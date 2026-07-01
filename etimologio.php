@@ -106,14 +106,16 @@
 //
 // ============================================================================
 
-require __DIR__ . '/config.php';
+require __DIR__ . '/auth.php';   // session + config + localdb + account resolution
 
 // --- RESPONSE HELPERS --------------------------------------------------------
 
 function jsonResponse(array $data, int $status = 200): void {
     http_response_code($status);
     header('Content-Type: application/json');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    // JSON_INVALID_UTF8_SUBSTITUTE: never emit an empty body if a stored value
+    // has a stray non-UTF-8 byte — substitute it instead of failing silently.
+    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
 
@@ -1681,6 +1683,137 @@ function updateProductCategory(
     ];
 }
 
+// --- CATEGORY-LEVEL CLASSIFICATIONS (χαρακτηρισμοί ανά κατηγορία, manual §9) ---
+// e-timologio lets you attach default classifications to a product CATEGORY, one
+// per invoice type (+ optional self-pricing variant). These are applied to items of
+// that category. The real UI posts a nested `prdCategory` object to create/updateCategory.
+
+// The invoice-type dropdown (value => label) as rendered on the ProductCategories page.
+function getClassificationInvoiceTypes(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/product/productCategories');
+    $types = [];
+    if (preg_match('/id="clsInvoiceType"(.*?)<\/select>/s', $html, $m)) {
+        if (preg_match_all('/<option[^>]*value="([^"]*)"[^>]*>(.*?)<\/option>/s', $m[1], $opts, PREG_SET_ORDER)) {
+            foreach ($opts as $o) {
+                $val = trim($o[1]);
+                if ($val === '') continue;
+                $types[] = ['value' => $val, 'label' => html_entity_decode(trim(strip_tags($o[2])), ENT_QUOTES, 'UTF-8')];
+            }
+        }
+    }
+    return $types;
+}
+
+// Allowed income classification categories + codes for an invoice type (from the
+// myDATA validation document that drives the UI's dynamic dropdowns).
+function getClassificationOptions(\CurlHandle $ch, string $invType, bool $selfPrice = false): array {
+    if ($invType === '') return ['success' => false, 'error' => 'Λείπει ο τύπος παραστατικού (type)'];
+    $url = BASE_URL . '/Product/GetValidationDoc?' . http_build_query([
+        'invType'   => $invType,
+        'selfPrice' => $selfPrice ? 'true' : 'false',
+    ]);
+    $doc = json_decode(curlGet($ch, $url), true);
+    if (!is_array($doc) || !isset($doc['IncomeClassificationCategories'])) {
+        return ['success' => false, 'error' => $doc['message'] ?? 'Δεν βρέθηκαν κανόνες χαρακτηρισμού για τον τύπο ' . $invType];
+    }
+    $strip = function (string $s): string {                 // "Label (E3_xxx)" -> "Label"
+        return trim(preg_replace('/\s*\([^()]*\)\s*$/', '', $s));
+    };
+    $cats = [];
+    foreach ($doc['IncomeClassificationCategories'] as $c) {
+        if (!empty($c['isDisabled'])) continue;
+        $codes = [];
+        $tiles = $c['incomeCategoryCodesTiles'] ?? [];
+        foreach (($c['classificationCodes_E3_VAT'] ?? []) as $i => $code) {
+            if ($code === '') continue;
+            $codes[] = ['code' => $code, 'title' => $strip((string)($tiles[$i] ?? $code))];
+        }
+        $cats[] = [
+            'category' => $c['classificationCategory_9'] ?? '',
+            'title'    => $c['classificationCategory_9_Title'] ?? ($c['classificationCategory_9'] ?? ''),
+            'codes'    => $codes,
+        ];
+    }
+    return ['success' => true, 'invoice_type' => $invType, 'self_pricing' => $selfPrice, 'categories' => $cats];
+}
+
+// List product categories together with their existing classifications (parsed
+// from each row's data-classifications attribute on the ProductCategories page).
+function listCategoryClassifications(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/product/productCategories');
+    $rows = extractTableRows($html, 'tblPrdCategories');
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        $id   = $cols[1] ?? '';
+        $name = $cols[3] ?? '';
+        $cls  = [];
+        if (preg_match('/data-classifications=(["\'])(.*?)\1/s', $row['html'], $m)) {
+            $decoded = json_decode(html_entity_decode($m[2], ENT_QUOTES, 'UTF-8'), true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $c) {
+                    $cls[] = [
+                        'invoice_type'       => (string)($c['i'] ?? ''),
+                        'invoice_type_label' => $c['it'] ?? '',
+                        'self_pricing'       => !empty($c['sp']),
+                        'category'           => $c['cc'] ?? '',
+                        'category_title'     => $c['ct'] ?? '',
+                        'code'               => $c['tc'] ?? '',
+                        'code_title'         => $c['tt'] ?? '',
+                    ];
+                }
+            }
+        }
+        if ($id === '' && $name === '') continue;
+        $items[] = ['category_id' => $id, 'name' => $name, 'classifications' => $cls];
+    }
+    return ['success' => true, 'count' => count($items), 'categories' => $items];
+}
+
+// Create/update a product category WITH its classifications. $cls entries:
+//   {invoice_type, category, code, self_pricing}. id=0/'' => create, else update.
+function saveCategoryClassifications(\CurlHandle $ch, string $id, string $name, array $cls): array {
+    if (trim($name) === '') return ['success' => false, 'error' => 'Λείπει η ονομασία κατηγορίας'];
+    $token = getToken($ch, BASE_URL . '/product/productCategories');
+    if ($token === '') return ['success' => false, 'error' => 'Δεν φορτώθηκε η φόρμα κατηγοριών'];
+
+    $categoryClassifications = [];
+    foreach ($cls as $c) {
+        $it = trim((string)($c['invoice_type'] ?? ''));
+        $cc = trim((string)($c['category'] ?? ''));
+        if ($it === '' || $cc === '') continue;
+        $entry = [
+            '_invoiceType'             => $it,
+            'selfPricing'              => !empty($c['self_pricing']) ? 'true' : 'false',
+            'classificationCategoryCode' => $cc,
+        ];
+        $tc = trim((string)($c['code'] ?? ''));
+        if ($tc !== '') $entry['classificationTypeCode'] = $tc;
+        $categoryClassifications[] = $entry;
+    }
+
+    $isUpdate = ((int)$id) > 0;
+    $prdCategory = [
+        'id'                      => $isUpdate ? (int)$id : 0,
+        'name'                    => trim($name),
+        'categoryClassifications' => $categoryClassifications,
+    ];
+    // jQuery posts the object as `prdCategory[...]`; http_build_query matches that shape.
+    $fields = ['prdCategory' => $prdCategory, '__RequestVerificationToken' => $token];
+    $action = $isUpdate ? '/Product/updateCategory' : '/Product/createCategory';
+
+    $response = curlPost($ch, BASE_URL . $action, $fields);
+    $decoded  = json_decode($response, true);
+    // On validation failure the controller returns JSON `{message:"err1~err2"}`.
+    // On success it returns a plain body (e.g. "0") — anything without a message is OK.
+    $err = (is_array($decoded) && !empty($decoded['message'])) ? (string)$decoded['message'] : '';
+    if ($err === '') {
+        return ['success' => true, 'id' => $id, 'name' => trim($name), 'count' => count($categoryClassifications)];
+    }
+    return ['success' => false, 'error' => str_replace('~', ' · ', $err),
+            'raw' => substr((string)$response, 0, 400)];
+}
+
 // --- 5. GET PRODUCT DATA (classifications, description) ----------------------
 
 function getProductData(\CurlHandle $ch, string $productCode, string $invoiceType): ?array {
@@ -1692,6 +1825,128 @@ function getProductData(\CurlHandle $ch, string $productCode, string $invoiceTyp
     ]);
     $response = curlGet($ch, $url);
     return json_decode($response, true) ?: null;
+}
+
+// --- Classifications (χαρακτηρισμοί) for a product within an invoice type -----
+// myDATA requires each line to carry income (E3_*) and, where applicable, VAT
+// classifications. e-timologio derives them per product+type via GetProduct.
+function getInvoiceClassifications(\CurlHandle $ch, string $productCode, string $invoiceType): array {
+    $p = getProductData($ch, $productCode, $invoiceType);
+    if ($p === null) return ['success' => false, 'error' => 'Δεν βρέθηκε είδος ' . $productCode];
+    $cls = [];
+    foreach (($p['cl'] ?? []) as $cl) {
+        $cls[] = [
+            'kind'          => isset($cl['k']) ? (int)$cl['k'] : 1,
+            'category'      => $cl['cc'] ?? '',
+            'category_name' => $cl['ct'] ?? '',
+            'code'          => $cl['tc'] ?? '',
+            'code_name'     => $cl['tt'] ?? '',
+        ];
+    }
+    return [
+        'success'         => true,
+        'product'         => $productCode,
+        'type'            => $invoiceType,
+        'vat_category'    => $p['v'] ?? null,
+        'classifications' => $cls,
+    ];
+}
+
+// myDATA VAT category code -> effective rate
+function vatRateFromCategory(int $cat): float {
+    $map = [1 => 0.24, 2 => 0.13, 3 => 0.06, 4 => 0.17, 5 => 0.09, 6 => 0.04, 7 => 0.0, 8 => 0.0];
+    return $map[$cat] ?? 0.24;
+}
+
+// Build a single invoice line (with per-line product classifications + VAT).
+// quantity is sent only when != 1 (some invoice types forbid it for services).
+// $disc = per-line discount: percentage (0-100) when $discIsPct, else absolute €.
+// $clsOverride = explicit classifications [{k?,cc,tc}] replacing the product defaults.
+function buildInvoiceLine(
+    \CurlHandle $ch, int $n, string $code, float $qty, float $unitNet,
+    string $invoiceType, float $rateOverride = -1.0, int $catOverride = 0,
+    float $disc = 0.0, bool $discIsPct = true, array $clsOverride = []
+): array {
+    $isZeroType = in_array($invoiceType, ZERO_VAT_TYPES);
+    $product = getProductData($ch, $code, $invoiceType);
+    $descr = (is_array($product) && isset($product['d'])) ? $code . ' - ' . $product['d'] : $code;
+
+    if ($rateOverride >= 0) {
+        $rate = $rateOverride; $cat = $catOverride > 0 ? $catOverride : vatCategoryFromRate($rate);
+    } elseif ($isZeroType) {
+        $rate = 0.0; $cat = 7;
+    } elseif (is_array($product) && !empty($product['v'])) {
+        $cat = (int)$product['v']; $rate = vatRateFromCategory($cat);
+    } else {
+        $cat = $catOverride > 0 ? $catOverride : 1; $rate = vatRateFromCategory($cat);
+    }
+    $isZero = ($rate == 0.0);
+    if ($qty <= 0) $qty = 1.0;
+
+    // Gross (before discount) → discount → net (after discount) → VAT.
+    $gross = round($unitNet * $qty, 2);
+    $discAmount = 0.0;
+    if ($disc > 0) {
+        $discAmount = $discIsPct ? round($gross * $disc / 100.0, 2) : round($disc, 2);
+        if ($discAmount > $gross) $discAmount = $gross;   // never discount below zero
+    }
+    $net   = round($gross - $discAmount, 2);
+    $vat   = round($net * $rate, 2);
+    $total = round($net + $vat, 2);
+
+    // Classifications: explicit override wins, else product defaults, else a sane fallback.
+    // Each carries the line's *net (post-discount)* amount, as myDATA expects.
+    $cls = [];
+    if (!empty($clsOverride)) {
+        foreach ($clsOverride as $cl) {
+            if (empty($cl['cc']) || empty($cl['tc'])) continue;
+            $cls[] = [
+                'classificationKind'     => isset($cl['k']) && (int)$cl['k'] > 0 ? (int)$cl['k'] : 1,
+                'classificationCategory' => $cl['cc'],
+                'classificationType'     => $cl['tc'],
+                'amount'                 => $net,
+            ];
+        }
+    }
+    if (empty($cls)) {
+        foreach (((is_array($product) ? ($product['cl'] ?? null) : null) ?? []) as $cl) {
+            $cls[] = [
+                'classificationKind'     => isset($cl['k']) && (int)$cl['k'] > 0 ? (int)$cl['k'] : 1,
+                'classificationCategory' => $cl['cc'],
+                'classificationType'     => $cl['tc'],
+                'amount'                 => $net,
+            ];
+        }
+    }
+    if (empty($cls)) {
+        $cls[] = ['classificationKind' => 1, 'classificationCategory' => 'category1_3',
+                  'classificationType' => $isZero ? 'E3_561_006' : 'E3_561_003', 'amount' => $net];
+    }
+
+    // discountType: 1 = percentage, 2 = absolute value (e-timologio convention).
+    $line = [
+        'lineNumber'                   => $n,
+        'itemId'                       => $n,
+        'itemCode'                     => $code,
+        'itemDescr'                    => $descr,
+        'unitPrice'                    => $unitNet,
+        'vatCategory'                  => $cat,
+        'vatExemptionCategory'         => $isZero ? 4 : '',
+        'netValueWithoutDiscount'      => $gross,
+        'discountValue'                => $disc > 0 ? ($discIsPct ? $disc : $discAmount) : 0,
+        'netValueWithDiscount'         => $net,
+        'vatAmount'                    => $vat,
+        'totalValue'                   => $total,
+        'discountAmount'               => $discAmount,
+        'discountType'                 => $discIsPct ? 1 : 2,
+        'isGiftVoucher'                => 'false',
+        'otherMeasurementUnitTitle'    => '',
+        'otherMeasurementUnitQuantity' => '',
+        'classifications'              => $cls,
+    ];
+    if ($qty != 1.0) { $line['quantity'] = $qty; $line['measurementUnit'] = 1; }
+
+    return ['line' => $line, 'net' => $net, 'vat' => $vat, 'total' => $total, 'discount' => $discAmount, 'gross' => $gross];
 }
 
 // --- 6. CREATE INVOICE (draft by default, live if $live=true) ----------------
@@ -1712,19 +1967,35 @@ function createInvoice(
     string $branch = '0',
     int $withholdingCategory = 0,
     float $withholdingAmount = 0.0,
-    bool $live = false
+    bool $live = false,
+    string $correlatedMark = '',
+    string $invoiceNotes = '',
+    float $vatRateOverride = -1.0,
+    int $vatCategoryOverride = 0,
+    array $delivery = [],
+    array $lines = []
 ): array {
 
     if ($issueDate === '') {
         $issueDate = $live ? date('Y-m-d') : date('d-m-Y');
     }
 
-    // Zero VAT for non-EU invoice types
+    // VAT rate: explicit override (e.g. mirroring an original invoice) wins,
+    // otherwise 0% for non-EU types, else the standard 24%.
     $isZeroVat = in_array($invoiceType, ZERO_VAT_TYPES);
-    $vatRate   = $isZeroVat ? 0.0 : 0.24;
+    if ($vatRateOverride >= 0) {
+        $vatRate   = $vatRateOverride;
+        $isZeroVat = ($vatRateOverride == 0.0);
+    } else {
+        $vatRate   = $isZeroVat ? 0.0 : 0.24;
+    }
     $netValue  = round($amount, 2);
     $vatAmount = round($netValue * $vatRate, 2);
     $total     = round($netValue + $vatAmount, 2);
+    // myDATA VAT category code (24%=1,13%=2,6%=3,17%=4,9%=5,4%=6,0%=7)
+    $vatCatCode = $vatCategoryOverride > 0
+        ? $vatCategoryOverride
+        : vatCategoryFromRate($vatRate, $isZeroVat);
 
     // Enrich counterpart — Taxisnet for GR clients, e-timologio database for foreign
     if ($afm !== '') {
@@ -1750,25 +2021,44 @@ function createInvoice(
         }
     }
 
-    // Fetch product data to get correct description and classifications per invoice type
-    $product   = getProductData($ch, $description, $invoiceType);
-    $itemDescr = isset($product['d']) ? $description . ' - ' . $product['d'] : $description;
-
-    // Build classifications from product definition (mirrors what JS does)
-    $classifications = [];
-    if (!empty($product['cl'])) {
-        foreach ($product['cl'] as $cl) {
-            $classifications[] = [
-                'clsCategory' => $cl['cc'],
-                'clsCode'     => $cl['tc'],
-            ];
-        }
-    } else {
-        $classifications[] = [
-            'clsCategory' => 'category1_3',
-            'clsCode'     => $isZeroVat ? 'E3_561_006' : 'E3_561_003',
-        ];
+    // Normalise to a list of lines. Single-amount calls become one line (qty 1).
+    if (empty($lines)) {
+        $lines = [[
+            'code'  => $description,
+            'qty'   => 1,
+            'price' => round($amount, 2),
+            'rate'  => $vatRateOverride,
+            'cat'   => $vatCategoryOverride,
+        ]];
     }
+    $invoiceLines = [];
+    $netValue = 0.0; $vatAmount = 0.0; $total = 0.0; $discountTotal = 0.0;
+    $ln = 1;
+    foreach ($lines as $row) {
+        // Discount: `disc` = percentage (default) or absolute € when discType='amount'/2.
+        $disc      = (float)($row['disc'] ?? 0);
+        $discIsPct = !in_array((string)($row['discType'] ?? 'pct'), ['amount', '2', 'eur'], true);
+        $built = buildInvoiceLine(
+            $ch, $ln++,
+            (string)($row['code'] ?? $description),
+            (float)($row['qty'] ?? 1),
+            (float)($row['price'] ?? 0),
+            $invoiceType,
+            isset($row['rate']) ? (float)$row['rate'] : -1.0,
+            (int)($row['cat'] ?? 0),
+            $disc, $discIsPct,
+            (is_array($row['cls'] ?? null)) ? $row['cls'] : []
+        );
+        $invoiceLines[]  = $built['line'];
+        $netValue       += $built['net'];
+        $vatAmount      += $built['vat'];
+        $total          += $built['total'];
+        $discountTotal  += $built['discount'];
+    }
+    $discountTotal = round($discountTotal, 2);
+    $netValue  = round($netValue, 2);
+    $vatAmount = round($vatAmount, 2);
+    $total     = round($total, 2);
 
     // Build withholding tax array if applicable
     $invoiceTaxes = [];
@@ -1785,7 +2075,7 @@ function createInvoice(
 
     $invoice = [
         '_invoiceType'              => $invoiceType,
-        'CorrelatedInvoice'         => '',
+        'CorrelatedInvoice'         => $correlatedMark,
         'selfPricing'               => 'false',
         'paymentType'               => (string)$paymentType,
         'invoiceFormat'             => 1,
@@ -1794,7 +2084,7 @@ function createInvoice(
         'trans'                     => 'false',
         'isB2G'                     => 'false',
         'tempInvoiceId'             => '',
-        'invoiceNotes'              => '',
+        'invoiceNotes'              => $invoiceNotes,
         'transmissionFailure'       => '',
         'ccr_totalNetValueWithDisc' => '',
         'ccr_grossValue'            => '',
@@ -1837,36 +2127,40 @@ function createInvoice(
 
         'invoiceTaxes' => $invoiceTaxes,
 
-        'invoiceLines' => [
-            [
-                'lineNumber'                   => 1,
-                'itemId'                       => 1,
-                'itemCode'                     => $description,
-                'itemDescr'                    => $itemDescr,
-                'unitPrice'                    => $netValue,
-                'vatCategory'                  => $isZeroVat ? 7 : 1,
-                'vatExemptionCategory'         => $isZeroVat ? 4 : '',
-                'netValueWithoutDiscount'      => $netValue,
-                'discountValue'                => 0,
-                'netValueWithDiscount'         => $netValue,
-                'vatAmount'                    => $vatAmount,
-                'totalValue'                   => $total,
-                'discountAmount'               => 0,
-                'discountType'                 => 1,
-                'isGiftVoucher'                => 'false',
-                'otherMeasurementUnitTitle'    => '',
-                'otherMeasurementUnitQuantity' => '',
-                'classifications'              => [
-                    [
-                        'classificationKind'     => 1,
-                        'classificationCategory' => $classifications[0]['clsCategory'],
-                        'classificationType'     => $classifications[0]['clsCode'],
-                        'amount'                 => $netValue,
-                    ],
-                ],
-            ],
-        ],
+        'invoiceLines' => $invoiceLines,
     ];
+
+    // Delivery note (δελτίο αποστολής/επιστροφής) header — applied when $delivery set
+    if (!empty($delivery)) {
+        $invoice['isDeliveryNote'] = 'true';
+        $invoice['trans']          = 'true';
+        $invoice['DispatchTime']   = $delivery['dispatchTime'] ?? '';
+        $invoice['invoiceHeader']['vehicleNumber'] = $delivery['vehicleNumber'] ?? '';
+        $invoice['invoiceHeader']['movePurpose']   = (string)($delivery['movePurpose'] ?? '1');
+        if (!empty($delivery['dispatchDate'])) {
+            $invoice['invoiceHeader']['dispatchDate'] = $delivery['dispatchDate'];
+        }
+        $invoice['invoiceHeader']['otherDeliveryNoteHeader'] = [
+            'loadingAddress'  => [
+                'street'     => $delivery['load_street'] ?? '',
+                'number'     => $delivery['load_number'] ?? '',
+                'postalCode' => $delivery['load_zip'] ?? '',
+                'city'       => $delivery['load_city'] ?? '',
+            ],
+            'deliveryAddress' => [
+                'street'     => $delivery['deliv_street'] ?? '',
+                'number'     => $delivery['deliv_number'] ?? '',
+                'postalCode' => $delivery['deliv_zip'] ?? '',
+                'city'       => $delivery['deliv_city'] ?? '',
+            ],
+            'startShippingBranch'    => '0',
+            'completeShippingBranch' => '0',
+        ];
+        if (!empty($delivery['reverse'])) {
+            $invoice['reverseDeliveryNote'] = 'true';
+            $invoice['invoiceHeader']['reverseDeliveryNotePurpose'] = (string)($delivery['movePurpose'] ?? '');
+        }
+    }
 
     curlGet($ch, BASE_URL . '/invoice/newinvoice');
 
@@ -1894,6 +2188,7 @@ function createInvoice(
                 'amount_net'   => $netValue,
                 'amount_vat'   => $vatAmount,
                 'amount_total' => $total,
+                'amount_discount' => $discountTotal,
             ];
         }
 
@@ -1925,6 +2220,7 @@ function createInvoice(
                 'amount_net'   => $netValue,
                 'amount_vat'   => $vatAmount,
                 'amount_total' => $total,
+                'amount_discount' => $discountTotal,
                 'note'         => 'DRAFT only - not submitted to AADE, no MARK assigned',
             ];
         }
@@ -1937,7 +2233,110 @@ function createInvoice(
     }
 }
 
+// --- 6b. CREDIT NOTE / CANCELLATION (πιστωτικό συσχετιζόμενο) -----------------
+// In myDATA you cannot "delete" an issued invoice — you cancel it by issuing a
+// CORRELATED credit note that references the original MARK:
+//   • B2B invoices (1.x / 2.x)  → 5.1 Πιστωτικό Τιμολόγιο (Συσχετιζόμενο)  = type 50
+//   • Retail (11.x ΑΛΠ/ΑΠΥ)     → 11.4 Πιστωτικό Στοιχείο Λιανικής (Συσχ.) = type 61
+// The credit note mirrors the original net amount; CorrelatedInvoice = MARK.
+
+function findInvoiceByMark(\CurlHandle $ch, string $mark): ?array {
+    $res = searchInvoices($ch, '01/01/2010', date('d/m/Y'), '', $mark, '', '', '0');
+    foreach (($res['invoices'] ?? []) as $iv) {
+        if ((string)($iv['mark'] ?? '') === (string)$mark) return $iv;
+    }
+    return $res['invoices'][0] ?? null;
+}
+
+function createCreditNote(
+    \CurlHandle $ch,
+    string $originalMark,
+    bool $live = false,
+    string $reason = '',
+    string $description = 'ΥΠ001',
+    float $amountOverride = 0.0
+): array {
+    $orig = findInvoiceByMark($ch, $originalMark);
+    if (!$orig) {
+        return ['success' => false, 'error' => 'Δεν βρέθηκε παραστατικό με ΜΑΡΚ ' . $originalMark];
+    }
+
+    $typeLabel  = (string)($orig['type'] ?? '');
+    $isRetail   = (bool)preg_match('#(^|\s)11\.#', $typeLabel);
+    $creditType = $isRetail ? '61' : '50';
+
+    $origNet = parseMoney((string)($orig['net_value'] ?? '0'));
+    $origVat = parseMoney((string)($orig['vat_value'] ?? '0'));
+
+    $net = $amountOverride > 0 ? $amountOverride : $origNet;
+    if ($net <= 0) {
+        $total = parseMoney((string)($orig['total'] ?? '0'));
+        $net = $total > 0 ? round($total / 1.24, 2) : 0.0;
+    }
+    if ($net <= 0) {
+        return ['success' => false, 'error' => 'Δεν προσδιορίστηκε ποσό για το πιστωτικό (δώσε amount)'];
+    }
+
+    // Mirror the EXACT VAT rate of the original (vat/net), instead of assuming 24%.
+    $rate = ($origNet > 0) ? round($origVat / $origNet, 2) : -1.0;
+    $vatCat = $rate >= 0 ? vatCategoryFromRate($rate) : 0;
+
+    $buyer = trim((string)($orig['buyer_vat'] ?? ''));
+    $notes = $reason !== '' ? $reason : ('Ακύρωση/Πιστωτικό για ΜΑΡΚ ' . $originalMark);
+
+    $result = createInvoice(
+        $ch, round($net, 2), $creditType, 3, $description, '',
+        $buyer, '', '', '', '', 'GR', '0',
+        0, 0.0, $live, $originalMark, $notes, $rate, $vatCat
+    );
+
+    $result['credit_note']     = true;
+    $result['credit_type']     = $creditType;
+    $result['correlated_mark'] = $originalMark;
+    $result['original']        = [
+        'type'      => $typeLabel,
+        'buyer_vat' => $buyer,
+        'net'       => round($net, 2),
+        'vat'       => round($origVat, 2),
+        'vat_rate'  => $rate >= 0 ? $rate : null,
+    ];
+    return $result;
+}
+
 // --- 7. GET INVOICE PDF BY MARK ----------------------------------------------
+
+// Fetch raw PDF bytes for a MARK (null if not a valid PDF)
+function fetchInvoicePdfBytes(\CurlHandle $ch, string $mark): ?string {
+    $resp = curlGet($ch, BASE_URL . '/Invoice/PrintInvoice2PdfNew?' . http_build_query(['mark' => $mark]));
+    if (!$resp || substr($resp, 0, 4) !== '%PDF') return null;
+    return $resp;
+}
+
+// Stream a ZIP of multiple invoice PDFs (bulk / per-customer download)
+function streamInvoicesZip(\CurlHandle $ch, array $marks, string $zipName = 'invoices.zip'): void {
+    if (!class_exists('ZipArchive')) jsonError('Το PHP zip extension δεν είναι ενεργό', 500);
+    $tmp = tempnam(sys_get_temp_dir(), 'etz');
+    $zip = new \ZipArchive();
+    $zip->open($tmp, \ZipArchive::OVERWRITE);
+    $ok = 0; $fail = [];
+    foreach ($marks as $m) {
+        $m = trim((string)$m);
+        if ($m === '') continue;
+        $pdf = fetchInvoicePdfBytes($ch, $m);
+        if ($pdf !== null) { $zip->addFromString("invoice-$m.pdf", $pdf); $ok++; }
+        else { $fail[] = $m; }
+    }
+    if (!empty($fail)) $zip->addFromString('_missing.txt', "Δεν βρέθηκαν PDF για:\n" . implode("\n", $fail));
+    $zip->close();
+    if ($ok === 0) { @unlink($tmp); jsonError('Κανένα έγκυρο PDF για συμπίεση'); }
+    $data = file_get_contents($tmp);
+    @unlink($tmp);
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $zipName . '"');
+    header('Content-Length: ' . strlen($data));
+    echo $data;
+    exit;
+}
 
 function getInvoicePdf(\CurlHandle $ch, string $mark): void {
     $url      = BASE_URL . '/Invoice/PrintInvoice2PdfNew?' . http_build_query(['mark' => $mark]);
@@ -1967,7 +2366,229 @@ function getInvoicePdf(\CurlHandle $ch, string $mark): void {
     ]);
 }
 
+// --- 8. STATISTICS (Dashboard) ----------------------------------------------
+// e-timologio renders the dashboard numbers server-side as Chart.js datasets.
+// We GET /Dashboard/DashboardByDate?type=... and parse the embedded arrays.
+function getStatistics(\CurlHandle $ch, string $period = 'month'): array {
+    $period = in_array($period, ['month', 'preMonth', 'year'], true) ? $period : 'month';
+    $html = curlGet($ch, BASE_URL . '/Dashboard/DashboardByDate?type=' . $period);
+
+    // Collect all labels:[...] and data:[...] arrays in document order.
+    preg_match_all('/labels:\s*(\[[^\]]*\])/', $html, $lm);
+    preg_match_all('/data:\s*(\[[^\]]*\])/',   $html, $dm);
+
+    $decode = function (string $arr): array {
+        $v = json_decode($arr, true);
+        return is_array($v) ? $v : [];
+    };
+
+    $types  = isset($lm[1][0]) ? $decode($lm[1][0]) : [];
+    $counts = isset($dm[1][0]) ? $decode($dm[1][0]) : [];
+    $values = isset($dm[1][1]) ? $decode($dm[1][1]) : [];
+
+    $breakdown = [];
+    foreach ($types as $i => $t) {
+        $breakdown[] = [
+            'type'  => (string)$t,
+            'count' => (int)($counts[$i] ?? 0),
+            'value' => (float)($values[$i] ?? 0),
+        ];
+    }
+
+    return [
+        'success'      => true,
+        'period'       => $period,
+        'breakdown'    => $breakdown,
+        'total_count'  => array_sum($counts),
+        'total_value'  => round(array_sum($values), 2),
+    ];
+}
+
+// --- 9. CUSTOMER LEDGER / ΚΑΡΤΕΛΑ -------------------------------------------
+// Combines issued invoices (from e-timologio) with LOCAL payments to produce a
+// running balance. e-timologio itself stores neither payments nor balances.
+// Map an effective VAT rate (0.24, 0.13, …) to the myDATA vatCategory code.
+function vatCategoryFromRate(float $rate, bool $isZeroVat = false): int {
+    if ($isZeroVat || $rate == 0.0) return 7;
+    $pct = (int)round($rate * 100);
+    $map = [24 => 1, 13 => 2, 6 => 3, 17 => 4, 9 => 5, 4 => 6, 0 => 7];
+    return $map[$pct] ?? 1;
+}
+
+function parseMoney(string $s): float {
+    $s = trim($s);
+    if ($s === '') return 0.0;
+    // Greek format: 1.234,56 -> 1234.56 ; also tolerate 1234.56
+    $s = preg_replace('/[^\d,.\-]/', '', $s);
+    if (strpos($s, ',') !== false) {
+        $s = str_replace('.', '', $s);   // remove thousands sep
+        $s = str_replace(',', '.', $s);  // decimal comma -> dot
+    }
+    return (float)$s;
+}
+
+function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to): array {
+    $inv = searchInvoices($ch, $from, $to, '', '', '', $buyerVat, '0');
+    $invoices = $inv['invoices'] ?? [];
+
+    $entries = [];
+    $totalDebit = 0.0; // invoiced (customer owes)
+    foreach ($invoices as $iv) {
+        $amt = parseMoney((string)($iv['total'] ?? '0'));
+        $totalDebit += $amt;
+        $entries[] = [
+            'kind'   => 'invoice',
+            'date'   => $iv['issue_date'] ?? '',
+            'mark'   => $iv['mark'] ?? '',
+            'type'   => $iv['type'] ?? '',
+            'aa'     => $iv['aa'] ?? '',
+            'debit'  => round($amt, 2),
+            'credit' => 0.0,
+        ];
+    }
+
+    $payments = payments_list(COMPANY_VAT, $buyerVat, toDbDate($from), toDbDate($to));
+    $totalCredit = 0.0;
+    foreach ($payments as $p) {
+        $totalCredit += (float)$p['amount'];
+        $entries[] = [
+            'kind'       => 'payment',
+            'date'       => $p['pay_date'],
+            'payment_id' => (int)$p['id'],
+            'method'     => (int)$p['method'],
+            'notes'      => $p['notes'],
+            'debit'      => 0.0,
+            'credit'     => round((float)$p['amount'], 2),
+        ];
+    }
+
+    $meta    = customer_meta_get(COMPANY_VAT, $buyerVat);
+    $opening = (float)($meta['opening_balance'] ?? 0);
+
+    // Sort entries by date ascending, then compute running balance
+    usort($entries, fn($a, $b) => strcmp(normDate($a['date']), normDate($b['date'])));
+    $running = $opening;
+    foreach ($entries as &$e) {
+        $running += $e['debit'] - $e['credit'];
+        $e['balance'] = round($running, 2);
+    }
+    unset($e);
+
+    return [
+        'success'         => true,
+        'account_vat'     => COMPANY_VAT,
+        'customer_vat'    => $buyerVat,
+        'customer_name'   => $meta['customer_name'] ?? '',
+        'opening_balance' => round($opening, 2),
+        'total_invoiced'  => round($totalDebit, 2),
+        'total_paid'      => round($totalCredit, 2),
+        'balance'         => round($opening + $totalDebit - $totalCredit, 2),
+        'notes'           => $meta['notes'] ?? '',
+        'entries'         => $entries,
+    ];
+}
+
+// Normalise a display date (dd/mm/yyyy or yyyy-mm-dd) to yyyy-mm-dd for sorting
+function normDate(string $d): string {
+    $d = trim($d);
+    if (preg_match('#^(\d{2})/(\d{2})/(\d{4})#', $d, $m)) return "$m[3]-$m[2]-$m[1]";
+    if (preg_match('#^(\d{4})-(\d{2})-(\d{2})#', $d, $m)) return "$m[1]-$m[2]-$m[3]";
+    return $d;
+}
+// Convert a search date (yyyy-mm-dd or dd/mm/yyyy) to yyyy-mm-dd for the local DB
+function toDbDate(string $d): string {
+    $d = trim($d);
+    if ($d === '') return '';
+    return normDate($d);
+}
+
 // --- API ENTRY POINT ---------------------------------------------------------
+
+// ===========================================================================
+// AUTH ACTIONS (?auth=…) — public ones reachable without a session; the rest
+// (and every other action below) require login. Master-only actions checked too.
+// ===========================================================================
+$authAction = trim($_GET['auth'] ?? $_POST['auth'] ?? '');
+if ($authAction !== '') {
+    switch ($authAction) {
+        case 'login':
+            jsonResponse(auth_login(trim($_POST['email'] ?? $_GET['email'] ?? ''), (string)($_POST['password'] ?? $_GET['password'] ?? '')));
+        case 'signup':
+            jsonResponse(auth_signup(trim($_POST['email'] ?? ''), (string)($_POST['password'] ?? ''), trim($_POST['business_name'] ?? '')));
+        case 'forgot':
+            jsonResponse(auth_forgot(trim($_POST['email'] ?? $_GET['email'] ?? '')));
+        case 'reset':
+            jsonResponse(auth_reset(trim($_POST['token'] ?? $_GET['token'] ?? ''), (string)($_POST['password'] ?? '')));
+        case 'logout':
+            auth_logout(); jsonResponse(['success' => true]);
+        case 'me': {
+            $u = current_user();
+            if (!$u) jsonResponse(['success' => true, 'authenticated' => false]);
+            $accts = accounts_for_user((int)$u['id']);
+            jsonResponse([
+                'success' => true, 'authenticated' => true, 'user' => user_public($u),
+                'accounts' => array_map(fn($a) => ['vat' => $a['vat'], 'label' => $a['label'] ?: $a['vat']], $accts),
+                'active' => defined('COMPANY_VAT') ? COMPANY_VAT : '',
+            ]);
+        }
+        case 'change_password': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!password_verify((string)($_POST['old_password'] ?? ''), $u['password_hash'])) jsonError('Λάθος τρέχων κωδικός');
+            $np = (string)($_POST['password'] ?? '');
+            if (strlen($np) < 8) jsonError('Ο νέος κωδικός πρέπει να έχει ≥ 8 χαρακτήρες');
+            user_update((int)$u['id'], ['password_hash' => password_hash($np, PASSWORD_DEFAULT)]);
+            jsonResponse(['success' => true]);
+        }
+        // ---- Master-admin only ----
+        case 'admin_users': case 'admin_approve': case 'admin_set_status':
+        case 'admin_reset_pw': case 'admin_add_account': case 'admin_update_account':
+        case 'admin_delete_account': case 'admin_user_accounts': case 'admin_create_user': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            switch ($authAction) {
+                case 'admin_users':
+                    jsonResponse(['success' => true, 'users' => users_all()]);
+                case 'admin_create_user': {
+                    $r = auth_signup(trim($_POST['email'] ?? ''), (string)($_POST['password'] ?? ''), trim($_POST['business_name'] ?? ''));
+                    if ($r['success']) user_update((int)$r['id'], ['status' => 'active']);   // admin-created = active
+                    jsonResponse($r);
+                }
+                case 'admin_approve':
+                    user_update((int)($_POST['user_id'] ?? 0), ['status' => 'active']);
+                    jsonResponse(['success' => true]);
+                case 'admin_set_status':
+                    user_update((int)($_POST['user_id'] ?? 0), ['status' => in_array($_POST['status'] ?? '', ['active','pending','disabled'], true) ? $_POST['status'] : 'pending']);
+                    jsonResponse(['success' => true]);
+                case 'admin_reset_pw': {
+                    $uid = (int)($_POST['user_id'] ?? 0);
+                    $token = bin2hex(random_bytes(24));
+                    user_update($uid, ['reset_token' => $token, 'reset_expires' => time() + 86400]);
+                    jsonResponse(['success' => true, 'token' => $token, 'reset_link' => auth_reset_link($token)]);
+                }
+                case 'admin_user_accounts':
+                    jsonResponse(['success' => true, 'accounts' => array_map(fn($a) => ['id'=>$a['id'],'vat'=>$a['vat'],'label'=>$a['label'],'username'=>$a['username']], accounts_for_user((int)($_GET['user_id'] ?? $_POST['user_id'] ?? 0)))]);
+                case 'admin_add_account':
+                    account_add((int)($_POST['user_id'] ?? 0), trim($_POST['vat'] ?? ''), trim($_POST['label'] ?? ''), trim($_POST['username'] ?? ''), trim($_POST['subkey'] ?? ''));
+                    jsonResponse(['success' => true]);
+                case 'admin_update_account':
+                    account_update((int)($_POST['account_id'] ?? 0), ['vat'=>trim($_POST['vat'] ?? ''),'label'=>trim($_POST['label'] ?? ''),'username'=>trim($_POST['username'] ?? ''),'subkey'=>trim($_POST['subkey'] ?? '')]);
+                    jsonResponse(['success' => true]);
+                case 'admin_delete_account':
+                    jsonResponse(['success' => account_delete((int)($_POST['account_id'] ?? 0))]);
+            }
+        }
+        default:
+            jsonError('Άγνωστη ενέργεια auth: ' . $authAction);
+    }
+}
+
+// ---- LOGIN GATE: everything past here needs an authenticated user ----------
+$__user = current_user();
+if (!$__user) jsonError('Απαιτείται σύνδεση', 401);
+// A logged-in business user with no linked AADE account yet can't hit AADE.
+if (!defined('COMPANY_VAT')) {
+    jsonError('Δεν έχει συνδεθεί λογαριασμός AADE στον χρήστη σας (εκκρεμεί ρύθμιση από τον διαχειριστή).', 409);
+}
 
 $mark                = trim($_GET['mark']                  ?? $_POST['mark']                  ?? '');
 $afm                 = trim($_GET['afm']                   ?? $_POST['afm']                   ?? '');
@@ -2094,11 +2715,265 @@ $categoryName        = trim($_GET['category_name']              ?? $_POST['categ
 $companyProfileFlag  = !empty(($_GET['company_profile']           ?? $_POST['company_profile']           ?? ''));
 $companyFromTaxis    = !empty(($_GET['company_from_taxis']        ?? $_POST['company_from_taxis']        ?? ''));
 
+// New params: statistics, ledger, local payments, accounts
+$statisticsFlag      = !empty(($_GET['statistics']               ?? $_POST['statistics']               ?? ''));
+$statsPeriod         = trim($_GET['period']                      ?? $_POST['period']                   ?? 'month');
+$ledgerFlag          = !empty(($_GET['ledger']                   ?? $_POST['ledger']                   ?? ''));
+$listAccountsFlag    = !empty(($_GET['accounts']                 ?? $_POST['accounts']                 ?? ''));
+$listPaymentsFlag    = !empty(($_GET['list_payments']            ?? $_POST['list_payments']            ?? ''));
+$addPaymentFlag      = !empty(($_GET['add_payment']              ?? $_POST['add_payment']              ?? ''));
+$deletePaymentId     = trim($_GET['delete_payment_id']           ?? $_POST['delete_payment_id']        ?? '');
+$customerMetaGet     = !empty(($_GET['customer_meta']            ?? $_POST['customer_meta']            ?? ''));
+$customerMetaSet     = !empty(($_GET['set_customer_meta']        ?? $_POST['set_customer_meta']        ?? ''));
+
+// ----------------------------------------------------------------------------
+// LOCAL-ONLY actions (no e-timologio login needed → fast)
+// ----------------------------------------------------------------------------
+if ($listAccountsFlag) {
+    $out = [];
+    foreach (accounts_for_user((int)$__user['id']) as $a) {
+        $out[] = ['label' => $a['label'] ?: $a['vat'], 'vat' => (string)$a['vat']];
+    }
+    jsonResponse(['success' => true, 'active' => COMPANY_VAT, 'accounts' => $out]);
+}
+
+// Instant cache read (no AADE login) — UI renders from this immediately
+$cachedKind = trim($_GET['cached'] ?? $_POST['cached'] ?? '');
+if ($cachedKind !== '') {
+    $c = cache_get(COMPANY_VAT, $cachedKind);
+    if ($c) {
+        jsonResponse(['success' => true, 'cached' => true, 'kind' => $cachedKind,
+            'synced_at' => $c['synced_at'], 'count' => count($c['rows']), 'rows' => $c['rows']]);
+    }
+    jsonResponse(['success' => true, 'cached' => false, 'kind' => $cachedKind, 'count' => 0, 'rows' => []]);
+}
+
+if ($addPaymentFlag) {
+    $id = payment_add(COMPANY_VAT, [
+        'customer_vat'  => trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm),
+        'customer_code' => trim($_GET['customer_code'] ?? $_POST['customer_code'] ?? ''),
+        'customer_name' => trim($_GET['customer_name'] ?? $_POST['customer_name'] ?? $name),
+        'amount'        => (float)($_GET['pay_amount'] ?? $_POST['pay_amount'] ?? $amount),
+        'method'        => (int)($_GET['pay_method'] ?? $_POST['pay_method'] ?? $payment),
+        'pay_date'      => trim($_GET['pay_date'] ?? $_POST['pay_date'] ?? date('Y-m-d')),
+        'mark'          => $mark,
+        'notes'         => trim($_GET['pay_notes'] ?? $_POST['pay_notes'] ?? ''),
+    ]);
+    jsonResponse(['success' => true, 'payment_id' => $id]);
+}
+
+if ($deletePaymentId !== '') {
+    $ok = payment_delete(COMPANY_VAT, (int)$deletePaymentId);
+    jsonResponse(['success' => $ok, 'deleted' => $ok ? (int)$deletePaymentId : null]);
+}
+
+if ($listPaymentsFlag) {
+    $rows = payments_list(
+        COMPANY_VAT,
+        trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm),
+        toDbDate(trim($_GET['issue_date_from'] ?? $_POST['issue_date_from'] ?? '')),
+        toDbDate(trim($_GET['issue_date_to'] ?? $_POST['issue_date_to'] ?? ''))
+    );
+    jsonResponse(['success' => true, 'count' => count($rows), 'payments' => $rows]);
+}
+
+if ($customerMetaSet) {
+    $cv = trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm);
+    customer_meta_set(COMPANY_VAT, $cv, [
+        'customer_name'   => trim($_GET['customer_name'] ?? $_POST['customer_name'] ?? ''),
+        'opening_balance' => (float)($_GET['opening_balance'] ?? $_POST['opening_balance'] ?? 0),
+        'notes'           => trim($_GET['cust_notes'] ?? $_POST['cust_notes'] ?? ''),
+    ]);
+    jsonResponse(['success' => true, 'meta' => customer_meta_get(COMPANY_VAT, $cv)]);
+}
+
+if ($customerMetaGet) {
+    $cv = trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm);
+    jsonResponse(['success' => true, 'meta' => customer_meta_get(COMPANY_VAT, $cv)]);
+}
+
 $ch = login();
+
+if ($statisticsFlag) {
+    $result = getStatistics($ch, $statsPeriod);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Background sync — fetch fresh, compare snapshot hash, update cache, report change
+$syncKind = trim($_GET['sync'] ?? $_POST['sync'] ?? '');
+if ($syncKind !== '') {
+    $prev = cache_get(COMPANY_VAT, $syncKind);
+    $rows = [];
+    if ($syncKind === 'customers') {
+        $r = listCustomers($ch, '', '', '', true, 1000, 20); $rows = $r['customers'] ?? [];
+    } elseif ($syncKind === 'products') {
+        $r = listProducts($ch); $rows = $r['products'] ?? [];
+    } elseif ($syncKind === 'invoices') {
+        $r = searchInvoices($ch, $issueDateFrom, $issueDateTo, '', '', '', '', '0'); $rows = $r['invoices'] ?? [];
+    } else {
+        curl_close($ch); jsonError('Unknown sync kind: ' . $syncKind);
+    }
+    $newHash  = md5(json_encode($rows, JSON_UNESCAPED_UNICODE));
+    $changed  = !$prev || $prev['hash'] !== $newHash;
+    if ($changed) cache_set(COMPANY_VAT, $syncKind, $rows);
+    $meta = cache_get(COMPANY_VAT, $syncKind);
+    curl_close($ch);
+    jsonResponse(['success' => true, 'kind' => $syncKind, 'changed' => $changed,
+        'count' => count($rows), 'prev_count' => $prev ? count($prev['rows']) : 0,
+        'synced_at' => $meta['synced_at'] ?? '', 'rows' => $rows]);
+}
+
+if ($ledgerFlag) {
+    $cv = trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm);
+    if ($cv === '') { curl_close($ch); jsonError('Missing buyer_vat for ledger'); }
+    $result = buildLedger($ch, $cv, $issueDateFrom, $issueDateTo);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Credit note / cancellation by original MARK
+$creditNoteFlag = !empty(($_GET['credit_note'] ?? $_POST['credit_note'] ?? ''));
+$cancelMark     = trim($_GET['cancel_mark'] ?? $_POST['cancel_mark'] ?? $_GET['credit_for_mark'] ?? $_POST['credit_for_mark'] ?? '');
+$creditReason   = trim($_GET['reason'] ?? $_POST['reason'] ?? '');
+if ($creditNoteFlag || $cancelMark !== '') {
+    if ($cancelMark === '') { curl_close($ch); jsonError('Λείπει το cancel_mark (ΜΑΡΚ αρχικού παραστατικού)'); }
+    $result = createCreditNote($ch, $cancelMark, $live, $creditReason, $descr, $amount);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Classifications (χαρακτηρισμοί) for a product within an invoice type
+if (!empty($_GET['classifications'] ?? $_POST['classifications'] ?? '')) {
+    $prod = trim($_GET['product'] ?? $_POST['product'] ?? $descr);
+    $result = getInvoiceClassifications($ch, $prod, $type);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Invoice-type catalogue (numeric value + dotted code + full label) for the UI.
+if (!empty($_GET['invoice_types'] ?? $_POST['invoice_types'] ?? '')) {
+    $types = getClassificationInvoiceTypes($ch);
+    foreach ($types as &$t) {
+        // labels look like "2.1 - Τιμολόγιο Παροχής Υπηρεσιών"
+        if (preg_match('/^\s*([\d.]+)\s*-\s*(.+)$/u', $t['label'], $m)) {
+            $t['code'] = $m[1];
+            $t['name'] = trim($m[2]);
+        } else { $t['code'] = ''; $t['name'] = $t['label']; }
+    }
+    unset($t);
+    curl_close($ch);
+    jsonResponse(['success' => true, 'invoice_types' => $types]);
+}
+
+// Allowed classification categories + codes for an invoice type (dropdown source)
+if (!empty($_GET['cls_options'] ?? $_POST['cls_options'] ?? '')) {
+    $selfP  = !empty($_GET['self'] ?? $_POST['self'] ?? '');
+    $result = getClassificationOptions($ch, $type, $selfP);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Category-level classifications — list categories + their χαρακτηρισμοί + type list
+if (!empty($_GET['category_cls'] ?? $_POST['category_cls'] ?? '')) {
+    $result = listCategoryClassifications($ch);
+    $result['invoice_types'] = getClassificationInvoiceTypes($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Save category-level classifications (create or update a product category)
+if (!empty($_GET['save_category_cls'] ?? $_POST['save_category_cls'] ?? '')) {
+    $catId   = trim($_GET['category_id'] ?? $_POST['category_id'] ?? '');
+    $catName = trim($_GET['category_name'] ?? $_POST['category_name'] ?? '');
+    $clsJson = trim($_GET['cls'] ?? $_POST['cls'] ?? '');
+    $clsArr  = json_decode($clsJson, true);
+    if (!is_array($clsArr)) $clsArr = [];
+    $result = saveCategoryClassifications($ch, $catId, $catName, $clsArr);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Delivery / return note (δελτίο αποστολής / επιστροφής)
+if (!empty($_GET['delivery_note'] ?? $_POST['delivery_note'] ?? '')) {
+    $delivery = [
+        'movePurpose'    => trim($_GET['move_purpose'] ?? $_POST['move_purpose'] ?? '1'),
+        'vehicleNumber'  => trim($_GET['vehicle'] ?? $_POST['vehicle'] ?? ''),
+        'dispatchDate'   => trim($_GET['dispatch_date'] ?? $_POST['dispatch_date'] ?? ''),
+        'dispatchTime'   => trim($_GET['dispatch_time'] ?? $_POST['dispatch_time'] ?? ''),
+        'reverse'        => !empty($_GET['reverse'] ?? $_POST['reverse'] ?? ''),
+        'load_street'    => trim($_GET['load_street'] ?? $_POST['load_street'] ?? ''),
+        'load_number'    => trim($_GET['load_number'] ?? $_POST['load_number'] ?? ''),
+        'load_zip'       => trim($_GET['load_zip'] ?? $_POST['load_zip'] ?? ''),
+        'load_city'      => trim($_GET['load_city'] ?? $_POST['load_city'] ?? ''),
+        'deliv_street'   => trim($_GET['deliv_street'] ?? $_POST['deliv_street'] ?? ''),
+        'deliv_number'   => trim($_GET['deliv_number'] ?? $_POST['deliv_number'] ?? ''),
+        'deliv_zip'      => trim($_GET['deliv_zip'] ?? $_POST['deliv_zip'] ?? ''),
+        'deliv_city'     => trim($_GET['deliv_city'] ?? $_POST['deliv_city'] ?? ''),
+    ];
+    // Delivery-note type: 503=9.3 (default), 504=9.1 correlated, 505=9.2
+    $dnType = trim($_GET['dn_type'] ?? $_POST['dn_type'] ?? '503');
+    if ($afm !== '' && preg_match('/^\d{9}$/', $afm)) {
+        $cust = findOrCreateCustomer($ch, $afm);
+        if (!$cust['success']) { curl_close($ch); jsonResponse($cust); }
+    }
+    // Optional multi-line delivery note — same `lines` JSON as invoices.
+    $dnLines = [];
+    $dnLinesJson = trim($_GET['lines'] ?? $_POST['lines'] ?? '');
+    if ($dnLinesJson !== '') {
+        $dnLines = json_decode($dnLinesJson, true);
+        if (!is_array($dnLines)) $dnLines = [];
+    }
+    $result = createInvoice(
+        $ch, $amount, $dnType, $payment, $descr, '',
+        $afm, $name, $address, $city, $zip, $country, $branch,
+        0, 0.0, $live, '', trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, $delivery, $dnLines
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Multi-line invoice — `lines` is a JSON array of {code, qty, price[, rate, cat]}
+$linesJson = trim($_GET['lines'] ?? $_POST['lines'] ?? '');
+if ($linesJson !== '') {
+    $linesArr = json_decode($linesJson, true);
+    if (!is_array($linesArr) || empty($linesArr)) { curl_close($ch); jsonError('Άκυρες γραμμές (lines)'); }
+    if ($afm !== '' && preg_match('/^\d{9}$/', $afm)) {
+        $cust = findOrCreateCustomer($ch, $afm);
+        if (!$cust['success']) { curl_close($ch); jsonResponse($cust); }
+    }
+    $result = createInvoice(
+        $ch, 0, $type, $payment, $descr, '',
+        $afm, $name, $address, $city, $zip, $country, $branch,
+        $withholdingCategory, $withholdingAmount, $live, '',
+        trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
 
 // PDF retrieval by MARK — takes priority over all other parameters
 if ($mark !== '') {
     getInvoicePdf($ch, $mark);
+}
+
+// Bulk / per-customer PDF download as ZIP
+if (!empty($_GET['invoices_zip'] ?? $_POST['invoices_zip'] ?? '')) {
+    $marksParam = trim($_GET['marks'] ?? $_POST['marks'] ?? '');
+    $marks = [];
+    if ($marksParam !== '') {
+        $marks = array_filter(array_map('trim', explode(',', $marksParam)));
+        $zipName = 'invoices.zip';
+    } else {
+        $bv = $buyerVatFilter !== '' ? $buyerVatFilter : $afm;
+        $r  = searchInvoices($ch, $issueDateFrom, $issueDateTo, $searchInvoiceType, '', $seriesFilter, $bv, '0');
+        foreach (($r['invoices'] ?? []) as $iv) {
+            if (!empty($iv['mark'])) $marks[] = $iv['mark'];
+        }
+        $zipName = $bv !== '' ? ('invoices-' . preg_replace('/\D/', '', $bv) . '.zip') : 'invoices.zip';
+    }
+    if (empty($marks)) { curl_close($ch); jsonError('Δεν βρέθηκαν παραστατικά για ZIP'); }
+    streamInvoicesZip($ch, $marks, $zipName);
 }
 
 if ($deleteCustomerCode !== '' || $deleteCustomerVat !== '') {

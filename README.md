@@ -36,11 +36,118 @@ This is believed to be the first open-source PHP implementation of the e-timolog
 
 ---
 
+## New: `app.php` — fast multi-tenant UI
+
+`app.php` is a self-contained, no-build web UI (vanilla HTML/JS) that sits on top
+of `etimologio.php`. Open it in a browser and you get:
+
+- **Multi-account switcher** — many e-timologio accounts (credentials), each with
+  many customers. Pick the active company from the header; everything (data,
+  sessions, local ledgers) is scoped to it.
+- **Στατιστικά** — live dashboard (τρέχων μήνας / προηγούμενος / έτος) with totals
+  and a per-type breakdown, parsed from e-timologio's Dashboard.
+- **Πελάτες** — smart search (ΑΦΜ / επωνυμία / κωδικός) with one-click drill-down.
+- **Καρτέλα πελάτη (ledger)** — combines issued invoices (from e-timologio) with
+  **local payments** into a running balance. e-timologio itself stores neither
+  payments nor balances, so payments are kept locally (SQLite) and never sent to
+  AADE.
+- **Είδη** — product/service catalogue with instant filter, **create/edit/delete**
+  (with categories, VAT category, unit); feeds the issue form.
+- **Έκδοση** — invoice form with ΑΦΜ auto-fill (Taxisnet), draft or live issuance.
+- **Ακύρωση** — cancel an issued document by issuing a **correlated credit note**
+  (you only need the original MARK). 5.1 is chosen for invoices, 11.4 for retail.
+- **Customer create/edit** — with-ΑΦΜ (Taxisnet auto-fill) or personal (no ΑΦΜ).
+- **Command palette** (`Ctrl+K`) — jump to any customer's καρτέλα instantly.
+- **Δελτίο** — issue a delivery / return note (δελτίο αποστολής / επιστροφής) with
+  move purpose, vehicle, dispatch time and delivery address.
+- **Instant load** — customers/products render from a local encrypted snapshot
+  immediately, then sync with AADE in the background and refresh only if changed.
+- **Encrypted local data** — payments, ledgers AND the cache are stored encrypted
+  at rest (libsodium).
+- **PDF καρτέλας** — export a customer's ledger (debits/credits/running balance) to
+  PDF (Greek-correct, via jsPDF).
+- **Invoice PDFs** — download single, in bulk by date range, or per customer as a ZIP.
+- **Multi-line invoices** — add multiple item lines (product, quantity, unit price) with
+  a live net total; each line gets its own VAT rate and classifications.
+- **Per-line discounts** — each line accepts a discount (percentage or absolute €).
+- **Multi-line delivery notes** — the Δελτίο view uses the same multi-line editor.
+- **Category-level classifications** — set default income classifications per product
+  category and invoice type (myDATA §9), edited from the Είδη view.
+- **Verbal invoice types** — statistics, the customer card and the ledger PDF show the
+  full document-type label (e.g. `2.1 - Τιμολόγιο Παροχής Υπηρεσιών`), not just the code.
+- **Customer autocomplete on issue** — click the ΑΦΜ/επωνυμία field to search all
+  customers; picking one fills every field. Or press **🧾 Έκδοση** on a customer row.
+- **Types limited to active series** — the issue type list only offers document types
+  that have an open series (series is mandatory to issue).
+- **Inline product picker** — pick an item (or create one on the spot); each line shows
+  the item's description and VAT %.
+- **Per-line discounts & multi-line delivery notes** (see below).
+
+> Requires the PHP `zip` extension for ZIP downloads.
+
+### Multi-client login (auth.php)
+The app is multi-tenant **with logins**. A **master admin** manages businesses,
+approves public signups, and links each business's AADE (e-timologio) credentials —
+which are stored **encrypted in the local DB**, not in `config.php`. Each business logs
+in and owns one or more AADE accounts (switchable from the top bar).
+
+Setup: set `MASTER_ADMIN_EMAIL` / `MASTER_ADMIN_PASSWORD` in `config.php`; on first run
+they are hashed into the DB (then you can remove the password). Any legacy `$ACCOUNTS`
+entries are auto-migrated to the master admin so existing setups keep working. Password
+reset works via the admin panel (token/link) and, if `SMTP_FROM` is configured, by email.
+
+| Auth action (POST `?auth=…`) | Who | Description |
+|------|-----|-------------|
+| `login` / `logout` / `me` | public / session | Session login, logout, current user + accounts |
+| `signup` | public | Register a business (pending admin approval) |
+| `forgot` / `reset` | public | Request a reset token / set a new password |
+| `change_password` | session | Change own password |
+| `admin_users` / `admin_create_user` / `admin_approve` / `admin_set_status` / `admin_reset_pw` | master | Manage users, approve signups, issue reset links |
+| `admin_add_account` / `admin_update_account` / `admin_delete_account` / `admin_user_accounts` | master | Link/unlink a business's encrypted AADE credentials |
+
+### New bridge endpoints (used by the UI)
+| Call | Description |
+|------|-------------|
+| `?accounts=1` | List configured accounts (label + VAT) |
+| `?statistics=1&period=month\|preMonth\|year` | Parsed Dashboard statistics as JSON |
+| `?ledger=1&buyer_vat=…&issue_date_from=…&issue_date_to=…` | Customer card: invoices + local payments + running balance |
+| `?list_payments=1&buyer_vat=…` | List local payments for a customer |
+| `?add_payment=1&buyer_vat=…&pay_amount=…&pay_method=…&pay_date=…&pay_notes=…` | Record a local payment |
+| `?delete_payment_id=…` | Delete a local payment |
+| `?customer_meta=1&buyer_vat=…` / `?set_customer_meta=1&…&opening_balance=…&cust_notes=…` | Get / set per-customer opening balance + notes |
+| `?credit_note=1&cancel_mark=ORIGINAL_MARK&reason=…[&live=1][&amount=…]` | Issue a correlated credit note to cancel an invoice/receipt (5.1 for invoices, 11.4 for retail; auto-detected; mirrors the original's exact VAT rate) |
+| `?delivery_note=1&afm=…&amount=…&move_purpose=1\|5&dn_type=503&vehicle=…&dispatch_date=…&deliv_street=…&deliv_city=…[&reverse=1][&live=1]` | Issue a delivery / return note (δελτίο αποστολής / επιστροφής); `move_purpose=5` = Επιστροφή |
+| `?classifications=1&product=CODE&type=20` | Income/VAT classifications (χαρακτηρισμοί) for a product within an invoice type |
+| `?lines=[{"code":"ΥΠ001","qty":2,"price":100,"disc":10},…]&type=20&afm=…[&live=1]` | Multi-line invoice; per-line product, quantity, unit price, VAT & classifications (single `amount=` still supported). `disc` = discount % (or absolute € with `"discType":"amount"`). Also accepted by `?delivery_note=1` for multi-line notes |
+| `?cls_options=1&type=20[&self=1]` | Allowed income classification categories + E3 codes for an invoice type (from the myDATA validation doc) |
+| `?category_cls=1` | Product categories with their existing classifications + the invoice-type list |
+| `?save_category_cls=1&category_id=0&category_name=…&cls=[{"invoice_type":"20","category":"category1_3","code":"E3_561_001"},…]` | Create (id=0) or update a product category with default classifications (manual §9) |
+| `?cached=customers\|products\|invoices` | Instant read from the local encrypted snapshot (no AADE login) |
+| `?sync=customers\|products\|invoices` | Re-fetch from AADE, compare snapshot hash, update cache; returns `changed` + rows |
+| `?mark=MARK&pdf_raw=1` | Download a single invoice PDF |
+| `?invoices_zip=1&marks=MARK1,MARK2` | Download selected invoice PDFs as a ZIP |
+| `?invoices_zip=1&buyer_vat=…&issue_date_from=…&issue_date_to=…` | Download all of a customer's invoice PDFs as a ZIP (bulk / per-customer) |
+
+> Local payments are stored in an SQLite file (`.localdata.sqlite`), multi-tenant
+> (rows scoped by account VAT). Sensitive fields (names, notes, amounts) are
+> **encrypted at rest** via `crypto.php` (libsodium); the key lives in `config.php`
+> (`ENCRYPTION_KEY`) or an auto-generated `.enckey` file. See `ENDPOINTS.md` for the
+> full reverse-engineered endpoint map.
+
+### Local development (PHP on Windows)
+For contributing, a portable PHP works fine: enable `curl`, `openssl`, `mbstring`,
+`pdo_sqlite`, `sqlite3`, `sodium` in `php.ini`, point `curl.cainfo`/`openssl.cafile`
+at a `cacert.pem` (required for AADE HTTPS), then run `php -S 127.0.0.1:8080` from the
+repo and open `app.php`. Use `php -l <file>` to lint before committing.
+
+---
+
 ## Setup
 
 ### Requirements
 - PHP 8.0+
 - `curl` extension enabled
+- `pdo_sqlite` extension enabled (for local payments/ledgers)
 - Web server (Apache/Nginx) or Synology Web Station
 
 ### Installation

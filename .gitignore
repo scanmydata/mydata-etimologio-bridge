@@ -1,9 +1,15 @@
 # Credentials — NEVER commit this
 config.php
  
-# Session cookie file
+# Session cookie file(s)
 etimologio_cookies.txt
+.etimologio_cookies.txt
+.cookies/
 /tmp/etimologio_cookies.txt
+
+# Local SQLite data (payments, ledgers, customer notes)
+.localdata.sqlite
+.localdata.sqlite-*
  
 # OS & editor
 .DS_Store
@@ -12,3 +18,9 @@ Thumbs.db
 .vscode/
 *.swp
  
+
+# Local dev launch config (machine-specific paths)
+.claude/
+
+# Encryption key (NEVER commit)
+.enckey
