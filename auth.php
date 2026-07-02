@@ -59,7 +59,10 @@ function auth_login(string $email, string $password): array {
     }
     if ($u['status'] === 'pending')  return ['success' => false, 'error' => 'Ο λογαριασμός εκκρεμεί έγκριση από τον διαχειριστή'];
     if ($u['status'] === 'disabled') return ['success' => false, 'error' => 'Ο λογαριασμός είναι απενεργοποιημένος'];
-    session_regenerate_id(true);
+    // NB: we deliberately do NOT session_regenerate_id() here. The login happens via
+    // fetch() and the UI then navigates with location.href; a regenerated cookie from
+    // the fetch response is not reliably adopted before that navigation, which would
+    // drop the session. Reusing the existing session id keeps login robust.
     $_SESSION['uid'] = (int)$u['id'];
     return ['success' => true, 'user' => user_public($u)];
 }

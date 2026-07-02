@@ -60,10 +60,13 @@ function localdb(): \PDO {
             customer_name   TEXT NOT NULL DEFAULT '',  -- encrypted
             opening_balance TEXT NOT NULL DEFAULT '',  -- encrypted
             notes           TEXT NOT NULL DEFAULT '',  -- encrypted
+            deliv_meta      TEXT NOT NULL DEFAULT '',  -- encrypted JSON: branch + delivery address
             updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (account_vat, customer_vat)
         )
     ");
+    // Upgrade path for DBs created before deliv_meta existed.
+    try { $pdo->exec("ALTER TABLE customer_meta ADD COLUMN deliv_meta TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
 
     // --- Auth: application users (master admin + business accounts) ----------
     // email is the login identifier (kept plaintext so it can be queried).
@@ -331,5 +334,35 @@ function customer_meta_set(string $accountVat, string $customerVat, array $d): v
         ':cn'  => enc(trim($d['customer_name'] ?? '')),
         ':ob'  => enc_num(round((float)($d['opening_balance'] ?? 0), 2)),
         ':nt'  => enc(trim($d['notes'] ?? '')),
+    ]);
+}
+
+// --- Per-customer delivery-note settings (branch + delivery address) --------
+// Stored as encrypted JSON in customer_meta.deliv_meta so repeat delivery notes
+// to the same customer prefill the last-used branch/address. Touches ONLY the
+// deliv_meta column (does not disturb opening_balance/notes).
+
+function customer_deliv_get(string $accountVat, string $customerVat): array {
+    $st = localdb()->prepare("SELECT deliv_meta FROM customer_meta WHERE account_vat = :acc AND customer_vat = :cv");
+    $st->execute([':acc' => $accountVat, ':cv' => $customerVat]);
+    $raw = $st->fetchColumn();
+    if ($raw === false || $raw === null || $raw === '') return [];
+    $json = dec($raw);
+    $d = $json !== '' ? json_decode($json, true) : null;
+    return is_array($d) ? $d : [];
+}
+
+function customer_deliv_set(string $accountVat, string $customerVat, array $d): void {
+    $st = localdb()->prepare("
+        INSERT INTO customer_meta (account_vat, customer_vat, deliv_meta, updated_at)
+        VALUES (:acc, :cv, :dm, datetime('now'))
+        ON CONFLICT(account_vat, customer_vat) DO UPDATE SET
+            deliv_meta = excluded.deliv_meta,
+            updated_at = datetime('now')
+    ");
+    $st->execute([
+        ':acc' => $accountVat,
+        ':cv'  => $customerVat,
+        ':dm'  => enc(json_encode($d, JSON_UNESCAPED_UNICODE)),
     ]);
 }

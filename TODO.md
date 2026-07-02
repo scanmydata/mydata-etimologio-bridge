@@ -4,14 +4,16 @@
 - [x] Invoice categories full CRUD (manual section 7): create/update/delete with server-side validations and dependency checks.
 - [x] Deductions full CRUD (manual section 8): create/update/list/delete with business rules.
 - [x] Classifications (χαρακτηρισμοί) logic (manual section 9): per-line income/VAT classifications driven by product+type (`?classifications=1`); all product classifications emitted on issue. Category-level classification editing done: `?cls_options=1&type=` (allowed income categories+E3 codes per invoice type from the myDATA validation doc), `?category_cls=1` (categories with their existing classifications + invoice-type list), `?save_category_cls=1` (create/update a product category with `categoryClassifications`). UI editor in the Είδη view. Verified via create/update/delete of a temp category.
-- [x] Delivery / return note (δελτίο αποστολής-επιστροφής, manual section ~12 / types 9.x): `?delivery_note=1` with movePurpose, dispatch, vehicle, loading/delivery address, reverse. Verified via draft.
+- [x] Delivery / return note (δελτίο αποστολής-επιστροφής, manual section ~12 / types 9.x): `?delivery_note=1` with movePurpose, dispatch, vehicle, loading/delivery address, reverse. Verified via draft. UI revamp: dynamic type + series dropdowns (`dn_series`, series filtered per 9.x code via `DN_CODE` map), customer autocomplete (+new customer), product-line combobox (like issue, shows code+desc+VAT), loading place from company base (`?company_profile=1`, parsed) with localStorage reuse, per-customer delivery branch (0=κεντρικό) + address saved/loaded via `?cust_deliv=1` / `?save_cust_deliv=1` (encrypted `customer_meta.deliv_meta`; also auto-saved on issue). `startShippingBranch`/`completeShippingBranch` wired to load/deliv branch. Verified via draft (type 503, deleted after).
+- [x] Delivery-note draft PDF: «Προεπισκόπηση» button generates a client-side jsPDF draft (issuer/recipient, movement info, loading/delivery + branches, lines table, net total, notes, ΠΡΟΧΕΙΡΟ watermark). Verified.
 - [x] Local encrypted cache + background sync for instant UI (`?cached=`, `?sync=`).
 - [x] Customer ledger PDF export (χρεώσεις-πιστώσεις) via jsPDF with Greek font.
 - [x] Invoice PDF download: single, bulk by date, per-customer ZIP (`?invoices_zip=1`).
 - [x] Verified: deductions CRUD, withholding tax in invoices, payment methods.
 - [x] Full customer edit flow (manual section 11.2): load/edit/save existing customer from ViewCustomer flow.
 - [x] Invoice cancellation endpoint (manual section 12.4): implemented as correlated credit note (`?credit_note=1&cancel_mark=MARK`) — 5.1 for invoices, 11.4 for retail (auto-detected). Verified via draft.
-- [ ] Draft invoice full workflow (manual section 12.5): open/edit/reissue draft from saved temporary entries.
+- [~] Draft invoice workflow (manual section 12.5): Πρόχειρα view lists temp invoices (`?search_temp=1`) with delete (`?delete_temp_id=&seller_vat=`). Open/edit/reissue-from-draft still TODO — needs replicating e-timologio's `/invoice/NewInvoiceByTmpInvoice?tempInvoiceId=<encrypted token>` prefilled-form flow (no re-postable model; our AADE session is server-side only).
+- [x] Series (σειρά) selection on issue: `createInvoice` `$series` param + `issue_series`; UI per-type series dropdown with inline "new series" create. (Was hardcoded to 'A'.)
 
 ## Priority B (Invoice issuance parity)
 - [x] Multi-line invoices (manual section 12.2.3): `?lines=[...]` JSON, per-line product/qty/price/VAT/classifications, live net total in UI.

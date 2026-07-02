@@ -948,22 +948,15 @@ function searchTempInvoices(
     $saveDateFrom = toSearchDate($saveDateFrom, $fromDefault);
     $saveDateTo   = toSearchDate($saveDateTo, $today);
 
-    $token = getToken($ch, BASE_URL . '/tempinvoice/TempInvoices');
-    if ($token === '') {
-        return ['success' => false, 'error' => 'Could not load temp invoice search form'];
-    }
-
-    $html = curlPost($ch, BASE_URL . '/tempinvoice/SearchTempInvoices', [
-        'InvoiceType'                => $invoiceType,
-        'BuyerVatNumber'             => $buyerVat,
-        'TempInvoiceId'              => $tempInvoiceId,
-        'SaveDateFrom'               => $saveDateFrom,
-        'SaveDateTo'                 => $saveDateTo,
-        'btnSearch'                  => 'btnSearch',
-        '__RequestVerificationToken' => $token,
-    ]);
-
+    // The temp-invoice list page (/tempinvoice/TempInvoices) already server-renders
+    // the FULL table (DataTables paginates client-side). The POST /SearchTempInvoices
+    // filter returns an empty grid, so we parse the GET page and filter here.
+    $html = curlGet($ch, BASE_URL . '/tempinvoice/TempInvoices');
     $rows = extractTableRows($html, 'tblTempInvoices');
+
+    $fromTs = strtotime(str_replace('/', '-', $saveDateFrom) . ' 00:00:00');
+    $toTs   = strtotime(str_replace('/', '-', $saveDateTo)   . ' 23:59:59');
+
     $items = [];
     foreach ($rows as $row) {
         $cols = array_map('htmlText', $row['cells']);
@@ -983,6 +976,13 @@ function searchTempInvoices(
             $item['temp_id'] = $m[1];
             $item['seller_vat'] = $m[2];
         }
+
+        // Client-side filters (save-date range, buyer VAT, type, temp id).
+        $sd = strtotime(str_replace('/', '-', $item['save_date']));
+        if ($sd !== false && (($fromTs && $sd < $fromTs) || ($toTs && $sd > $toTs))) continue;
+        if ($buyerVat !== '' && strpos($item['buyer_vat'], $buyerVat) === false) continue;
+        if ($invoiceType !== '' && strpos($item['type'], $invoiceType) === false) continue;
+        if ($tempInvoiceId !== '' && $item['temp_id'] !== $tempInvoiceId) continue;
 
         $items[] = $item;
     }
@@ -1704,6 +1704,34 @@ function getClassificationInvoiceTypes(\CurlHandle $ch): array {
     return $types;
 }
 
+// Invoice taxes (Νέος Φόρος): the 5 taxType category lists as rendered in the
+// new-invoice form. taxType: 1=Παρακρατούμενοι, 2=Τέλη, 3=Άλλοι φόροι,
+// 4=Ψηφιακό Τέλος Συναλλαγής, 5=Κρατήσεις (account-specific, from Deductions CRUD).
+function getTaxCategories(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/invoice/newinvoice');
+    $extract = function (string $selectId) use ($html): array {
+        if (!preg_match('/<select[^>]*id=["\']' . preg_quote($selectId, '/') . '["\'][^>]*>(.*?)<\/select>/s', $html, $m)) return [];
+        $out = [];
+        if (preg_match_all('/<option[^>]*value=["\']([^"\']*)["\'][^>]*>(.*?)<\/option>/s', $m[1], $o, PREG_SET_ORDER)) {
+            foreach ($o as $opt) {
+                $val = trim($opt[1]);
+                $label = trim(html_entity_decode(strip_tags($opt[2]), ENT_QUOTES, 'UTF-8'));
+                if ($val === '' || stripos($label, 'Διεγράφη') !== false) continue;  // skip placeholder + deleted deductions
+                $out[] = ['code' => $val, 'label' => $label];
+            }
+        }
+        return $out;
+    };
+    return [
+        'success'  => true,
+        'withheld' => $extract('withheldList'),      // taxType 1
+        'fees'     => $extract('feesList'),           // taxType 2
+        'other'    => $extract('othertaxesList'),     // taxType 3
+        'digital'  => $extract('stampList'),          // taxType 4 (Ψηφιακό Τέλος Συναλλαγής)
+        'deductions' => $extract('deductionsList'),   // taxType 5 (account-specific)
+    ];
+}
+
 // Allowed income classification categories + codes for an invoice type (from the
 // myDATA validation document that drives the UI's dynamic dropdowns).
 function getClassificationOptions(\CurlHandle $ch, string $invType, bool $selfPrice = false): array {
@@ -1973,11 +2001,30 @@ function createInvoice(
     float $vatRateOverride = -1.0,
     int $vatCategoryOverride = 0,
     array $delivery = [],
-    array $lines = []
+    array $lines = [],
+    string $series = 'A',
+    array $taxes = [],
+    bool $preview = false,
+    string $issueLang = 'el'
 ): array {
 
     if ($issueDate === '') {
-        $issueDate = $live ? date('Y-m-d') : date('d-m-Y');
+        // Preview validates the issue date like a live issue (must be "today" in
+        // Greece); temp/draft saves accept the d-m-Y form.
+        $issueDate = ($live || $preview) ? date('Y-m-d') : date('d-m-Y');
+    }
+
+    // Issuer identity — needed so the preview PDF shows the real company name /
+    // address / ΔΟΥ (the form leaves issuer blank; the server fills it from the
+    // session on issue, but the preview renderer reads it from the model).
+    $issuerName = $issuerJob = $issuerAddress = $issuerDoy = '';
+    if ($preview || $live) {
+        $cp = getCompanyProfile($ch);
+        $co = $cp['company'] ?? [];
+        $issuerName    = (string)($co['name'] ?? '');
+        $issuerJob     = (string)($co['job_description'] ?? '');
+        $issuerAddress = (string)($co['address'] ?? '');
+        $issuerDoy     = (string)($co['doy'] ?? '');
     }
 
     // VAT rate: explicit override (e.g. mirroring an original invoice) wins,
@@ -2060,16 +2107,31 @@ function createInvoice(
     $vatAmount = round($vatAmount, 2);
     $total     = round($total, 2);
 
-    // Build withholding tax array if applicable
+    // Build invoice taxes. Legacy single withholding params still work; the general
+    // $taxes array carries any mix of withheld/fees/other/digital/deductions.
     $invoiceTaxes = [];
+    $tid = 1;
     if ($withholdingCategory > 0 && $withholdingAmount > 0) {
         $invoiceTaxes[] = [
-            'id'              => 1,
+            'id'              => $tid++,
             'taxType'         => 1,
             'taxCategory'     => $withholdingCategory,
             'underlyingValue' => $netValue,
             'taxAmount'       => (string)round($withholdingAmount, 2),
             'taxNotes'        => '',
+        ];
+    }
+    foreach ($taxes as $t) {
+        $ttype = (int)($t['type'] ?? 0);
+        $tamt  = round((float)($t['amount'] ?? 0), 2);
+        if ($ttype < 1 || $ttype > 5 || $tamt <= 0) continue;
+        $invoiceTaxes[] = [
+            'id'              => $tid++,
+            'taxType'         => $ttype,
+            'taxCategory'     => (string)($t['category'] ?? ''),
+            'underlyingValue' => $netValue,
+            'taxAmount'       => (string)$tamt,
+            'taxNotes'        => (string)($t['notes'] ?? ''),
         ];
     }
 
@@ -2084,13 +2146,14 @@ function createInvoice(
         'trans'                     => 'false',
         'isB2G'                     => 'false',
         'tempInvoiceId'             => '',
+        'timologioIssueLanguage'    => ($issueLang === 'en' ? 'en' : 'el'),
         'invoiceNotes'              => $invoiceNotes,
         'transmissionFailure'       => '',
         'ccr_totalNetValueWithDisc' => '',
         'ccr_grossValue'            => '',
 
         'invoiceHeader' => [
-            'series'                     => 'A',  // Series A assumed — change if your setup differs
+            'series'                     => ($series !== '' ? $series : 'A'),
             'aa'                         => '',
             'issueDate'                  => $issueDate,
             'vehicleNumber'              => '',
@@ -2103,9 +2166,14 @@ function createInvoice(
         ],
 
         'issuer' => [
-            'vatNumber' => '',
-            'branch'    => '0',
-            'country'   => 'GR',
+            'vatNumber'      => defined('COMPANY_VAT') ? COMPANY_VAT : '',
+            'branch'         => '0',
+            'country'        => 'GR',
+            'name'           => $issuerName,
+            'jobDescription' => $issuerJob,
+            'JobDescription' => $issuerJob,
+            'doy'            => $issuerDoy,
+            'address'        => ['street' => $issuerAddress, 'number' => '', 'postalCode' => '', 'city' => ''],
         ],
 
         'counterpart' => [
@@ -2153,8 +2221,8 @@ function createInvoice(
                 'postalCode' => $delivery['deliv_zip'] ?? '',
                 'city'       => $delivery['deliv_city'] ?? '',
             ],
-            'startShippingBranch'    => '0',
-            'completeShippingBranch' => '0',
+            'startShippingBranch'    => (string)($delivery['load_branch'] ?? '0'),
+            'completeShippingBranch' => (string)($delivery['deliv_branch'] ?? '0'),
         ];
         if (!empty($delivery['reverse'])) {
             $invoice['reverseDeliveryNote'] = 'true';
@@ -2163,6 +2231,42 @@ function createInvoice(
     }
 
     curlGet($ch, BASE_URL . '/invoice/newinvoice');
+
+    if ($preview) {
+        // PREVIEW = "πάτα προεπισκόπηση → αποθηκεύεται στο e-timologio + PDF".
+        // 1) Persist the draft (savetempinvoice) so it stays saved in e-timologio.
+        // 2) Ask AADE for the preview data (PrintPreviewInvoice2PdfNew): this is
+        //    the `data2print` payload the e-timologio UI feeds to its own client
+        //    renderer (invoice2pdf.js / dispatchNote2pdf.js). We forward it to the
+        //    browser, which renders the byte-identical AADE PDF with those scripts.
+        $saveResp = curlPostInvoice($ch, BASE_URL . '/TempInvoice/savetempinvoice', $invoice);
+        $saveData = json_decode($saveResp, true);
+        $tempId   = $saveData['resultData'][0] ?? '';
+        if ($tempId === '') {
+            return [
+                'success' => false,
+                'error'   => $saveData['message'] ?? 'Η αποθήκευση για προεπισκόπηση απέτυχε',
+                'raw'     => substr($saveResp, 0, 400),
+            ];
+        }
+        $invoice['tempInvoiceId'] = $tempId;
+        $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $invoice);
+        $d2p  = json_decode($resp, true);
+        if (is_array($d2p) && isset($d2p['invoice'])) {
+            // Success: got the data2print payload.
+            return ['success' => true, 'preview' => true, 'saved' => true, 'temp_id' => $tempId, 'data2print' => $d2p];
+        }
+        if (substr($resp, 0, 4) === '%PDF') {
+            return ['success' => true, 'preview' => true, 'saved' => true, 'temp_id' => $tempId, 'pdf_b64' => base64_encode($resp)];
+        }
+        // Preview render failed on AADE — the draft is still saved. Report so the
+        // UI can fall back to its own client rendering.
+        return [
+            'success' => true, 'preview' => true, 'saved' => true, 'temp_id' => $tempId,
+            'preview_error' => is_array($d2p) ? ($d2p['message'] ?? $d2p['genericMsg'] ?? 'render failed') : 'render failed',
+            'type' => $invoiceType, 'amount_net' => $netValue, 'amount_vat' => $vatAmount, 'amount_total' => $total,
+        ];
+    }
 
     if ($live) {
         // LIVE — submit to AADE, get MARK
@@ -2366,41 +2470,53 @@ function getInvoicePdf(\CurlHandle $ch, string $mark): void {
     ]);
 }
 
-// --- 8. STATISTICS (Dashboard) ----------------------------------------------
-// e-timologio renders the dashboard numbers server-side as Chart.js datasets.
-// We GET /Dashboard/DashboardByDate?type=... and parse the embedded arrays.
+// --- 8. STATISTICS ----------------------------------------------------------
+// The e-timologio dashboard reports GROSS turnover (net + VAT). For statistics we
+// want the NET turnover (καθαρή αξία) per document type, so we aggregate the net
+// values of the issued invoices in the period ourselves. (The καρτέλα deliberately
+// keeps GROSS totals — that's the amount actually owed/paid.)
 function getStatistics(\CurlHandle $ch, string $period = 'month'): array {
     $period = in_array($period, ['month', 'preMonth', 'year'], true) ? $period : 'month';
-    $html = curlGet($ch, BASE_URL . '/Dashboard/DashboardByDate?type=' . $period);
+    if ($period === 'year') {
+        $from = '01/01/' . date('Y');  $to = '31/12/' . date('Y');
+    } elseif ($period === 'preMonth') {
+        $ts = strtotime('first day of previous month');
+        $from = date('01/m/Y', $ts);   $to = date('t/m/Y', $ts);
+    } else { // current month
+        $from = date('01/m/Y');        $to = date('t/m/Y');
+    }
 
-    // Collect all labels:[...] and data:[...] arrays in document order.
-    preg_match_all('/labels:\s*(\[[^\]]*\])/', $html, $lm);
-    preg_match_all('/data:\s*(\[[^\]]*\])/',   $html, $dm);
+    $res = searchInvoices($ch, $from, $to, '', '', '', '', '0');
+    $invoices = $res['invoices'] ?? [];
 
-    $decode = function (string $arr): array {
-        $v = json_decode($arr, true);
-        return is_array($v) ? $v : [];
-    };
-
-    $types  = isset($lm[1][0]) ? $decode($lm[1][0]) : [];
-    $counts = isset($dm[1][0]) ? $decode($dm[1][0]) : [];
-    $values = isset($dm[1][1]) ? $decode($dm[1][1]) : [];
+    $agg = [];  // dotted code => ['count'=>, 'value'=> net]
+    $totalCount = 0; $totalNet = 0.0;
+    foreach ($invoices as $iv) {
+        $net = parseMoney((string)($iv['net_value'] ?? '0'));
+        // type comes as "2.1 - Τιμολόγιο …"; key the breakdown by the dotted code.
+        $label = (string)($iv['type'] ?? '');
+        $code  = preg_match('/^\s*([\d.]+)/', $label, $m) ? $m[1] : $label;
+        if (!isset($agg[$code])) $agg[$code] = ['count' => 0, 'value' => 0.0];
+        $agg[$code]['count']++;
+        $agg[$code]['value'] += $net;
+        $totalCount++;
+        $totalNet += $net;
+    }
 
     $breakdown = [];
-    foreach ($types as $i => $t) {
-        $breakdown[] = [
-            'type'  => (string)$t,
-            'count' => (int)($counts[$i] ?? 0),
-            'value' => (float)($values[$i] ?? 0),
-        ];
+    foreach ($agg as $code => $a) {
+        $breakdown[] = ['type' => (string)$code, 'count' => $a['count'], 'value' => round($a['value'], 2)];
     }
+    usort($breakdown, fn($x, $y) => $y['value'] <=> $x['value']);
 
     return [
         'success'      => true,
         'period'       => $period,
+        'from'         => $from,
+        'to'           => $to,
         'breakdown'    => $breakdown,
-        'total_count'  => array_sum($counts),
-        'total_value'  => round(array_sum($values), 2),
+        'total_count'  => $totalCount,
+        'total_value'  => round($totalNet, 2),   // NET turnover
     ];
 }
 
@@ -2441,6 +2557,7 @@ function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to
             'date'   => $iv['issue_date'] ?? '',
             'mark'   => $iv['mark'] ?? '',
             'type'   => $iv['type'] ?? '',
+            'series' => $iv['series'] ?? '',
             'aa'     => $iv['aa'] ?? '',
             'debit'  => round($amt, 2),
             'credit' => 0.0,
@@ -2630,6 +2747,7 @@ $custCode            = trim($_GET['cust_code']             ?? $_POST['cust_code'
 $custVat             = trim($_GET['cust_vat']              ?? $_POST['cust_vat']              ?? '');
 $custOldVat          = trim($_GET['cust_old_vat']          ?? $_POST['cust_old_vat']          ?? '');
 
+$previewFlag         = !empty(($_GET['preview']            ?? $_POST['preview']               ?? ''));
 $searchInvoicesFlag  = !empty(($_GET['search_invoices']    ?? $_POST['search_invoices']       ?? ''));
 $issueDateFrom       = trim($_GET['issue_date_from']       ?? $_POST['issue_date_from']       ?? '');
 $issueDateTo         = trim($_GET['issue_date_to']         ?? $_POST['issue_date_to']         ?? '');
@@ -2652,6 +2770,8 @@ $tempInvoiceIdFilter = trim($_GET['temp_id']               ?? $_POST['temp_id'] 
 
 $deleteTempId        = trim($_GET['delete_temp_id']        ?? $_POST['delete_temp_id']        ?? '');
 $sellerVat           = trim($_GET['seller_vat']            ?? $_POST['seller_vat']            ?? '');
+$issueSeries         = trim($_GET['issue_series']          ?? $_POST['issue_series']          ?? 'A');
+$issueLang           = (($_GET['issue_lang'] ?? $_POST['issue_lang'] ?? 'el') === 'en') ? 'en' : 'el';
 $deleteCustomerCode  = trim($_GET['delete_customer_code']  ?? $_POST['delete_customer_code']  ?? '');
 $deleteCustomerVat   = trim($_GET['delete_customer_vat']   ?? $_POST['delete_customer_vat']   ?? '');
 
@@ -2725,6 +2845,8 @@ $addPaymentFlag      = !empty(($_GET['add_payment']              ?? $_POST['add_
 $deletePaymentId     = trim($_GET['delete_payment_id']           ?? $_POST['delete_payment_id']        ?? '');
 $customerMetaGet     = !empty(($_GET['customer_meta']            ?? $_POST['customer_meta']            ?? ''));
 $customerMetaSet     = !empty(($_GET['set_customer_meta']        ?? $_POST['set_customer_meta']        ?? ''));
+$custDelivGet        = !empty(($_GET['cust_deliv']               ?? $_POST['cust_deliv']               ?? ''));
+$custDelivSet        = !empty(($_GET['save_cust_deliv']          ?? $_POST['save_cust_deliv']          ?? ''));
 
 // ----------------------------------------------------------------------------
 // LOCAL-ONLY actions (no e-timologio login needed → fast)
@@ -2792,7 +2914,46 @@ if ($customerMetaGet) {
     jsonResponse(['success' => true, 'meta' => customer_meta_get(COMPANY_VAT, $cv)]);
 }
 
+if ($custDelivGet) {
+    $cv = trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm);
+    jsonResponse(['success' => true, 'deliv' => customer_deliv_get(COMPANY_VAT, $cv)]);
+}
+
+if ($custDelivSet) {
+    $cv = trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm);
+    if ($cv === '') jsonError('Λείπει ο ΑΦΜ πελάτη');
+    customer_deliv_set(COMPANY_VAT, $cv, [
+        'branch'  => trim($_GET['deliv_branch'] ?? $_POST['deliv_branch'] ?? '0'),
+        'street'  => trim($_GET['deliv_street'] ?? $_POST['deliv_street'] ?? ''),
+        'number'  => trim($_GET['deliv_number'] ?? $_POST['deliv_number'] ?? ''),
+        'city'    => trim($_GET['deliv_city']   ?? $_POST['deliv_city']   ?? ''),
+        'zip'     => trim($_GET['deliv_zip']    ?? $_POST['deliv_zip']    ?? ''),
+    ]);
+    jsonResponse(['success' => true, 'deliv' => customer_deliv_get(COMPANY_VAT, $cv)]);
+}
+
 $ch = login();
+
+// Serve e-timologio's own client-side PDF scripts through the bridge so the UI can
+// render the exact AADE "Προεπισκόπηση" PDF. Whitelisted static assets only.
+$jsAsset = trim($_GET['etimologio_js'] ?? '');
+if ($jsAsset !== '') {
+    $whitelist = [
+        'font'         => '/js/print2pdf/font.js',
+        'invoice2pdf'  => '/js/print2pdf/invoice2pdf.js',
+        'dispatch2pdf' => '/js/print2pdf/dispatchNote2pdf.js',
+    ];
+    if (isset($whitelist[$jsAsset])) {
+        $js = curlGet($ch, BASE_URL . $whitelist[$jsAsset]);
+        curl_close($ch);
+        header('Content-Type: application/javascript; charset=utf-8');
+        header('Cache-Control: public, max-age=86400');
+        echo $js;
+        exit;
+    }
+    curl_close($ch);
+    jsonError('Unknown asset');
+}
 
 if ($statisticsFlag) {
     $result = getStatistics($ch, $statsPeriod);
@@ -2847,6 +3008,24 @@ if ($creditNoteFlag || $cancelMark !== '') {
 if (!empty($_GET['classifications'] ?? $_POST['classifications'] ?? '')) {
     $prod = trim($_GET['product'] ?? $_POST['product'] ?? $descr);
     $result = getInvoiceClassifications($ch, $prod, $type);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Pure Taxisnet name lookup by VAT (no customer creation) — used by admin onboarding
+// and anywhere we just need the registered company/customer name for an ΑΦΜ.
+if (!empty($_GET['taxis_name'] ?? $_POST['taxis_name'] ?? '')) {
+    $vat = preg_replace('/\D/', '', $_GET['vat'] ?? $_POST['vat'] ?? '');
+    if (!preg_match('/^\d{9}$/', $vat)) { curl_close($ch); jsonError('Μη έγκυρο ΑΦΜ (9 ψηφία)'); }
+    $info = getFromTaxisnet($ch, $vat);
+    curl_close($ch);
+    if (!$info || $info['name'] === '') jsonError('Δεν βρέθηκε επωνυμία για το ΑΦΜ ' . $vat, 404);
+    jsonResponse(['success' => true, 'vat' => $vat] + $info);
+}
+
+// Invoice taxes / withholdings / fees category lists (Νέος Φόρος)
+if (!empty($_GET['tax_categories'] ?? $_POST['tax_categories'] ?? '')) {
+    $result = getTaxCategories($ch);
     curl_close($ch);
     jsonResponse($result);
 }
@@ -2910,12 +3089,22 @@ if (!empty($_GET['delivery_note'] ?? $_POST['delivery_note'] ?? '')) {
         'deliv_number'   => trim($_GET['deliv_number'] ?? $_POST['deliv_number'] ?? ''),
         'deliv_zip'      => trim($_GET['deliv_zip'] ?? $_POST['deliv_zip'] ?? ''),
         'deliv_city'     => trim($_GET['deliv_city'] ?? $_POST['deliv_city'] ?? ''),
+        'load_branch'    => trim($_GET['load_branch'] ?? $_POST['load_branch'] ?? '0'),
+        'deliv_branch'   => trim($_GET['deliv_branch'] ?? $_POST['deliv_branch'] ?? '0'),
     ];
     // Delivery-note type: 503=9.3 (default), 504=9.1 correlated, 505=9.2
     $dnType = trim($_GET['dn_type'] ?? $_POST['dn_type'] ?? '503');
+    $dnSeries = trim($_GET['dn_series'] ?? $_POST['dn_series'] ?? 'A');
+    if ($dnSeries === '') $dnSeries = 'A';
     if ($afm !== '' && preg_match('/^\d{9}$/', $afm)) {
         $cust = findOrCreateCustomer($ch, $afm);
         if (!$cust['success']) { curl_close($ch); jsonResponse($cust); }
+        // Remember the delivery branch/address for this customer for next time.
+        customer_deliv_set(COMPANY_VAT, $afm, [
+            'branch' => $delivery['deliv_branch'],
+            'street' => $delivery['deliv_street'], 'number' => $delivery['deliv_number'],
+            'city'   => $delivery['deliv_city'],   'zip'    => $delivery['deliv_zip'],
+        ]);
     }
     // Optional multi-line delivery note — same `lines` JSON as invoices.
     $dnLines = [];
@@ -2927,7 +3116,7 @@ if (!empty($_GET['delivery_note'] ?? $_POST['delivery_note'] ?? '')) {
     $result = createInvoice(
         $ch, $amount, $dnType, $payment, $descr, '',
         $afm, $name, $address, $city, $zip, $country, $branch,
-        0, 0.0, $live, '', trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, $delivery, $dnLines
+        0, 0.0, $live, '', trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, $delivery, $dnLines, $dnSeries, [], $previewFlag, $issueLang
     );
     curl_close($ch);
     jsonResponse($result);
@@ -2942,11 +3131,13 @@ if ($linesJson !== '') {
         $cust = findOrCreateCustomer($ch, $afm);
         if (!$cust['success']) { curl_close($ch); jsonResponse($cust); }
     }
+    $taxesArr = json_decode(trim($_GET['taxes'] ?? $_POST['taxes'] ?? ''), true);
+    if (!is_array($taxesArr)) $taxesArr = [];
     $result = createInvoice(
         $ch, 0, $type, $payment, $descr, '',
         $afm, $name, $address, $city, $zip, $country, $branch,
         $withholdingCategory, $withholdingAmount, $live, '',
-        trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr
+        trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr, $issueSeries, $taxesArr, $previewFlag, $issueLang
     );
     curl_close($ch);
     jsonResponse($result);
@@ -3137,11 +3328,13 @@ if ($searchInvoicesFlag) {
 }
 
 if ($searchTempFlag) {
+    // NB: use a dedicated temp_type filter (NOT $type, which defaults to '58' for
+    // invoice creation and would wrongly filter out every draft).
     $result = searchTempInvoices(
         $ch,
         $saveDateFrom,
         $saveDateTo,
-        $type,
+        trim($_GET['temp_type'] ?? $_POST['temp_type'] ?? ''),
         $buyerVatFilter,
         $tempInvoiceIdFilter
     );
@@ -3234,7 +3427,7 @@ if ($amount > 0) {
     $result = createInvoice(
         $ch, $amount, $type, $payment, $descr, '',
         $afm, $name, $address, $city, $zip, $country, $branch,
-        $withholdingCategory, $withholdingAmount, $live
+        $withholdingCategory, $withholdingAmount, $live, '', '', -1.0, 0, [], [], $issueSeries
     );
 } else {
     // Customer lookup flow

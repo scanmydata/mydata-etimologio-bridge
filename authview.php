@@ -81,11 +81,12 @@ const API='etimologio.php';
 function msg(t,ok){const m=document.getElementById('msg');m.textContent=t;m.className='msg '+(ok?'ok':'err');}
 function tab(w){['login','signup','forgot'].forEach(x=>{document.getElementById('f-'+x).classList.toggle('on',x===w);document.getElementById('t-'+x).classList.toggle('on',x===w);});document.getElementById('msg').className='msg';
   document.getElementById('subtitle').textContent=w==='login'?'Συνδεθείτε στον λογαριασμό της επιχείρησής σας':w==='signup'?'Δημιουργήστε λογαριασμό επιχείρησης':'Επαναφορά κωδικού πρόσβασης';}
+const g=id=>document.getElementById(id);
 async function post(params){const b=new URLSearchParams(params);const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});return r.json();}
-async function doLogin(e){e.preventDefault();try{const d=await post({auth:'login',email:l_email.value,password:l_pass.value});if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
-async function doSignup(e){e.preventDefault();try{const d=await post({auth:'signup',email:s_email.value,password:s_pass.value,business_name:s_name.value});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
-async function doForgot(e){e.preventDefault();try{const d=await post({auth:'forgot',email:fg_email.value});msg(d.note||'Στάλθηκαν οδηγίες.',true);}catch(x){msg('Σφάλμα δικτύου');}return false;}
-async function doReset(e){e.preventDefault();if(r_pass.value!==r_pass2.value){msg('Οι κωδικοί δεν ταιριάζουν');return false;}try{const d=await post({auth:'reset',token:r_token.value,password:r_pass.value});if(d.success){msg('Ο κωδικός ενημερώθηκε. Ανακατεύθυνση…',true);setTimeout(()=>location.href='app.php',1200);}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+async function doLogin(e){e.preventDefault();try{const d=await post({auth:'login',email:g('l-email').value,password:g('l-pass').value});if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+async function doSignup(e){e.preventDefault();try{const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+async function doForgot(e){e.preventDefault();try{const d=await post({auth:'forgot',email:g('fg-email').value});msg(d.note||'Στάλθηκαν οδηγίες.',true);}catch(x){msg('Σφάλμα δικτύου');}return false;}
+async function doReset(e){e.preventDefault();if(g('r-pass').value!==g('r-pass2').value){msg('Οι κωδικοί δεν ταιριάζουν');return false;}try{const d=await post({auth:'reset',token:g('r-token').value,password:g('r-pass').value});if(d.success){msg('Ο κωδικός ενημερώθηκε. Ανακατεύθυνση…',true);setTimeout(()=>location.href='app.php',1200);}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 </script>
 </body>
 </html>
