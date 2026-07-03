@@ -1893,7 +1893,8 @@ function vatRateFromCategory(int $cat): float {
 function buildInvoiceLine(
     \CurlHandle $ch, int $n, string $code, float $qty, float $unitNet,
     string $invoiceType, float $rateOverride = -1.0, int $catOverride = 0,
-    float $disc = 0.0, bool $discIsPct = true, array $clsOverride = []
+    float $disc = 0.0, bool $discIsPct = true, array $clsOverride = [],
+    bool $isDeliveryNote = false
 ): array {
     $isZeroType = in_array($invoiceType, ZERO_VAT_TYPES);
     $product = getProductData($ch, $code, $invoiceType);
@@ -1921,6 +1922,12 @@ function buildInvoiceLine(
     $net   = round($gross - $discAmount, 2);
     $vat   = round($net * $rate, 2);
     $total = round($net + $vat, 2);
+
+    // A δελτίο διακίνησης (dispatch note) is a pure GOODS-MOVEMENT document: it must
+    // NOT carry monetary values — only the item and its quantity. Zero every amount.
+    if ($isDeliveryNote) {
+        $unitNet = 0.0; $gross = 0.0; $net = 0.0; $vat = 0.0; $total = 0.0; $discAmount = 0.0; $disc = 0.0;
+    }
 
     // Classifications: explicit override wins, else product defaults, else a sane fallback.
     // Each carries the line's *net (post-discount)* amount, as myDATA expects.
@@ -1950,6 +1957,28 @@ function buildInvoiceLine(
         $cls[] = ['classificationKind' => 1, 'classificationCategory' => 'category1_3',
                   'classificationType' => $isZero ? 'E3_561_006' : 'E3_561_003', 'amount' => $net];
     }
+    // The income classification CODE must match the invoice type: wholesale/B2B
+    // documents accept E3_561_001/002, retail (11.x → 57..61) accept E3_561_003/006.
+    // A code valid for one type is rejected by the other (generic «Αδυναμία
+    // προεπισκόπησης»), and a product may carry a wholesale code while being billed on
+    // a retail receipt — so remap any plain sale code to the type-appropriate one.
+    if (!$isDeliveryNote) {
+        $retail = in_array($invoiceType, ['57', '58', '59', '60', '61'], true);
+        $incomeCode = $isZero ? ($retail ? 'E3_561_006' : 'E3_561_002')
+                              : ($retail ? 'E3_561_003' : 'E3_561_001');
+        foreach ($cls as &$c) {
+            if (isset($c['classificationType']) && strncmp((string)$c['classificationType'], 'E3_561_00', 9) === 0) {
+                $c['classificationType'] = $incomeCode;
+            }
+        }
+        unset($c);
+    }
+    // A δελτίο διακίνησης uses the movement classification category «category3»
+    // (Διακίνηση), which carries NO E3 income code — the income categories/codes
+    // (category1_*/E3_561_*) are invalid for it and make AADE reject the preview.
+    if ($isDeliveryNote) {
+        $cls = [['classificationKind' => 1, 'classificationCategory' => 'category3', 'classificationType' => '', 'amount' => $net]];
+    }
 
     // discountType: 1 = percentage, 2 = absolute value (e-timologio convention).
     $line = [
@@ -1965,14 +1994,29 @@ function buildInvoiceLine(
         'netValueWithDiscount'         => $net,
         'vatAmount'                    => $vat,
         'totalValue'                   => $total,
+        'otherMeasurementUnitTitle'    => '',
+        'otherMeasurementUnitQuantity' => '',
+        // Per-line tax buckets — the real e-timologio form posts these (all 0 for a
+        // plain line). Their absence makes PrintPreviewInvoice2PdfNew reject the model.
+        'withheldAmount'               => 0,
+        'stampAmount'                  => 0,
+        'feesAmount'                   => 0,
+        'otherTaxesAmount'             => 0,
+        'deductionsAmount'             => 0,
         'discountAmount'               => $discAmount,
         'discountType'                 => $discIsPct ? 1 : 2,
         'isGiftVoucher'                => 'false',
-        'otherMeasurementUnitTitle'    => '',
-        'otherMeasurementUnitQuantity' => '',
         'classifications'              => $cls,
     ];
-    if ($qty != 1.0) { $line['quantity'] = $qty; $line['measurementUnit'] = 1; }
+    // Quantity + measurement unit: delivery notes (δελτίο διακίνησης) REQUIRE a
+    // measurement unit ("η μονάδα μέτρησης είναι υποχρεωτική"), but pure service
+    // invoices (e.g. ΤΠΥ/type 20) FORBID quantity/unit (myDATA forbiddenFields) and
+    // reject the preview if present. So only emit them for delivery notes or when the
+    // quantity is not the implicit 1 (goods lines). 1 = τεμάχια (default unit).
+    if ($isDeliveryNote || $qty != 1.0) {
+        $line['quantity']        = $qty;
+        $line['measurementUnit'] = 1;
+    }
 
     return ['line' => $line, 'net' => $net, 'vat' => $vat, 'total' => $total, 'discount' => $discAmount, 'gross' => $gross];
 }
@@ -2009,22 +2053,10 @@ function createInvoice(
 ): array {
 
     if ($issueDate === '') {
-        // Preview validates the issue date like a live issue (must be "today" in
-        // Greece); temp/draft saves accept the d-m-Y form.
-        $issueDate = ($live || $preview) ? date('Y-m-d') : date('d-m-Y');
-    }
-
-    // Issuer identity — needed so the preview PDF shows the real company name /
-    // address / ΔΟΥ (the form leaves issuer blank; the server fills it from the
-    // session on issue, but the preview renderer reads it from the model).
-    $issuerName = $issuerJob = $issuerAddress = $issuerDoy = '';
-    if ($preview || $live) {
-        $cp = getCompanyProfile($ch);
-        $co = $cp['company'] ?? [];
-        $issuerName    = (string)($co['name'] ?? '');
-        $issuerJob     = (string)($co['job_description'] ?? '');
-        $issuerAddress = (string)($co['address'] ?? '');
-        $issuerDoy     = (string)($co['doy'] ?? '');
+        // Live issue uses the form's canonical Y-n-j (no zero-padding, e.g. 2026-7-3);
+        // temp/draft saves accept d-m-Y. Preview saves the draft first (d-m-Y) and then
+        // re-stamps the header to Y-n-j just before PrintPreviewInvoice2PdfNew below.
+        $issueDate = $live ? date('Y-n-j') : date('d-m-Y');
     }
 
     // VAT rate: explicit override (e.g. mirroring an original invoice) wins,
@@ -2081,6 +2113,7 @@ function createInvoice(
     $invoiceLines = [];
     $netValue = 0.0; $vatAmount = 0.0; $total = 0.0; $discountTotal = 0.0;
     $ln = 1;
+    $isDN = !empty($delivery);
     foreach ($lines as $row) {
         // Discount: `disc` = percentage (default) or absolute € when discType='amount'/2.
         $disc      = (float)($row['disc'] ?? 0);
@@ -2094,7 +2127,8 @@ function createInvoice(
             isset($row['rate']) ? (float)$row['rate'] : -1.0,
             (int)($row['cat'] ?? 0),
             $disc, $discIsPct,
-            (is_array($row['cls'] ?? null)) ? $row['cls'] : []
+            (is_array($row['cls'] ?? null)) ? $row['cls'] : [],
+            $isDN
         );
         $invoiceLines[]  = $built['line'];
         $netValue       += $built['net'];
@@ -2139,6 +2173,7 @@ function createInvoice(
         '_invoiceType'              => $invoiceType,
         'CorrelatedInvoice'         => $correlatedMark,
         'selfPricing'               => 'false',
+        'toWeigh'                   => 'false',
         'paymentType'               => (string)$paymentType,
         'invoiceFormat'             => 1,
         'DispatchTime'              => '',
@@ -2165,15 +2200,14 @@ function createInvoice(
             'otherCorrelatedEntities'    => [],
         ],
 
+        // The real form posts an EMPTY issuer (only branch/country); the server fills
+        // the full company identity from the authenticated session for both the saved
+        // draft and the rendered PDF. Sending a populated issuer block made
+        // PrintPreviewInvoice2PdfNew reject the model.
         'issuer' => [
-            'vatNumber'      => defined('COMPANY_VAT') ? COMPANY_VAT : '',
-            'branch'         => '0',
-            'country'        => 'GR',
-            'name'           => $issuerName,
-            'jobDescription' => $issuerJob,
-            'JobDescription' => $issuerJob,
-            'doy'            => $issuerDoy,
-            'address'        => ['street' => $issuerAddress, 'number' => '', 'postalCode' => '', 'city' => ''],
+            'vatNumber' => '',
+            'branch'    => '0',
+            'country'   => 'GR',
         ],
 
         'counterpart' => [
@@ -2224,10 +2258,12 @@ function createInvoice(
             'startShippingBranch'    => (string)($delivery['load_branch'] ?? '0'),
             'completeShippingBranch' => (string)($delivery['deliv_branch'] ?? '0'),
         ];
-        if (!empty($delivery['reverse'])) {
-            $invoice['reverseDeliveryNote'] = 'true';
-            $invoice['invoiceHeader']['reverseDeliveryNotePurpose'] = (string)($delivery['movePurpose'] ?? '');
-        }
+        // 9.x delivery notes always carry the reverse-delivery flag + purpose (the
+        // real form posts them unconditionally for δελτίο 9.3); leaving them out makes
+        // the preview fail with a generic "Αδυναμία προεπισκόπησης".
+        $isReverse = !empty($delivery['reverse']);
+        $invoice['reverseDeliveryNote'] = $isReverse ? 'true' : 'false';
+        $invoice['invoiceHeader']['reverseDeliveryNotePurpose'] = $isReverse ? (string)($delivery['movePurpose'] ?? '') : '';
     }
 
     curlGet($ch, BASE_URL . '/invoice/newinvoice');
@@ -2235,10 +2271,11 @@ function createInvoice(
     if ($preview) {
         // PREVIEW = "πάτα προεπισκόπηση → αποθηκεύεται στο e-timologio + PDF".
         // 1) Persist the draft (savetempinvoice) so it stays saved in e-timologio.
-        // 2) Ask AADE for the preview data (PrintPreviewInvoice2PdfNew): this is
-        //    the `data2print` payload the e-timologio UI feeds to its own client
-        //    renderer (invoice2pdf.js / dispatchNote2pdf.js). We forward it to the
-        //    browser, which renders the byte-identical AADE PDF with those scripts.
+        // 2) POST the SAME model to /Invoice/PrintPreviewInvoice2PdfNew. Contrary to
+        //    our earlier assumption, this endpoint does NOT return a `data2print` JSON
+        //    for client-side rendering — the AADE server renders the real PDF itself
+        //    and returns it directly as `application/pdf` (verified against a captured
+        //    browser request). We just base64 it back to the UI to display.
         $saveResp = curlPostInvoice($ch, BASE_URL . '/TempInvoice/savetempinvoice', $invoice);
         $saveData = json_decode($saveResp, true);
         $tempId   = $saveData['resultData'][0] ?? '';
@@ -2249,21 +2286,20 @@ function createInvoice(
                 'raw'     => substr($saveResp, 0, 400),
             ];
         }
-        $invoice['tempInvoiceId'] = $tempId;
+        // The preview endpoint validates the issue date like a live issue: it must be
+        // "today" in Greece and in the form's Y-n-j shape (no zero-padding).
+        $invoice['tempInvoiceId']              = $tempId;
+        $invoice['invoiceHeader']['issueDate'] = date('Y-n-j');
         $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $invoice);
-        $d2p  = json_decode($resp, true);
-        if (is_array($d2p) && isset($d2p['invoice'])) {
-            // Success: got the data2print payload.
-            return ['success' => true, 'preview' => true, 'saved' => true, 'temp_id' => $tempId, 'data2print' => $d2p];
-        }
         if (substr($resp, 0, 4) === '%PDF') {
+            // Real AADE PDF.
             return ['success' => true, 'preview' => true, 'saved' => true, 'temp_id' => $tempId, 'pdf_b64' => base64_encode($resp)];
         }
-        // Preview render failed on AADE — the draft is still saved. Report so the
-        // UI can fall back to its own client rendering.
+        // Anything non-PDF is an error payload — the draft is still saved.
+        $d2p = json_decode($resp, true);
         return [
             'success' => true, 'preview' => true, 'saved' => true, 'temp_id' => $tempId,
-            'preview_error' => is_array($d2p) ? ($d2p['message'] ?? $d2p['genericMsg'] ?? 'render failed') : 'render failed',
+            'preview_error' => is_array($d2p) ? ($d2p['message'] ?? $d2p['genericMsg'] ?? 'render failed') : (trim($resp) !== '' ? substr(strip_tags($resp), 0, 300) : 'render failed'),
             'type' => $invoiceType, 'amount_net' => $netValue, 'amount_vat' => $vatAmount, 'amount_total' => $total,
         ];
     }
@@ -2352,13 +2388,24 @@ function findInvoiceByMark(\CurlHandle $ch, string $mark): ?array {
     return $res['invoices'][0] ?? null;
 }
 
+// Fetch the FULL original (correlated) invoice by MARK via the same endpoint the
+// e-timologio form calls when you set a credit note's correlated MARK. Returns the
+// `correlatedInvoice` object (issuer/counterpart/invoiceLines/…) or null.
+function getCorrelatedInvoice(\CurlHandle $ch, string $mark, string $creditType): ?array {
+    $q = http_build_query(['invType' => $creditType, 'selfPrice' => 'false', 'correlatedMark' => $mark, 'fromNewInvoice' => 'true']);
+    $doc = json_decode(curlGet($ch, BASE_URL . '/Invoice/GetValidationDoc?' . $q), true);
+    return (is_array($doc) && !empty($doc['correlatedInvoice']) && is_array($doc['correlatedInvoice'])) ? $doc['correlatedInvoice'] : null;
+}
+
 function createCreditNote(
     \CurlHandle $ch,
     string $originalMark,
     bool $live = false,
     string $reason = '',
     string $description = 'ΥΠ001',
-    float $amountOverride = 0.0
+    float $amountOverride = 0.0,
+    bool $preview = false,
+    string $issueLang = 'el'
 ): array {
     $orig = findInvoiceByMark($ch, $originalMark);
     if (!$orig) {
@@ -2388,10 +2435,55 @@ function createCreditNote(
     $buyer = trim((string)($orig['buyer_vat'] ?? ''));
     $notes = $reason !== '' ? $reason : ('Ακύρωση/Πιστωτικό για ΜΑΡΚ ' . $originalMark);
 
+    // Pick a registered series for the credit type (50 = πιστωτικό, 61 = λιανικό
+    // πιστωτικό). Posting a non-existent series makes the preview/issue fail, so we
+    // resolve it from the account's series list instead of hardcoding 'A'.
+    $creditSeries = 'A';
+    $seriesList = listSeries($ch);
+    foreach (($seriesList['series'] ?? []) as $s) {
+        if ((string)($s['invoice_type_code'] ?? '') === $creditType) {
+            $creditSeries = (string)($s['series_code'] ?? 'A');
+            break;
+        }
+    }
+
+    // Mirror the ORIGINAL invoice's exact line(s) — item, values and classifications —
+    // exactly like the e-timologio credit-note form does. A generic single line makes
+    // AADE reject with «το πληρωτέο/η καθαρή αξία του πιστωτικού δεν μπορεί να είναι
+    // μεγαλύτερη του συσχετιζόμενου». For a partial credit the lines are scaled pro-rata.
+    $corr = getCorrelatedInvoice($ch, $originalMark, $creditType);
+    $mirrorLines = [];
+    $counterName = '';
+    if ($corr) {
+        $cp = $corr['counterpart'] ?? [];
+        $counterName = (string)($cp['name'] ?? '');
+        if ($buyer === '') $buyer = (string)($cp['vatNumber'] ?? '');
+        $factor = ($amountOverride > 0 && $origNet > 0) ? min(1.0, round($amountOverride / $origNet, 6)) : 1.0;
+        foreach (($corr['invoiceLines'] ?? []) as $ol) {
+            $lnNet = round((float)($ol['netValueWithDiscount'] ?? 0) * $factor, 2);
+            $lnVat = round((float)($ol['vatAmount'] ?? 0) * $factor, 2);
+            $lrate = $lnNet > 0 ? round($lnVat / $lnNet, 2) : 0.0;
+            $cls = [];
+            foreach (($ol['classifications'] ?? []) as $c) {
+                if (empty($c['classificationCategory'])) continue;
+                $cls[] = ['cc' => $c['classificationCategory'], 'tc' => (string)($c['classificationType'] ?? ''), 'k' => (int)($c['classificationKind'] ?? 1)];
+            }
+            $mirrorLines[] = [
+                'code'  => (string)($ol['itemCode'] ?? $description),
+                'qty'   => 1,
+                'price' => $lnNet,
+                'rate'  => $lrate,
+                'cat'   => (int)($ol['vatCategory'] ?? 0),
+                'cls'   => $cls,
+            ];
+        }
+    }
+
     $result = createInvoice(
         $ch, round($net, 2), $creditType, 3, $description, '',
-        $buyer, '', '', '', '', 'GR', '0',
-        0, 0.0, $live, $originalMark, $notes, $rate, $vatCat
+        $buyer, $counterName, '', '', '', 'GR', '0',
+        0, 0.0, $live, $originalMark, $notes, $rate, $vatCat,
+        [], $mirrorLines, $creditSeries, [], $preview, $issueLang
     );
 
     $result['credit_note']     = true;
@@ -2999,7 +3091,7 @@ $cancelMark     = trim($_GET['cancel_mark'] ?? $_POST['cancel_mark'] ?? $_GET['c
 $creditReason   = trim($_GET['reason'] ?? $_POST['reason'] ?? '');
 if ($creditNoteFlag || $cancelMark !== '') {
     if ($cancelMark === '') { curl_close($ch); jsonError('Λείπει το cancel_mark (ΜΑΡΚ αρχικού παραστατικού)'); }
-    $result = createCreditNote($ch, $cancelMark, $live, $creditReason, $descr, $amount);
+    $result = createCreditNote($ch, $cancelMark, $live, $creditReason, $descr, $amount, $previewFlag, $issueLang);
     curl_close($ch);
     jsonResponse($result);
 }
