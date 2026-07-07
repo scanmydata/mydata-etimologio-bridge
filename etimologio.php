@@ -1894,7 +1894,7 @@ function buildInvoiceLine(
     \CurlHandle $ch, int $n, string $code, float $qty, float $unitNet,
     string $invoiceType, float $rateOverride = -1.0, int $catOverride = 0,
     float $disc = 0.0, bool $discIsPct = true, array $clsOverride = [],
-    bool $isDeliveryNote = false
+    bool $isDeliveryNote = false, int $deliveryMovePurpose = 1
 ): array {
     $isZeroType = in_array($invoiceType, ZERO_VAT_TYPES);
     $product = getProductData($ch, $code, $invoiceType);
@@ -2017,6 +2017,13 @@ function buildInvoiceLine(
         $line['quantity']        = $qty;
         $line['measurementUnit'] = 1;
     }
+    // Delivery-note lines carry NO VAT — vatCategory 8 (Άνευ ΦΠΑ) — and each line needs a
+    // movement purpose. Captured verbatim from a WORKING 9.3 PrintPreview request; sending
+    // the product's real vatCategory (e.g. 1=24%) makes AADE reject the δελτίο generically.
+    if ($isDeliveryNote) {
+        $line['vatCategory']     = 8;
+        $line['movePurposeLine'] = (int)$deliveryMovePurpose;
+    }
 
     return ['line' => $line, 'net' => $net, 'vat' => $vat, 'total' => $total, 'discount' => $discAmount, 'gross' => $gross];
 }
@@ -2049,7 +2056,9 @@ function createInvoice(
     string $series = 'A',
     array $taxes = [],
     bool $preview = false,
-    string $issueLang = 'el'
+    string $issueLang = 'el',
+    array $paymentMethods = [],
+    string $reuseTempId = ''
 ): array {
 
     if ($issueDate === '') {
@@ -2128,7 +2137,8 @@ function createInvoice(
             (int)($row['cat'] ?? 0),
             $disc, $discIsPct,
             (is_array($row['cls'] ?? null)) ? $row['cls'] : [],
-            $isDN
+            $isDN,
+            $isDN ? (int)($delivery['movePurpose'] ?? 1) : 1
         );
         $invoiceLines[]  = $built['line'];
         $netValue       += $built['net'];
@@ -2184,8 +2194,14 @@ function createInvoice(
         'timologioIssueLanguage'    => ($issueLang === 'en' ? 'en' : 'el'),
         'invoiceNotes'              => $invoiceNotes,
         'transmissionFailure'       => '',
-        'ccr_totalNetValueWithDisc' => '',
-        'ccr_grossValue'            => '',
+        // Document totals the form always posts: total net (with discount) + gross.
+        // For a CREDIT NOTE these are REQUIRED — with them empty the server cannot
+        // compare the credit's payable against the correlated invoice and rejects with
+        // «Το πληρωτέο/η καθαρή αξία του πιστωτικού δεν μπορεί να είναι μεγαλύτερη του
+        // συσχετιζόμενου». (Confirmed by diffing our request against the live form's
+        // working PrintPreview body — these two empty fields were the ONLY difference.)
+        'ccr_totalNetValueWithDisc' => (string)$netValue,
+        'ccr_grossValue'            => (string)$total,
 
         'invoiceHeader' => [
             'series'                     => ($series !== '' ? $series : 'A'),
@@ -2232,15 +2248,39 @@ function createInvoice(
         'invoiceLines' => $invoiceLines,
     ];
 
+    // Payment methods (paymentMethodDetails) — needed by credit notes so their
+    // «πληρωτέο» (payable) matches the correlated invoice's; each entry {type, amount}.
+    if (!empty($paymentMethods)) {
+        $invoice['paymentMethods'] = ['paymentMethodDetails' => $paymentMethods];
+    }
+
     // Delivery note (δελτίο αποστολής/επιστροφής) header — applied when $delivery set
     if (!empty($delivery)) {
         $invoice['isDeliveryNote'] = 'true';
         $invoice['trans']          = 'true';
+        // A δελτίο διακίνησης carries NO payment / currency / document-total fields. A
+        // WORKING 9.3 PrintPreview posts paymentType, invoiceHeader.currency and both
+        // ccr_* totals as EMPTY strings. Our defaults (paymentType=3, currency='0',
+        // ccr_*='0') make AADE reject the preview generically, so blank them here.
+        $invoice['paymentType']               = '';
+        $invoice['invoiceHeader']['currency'] = '';
+        $invoice['ccr_totalNetValueWithDisc'] = '';
+        $invoice['ccr_grossValue']            = '';
         $invoice['DispatchTime']   = $delivery['dispatchTime'] ?? '';
         $invoice['invoiceHeader']['vehicleNumber'] = $delivery['vehicleNumber'] ?? '';
         $invoice['invoiceHeader']['movePurpose']   = (string)($delivery['movePurpose'] ?? '1');
         if (!empty($delivery['dispatchDate'])) {
-            $invoice['invoiceHeader']['dispatchDate'] = $delivery['dispatchDate'];
+            // dispatchDate must be Y-n-j (e.g. 2026-7-7), exactly like issueDate — this is
+            // what the e-timologio form posts (verified by capturing a WORKING 9.3 preview).
+            // Accept dd/mm/yyyy, dd-mm-yyyy or yyyy-mm-dd on input and normalize.
+            $dd = trim((string)$delivery['dispatchDate']);
+            $ts = false;
+            if (preg_match('#^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$#', $dd, $mD)) {
+                $ts = mktime(0, 0, 0, (int)$mD[2], (int)$mD[1], (int)$mD[3]);
+            } elseif (preg_match('#^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$#', $dd, $mD)) {
+                $ts = mktime(0, 0, 0, (int)$mD[2], (int)$mD[3], (int)$mD[1]);
+            }
+            $invoice['invoiceHeader']['dispatchDate'] = $ts ? date('Y-n-j', $ts) : $dd;
         }
         $invoice['invoiceHeader']['otherDeliveryNoteHeader'] = [
             'loadingAddress'  => [
@@ -2255,8 +2295,10 @@ function createInvoice(
                 'postalCode' => $delivery['deliv_zip'] ?? '',
                 'city'       => $delivery['deliv_city'] ?? '',
             ],
-            'startShippingBranch'    => (string)($delivery['load_branch'] ?? '0'),
-            'completeShippingBranch' => (string)($delivery['deliv_branch'] ?? '0'),
+            // Branches: the working request leaves them empty when it's the central
+            // establishment (0); send '' rather than '0' to match.
+            'startShippingBranch'    => ((string)($delivery['load_branch']  ?? '0') === '0') ? '' : (string)$delivery['load_branch'],
+            'completeShippingBranch' => ((string)($delivery['deliv_branch'] ?? '0') === '0') ? '' : (string)$delivery['deliv_branch'],
         ];
         // 9.x delivery notes always carry the reverse-delivery flag + purpose (the
         // real form posts them unconditionally for δελτίο 9.3); leaving them out makes
@@ -2276,9 +2318,18 @@ function createInvoice(
         //    for client-side rendering — the AADE server renders the real PDF itself
         //    and returns it directly as `application/pdf` (verified against a captured
         //    browser request). We just base64 it back to the UI to display.
+        // REUSE an existing draft when the caller passes its id: setting tempInvoiceId in
+        // the model makes e-timologio UPDATE that draft in place instead of creating a new
+        // one, so repeated previews/saves of the same document don't pile up in Πρόχειρα.
+        if ($reuseTempId !== '') {
+            $invoice['tempInvoiceId'] = $reuseTempId;
+        }
         $saveResp = curlPostInvoice($ch, BASE_URL . '/TempInvoice/savetempinvoice', $invoice);
         $saveData = json_decode($saveResp, true);
         $tempId   = $saveData['resultData'][0] ?? '';
+        if ($tempId === '' && $reuseTempId !== '') {
+            $tempId = $reuseTempId;   // some update responses don't echo the id back
+        }
         if ($tempId === '') {
             return [
                 'success' => false,
@@ -2290,6 +2341,12 @@ function createInvoice(
         // "today" in Greece and in the form's Y-n-j shape (no zero-padding).
         $invoice['tempInvoiceId']              = $tempId;
         $invoice['invoiceHeader']['issueDate'] = date('Y-n-j');
+        // Cache the exact model behind this draft id so the Πρόχειρα list can re-preview it
+        // later WITHOUT rebuilding it (PrintPreview needs the full model — a saved draft
+        // cannot be rendered from its id alone; see the ?preview_temp handler).
+        if (function_exists('cache_set') && defined('COMPANY_VAT')) {
+            @cache_set(COMPANY_VAT, 'draftmodel_' . $tempId, [$invoice]);
+        }
         $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $invoice);
         if (substr($resp, 0, 4) === '%PDF') {
             // Real AADE PDF.
@@ -2405,7 +2462,8 @@ function createCreditNote(
     string $description = 'ΥΠ001',
     float $amountOverride = 0.0,
     bool $preview = false,
-    string $issueLang = 'el'
+    string $issueLang = 'el',
+    string $reuseTempId = ''
 ): array {
     $orig = findInvoiceByMark($ch, $originalMark);
     if (!$orig) {
@@ -2454,6 +2512,17 @@ function createCreditNote(
     $corr = getCorrelatedInvoice($ch, $originalMark, $creditType);
     $mirrorLines = [];
     $counterName = '';
+    // Mirror the ORIGINAL's payment TYPE (5=επί πιστώσει, 3=μετρητά …). The credit note
+    // is correlated to the original via the top-level `CorrelatedInvoice` = MARK scalar,
+    // which is what lets AADE validate «πληρωτέο ≤ συσχετιζόμενο». It just needs a
+    // paymentType set.
+    $payType = ($corr && !empty($corr['paymentType'])) ? (int)$corr['paymentType'] : 3;
+    // NOTE: do NOT send a `paymentMethods` block. Captured live from the e-timologio
+    // credit-note form (PrintPreviewInvoice2PdfNew), the WORKING request carries only
+    // `paymentType` and NO paymentMethods at all. Our earlier attempt to mirror
+    // paymentMethodDetails is what triggered the «TId/PaymentMethodInfo required» chain
+    // (and did nothing for «πληρωτέο», which is governed by CorrelatedInvoice + matching
+    // line values). So we pass an empty paymentMethods to createInvoice.
     if ($corr) {
         $cp = $corr['counterpart'] ?? [];
         $counterName = (string)($cp['name'] ?? '');
@@ -2480,10 +2549,10 @@ function createCreditNote(
     }
 
     $result = createInvoice(
-        $ch, round($net, 2), $creditType, 3, $description, '',
+        $ch, round($net, 2), $creditType, $payType, $description, '',
         $buyer, $counterName, '', '', '', 'GR', '0',
         0, 0.0, $live, $originalMark, $notes, $rate, $vatCat,
-        [], $mirrorLines, $creditSeries, [], $preview, $issueLang
+        [], $mirrorLines, $creditSeries, [], $preview, $issueLang, [], $reuseTempId
     );
 
     $result['credit_note']     = true;
@@ -2840,6 +2909,7 @@ $custVat             = trim($_GET['cust_vat']              ?? $_POST['cust_vat']
 $custOldVat          = trim($_GET['cust_old_vat']          ?? $_POST['cust_old_vat']          ?? '');
 
 $previewFlag         = !empty(($_GET['preview']            ?? $_POST['preview']               ?? ''));
+$reuseTempId         = trim($_GET['temp_id']               ?? $_POST['temp_id']               ?? '');
 $searchInvoicesFlag  = !empty(($_GET['search_invoices']    ?? $_POST['search_invoices']       ?? ''));
 $issueDateFrom       = trim($_GET['issue_date_from']       ?? $_POST['issue_date_from']       ?? '');
 $issueDateTo         = trim($_GET['issue_date_to']         ?? $_POST['issue_date_to']         ?? '');
@@ -3053,6 +3123,38 @@ if ($statisticsFlag) {
     jsonResponse($result);
 }
 
+// Preview PDF of an EXISTING draft by its tempInvoiceId — used by the Πρόχειρα list so
+// the user can pull up the real AADE preview of a saved draft WITHOUT creating a new one.
+// PrintPreviewInvoice2PdfNew renders straight from the persisted draft when given only
+// its tempInvoiceId (the server already holds the full model).
+$previewTempId = trim($_GET['preview_temp'] ?? $_POST['preview_temp'] ?? '');
+if ($previewTempId !== '') {
+    curlGet($ch, BASE_URL . '/invoice/newinvoice');
+    // Re-render from the cached model (stored when this draft was previewed/saved). The
+    // AADE preview endpoint needs the full model — it can't render a draft from its id
+    // alone. We re-stamp the id + today's issueDate and re-POST, reusing the same draft.
+    $cached = (function_exists('cache_get') && defined('COMPANY_VAT')) ? cache_get(COMPANY_VAT, 'draftmodel_' . $previewTempId) : null;
+    $model  = (is_array($cached) && isset($cached['rows'][0]) && is_array($cached['rows'][0])) ? $cached['rows'][0] : null;
+    if ($model) {
+        $model['tempInvoiceId']                = $previewTempId;
+        $model['invoiceHeader']['issueDate']   = date('Y-n-j');
+        $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $model);
+    } else {
+        // No cached model (e.g. draft created outside this app) — best-effort by id only.
+        $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', ['tempInvoiceId' => $previewTempId]);
+    }
+    curl_close($ch);
+    if (substr($resp, 0, 4) === '%PDF') {
+        jsonResponse(['success' => true, 'preview' => true, 'temp_id' => $previewTempId, 'pdf_b64' => base64_encode($resp)]);
+    }
+    $d2p = json_decode($resp, true);
+    jsonResponse([
+        'success' => false, 'temp_id' => $previewTempId,
+        'error'   => is_array($d2p) ? ($d2p['message'] ?? $d2p['genericMsg'] ?? 'render failed')
+                                    : (trim($resp) !== '' ? substr(strip_tags($resp), 0, 300) : 'render failed'),
+    ]);
+}
+
 // Background sync — fetch fresh, compare snapshot hash, update cache, report change
 $syncKind = trim($_GET['sync'] ?? $_POST['sync'] ?? '');
 if ($syncKind !== '') {
@@ -3091,7 +3193,7 @@ $cancelMark     = trim($_GET['cancel_mark'] ?? $_POST['cancel_mark'] ?? $_GET['c
 $creditReason   = trim($_GET['reason'] ?? $_POST['reason'] ?? '');
 if ($creditNoteFlag || $cancelMark !== '') {
     if ($cancelMark === '') { curl_close($ch); jsonError('Λείπει το cancel_mark (ΜΑΡΚ αρχικού παραστατικού)'); }
-    $result = createCreditNote($ch, $cancelMark, $live, $creditReason, $descr, $amount, $previewFlag, $issueLang);
+    $result = createCreditNote($ch, $cancelMark, $live, $creditReason, $descr, $amount, $previewFlag, $issueLang, $reuseTempId);
     curl_close($ch);
     jsonResponse($result);
 }
@@ -3186,8 +3288,42 @@ if (!empty($_GET['delivery_note'] ?? $_POST['delivery_note'] ?? '')) {
     ];
     // Delivery-note type: 503=9.3 (default), 504=9.1 correlated, 505=9.2
     $dnType = trim($_GET['dn_type'] ?? $_POST['dn_type'] ?? '503');
-    $dnSeries = trim($_GET['dn_series'] ?? $_POST['dn_series'] ?? 'A');
-    if ($dnSeries === '') $dnSeries = 'A';
+    $dnSeries = trim($_GET['dn_series'] ?? $_POST['dn_series'] ?? '');
+
+    // The δελτίο UI collects the customer only by ΑΦΜ/name and the loading/delivery
+    // places — it does NOT carry the customer's registered seat address. AADE, though,
+    // requires a full counterpart address (street/city/Τ.Κ.) on delivery notes. When
+    // it's missing, fall back to the delivery place (the goods' destination), which the
+    // user already supplies and which we validate below.
+    if ($address === '' && ($delivery['deliv_street'] ?? '') !== '') $address = $delivery['deliv_street'];
+    if ($city === ''    && ($delivery['deliv_city']   ?? '') !== '') $city    = $delivery['deliv_city'];
+    if ($zip === ''     && ($delivery['deliv_zip']    ?? '') !== '') $zip     = $delivery['deliv_zip'];
+
+    // Mandatory fields for δελτίο διακίνησης, per AADE's own newinvoice validation
+    // (captured live from the e-timologio form). Missing any of these makes
+    // PrintPreview/issue fail with a generic «Αδυναμία προεπισκόπησης» — so we
+    // check them up front and return the specific, actionable message instead.
+    $dnMissing = [];
+    if ($dnSeries === '') {
+        // 'A' is NOT a valid fallback: every delivery type needs its OWN registered
+        // series (e.g. a 503 series). An unregistered series → generic reject.
+        $dnMissing[] = 'Σειρά παραστατικού (δημιουργήστε μία σειρά για δελτίο αποστολής στις Ρυθμίσεις → Σειρές)';
+    }
+    if ($afm === '' || !preg_match('/^\d{9}$/', $afm)) $dnMissing[] = 'ΑΦΜ πελάτη (υποχρεωτικό στα δελτία διακίνησης)';
+    if ($address === '') $dnMissing[] = 'Διεύθυνση πελάτη';
+    if ($city === '')    $dnMissing[] = 'Πόλη πελάτη';
+    if ($zip === '')     $dnMissing[] = 'Τ.Κ. πελάτη';
+    if (($delivery['load_zip'] ?? '') === '')    $dnMissing[] = 'Τ.Κ. τόπου φόρτωσης';
+    if (($delivery['deliv_number'] ?? '') === '') $dnMissing[] = 'Αριθμός τόπου παράδοσης';
+    if (($delivery['deliv_zip'] ?? '') === '')    $dnMissing[] = 'Τ.Κ. τόπου παράδοσης';
+    if (!empty($dnMissing)) {
+        curl_close($ch);
+        jsonResponse([
+            'success' => false,
+            'error'   => 'Απαιτούνται τα ακόλουθα για το δελτίο διακίνησης: ' . implode(' · ', $dnMissing),
+            'missing' => $dnMissing,
+        ]);
+    }
     if ($afm !== '' && preg_match('/^\d{9}$/', $afm)) {
         $cust = findOrCreateCustomer($ch, $afm);
         if (!$cust['success']) { curl_close($ch); jsonResponse($cust); }
@@ -3208,7 +3344,7 @@ if (!empty($_GET['delivery_note'] ?? $_POST['delivery_note'] ?? '')) {
     $result = createInvoice(
         $ch, $amount, $dnType, $payment, $descr, '',
         $afm, $name, $address, $city, $zip, $country, $branch,
-        0, 0.0, $live, '', trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, $delivery, $dnLines, $dnSeries, [], $previewFlag, $issueLang
+        0, 0.0, $live, '', trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, $delivery, $dnLines, $dnSeries, [], $previewFlag, $issueLang, [], $reuseTempId
     );
     curl_close($ch);
     jsonResponse($result);
@@ -3229,7 +3365,7 @@ if ($linesJson !== '') {
         $ch, 0, $type, $payment, $descr, '',
         $afm, $name, $address, $city, $zip, $country, $branch,
         $withholdingCategory, $withholdingAmount, $live, '',
-        trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr, $issueSeries, $taxesArr, $previewFlag, $issueLang
+        trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr, $issueSeries, $taxesArr, $previewFlag, $issueLang, [], $reuseTempId
     );
     curl_close($ch);
     jsonResponse($result);

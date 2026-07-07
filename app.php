@@ -334,8 +334,8 @@ $__business = $__user['business_name'];
         <div class="issue-actions">
           <div class="hint" style="margin-bottom:8px">👁 <b>Προεπισκόπηση</b> & 💾 <b>Πρόχειρο</b> = δοκιμαστικά, <b>ΔΕΝ</b> υποβάλλονται στην ΑΑΔΕ (χωρίς ΜΑΡΚ). Μόνο το κόκκινο <b>Οριστική Έκδοση</b> υποβάλλει πραγματικά και δίνει ΜΑΡΚ.</div>
           <div class="row" style="align-items:center">
-            <button class="info" onclick="previewInvoice()" title="Δημιουργεί το PDF της ΑΑΔΕ & αποθηκεύει πρόχειρο — χωρίς υποβολή/ΜΑΡΚ">👁 Προεπισκόπηση</button>
-            <button class="ghost" onclick="submitInvoice(false)" title="Αποθήκευση ως πρόχειρο — χωρίς υποβολή/ΜΑΡΚ">💾 Αποθήκευση προχείρου</button>
+            <button class="info" onclick="previewInvoice()" title="Αποθηκεύει το πρόχειρο ΚΑΙ δείχνει το PDF της ΑΑΔΕ — χωρίς υποβολή/ΜΑΡΚ. Επαναλαμβανόμενες προεπισκοπήσεις ενημερώνουν το ΙΔΙΟ πρόχειρο (δεν δημιουργούν νέο).">💾👁 Αποθήκευση &amp; Προεπισκόπηση</button>
+            <button class="ghost sm" onclick="issueNewDraft()" title="Ξεκίνα νέο πρόχειρο (το επόμενο Αποθήκευση θα δημιουργήσει νέο ID)">🆕 Νέο</button>
             <div class="grow"></div>
             <button class="danger" onclick="confirmIssue()" title="ΟΡΙΣΤΙΚΗ υποβολή στην ΑΑΔΕ — το παραστατικό παίρνει ΜΑΡΚ και δεν αναιρείται">📤 Οριστική Έκδοση στην ΑΑΔΕ (ΜΑΡΚ)</button>
           </div>
@@ -402,8 +402,8 @@ $__business = $__user['business_name'];
         <div class="issue-actions">
           <div class="hint" style="margin-bottom:8px">👁 <b>Προεπισκόπηση</b> & 💾 <b>Πρόχειρο</b> = χωρίς υποβολή/ΜΑΡΚ. Μόνο το κόκκινο <b>Οριστική Έκδοση</b> υποβάλλει το δελτίο στην ΑΑΔΕ (ΜΑΡΚ). Το δελτίο φέρει <b>μόνο αγαθά, χωρίς αξίες</b>.</div>
           <div class="row" style="align-items:center">
-            <button class="info" onclick="dnPreviewPdf()" title="PDF προεπισκόπησης — χωρίς υποβολή/ΜΑΡΚ">👁 Προεπισκόπηση</button>
-            <button class="ghost" onclick="submitDelivery(false)" title="Αποθήκευση προχείρου — χωρίς υποβολή/ΜΑΡΚ">💾 Αποθήκευση προχείρου</button>
+            <button class="info" onclick="dnPreviewPdf()" title="Αποθηκεύει το πρόχειρο ΚΑΙ δείχνει το PDF — χωρίς υποβολή/ΜΑΡΚ. Επαναλαμβανόμενες προεπισκοπήσεις ενημερώνουν το ΙΔΙΟ πρόχειρο.">💾👁 Αποθήκευση &amp; Προεπισκόπηση</button>
+            <button class="ghost sm" onclick="dnNewDraft()" title="Ξεκίνα νέο πρόχειρο δελτίο">🆕 Νέο</button>
             <div class="grow"></div>
             <button class="danger" onclick="submitDelivery(true)" title="ΟΡΙΣΤΙΚΗ υποβολή δελτίου στην ΑΑΔΕ — παίρνει ΜΑΡΚ">📤 Οριστική Έκδοση δελτίου (ΜΑΡΚ)</button>
           </div>
@@ -1255,9 +1255,12 @@ async function previewInvoice(){const lines=collectLines();
   const p={preview:1,lines:JSON.stringify(lines),type:$('#iType').value,issue_series:ser,payment:$('#iPay').value,issue_lang:$('#iLang').value,afm:$('#iAfm').value.trim(),name:$('#iName').value,address:$('#iAddress').value,city:$('#iCity').value,zip:$('#iZip').value};
   if(ITAXES.length)p.taxes=JSON.stringify(ITAXES.map(t=>({type:t.type,category:t.category,amount:t.amount,notes:t.notes})));
   const notes=$('#iNotes').value.trim();if(notes)p.notes=notes;
-  $('#issueResult').innerHTML='<span class="spin"></span> Προεπισκόπηση & αποθήκευση προχείρου…';
+  // Reuse the same draft on repeated previews so we don't pile up new drafts in Πρόχειρα.
+  if(window.__issueTempId)p.temp_id=window.__issueTempId;
+  $('#issueResult').innerHTML='<span class="spin"></span> Αποθήκευση προχείρου & προεπισκόπηση…';
   try{const d=await api(p);
-    if(d.success){$('#issueResult').innerHTML=`<div class="card"><span class="pill warn">Πρόχειρο (προεπισκόπηση)</span><div style="margin-top:8px">Αποθηκεύτηκε στο e-timologio · Temp ID <strong>${esc(d.temp_id||'')}</strong> <span class="muted">(δες το και στα «Πρόχειρα»)</span></div></div>`;
+    if(d.success){if(d.temp_id)window.__issueTempId=d.temp_id;
+      $('#issueResult').innerHTML=`<div class="card"><span class="pill warn">Πρόχειρο (ενημερώθηκε)</span><div style="margin-top:8px">Αποθηκεύτηκε στο e-timologio · Temp ID <strong>${esc(d.temp_id||'')}</strong> <span class="muted">(ίδιο πρόχειρο — «🆕 Νέο» για νέο)</span></div></div>`;
       if(d.pdf_b64){cbOpenPdfB64(d.pdf_b64);toast('Προεπισκόπηση ΑΑΔΕ έτοιμη','ok');}
       else if(d.preview_error){$('#issueResult').innerHTML+=`<div class="card" style="margin-top:8px"><span class="pill bad">Η προεπισκόπηση απέτυχε</span> <span class="muted">${esc(d.preview_error)}</span> — το πρόχειρο αποθηκεύτηκε κανονικά.</div>`;toast('Αποθηκεύτηκε (χωρίς προεπισκόπηση)','warn');}
       else toast('Αποθηκεύτηκε ως πρόχειρο','ok');}
@@ -1278,6 +1281,8 @@ async function deliveryFromInvoice(){const o=window.__dnFromInv;if(!o)return;
   o.lines.forEach(l=>{addDnLine('',l.qty);const row=$('#dnLines tbody tr:last-child');dnPickProd(row.querySelector('.dl-code'),l.code);});
   toast('Το Δελτίο συμπληρώθηκε με τα αγαθά — έλεγξέ το','ok');}
 
+// Start a fresh draft: the next «Αποθήκευση & Προεπισκόπηση» creates a new draft ID.
+function issueNewDraft(){window.__issueTempId=null;$('#issueResult').innerHTML='<div class="card"><span class="pill">Νέο πρόχειρο</span> Το επόμενο Αποθήκευση θα δημιουργήσει νέο πρόχειρο.</div>';toast('Νέο πρόχειρο','ok');}
 async function submitInvoice(viaIssue){const live=viaIssue===true;
   const lines=collectLines();
   if(!lines.length){toast('Πρόσθεσε τουλάχιστον μία γραμμή (είδος + ποσότητα + τιμή)','err');return;}
@@ -1288,7 +1293,7 @@ async function submitInvoice(viaIssue){const live=viaIssue===true;
   if(live)p.live=1;
   $('#issueResult').innerHTML='<span class="spin"></span> Υποβολή…';
   try{const d=await api(p);
-    if(d.success){$('#issueResult').innerHTML=d.live?`<div class="card"><span class="pill ok">Εκδόθηκε</span><div style="margin-top:8px">ΜΑΡΚ <strong>${esc(d.mark)}</strong> · ΑΑ ${esc(d.aa)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € · <a href="${API}?account=${ACCOUNT}&mark=${esc(d.mark)}&pdf_raw=1" target="_blank">PDF</a></div></div>`:`<div class="card"><span class="pill warn">Πρόχειρο</span><div style="margin-top:8px">Temp ID ${esc(d.temp_id)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € <span class="muted">(δεν υποβλήθηκε)</span></div></div>`;toast(d.live?'Εκδόθηκε':'Πρόχειρο OK','ok');ITAXES=[];renderTaxes();sumTotals();offerDelivery(lines);}
+    if(d.success){$('#issueResult').innerHTML=d.live?`<div class="card"><span class="pill ok">Εκδόθηκε</span><div style="margin-top:8px">ΜΑΡΚ <strong>${esc(d.mark)}</strong> · ΑΑ ${esc(d.aa)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € · <a href="${API}?account=${ACCOUNT}&mark=${esc(d.mark)}&pdf_raw=1" target="_blank">PDF</a></div></div>`:`<div class="card"><span class="pill warn">Πρόχειρο</span><div style="margin-top:8px">Temp ID ${esc(d.temp_id)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € <span class="muted">(δεν υποβλήθηκε)</span></div></div>`;toast(d.live?'Εκδόθηκε':'Πρόχειρο OK','ok');if(d.live)window.__issueTempId=null;ITAXES=[];renderTaxes();sumTotals();offerDelivery(lines);}
     else $('#issueResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(d.error||'')+'</div>';
   }catch(e){$('#issueResult').innerHTML='';toast('Έκδοση: '+e.message,'err');}}
 
@@ -1410,6 +1415,7 @@ function dnPayload(){return {delivery_note:1,dn_type:$('#dnType').value,dn_serie
   vehicle:$('#dnVehicle').value,dispatch_date:di('dnDate'),dispatch_time:$('#dnTime').value,
   load_street:$('#dnLStreet').value,load_number:$('#dnLNumber').value,load_city:$('#dnLCity').value,load_zip:$('#dnLZip').value,load_branch:$('#dnLBranch').value||'0',
   deliv_street:$('#dnDStreet').value,deliv_number:$('#dnDNumber').value,deliv_city:$('#dnDCity').value,deliv_zip:$('#dnDZip').value,deliv_branch:$('#dnDBranch').value||'0'};}
+function dnNewDraft(){window.__dnTempId=null;$('#dnResult').innerHTML='<div class="card"><span class="pill">Νέο πρόχειρο</span> Το επόμενο Αποθήκευση θα δημιουργήσει νέο πρόχειρο δελτίο.</div>';toast('Νέο πρόχειρο','ok');}
 async function submitDelivery(viaIssue){const live=viaIssue===true;
   if(live&&!confirm('ΟΡΙΣΤΙΚΗ έκδοση δελτίου στην ΑΑΔΕ — θα λάβει ΜΑΡΚ και δεν αναιρείται. Συνέχεια;'))return;
   const lines=collectDnLines();
@@ -1420,7 +1426,7 @@ async function submitDelivery(viaIssue){const live=viaIssue===true;
   if(live)p.live=1;
   $('#dnResult').innerHTML='<span class="spin"></span> Υποβολή…';
   try{const d=await api(p);
-    if(d.success)$('#dnResult').innerHTML=`<div class="card"><span class="pill ${d.live?'ok':'warn'}">${d.live?'Δελτίο εκδόθηκε':'Πρόχειρο δελτίο'}</span><div style="margin-top:8px">Τύπος ${esc(d.type)} · σκοπός ${esc($('#dnPurpose option:checked').textContent)} · σύνολο ${fmt(d.amount_total)} €<br>${d.live?`ΜΑΡΚ <strong>${esc(d.mark)}</strong> · <a href="${API}?account=${ACCOUNT}&mark=${esc(d.mark)}&pdf_raw=1" target="_blank">PDF</a>`:`Temp ID ${esc(d.temp_id)} <span class="muted">(δεν υποβλήθηκε)</span>`}</div></div>`,toast(d.live?'Δελτίο εκδόθηκε':'Πρόχειρο δελτίο','ok');
+    if(d.success)$('#dnResult').innerHTML=`<div class="card"><span class="pill ${d.live?'ok':'warn'}">${d.live?'Δελτίο εκδόθηκε':'Πρόχειρο δελτίο'}</span><div style="margin-top:8px">Τύπος ${esc(d.type)} · σκοπός ${esc($('#dnPurpose option:checked').textContent)} · σύνολο ${fmt(d.amount_total)} €<br>${d.live?`ΜΑΡΚ <strong>${esc(d.mark)}</strong> · <a href="${API}?account=${ACCOUNT}&mark=${esc(d.mark)}&pdf_raw=1" target="_blank">PDF</a>`:`Temp ID ${esc(d.temp_id)} <span class="muted">(δεν υποβλήθηκε)</span>`}</div></div>`,toast(d.live?'Δελτίο εκδόθηκε':'Πρόχειρο δελτίο','ok'),d.live&&(window.__dnTempId=null);
     else $('#dnResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(d.error||'')+'</div>';
   }catch(e){$('#dnResult').innerHTML='';toast('Δελτίο: '+e.message,'err');}}
 
@@ -1434,9 +1440,10 @@ async function dnPreviewPdf(){
   dnSaveLoad();
   $('#dnResult').innerHTML='<span class="spin"></span> Προεπισκόπηση & αποθήκευση προχείρου…';
   try{const p=dnPayload();p.lines=JSON.stringify(lines);p.preview=1;p.issue_lang=($('#iLang')?$('#iLang').value:'el');if($('#dnPurpose').value==='5')p.reverse=1;
+    if(window.__dnTempId)p.temp_id=window.__dnTempId;   // reuse same draft, no new id
     const sv=await api(p);
-    if(sv&&sv.success){
-      $('#dnResult').innerHTML=`<div class="card"><span class="pill warn">Πρόχειρο δελτίο (προεπισκόπηση)</span><div style="margin-top:8px">Αποθηκεύτηκε στο e-timologio · Temp ID <strong>${esc(sv.temp_id||'')}</strong></div></div>`;
+    if(sv&&sv.success){if(sv.temp_id)window.__dnTempId=sv.temp_id;
+      $('#dnResult').innerHTML=`<div class="card"><span class="pill warn">Πρόχειρο δελτίο (ενημερώθηκε)</span><div style="margin-top:8px">Αποθηκεύτηκε στο e-timologio · Temp ID <strong>${esc(sv.temp_id||'')}</strong> <span class="muted">(ίδιο πρόχειρο — «🆕 Νέο» για νέο)</span></div></div>`;
       if(sv.pdf_b64){cbOpenPdfB64(sv.pdf_b64);toast('Προεπισκόπηση ΑΑΔΕ έτοιμη','ok');return;}
       // AADE didn't return a PDF — note it and fall back to the local draft below.
       toast('Η ΑΑΔΕ δεν επέστρεψε PDF — προσωρινό πρόχειρο','warn');
@@ -1512,7 +1519,7 @@ async function cxLoadInvoices(){let vat=$('#cxVat').value.trim();
     $('#cxTable tbody').innerHTML=inv.map((i,idx)=>`<tr><td>${esc(i.issue_date||'')}</td><td>${esc(i.type||'')}</td><td>${esc((i.series||'')+' '+(i.aa||''))}</td><td class="num">${esc(i.net_value||'')}</td><td class="num">${esc(i.total||'')}</td><td>${esc(i.mark)}</td><td class="right"><button class="primary sm" onclick="cxPick(${idx})">Επιλογή</button></td></tr>`).join('')||'<tr><td colspan="7" class="muted">Κανένα χρεωστικό στο διάστημα.</td></tr>';
   }catch(e){$('#cxTable tbody').innerHTML='';toast('Παραστατικά: '+e.message,'err');}}
 let CX_INV=[];
-function cxPick(idx){const i=CX_INV[idx];if(!i)return;const net=parseGr(i.net_value);
+function cxPick(idx){const i=CX_INV[idx];if(!i)return;const net=parseGr(i.net_value);window.__cxTempId=null;
   $('#cxSel').innerHTML=`<div class="card"><div class="modal-head" style="font-size:15px">Πιστωτικό για ΜΑΡΚ ${esc(i.mark)}</div>
     <div class="row">
       <div class="field"><label>Καθαρή αξία πιστωτικού (€)</label><input id="cxAmount" type="number" step="0.01" min="0" value="${net.toFixed(2)}"></div>
@@ -1520,8 +1527,7 @@ function cxPick(idx){const i=CX_INV[idx];if(!i)return;const net=parseGr(i.net_va
     </div>
     <div class="hint" style="margin-top:8px">👁 Προεπισκόπηση & 💾 Πρόχειρο = χωρίς υποβολή/ΜΑΡΚ. Μόνο το κόκκινο <b>Οριστική Έκδοση</b> υποβάλλει το πιστωτικό στην ΑΑΔΕ (ΜΑΡΚ).</div>
     <div class="row" style="margin-top:6px;align-items:center">
-      <button class="info" onclick="previewCredit('${q1(i.mark)}')" title="PDF προεπισκόπησης — χωρίς υποβολή/ΜΑΡΚ">👁 Προεπισκόπηση</button>
-      <button class="ghost" onclick="doCredit(false,'${q1(i.mark)}')" title="Αποθήκευση προχείρου — χωρίς υποβολή/ΜΑΡΚ">💾 Αποθήκευση προχείρου</button>
+      <button class="info" onclick="previewCredit('${q1(i.mark)}')" title="Αποθηκεύει το πρόχειρο ΚΑΙ δείχνει το PDF — χωρίς υποβολή/ΜΑΡΚ. Επαναλαμβανόμενες προεπισκοπήσεις ενημερώνουν το ΙΔΙΟ πρόχειρο.">💾👁 Αποθήκευση &amp; Προεπισκόπηση</button>
       <div class="grow"></div>
       <button class="danger" onclick="doCredit(true,'${q1(i.mark)}')" title="ΟΡΙΣΤΙΚΗ υποβολή πιστωτικού στην ΑΑΔΕ — παίρνει ΜΑΡΚ">📤 Οριστική Έκδοση πιστωτικού (ΜΑΡΚ)</button>
     </div>
@@ -1533,9 +1539,11 @@ function parseGr(s){s=String(s||'0').replace(/[^0-9,.-]/g,'');if(s.includes(',')
 // Προεπισκόπηση πιστωτικού = αποθήκευση προχείρου + πραγματικό PDF ΑΑΔΕ.
 async function previewCredit(mark){if(!mark){toast('Επίλεξε παραστατικό','err');return;}
   const p={credit_note:1,cancel_mark:mark,reason:$('#cxReason').value,amount:parseFloat($('#cxAmount').value)||0,preview:1};
-  $('#cxResult').innerHTML='<span class="spin"></span> Προεπισκόπηση & αποθήκευση προχείρου…';
+  if(window.__cxTempId)p.temp_id=window.__cxTempId;   // reuse same draft, no new id
+  $('#cxResult').innerHTML='<span class="spin"></span> Αποθήκευση προχείρου & προεπισκόπηση…';
   try{const d=await api(p);
-    if(d.success){$('#cxResult').innerHTML=`<div class="card"><span class="pill warn">Πρόχειρο πιστωτικό (προεπισκόπηση)</span><div style="margin-top:8px">Τύπος ${esc(d.credit_type||'')} · Συσχ. ΜΑΡΚ ${esc(d.correlated_mark||mark)} · Temp ID <strong>${esc(d.temp_id||'')}</strong></div></div>`;
+    if(d.success){if(d.temp_id)window.__cxTempId=d.temp_id;
+      $('#cxResult').innerHTML=`<div class="card"><span class="pill warn">Πρόχειρο πιστωτικό (ενημερώθηκε)</span><div style="margin-top:8px">Τύπος ${esc(d.credit_type||'')} · Συσχ. ΜΑΡΚ ${esc(d.correlated_mark||mark)} · Temp ID <strong>${esc(d.temp_id||'')}</strong></div></div>`;
       if(d.pdf_b64){cbOpenPdfB64(d.pdf_b64);toast('Προεπισκόπηση ΑΑΔΕ έτοιμη','ok');}
       else if(d.preview_error){$('#cxResult').innerHTML+=`<div class="card" style="margin-top:8px"><span class="pill bad">Η προεπισκόπηση απέτυχε</span> <span class="muted">${esc(d.preview_error)}</span> — το πρόχειρο αποθηκεύτηκε.</div>`;toast('Αποθηκεύτηκε (χωρίς προεπισκόπηση)','warn');}
       else toast('Αποθηκεύτηκε ως πρόχειρο','ok');}
@@ -1549,7 +1557,7 @@ async function doCredit(viaIssue,mark){if(!mark){toast('Επίλεξε παρα�
   try{const d=await api(p);
     if(d.success){const o=d.original||{};$('#cxResult').innerHTML=`<div class="card"><span class="pill ${d.live?'ok':'warn'}">${d.live?'Πιστωτικό εκδόθηκε':'Πρόχειρο πιστωτικό'}</span>
       <div style="margin-top:8px">Τύπος ${esc(d.credit_type)} (5.1/11.4) · Συσχ. ΜΑΡΚ ${esc(d.correlated_mark)}<br>Αρχικό: ${esc(o.type||'')} · ΑΦΜ ${esc(o.buyer_vat||'')} · καθαρή ${fmt(o.net||0)} €<br>${d.live?`Νέο ΜΑΡΚ <strong>${esc(d.mark)}</strong> · <a href="${API}?account=${ACCOUNT}&mark=${esc(d.mark)}&pdf_raw=1" target="_blank">PDF</a>`:`Temp ID ${esc(d.temp_id)} <span class="muted">(δεν υποβλήθηκε)</span>`}</div></div>`;
-      toast(d.live?'Πιστωτικό εκδόθηκε':'Πρόχειρο πιστωτικό OK','ok');}
+      toast(d.live?'Πιστωτικό εκδόθηκε':'Πρόχειρο πιστωτικό OK','ok');if(d.live)window.__cxTempId=null;}
     else $('#cxResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(d.error||'')+'</div>';
   }catch(e){$('#cxResult').innerHTML='';toast('Πιστωτικό: '+e.message,'err');}}
 
@@ -1561,9 +1569,17 @@ async function loadDrafts(){draftRange();$('#draftsTable tbody').innerHTML='<tr>
     const nameFor=v=>{const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===v);return c?c.name:'';};
     $('#draftsTable tbody').innerHTML=rows.map(t=>{const bv=t.buyer_vat||'';const nm=nameFor(bv);
       return `<tr><td>${esc(t.save_date||'')}</td><td>${esc(t.type||'')}</td><td>${esc(t.series||'')}</td><td>${esc(nm||bv||'—')}</td>
-      <td class="right"><button class="danger sm" onclick="delDraft('${q1(t.temp_id)}','${q1(t.seller_vat||'')}')">✕ Διαγραφή</button></td></tr>`;}).join('')
+      <td class="right"><button class="info sm" onclick="previewDraft('${q1(t.temp_id)}',this)" title="Φέρε το PDF προεπισκόπησης αυτού του προχείρου (χωρίς νέο πρόχειρο)">👁 Προεπισκόπηση</button>
+      <button class="danger sm" onclick="delDraft('${q1(t.temp_id)}','${q1(t.seller_vat||'')}')">✕ Διαγραφή</button></td></tr>`;}).join('')
       ||'<tr><td colspan="5" class="muted">Κανένα πρόχειρο.</td></tr>';
   }catch(e){$('#draftsTable tbody').innerHTML='';toast('Πρόχειρα: '+e.message,'err');}}
+// Preview the PDF of an EXISTING draft by its id — reuses the cached model, no new draft.
+async function previewDraft(id,btn){const old=btn?btn.textContent:'';if(btn){btn.disabled=true;btn.textContent='…';}
+  try{const d=await api({preview_temp:id});
+    if(d&&d.success&&d.pdf_b64){cbOpenPdfB64(d.pdf_b64);toast('Προεπισκόπηση ΑΑΔΕ έτοιμη','ok');}
+    else toast('Προεπισκόπηση: '+((d&&d.error)||'Δεν βρέθηκε αποθηκευμένο μοντέλο για αυτό το πρόχειρο (δημιουργήθηκε εκτός εφαρμογής;)'),'err');
+  }catch(e){toast('Προεπισκόπηση: '+e.message,'err');}
+  finally{if(btn){btn.disabled=false;btn.textContent=old;}}}
 async function delDraft(id,seller){if(!confirm('Διαγραφή πρόχειρου παραστατικού;'))return;
   try{const d=await api({delete_temp_id:id,seller_vat:seller});if(d.success===false)throw new Error(d.error||'');toast('Διαγράφηκε','ok');loadDrafts();}catch(e){toast('Διαγραφή: '+e.message,'err');}}
 
