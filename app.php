@@ -1569,7 +1569,7 @@ async function loadDrafts(){draftRange();$('#draftsTable tbody').innerHTML='<tr>
     const nameFor=v=>{const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===v);return c?c.name:'';};
     $('#draftsTable tbody').innerHTML=rows.map(t=>{const bv=t.buyer_vat||'';const nm=nameFor(bv);
       return `<tr><td>${esc(t.save_date||'')}</td><td>${esc(t.type||'')}</td><td>${esc(t.series||'')}</td><td>${esc(nm||bv||'—')}</td>
-      <td class="right"><button class="info sm" onclick="previewDraft('${q1(t.temp_id)}',this)" title="Φέρε το PDF προεπισκόπησης αυτού του προχείρου (χωρίς νέο πρόχειρο)">👁 Προεπισκόπηση</button>
+      <td class="right"><button class="info sm" onclick="previewDraft('${q1(t.enc_id||t.temp_id)}',this)" title="Φέρε το PDF προεπισκόπησης αυτού του προχείρου (χωρίς νέο πρόχειρο)">👁 Προεπισκόπηση</button>
       <button class="danger sm" onclick="delDraft('${q1(t.temp_id)}','${q1(t.seller_vat||'')}')">✕ Διαγραφή</button></td></tr>`;}).join('')
       ||'<tr><td colspan="5" class="muted">Κανένα πρόχειρο.</td></tr>';
   }catch(e){$('#draftsTable tbody').innerHTML='';toast('Πρόχειρα: '+e.message,'err');}}
@@ -1577,7 +1577,7 @@ async function loadDrafts(){draftRange();$('#draftsTable tbody').innerHTML='<tr>
 async function previewDraft(id,btn){const old=btn?btn.textContent:'';if(btn){btn.disabled=true;btn.textContent='…';}
   try{const d=await api({preview_temp:id});
     if(d&&d.success&&d.pdf_b64){cbOpenPdfB64(d.pdf_b64);toast('Προεπισκόπηση ΑΑΔΕ έτοιμη','ok');}
-    else toast('Προεπισκόπηση: '+((d&&d.error)||'Δεν βρέθηκε αποθηκευμένο μοντέλο για αυτό το πρόχειρο (δημιουργήθηκε εκτός εφαρμογής;)'),'err');
+    else toast('Προεπισκόπηση: '+((d&&d.error)||'απέτυχε'),'err');
   }catch(e){toast('Προεπισκόπηση: '+e.message,'err');}
   finally{if(btn){btn.disabled=false;btn.textContent=old;}}}
 async function delDraft(id,seller){if(!confirm('Διαγραφή πρόχειρου παραστατικού;'))return;

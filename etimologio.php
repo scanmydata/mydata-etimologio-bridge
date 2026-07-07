@@ -976,6 +976,12 @@ function searchTempInvoices(
             $item['temp_id'] = $m[1];
             $item['seller_vat'] = $m[2];
         }
+        // The row's "edit" link carries the ENCRYPTED tempInvoiceId token — needed to
+        // fetch the draft's model (/Invoice/TempInvoice?encTempInvoiceId=…) for a universal
+        // preview that works for ANY draft, incl. ones created directly in e-timologio.
+        if (preg_match('/NewInvoiceByTmpInvoice\?tempInvoiceId=([A-Za-z0-9_\-]+)/', $row['html'], $me)) {
+            $item['enc_id'] = $me[1];
+        }
 
         // Client-side filters (save-date range, buyer VAT, type, temp id).
         $sd = strtotime(str_replace('/', '-', $item['save_date']));
@@ -993,6 +999,75 @@ function searchTempInvoices(
         'save_date_from' => $saveDateFrom,
         'save_date_to'   => $saveDateTo,
         'temp_invoices'  => $items,
+    ];
+}
+
+// UNIVERSAL preview of ANY saved draft (incl. ones created directly in e-timologio):
+// 1) fetch the draft's stored model via /Invoice/TempInvoice?encTempInvoiceId=<encId>
+//    (the same JSON the edit page loads), 2) reshape that DB model into the exact
+// «postable» model PrintPreviewInvoice2PdfNew expects (a whitelist — the raw model
+// carries extra fields that trigger a stricter validation demanding BtgRequestId /
+// *Countries / … which our clean shape never sends), 3) POST it → real AADE PDF.
+// Verified by capturing the endpoint + replaying the transform against a live draft.
+function previewTempInvoice(\CurlHandle $ch, string $encId): array {
+    if ($encId === '') return ['success' => false, 'error' => 'Λείπει το αναγνωριστικό προχείρου'];
+    $resp = curlGet($ch, BASE_URL . '/Invoice/TempInvoice?encTempInvoiceId=' . rawurlencode($encId));
+    $data = json_decode($resp, true);
+    if (!is_array($data) || empty($data['invoice']) || !is_array($data['invoice'])) {
+        return ['success' => false, 'error' => 'Δεν βρέθηκε το μοντέλο του προχείρου', 'raw' => substr((string)$resp, 0, 300)];
+    }
+    $raw = $data['invoice'];
+    $h   = is_array($raw['invoiceHeader'] ?? null) ? $raw['invoiceHeader'] : [];
+    $sum = is_array($raw['invoiceSummary'] ?? null) ? $raw['invoiceSummary'] : [];
+    $dn  = in_array($raw['isDeliveryNote'] ?? false, [true, 'true', 1, '1'], true);
+    $sv  = static fn($v) => $v === null ? '' : (is_bool($v) ? ($v ? 'true' : 'false') : (string)$v);
+    $today = date('Y-n-j');
+
+    $clean = [
+        '_invoiceType'              => $sv($raw['_invoiceType'] ?? ($h['invoiceType'] ?? '')),
+        'CorrelatedInvoice'         => $sv($raw['correlatedInvoice'] ?? ''),
+        'selfPricing'               => 'false',
+        'toWeigh'                   => $sv($raw['toWeigh'] ?? 'false'),
+        'paymentType'               => $dn ? '' : $sv($raw['paymentType'] ?? ''),
+        'invoiceFormat'             => '1',
+        'DispatchTime'              => $dn ? $sv($raw['dispatchTime'] ?? ($h['dispatchTime'] ?? '')) : '',
+        'isDeliveryNote'            => $dn ? 'true' : 'false',
+        'trans'                     => $dn ? 'true' : 'false',
+        'isB2G'                     => 'false',
+        'timologioIssueLanguage'    => $sv($raw['language'] ?? 'el') === 'en' ? 'en' : 'el',
+        'ccr_totalNetValueWithDisc' => $dn ? '' : $sv($sum['totalNetValue']   ?? ''),
+        'ccr_grossValue'            => $dn ? '' : $sv($sum['totalGrossValue']  ?? ''),
+        'invoiceHeader' => [
+            'series'                     => $sv($h['series'] ?? ''),
+            'aa'                         => '',
+            'issueDate'                  => $today,
+            'vehicleNumber'              => $sv($h['vehicleNumber'] ?? ''),
+            'movePurpose'                => $dn ? $sv($h['movePurpose'] ?? '') : '',
+            'vatPaymentSuspension'       => $sv($h['vatPaymentSuspension'] ?? 'false'),
+            'currency'                   => $dn ? '' : $sv($h['currency'] ?? '0'),
+            'exchangeRate'               => $sv($h['exchangeRate'] ?? ''),
+            'specialInvoiceCategoryType' => $sv($h['specialInvoiceCategoryType'] ?? ''),
+            'dispatchDate'               => $dn ? $sv($h['dispatchDate'] ?? '') : '',
+            'reverseDeliveryNotePurpose' => $sv($h['reverseDeliveryNotePurpose'] ?? ''),
+        ],
+        'issuer'       => ['vatNumber' => '', 'branch' => '0', 'country' => 'GR'],
+        'counterpart'  => is_array($raw['counterpart'] ?? null) ? $raw['counterpart'] : [],
+        'invoiceLines' => is_array($raw['invoiceLines'] ?? null) ? array_values($raw['invoiceLines']) : [],
+    ];
+    if ($dn && is_array($h['otherDeliveryNoteHeader'] ?? null)) {
+        $clean['invoiceHeader']['otherDeliveryNoteHeader'] = $h['otherDeliveryNoteHeader'];
+    }
+
+    curlGet($ch, BASE_URL . '/invoice/newinvoice');
+    $pdf = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $clean);
+    if (substr($pdf, 0, 4) === '%PDF') {
+        return ['success' => true, 'preview' => true, 'pdf_b64' => base64_encode($pdf)];
+    }
+    $d2p = json_decode($pdf, true);
+    return [
+        'success' => false,
+        'error'   => is_array($d2p) ? ($d2p['message'] ?? $d2p['genericMsg'] ?? 'render failed')
+                                    : (trim($pdf) !== '' ? substr(strip_tags($pdf), 0, 300) : 'render failed'),
     ];
 }
 
@@ -2341,12 +2416,6 @@ function createInvoice(
         // "today" in Greece and in the form's Y-n-j shape (no zero-padding).
         $invoice['tempInvoiceId']              = $tempId;
         $invoice['invoiceHeader']['issueDate'] = date('Y-n-j');
-        // Cache the exact model behind this draft id so the Πρόχειρα list can re-preview it
-        // later WITHOUT rebuilding it (PrintPreview needs the full model — a saved draft
-        // cannot be rendered from its id alone; see the ?preview_temp handler).
-        if (function_exists('cache_set') && defined('COMPANY_VAT')) {
-            @cache_set(COMPANY_VAT, 'draftmodel_' . $tempId, [$invoice]);
-        }
         $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $invoice);
         if (substr($resp, 0, 4) === '%PDF') {
             // Real AADE PDF.
@@ -3127,32 +3196,22 @@ if ($statisticsFlag) {
 // the user can pull up the real AADE preview of a saved draft WITHOUT creating a new one.
 // PrintPreviewInvoice2PdfNew renders straight from the persisted draft when given only
 // its tempInvoiceId (the server already holds the full model).
+// `preview_temp` = the ENCRYPTED tempInvoiceId token (from the draft row's edit link). For
+// convenience a raw 36-char GUID is also accepted and resolved to its enc token. UNIVERSAL:
+// works for ANY draft, including ones created directly in e-timologio.
 $previewTempId = trim($_GET['preview_temp'] ?? $_POST['preview_temp'] ?? '');
 if ($previewTempId !== '') {
-    curlGet($ch, BASE_URL . '/invoice/newinvoice');
-    // Re-render from the cached model (stored when this draft was previewed/saved). The
-    // AADE preview endpoint needs the full model — it can't render a draft from its id
-    // alone. We re-stamp the id + today's issueDate and re-POST, reusing the same draft.
-    $cached = (function_exists('cache_get') && defined('COMPANY_VAT')) ? cache_get(COMPANY_VAT, 'draftmodel_' . $previewTempId) : null;
-    $model  = (is_array($cached) && isset($cached['rows'][0]) && is_array($cached['rows'][0])) ? $cached['rows'][0] : null;
-    if ($model) {
-        $model['tempInvoiceId']                = $previewTempId;
-        $model['invoiceHeader']['issueDate']   = date('Y-n-j');
-        $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', $model);
-    } else {
-        // No cached model (e.g. draft created outside this app) — best-effort by id only.
-        $resp = curlPostInvoice($ch, BASE_URL . '/Invoice/PrintPreviewInvoice2PdfNew', ['tempInvoiceId' => $previewTempId]);
+    $encId = $previewTempId;
+    if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-/i', $previewTempId)) {   // a raw GUID → find its enc token
+        $lst = searchTempInvoices($ch);
+        foreach (($lst['temp_invoices'] ?? []) as $ti) {
+            if (($ti['temp_id'] ?? '') === $previewTempId) { $encId = $ti['enc_id'] ?? ''; break; }
+        }
     }
+    $result = previewTempInvoice($ch, $encId);
+    $result['temp_id'] = $previewTempId;
     curl_close($ch);
-    if (substr($resp, 0, 4) === '%PDF') {
-        jsonResponse(['success' => true, 'preview' => true, 'temp_id' => $previewTempId, 'pdf_b64' => base64_encode($resp)]);
-    }
-    $d2p = json_decode($resp, true);
-    jsonResponse([
-        'success' => false, 'temp_id' => $previewTempId,
-        'error'   => is_array($d2p) ? ($d2p['message'] ?? $d2p['genericMsg'] ?? 'render failed')
-                                    : (trim($resp) !== '' ? substr(strip_tags($resp), 0, 300) : 'render failed'),
-    ]);
+    jsonResponse($result);
 }
 
 // Background sync — fetch fresh, compare snapshot hash, update cache, report change
