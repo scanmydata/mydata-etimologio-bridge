@@ -567,15 +567,22 @@ $__business = $__user['business_name'];
             <option value="1">Τραπεζικός λογ/σμός</option><option value="7">POS / e-POS</option><option value="6">Web Banking</option></select></div>
           <div class="field"><label>Γλώσσα</label><select id="blkLang"><option value="el">Ελληνικά</option><option value="en">Αγγλικά</option></select></div>
         </div>
-        <div class="field grow">
-          <label>Γραμμές (μία ανά παραστατικό) — <b>ΑΦΜ · κωδικός είδους · ποσότητα · τιμή μονάδας</b> (χωρισμένα με «,» ή «;»)</label>
-          <textarea id="blkCsv" rows="8" placeholder="800702104, 1, 1, 100&#10;800702104, 3, 2, 50&#10;# γραμμές με # αγνοούνται" style="width:100%;font-family:monospace"></textarea>
-          <p class="hint">Παράδειγμα: <code>800702104, 1, 1, 100</code> → ΑΦΜ 800702104, είδος «1», ποσότητα 1, τιμή 100€. Ο τύπος/σειρά/πληρωμή είναι οι κοινοί από πάνω.</p>
+        <div class="row" style="margin:6px 0 2px;align-items:center">
+          <strong>Παραστατικά (ένα ανά γραμμή)</strong><div class="grow"></div>
+          <button class="add sm" type="button" onclick="blkAddRow()">➕ Γραμμή</button>
         </div>
-        <div class="row" style="align-items:center">
-          <button class="info" onclick="bulkParse(true)">🔍 Έλεγχος γραμμών</button>
-          <button class="add" onclick="bulkRun(false)" title="Δημιουργία προχείρων για όλες τις γραμμές — χωρίς υποβολή/ΜΑΡΚ">💾 Δημιουργία προχείρων (όλα)</button>
+        <table id="blkTable"><thead><tr>
+          <th style="min-width:240px">Πελάτης</th><th style="min-width:220px">Είδος</th>
+          <th style="width:90px" class="num">Ποσότητα</th><th style="width:120px" class="num">Τιμή μον. (€)</th><th></th></tr></thead><tbody></tbody></table>
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:12px">⚙️ Εισαγωγή από κείμενο (για προχωρημένους) — ΑΦΜ, κωδικός, ποσότητα, τιμή</summary>
+          <textarea id="blkCsv" rows="5" placeholder="800702104, 1, 1, 100&#10;800702104, 3, 2, 50&#10;# γραμμές με # αγνοούνται" style="width:100%;font-family:monospace;margin-top:8px"></textarea>
+          <button class="ghost sm" type="button" onclick="blkImportCsv()">⬇ Φόρτωσε στις γραμμές</button>
+        </details>
+        <div class="row" style="align-items:center;margin-top:12px">
+          <span class="hint" id="blkCount"></span>
           <div class="grow"></div>
+          <button class="add" onclick="bulkRun(false)" title="Δημιουργία προχείρων για όλες τις γραμμές — χωρίς υποβολή/ΜΑΡΚ">💾 Δημιουργία προχείρων (όλα)</button>
           <button class="danger" onclick="bulkRun(true)" title="ΟΡΙΣΤΙΚΗ μαζική έκδοση στην ΑΑΔΕ — κάθε παραστατικό παίρνει ΜΑΡΚ">📤 Οριστική έκδοση όλων (ΜΑΡΚ)</button>
         </div>
         <div id="blkResult" style="margin-top:14px"></div>
@@ -1396,38 +1403,73 @@ async function loadBulkView(){await loadInvTypes();
     const sel=$('#blkType');
     sel.innerHTML=opts.length?opts.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join(''):'<option value="">— καμία ενεργή σειρά —</option>';
     blkFillSeries();
-  }catch(e){}}
+  }catch(e){}
+  if(!ALL_CUSTOMERS.length)loadCustomers();
+  if(!Object.keys(PRODMAP).length)loadProductList();
+  if(!$('#blkTable tbody').children.length)blkAddRow();
+}
 function blkFillSeries(){const t=$('#blkType').value;const sel=$('#blkSeries');
   const list=(SERIES||[]).filter(s=>String(s.invoice_type_code||'')===t);
   sel.innerHTML=list.length?list.map(s=>`<option value="${esc(s.series_code)}">${esc(s.series_code)}${s.description?(' — '+esc(s.description)):''}</option>`).join(''):'<option value="">—</option>';}
-// Parse the CSV textarea → array of bulk items using the common type/series/payment.
-function bulkParse(announce){
-  const type=$('#blkType').value, series=$('#blkSeries').value, pay=$('#blkPay').value, lang=$('#blkLang').value;
+// --- Interactive bulk rows (customer/product pickers) -------------------------
+function blkAddRow(vat='',name='',code='',qty=1,price=''){
+  const tb=$('#blkTable tbody');const tr=document.createElement('tr');
+  tr.innerHTML=`
+    <td style="position:relative"><input class="blk-cust" value="${esc(name||vat)}" data-vat="${esc(vat)}" placeholder="Αναζήτηση πελάτη…" autocomplete="off" oninput="blkCustAc(this)" onfocus="blkCustAc(this)" style="width:100%"><div class="ac-panel"></div></td>
+    <td style="position:relative"><input class="blk-code" value="${esc(prodText(code))}" data-code="${esc(code)}" placeholder="Αναζήτηση είδους…" autocomplete="off" oninput="blkProdAc(this)" onfocus="blkProdAc(this)" style="width:100%"><div class="ac-panel"></div></td>
+    <td><input class="blk-qty" type="number" step="0.01" min="0" value="${esc(qty)}" oninput="blkCountUpd()" style="width:80px;text-align:right"></td>
+    <td><input class="blk-price" type="text" inputmode="decimal" value="${esc(price)}" onblur="elFmtField(this,4)" placeholder="0,00" style="width:110px;text-align:right"></td>
+    <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove();blkCountUpd()">✕</button></td>`;
+  tb.appendChild(tr);blkCountUpd();}
+function blkCustAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
+  if(!ALL_CUSTOMERS.length)loadCustomers();
+  let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));rows=rows.slice(0,30);
+  if(!rows.length){panel.classList.remove('open');return;}
+  panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="blkPickCust(this,'${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
+  panel.classList.add('open');}
+function blkPickCust(el,vat,name){const td=el.closest('td');const inp=td.querySelector('.blk-cust');inp.value=name||vat;inp.dataset.vat=vat;td.querySelector('.ac-panel').classList.remove('open');blkCountUpd();}
+function blkProdAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
+  let items=Object.keys(PRODMAP).map(code=>({code,desc:PRODMAP[code].desc||'',vat:PRODMAP[code].vat}));
+  if(term)items=items.filter(x=>(x.code+' '+x.desc).toLowerCase().includes(term));items=items.slice(0,40);
+  if(!items.length){panel.classList.remove('open');return;}
+  panel.innerHTML=items.map(x=>`<div class="ac-row" onmousedown="blkPickProd(this,'${q1(x.code)}')"><b>${esc(x.code)}</b> <small>${esc(x.desc)}${x.vat!==undefined&&x.vat!==''?' · ΦΠΑ '+vatPct(x.vat)+'%':''}</small></div>`).join('');
+  panel.classList.add('open');}
+function blkPickProd(el,code){const td=el.closest('td');const inp=td.querySelector('.blk-code');inp.value=prodText(code);inp.dataset.code=code;td.querySelector('.ac-panel').classList.remove('open');
+  const tr=el.closest('tr');const priceInp=tr.querySelector('.blk-price');const p=PRODMAP[code];if(p&&p.price&&!elNum(priceInp.value))priceInp.value=elFmt(p.price,4);blkCountUpd();}
+document.addEventListener('click',e=>{if(!e.target.closest('#blkTable td'))document.querySelectorAll('#blkTable .ac-panel.open').forEach(p=>p.classList.remove('open'));});
+function blkCountUpd(){const n=document.querySelectorAll('#blkTable tbody tr').length;$('#blkCount').textContent=n?(n+' γραμμές'):'';}
+// Collect the interactive rows into bulk items using the common type/series/pay/lang
+function blkCollectRows(announce){
+  const type=$('#blkType').value,series=$('#blkSeries').value,pay=$('#blkPay').value,lang=$('#blkLang').value;
   if(!type){toast('Επίλεξε τύπο παραστατικού','err');return null;}
   if(!series){toast('Επίλεξε σειρά','err');return null;}
-  const raw=$('#blkCsv').value.split(/\r?\n/);const items=[];const errs=[];
-  raw.forEach((ln,i)=>{const s=ln.trim();if(!s||s.startsWith('#'))return;
-    const p=s.split(/[;,\t]/).map(x=>x.trim());
-    if(p.length<4){errs.push(`Γραμμή ${i+1}: χρειάζονται 4 πεδία (ΑΦΜ, κωδικός, ποσότητα, τιμή)`);return;}
-    const [afm,code,qty,price]=p;
-    if(!/^\d{9}$/.test(afm)){errs.push(`Γραμμή ${i+1}: μη έγκυρο ΑΦΜ «${afm}»`);return;}
-    const q=parseFloat(qty.replace(',','.'))||0, pr=parseFloat(price.replace(',','.'))||0;
-    if(!code){errs.push(`Γραμμή ${i+1}: λείπει ο κωδικός είδους`);return;}
+  const items=[],errs=[];
+  document.querySelectorAll('#blkTable tbody tr').forEach((tr,i)=>{
+    const vat=(tr.querySelector('.blk-cust').dataset.vat||'').trim();
+    const code=(tr.querySelector('.blk-code').dataset.code||'').trim();
+    const q=parseFloat((tr.querySelector('.blk-qty').value||'').replace(',','.'))||0;
+    const pr=elNum(tr.querySelector('.blk-price').value);
+    if(!vat&&!code&&!q)return; // skip empty row
+    if(!/^\d{9}$/.test(vat)){errs.push(`Γραμμή ${i+1}: επίλεξε πελάτη`);return;}
+    if(!code){errs.push(`Γραμμή ${i+1}: επίλεξε είδος`);return;}
     if(q<=0){errs.push(`Γραμμή ${i+1}: μη έγκυρη ποσότητα`);return;}
-    items.push({afm,type,series,payment:pay,issue_lang:lang,lines:[{code,qty:q,price:pr}]});
+    items.push({afm:vat,type,series,payment:pay,issue_lang:lang,lines:[{code,qty:q,price:pr}]});
   });
-  if(announce){
-    let html=`<div class="card"><span class="pill ${errs.length?'warn':'ok'}">${items.length} έγκυρες γραμμές</span>`;
-    if(errs.length)html+=`<div style="margin-top:8px;color:#c0392b">${errs.map(esc).join('<br>')}</div>`;
-    html+='</div>';$('#blkResult').innerHTML=html;
-  }
+  if(announce){let html=`<div class="card"><span class="pill ${errs.length?'warn':'ok'}">${items.length} έγκυρα</span>`;
+    if(errs.length)html+=`<div style="margin-top:8px;color:#c0392b">${errs.map(esc).join('<br>')}</div>`;html+='</div>';$('#blkResult').innerHTML=html;}
   return {items,errs};
 }
+// Advanced: import the CSV textarea into interactive rows
+function blkImportCsv(){const raw=($('#blkCsv').value||'').split(/\r?\n/);let added=0;
+  raw.forEach(ln=>{const s=ln.trim();if(!s||s.startsWith('#'))return;const p=s.split(/[;,\t]/).map(x=>x.trim());if(p.length<4)return;
+    const [afm,code,qty,price]=p;const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===afm);
+    blkAddRow(afm,c?c.name:'',code,parseFloat((qty||'').replace(',','.'))||1,price?elFmt(parseFloat(price.replace(',','.'))||0,4):'');added++;});
+  if(added){toast(added+' γραμμές προστέθηκαν','ok');$('#blkCsv').value='';}else toast('Καμία έγκυρη γραμμή στο κείμενο','err');}
 async function bulkRun(live){
-  const parsed=bulkParse(false);if(!parsed)return;
+  const parsed=blkCollectRows(false);if(!parsed)return;
   const {items,errs}=parsed;
-  if(!items.length){toast('Καμία έγκυρη γραμμή'+(errs.length?' — δες Έλεγχος':''),'err');bulkParse(true);return;}
-  if(errs.length&&!confirm(`${errs.length} γραμμές έχουν σφάλμα και θα παραλειφθούν. Συνέχεια με ${items.length};`)){bulkParse(true);return;}
+  if(!items.length){toast('Καμία έγκυρη γραμμή'+(errs.length?' — δες μηνύματα':''),'err');blkCollectRows(true);return;}
+  if(errs.length&&!confirm(`${errs.length} γραμμές έχουν σφάλμα και θα παραλειφθούν. Συνέχεια με ${items.length};`)){blkCollectRows(true);return;}
   if(live&&!confirm(`ΟΡΙΣΤΙΚΗ μαζική έκδοση ${items.length} παραστατικών στην ΑΑΔΕ — καθένα θα λάβει ΜΑΡΚ και ΔΕΝ αναιρείται. Συνέχεια;`))return;
   $('#blkResult').innerHTML='<span class="spin"></span> '+(live?'Μαζική έκδοση…':'Δημιουργία προχείρων…')+' ('+items.length+')';
   try{

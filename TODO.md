@@ -68,7 +68,7 @@ Done & verified (real bridge, %PDF where relevant):
 
 Open (requested, next):
 - [x] Έκδοση **guided start screen** (`#issueWizard`): step 1 Τιμολόγιο/Απόδειξη vs Δελτίο (routes to the Δελτίο view); step 2 Επαγγελματίας vs Ιδιώτης → auto-picks the matching registered invoice type (τιμολ / λιανικ) and focuses ΑΦΜ (pro) or Επωνυμία (ιδιώτης). `wizSkip()` bypasses it for Πελάτες→Έκδοση (`issueFor`) and the φωνητικό (`cbDoIssue`). Shows on fresh open; «↺ Αλλαγή επιλογής» re-opens it. Voice map already routes «τραπέζ/μαζικ» too.
-- [ ] **Interactive μαζική έκδοση** (customer/product pickers instead of typing ΑΦΜ/codes).
+- [x] **Interactive μαζική έκδοση**: the Μαζική view is now a table with a customer autocomplete + product autocomplete per row (no typing ΑΦΜ/codes), «➕ Γραμμή», unit price auto-filled from the product and el-GR formatted. Common type/series/payment/lang on top. `blkAddRow`/`blkCustAc`/`blkProdAc`/`blkCollectRows` replace the old CSV parse; the CSV textarea remains under a collapsible «για προχωρημένους» that imports into rows (`blkImportCsv`).
 - [~] **Column filters + row selection** (checkboxes, select-all) + restyle ALL tables to the *timologio-downloader* look; better panels/frames in Έκδοση.
   - [x] Table restyle to the grid look: sticky headers, zebra rows (`nth-child(even)`), stronger header underline, hover — applied globally via the base `table`/`thead th` CSS (affects every view's table at once).
   - [ ] Still open: per-column filter inputs + row checkboxes + select-all header control.
