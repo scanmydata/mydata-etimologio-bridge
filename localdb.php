@@ -182,6 +182,20 @@ function accounts_for_user(int $userId): array {
     return array_map('account_row', $st->fetchAll());
 }
 
+// All linked AADE businesses (across every user) — for the master admin's business list.
+// The subkey is intentionally omitted (never surfaced to the UI list).
+function accounts_all(): array {
+    $rows = localdb()->query(
+        "SELECT a.*, u.email AS owner_email FROM aade_accounts a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id ASC"
+    )->fetchAll();
+    return array_map(function ($r) {
+        $a = account_row($r);
+        unset($a['subkey']);
+        $a['owner_email'] = $r['owner_email'] ?? '';
+        return $a;
+    }, $rows);
+}
+
 function account_get(int $id): ?array {
     $st = localdb()->prepare("SELECT * FROM aade_accounts WHERE id = :id");
     $st->execute([':id' => $id]);

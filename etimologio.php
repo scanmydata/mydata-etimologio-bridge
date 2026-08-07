@@ -2007,6 +2007,7 @@ function buildInvoiceLine(
     // Classifications: explicit override wins, else product defaults, else a sane fallback.
     // Each carries the line's *net (post-discount)* amount, as myDATA expects.
     $cls = [];
+    $clsTrusted = false;   // true = explicit override OR the product's AADE per-type classification
     if (!empty($clsOverride)) {
         foreach ($clsOverride as $cl) {
             if (empty($cl['cc']) || empty($cl['tc'])) continue;
@@ -2017,16 +2018,21 @@ function buildInvoiceLine(
                 'amount'                 => $net,
             ];
         }
+        if (!empty($cls)) $clsTrusted = true;
     }
     if (empty($cls)) {
+        // GetProduct is queried with invoiceType=$invoiceType, so $product['cl'] is the
+        // AADE-authoritative classification FOR THIS type — trust it verbatim.
         foreach (((is_array($product) ? ($product['cl'] ?? null) : null) ?? []) as $cl) {
+            if (empty($cl['cc'])) continue;
             $cls[] = [
                 'classificationKind'     => isset($cl['k']) && (int)$cl['k'] > 0 ? (int)$cl['k'] : 1,
                 'classificationCategory' => $cl['cc'],
-                'classificationType'     => $cl['tc'],
+                'classificationType'     => $cl['tc'] ?? '',
                 'amount'                 => $net,
             ];
         }
+        if (!empty($cls)) $clsTrusted = true;
     }
     if (empty($cls)) {
         $cls[] = ['classificationKind' => 1, 'classificationCategory' => 'category1_3',
@@ -2037,7 +2043,10 @@ function buildInvoiceLine(
     // A code valid for one type is rejected by the other (generic «Αδυναμία
     // προεπισκόπησης»), and a product may carry a wholesale code while being billed on
     // a retail receipt — so remap any plain sale code to the type-appropriate one.
-    if (!$isDeliveryNote) {
+    // Remap the sale code to the type-appropriate one ONLY when we guessed (no explicit /
+    // per-type classification). Never touch an authoritative classification — that would
+    // corrupt legitimately different codes (e.g. E3_561_007 «Λοιπά»).
+    if (!$isDeliveryNote && !$clsTrusted) {
         $retail = in_array($invoiceType, ['57', '58', '59', '60', '61'], true);
         $incomeCode = $isZero ? ($retail ? 'E3_561_006' : 'E3_561_002')
                               : ($retail ? 'E3_561_003' : 'E3_561_001');
@@ -2890,11 +2899,14 @@ if ($authAction !== '') {
         // ---- Master-admin only ----
         case 'admin_users': case 'admin_approve': case 'admin_set_status':
         case 'admin_reset_pw': case 'admin_add_account': case 'admin_update_account':
-        case 'admin_delete_account': case 'admin_user_accounts': case 'admin_create_user': {
+        case 'admin_delete_account': case 'admin_user_accounts': case 'admin_create_user':
+        case 'admin_accounts': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             switch ($authAction) {
                 case 'admin_users':
                     jsonResponse(['success' => true, 'users' => users_all()]);
+                case 'admin_accounts':
+                    jsonResponse(['success' => true, 'accounts' => accounts_all()]);
                 case 'admin_create_user': {
                     $r = auth_signup(trim($_POST['email'] ?? ''), (string)($_POST['password'] ?? ''), trim($_POST['business_name'] ?? ''));
                     if ($r['success']) user_update((int)$r['id'], ['status' => 'active']);   // admin-created = active
@@ -3324,6 +3336,72 @@ if (!empty($_GET['save_category_cls'] ?? $_POST['save_category_cls'] ?? '')) {
     $result = saveCategoryClassifications($ch, $catId, $catName, $clsArr);
     curl_close($ch);
     jsonResponse($result);
+}
+
+// ---- MASS / BULK ISSUANCE (μαζική έκδοση) ---------------------------------
+// `?bulk_issue=1` with `items=<JSON array>`; each item is one document:
+//   {afm,name,address,city,zip,country,branch, type, series, payment, issue_lang,
+//    notes, lines:[{code,qty,price[,disc,discType,rate,cat]}], taxes:[...]}
+// Modes: default = DRAFT (savetempinvoice, nothing submitted); `live=1` = real issue
+// (each gets a MARK). Returns a per-item result array so a partial batch is transparent.
+if (!empty($_GET['bulk_issue'] ?? $_POST['bulk_issue'] ?? '')) {
+    $itemsJson = trim($_POST['items'] ?? $_GET['items'] ?? '');
+    $items = json_decode($itemsJson, true);
+    if (!is_array($items) || empty($items)) { curl_close($ch); jsonError('Άκυρη ή κενή λίστα (items)'); }
+    if (count($items) > 200) { curl_close($ch); jsonError('Πολλά παραστατικά σε μία παρτίδα (μέγιστο 200)'); }
+    $bulkLive = !empty($_GET['live'] ?? $_POST['live'] ?? '');
+    $results = [];
+    $okCount = 0;
+    foreach (array_values($items) as $idx => $it) {
+        if (!is_array($it)) { $results[] = ['index' => $idx, 'success' => false, 'error' => 'Άκυρη γραμμή']; continue; }
+        $bAfm    = trim((string)($it['afm'] ?? ''));
+        $bType   = trim((string)($it['type'] ?? '58'));
+        $bSeries = trim((string)($it['series'] ?? ''));
+        $bPay    = (int)($it['payment'] ?? 3);
+        $bName   = trim((string)($it['name'] ?? ''));
+        $bLines  = is_array($it['lines'] ?? null) ? $it['lines'] : [];
+        $bTaxes  = is_array($it['taxes'] ?? null) ? $it['taxes'] : [];
+        $bLang   = (($it['issue_lang'] ?? 'el') === 'en') ? 'en' : 'el';
+        $bNotes  = trim((string)($it['notes'] ?? ''));
+        if (empty($bLines)) { $results[] = ['index' => $idx, 'afm' => $bAfm, 'success' => false, 'error' => 'Καμία γραμμή είδους']; continue; }
+        if ($bSeries === '') { $results[] = ['index' => $idx, 'afm' => $bAfm, 'success' => false, 'error' => 'Λείπει η σειρά']; continue; }
+        // Auto find/create the customer (GR ΑΦΜ) so the counterpart resolves.
+        if ($bAfm !== '' && preg_match('/^\d{9}$/', $bAfm)) {
+            $cust = findOrCreateCustomer($ch, $bAfm);
+            if (!$cust['success']) { $results[] = ['index' => $idx, 'afm' => $bAfm, 'success' => false, 'error' => $cust['error'] ?? 'Αποτυχία πελάτη']; continue; }
+        }
+        $r = createInvoice(
+            $ch, 0, $bType, $bPay, ($bNotes !== '' ? $bNotes : 'ΥΠ001'), '',
+            $bAfm, $bName, trim((string)($it['address'] ?? '')), trim((string)($it['city'] ?? '')),
+            trim((string)($it['zip'] ?? '')), trim((string)($it['country'] ?? 'GR')), trim((string)($it['branch'] ?? '0')),
+            0, 0.0, $bulkLive, '', $bNotes, -1.0, 0, [], $bLines, $bSeries, $bTaxes, false, $bLang
+        );
+        $row = [
+            'index'        => $idx,
+            'afm'          => $bAfm,
+            'name'         => $bName,
+            'type'         => $bType,
+            'success'      => (bool)($r['success'] ?? false),
+            'amount_total' => $r['amount_total'] ?? null,
+        ];
+        if ($r['success'] ?? false) {
+            $okCount++;
+            if ($bulkLive) { $row['mark'] = $r['mark'] ?? ''; $row['aa'] = $r['aa'] ?? ''; }
+            else { $row['temp_id'] = $r['temp_id'] ?? ''; }
+        } else {
+            $row['error'] = $r['error'] ?? 'Άγνωστο σφάλμα';
+        }
+        $results[] = $row;
+    }
+    curl_close($ch);
+    jsonResponse([
+        'success' => true,
+        'live'    => $bulkLive,
+        'total'   => count($results),
+        'ok'      => $okCount,
+        'failed'  => count($results) - $okCount,
+        'results' => $results,
+    ]);
 }
 
 // Delivery / return note (δελτίο αποστολής / επιστροφής)

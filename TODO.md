@@ -49,6 +49,33 @@
 - [ ] Add secure secret management guidance (environment variables/secret store).
 - [ ] Add health-check endpoint and smoke-test script for login/search/pdf lifecycle.
 
+## Changelog / decisions (2026-08)
+Done & verified (real bridge, %PDF where relevant):
+- [x] Real AADE preview for **credit notes** (5.1/50): root cause was empty `ccr_totalNetValueWithDisc`/`ccr_grossValue` (must be populated) + must NOT send a `paymentMethods` block. Correlated via top-level `CorrelatedInvoice`=MARK + line values mirroring the original.
+- [x] Real AADE preview for **delivery notes** (9.3/503): line `vatCategory`=8 (Άνευ ΦΠΑ), empty `paymentType`/`currency`/`ccr_*`, add per-line `movePurposeLine`, `dispatchDate` in Y-n-j, DispatchTime ≥ current Greece time; needs a 503 series + full counterpart address + loading/delivery Τ.Κ.
+- [x] **Universal preview from Πρόχειρα** (`?preview_temp=<enc_id>`): fetch the draft model via `/Invoice/TempInvoice?encTempInvoiceId=`, whitelist-reshape → postable model → %PDF. Works for ANY draft (even AADE-created). `searchTempInvoices` now returns `enc_id` per row.
+- [x] **Merged Save+Preview** + draft-ID reuse (`temp_id` param → savetempinvoice updates in place; UI keeps `__issueTempId/__dnTempId/__cxTempId`).
+- [x] **Μαζική έκδοση** (`?bulk_issue=1`, items JSON, per-item results, draft/live) + UI «Μαζική» view (CSV import).
+- [x] **Χαρακτηρισμοί ανά είδος**: trust the product's AADE per-type classification (GetProduct?invoiceType=), remap only the guessed fallback (was corrupting E3_561_007 etc.).
+- [x] **Light/Dark theme** (toggle switch bottom-left, localStorage) + tooltips (`data-tip`); flash messages moved top-right.
+- [x] **Ακύρωση**: «Αναζήτηση χρεωστικών» works with date-range only (customer optional) + counterpart column.
+- [x] **Admin**: businesses list (all AADE accounts) so ΤΟ ΒΑΨΙΜΟ shows; admin framed as manager, not a business.
+
+Open (requested, next):
+- [ ] Έκδοση **guided start screen**: Τιμολόγιο/Απόδειξη ή Δελτίο; → Επαγγελματίας ή Ιδιώτης; → route the flow (merge Έκδοση+Δελτίο). Update the voice/chat intents to match.
+- [ ] **Interactive μαζική έκδοση** (customer/product pickers instead of typing ΑΦΜ/codes).
+- [ ] **Column filters + row selection** (checkboxes, select-all) + restyle ALL tables to the *timologio-downloader* look; better panels/frames in Έκδοση.
+- [ ] **Auto-compute taxes/withholdings** (φόροι-κρατήσεις) on the issue form.
+- [ ] **Number formatting** on blur for unit-price & total-with-VAT (thousands `.`, decimals `,`).
+- [ ] **Prefill issue form** correctly from Πελάτες→Έκδοση (`issueFor`).
+- [ ] Perf: new-category-with-suggested-classification loads slowly.
+- [ ] **Bulk payment import from bank extraits** — parse per-bank statements and register payments in bulk. Sample formats provided (bank name only in the filename for setup):
+  - **Eurobank** (CSV, `;`-sep, Greek ANSI): cols = Ημ/νία συναλλαγής; Ημ/νία αξίας; Περιγραφή; Ποσό (`-1.500,00`); Υπόλοιπο; (5th blank). Data starts row 2; footer rows carry IBAN + account holder.
+  - **Optima** (`accountTransactionHistory(2)-...xlsx`).
+  - **Εθνική/National** (`ibank_print_pendingTransactions_...xlsx`).
+  - TODO: build a per-bank column mapping (date, description, amount sign, balance), match description→customer/MARK, create a ledger + bulk-payment registration flow.
+- [ ] Future: merge into `github.com/scanmydata/MyData-Invoice-Downloader` — run all locally; web = client-side; single client logs in & issues; admin-accountant notified of new movements (issue/save/payment).
+
 ## Notes
 - Manual baseline used: `manualTIMOLOGIO.pdf` / `manualTIMOLOGIO.txt`.
 - Current implementation already covers invoice search, PDF retrieval by MARK, customer list/create/delete, personal customer create (no AFM), product/category CRUD basics, series/deductions/product/category listing, and selected delete flows.

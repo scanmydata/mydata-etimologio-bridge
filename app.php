@@ -33,9 +33,44 @@ $__business = $__user['business_name'];
   :root{
     --bg:#0b1220; --panel:#131f33; --panel2:#18263d; --line:#2b3b54;
     --txt:#e6edf6; --muted:#93a4bd; --accent:#38bdf8; --accent2:#0ea5e9;
-    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --chip:#0b2942;
+    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --chip:#0b2942; --hover:#1b2c45;
     --radius:14px; --shadow:0 10px 30px rgba(0,0,0,.4); --side:230px;
   }
+  /* Light theme — activated by data-theme="light" on <html> (toggle bottom-left). */
+  :root[data-theme="light"]{
+    --bg:#f1f5fb; --panel:#ffffff; --panel2:#eef3fa; --line:#d5deea;
+    --txt:#1a2637; --muted:#5b6b84; --accent:#0284c7; --accent2:#0369a1;
+    --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --chip:#e5eefb; --hover:#e8eef7;
+    --shadow:0 10px 30px rgba(30,50,90,.12);
+  }
+  :root[data-theme="light"] body{background:var(--bg)}
+  /* Colored action buttons need readable (dark-on-tint) text in light mode */
+  :root[data-theme="light"] button.add{background:#dcfce7;border-color:#16a34a;color:#166534}
+  :root[data-theme="light"] button.add:hover{background:#bbf7d0}
+  :root[data-theme="light"] button.tax{background:#fef3c7;border-color:#d97706;color:#92400e}
+  :root[data-theme="light"] button.tax:hover{background:#fde68a}
+  :root[data-theme="light"] button.info{background:#e0f2fe;border-color:var(--accent2);color:#075985}
+  :root[data-theme="light"] button.info:hover{background:#bae6fd}
+  :root[data-theme="light"] button.danger{background:#fef2f2;border-color:var(--bad);color:#b91c1c}
+  :root[data-theme="light"] button.danger:hover{background:#fee2e2}
+  :root[data-theme="light"] button.primary{color:#fff}
+  :root[data-theme="light"] .toast{color:var(--txt)}
+  /* Theme toggle switch (fixed bottom-left, clear of content) */
+  #themeToggle{position:fixed;left:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;gap:8px;
+    background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px 5px 6px;cursor:pointer;
+    box-shadow:var(--shadow);color:var(--muted);font-size:12px;user-select:none}
+  #themeToggle:hover{border-color:var(--accent)}
+  #themeToggle .tt-switch{position:relative;width:40px;height:22px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);flex:0 0 auto}
+  #themeToggle .tt-knob{position:absolute;top:1px;left:1px;width:18px;height:18px;border-radius:50%;background:var(--accent);
+    display:flex;align-items:center;justify-content:center;font-size:11px;transition:transform .2s,background .2s}
+  :root[data-theme="light"] #themeToggle .tt-knob{transform:translateX(18px)}
+  /* Lightweight CSS tooltips for elements carrying data-tip */
+  [data-tip]{position:relative}
+  [data-tip]:hover::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);
+    background:#0f1b2e;color:#e6edf6;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12px;
+    white-space:nowrap;z-index:80;box-shadow:0 6px 20px rgba(0,0,0,.35);pointer-events:none}
+  [data-tip]:hover::before{content:'';position:absolute;left:50%;bottom:calc(100% + 2px);transform:translateX(-50%);
+    border:6px solid transparent;border-top-color:#0f1b2e;z-index:80;pointer-events:none}
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;font-family:system-ui,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
@@ -90,7 +125,7 @@ $__business = $__user['business_name'];
   th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
   table.sortable thead th{cursor:pointer;user-select:none;white-space:nowrap}
   table.sortable thead th:hover{color:var(--accent)}
-  tbody tr:hover{background:#1b2c45}
+  tbody tr:hover{background:var(--hover)}
   tr.clickable{cursor:pointer}
   .num{text-align:right;font-variant-numeric:tabular-nums}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:4px 0}
@@ -114,7 +149,7 @@ $__business = $__user['business_name'];
   .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
   @keyframes sp{to{transform:rotate(360deg)}}
   /* Toast */
-  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(10px);transition:.25s}
+  .toast{position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
   .toast.show{opacity:1;transform:none}
   .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--bad)}
   /* Dialog */
@@ -149,6 +184,7 @@ $__business = $__user['business_name'];
     <div class="brand">e-Timologio <span>Pro</span></div>
     <nav class="menu" id="menu">
       <div class="nav-item active" data-view="issue"><span class="ic">🧾</span> Έκδοση</div>
+      <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική</div>
       <div class="nav-item" data-view="customers"><span class="ic">👥</span> Πελάτες</div>
       <div class="nav-item" data-view="card"><span class="ic">📇</span> Καρτέλα</div>
       <div class="nav-item" data-view="delivery"><span class="ic">🚚</span> Δελτίο</div>
@@ -422,9 +458,10 @@ $__business = $__user['business_name'];
           <input id="cxVat" type="hidden">
           <div class="field"><label>Από</label><input id="cxFrom" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
           <div class="field"><label>Έως</label><input id="cxTo" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
-          <button class="primary" onclick="cxLoadInvoices()">Φόρτωση χρεωστικών</button>
+          <button class="primary" onclick="cxLoadInvoices()" data-tip="Αναζήτηση εκδοθέντων χρεωστικών — με πελάτη ή μόνο με το διάστημα Από–Έως">🔍 Αναζήτηση χρεωστικών</button>
         </div>
-        <table id="cxTable"><thead><tr><th>Ημ/νία</th><th>Τύπος</th><th>Σειρά/ΑΑ</th><th class="num">Καθαρή</th><th class="num">Σύνολο</th><th>ΜΑΡΚ</th><th></th></tr></thead><tbody></tbody></table>
+        <p class="hint">Άφησε τον πελάτη κενό για να ψάξεις <b>μόνο με το διάστημα Από–Έως</b>.</p>
+        <table id="cxTable"><thead><tr><th>Ημ/νία</th><th>Τύπος</th><th>Σειρά/ΑΑ</th><th>Πελάτης (ΑΦΜ)</th><th class="num">Καθαρή</th><th class="num">Σύνολο</th><th>ΜΑΡΚ</th><th></th></tr></thead><tbody></tbody></table>
         <div id="cxSel" style="margin-top:12px"></div>
       </div>
     </section>
@@ -442,6 +479,34 @@ $__business = $__user['business_name'];
           <div class="hint" id="dfCount"></div>
         </div>
         <table id="draftsTable"><thead><tr><th>Ημ/νία</th><th>Τύπος</th><th>Σειρά</th><th>Πελάτης</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- BULK / MASS ISSUANCE -->
+    <section class="view" id="view-bulk">
+      <h2 class="title">Μαζική Έκδοση</h2>
+      <p class="sub">Έκδοση πολλών παραστατικών μαζί. Κοινός τύπος/σειρά/πληρωμή· μία γραμμή ανά παραστατικό.</p>
+      <div class="panel">
+        <div class="row">
+          <div class="field"><label>Τύπος παραστατικού</label><select id="blkType" onchange="blkFillSeries()"><option>…</option></select></div>
+          <div class="field"><label>Σειρά</label><select id="blkSeries"></select></div>
+          <div class="field"><label>Τρόπος πληρωμής</label><select id="blkPay">
+            <option value="5">Επί πιστώσει</option><option value="3">Μετρητά</option>
+            <option value="1">Τραπεζικός λογ/σμός</option><option value="7">POS / e-POS</option><option value="6">Web Banking</option></select></div>
+          <div class="field"><label>Γλώσσα</label><select id="blkLang"><option value="el">Ελληνικά</option><option value="en">Αγγλικά</option></select></div>
+        </div>
+        <div class="field grow">
+          <label>Γραμμές (μία ανά παραστατικό) — <b>ΑΦΜ · κωδικός είδους · ποσότητα · τιμή μονάδας</b> (χωρισμένα με «,» ή «;»)</label>
+          <textarea id="blkCsv" rows="8" placeholder="800702104, 1, 1, 100&#10;800702104, 3, 2, 50&#10;# γραμμές με # αγνοούνται" style="width:100%;font-family:monospace"></textarea>
+          <p class="hint">Παράδειγμα: <code>800702104, 1, 1, 100</code> → ΑΦΜ 800702104, είδος «1», ποσότητα 1, τιμή 100€. Ο τύπος/σειρά/πληρωμή είναι οι κοινοί από πάνω.</p>
+        </div>
+        <div class="row" style="align-items:center">
+          <button class="info" onclick="bulkParse(true)">🔍 Έλεγχος γραμμών</button>
+          <button class="add" onclick="bulkRun(false)" title="Δημιουργία προχείρων για όλες τις γραμμές — χωρίς υποβολή/ΜΑΡΚ">💾 Δημιουργία προχείρων (όλα)</button>
+          <div class="grow"></div>
+          <button class="danger" onclick="bulkRun(true)" title="ΟΡΙΣΤΙΚΗ μαζική έκδοση στην ΑΑΔΕ — κάθε παραστατικό παίρνει ΜΑΡΚ">📤 Οριστική έκδοση όλων (ΜΑΡΚ)</button>
+        </div>
+        <div id="blkResult" style="margin-top:14px"></div>
       </div>
     </section>
 
@@ -478,6 +543,14 @@ $__business = $__user['business_name'];
           </div>
         </div>
         <table id="adminUsers"><thead><tr><th>Επωνυμία</th><th>Email</th><th>Ρόλος</th><th>Κατάσταση</th><th>Λογ. AADE</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <div class="row" style="justify-content:space-between">
+          <strong>Επιχειρήσεις (λογαριασμοί AADE)</strong>
+          <span class="hint" id="adminBizCount"></span>
+        </div>
+        <p class="sub">Όλες οι συνδεδεμένες επιχειρήσεις. Ο διαχειριστής δεν είναι επιχείρηση — απλώς τις διαχειρίζεται.</p>
+        <table id="adminBiz"><thead><tr><th>Επωνυμία</th><th>ΑΦΜ</th><th>Χρήστης (κάτοχος)</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </section>
     <?php endif; ?>
@@ -684,6 +757,10 @@ $__business = $__user['business_name'];
   </div>
 </div>
 
+<div id="themeToggle" onclick="toggleTheme()" data-tip="Εναλλαγή φωτεινού / σκοτεινού θέματος">
+  <span class="tt-switch"><span class="tt-knob" id="themeIco">🌙</span></span><span id="themeLbl">Σκούρο</span>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <script>
@@ -697,6 +774,12 @@ const q1=s=>String(s??'').replace(/'/g,"\\'");
 const PAYMETHODS={3:'Μετρητά',1:'Τραπεζική μεταφορά',4:'Επιταγή'};
 function payMethod(m){return PAYMETHODS[parseInt(m,10)]||'';}
 function toast(m,t=''){const e=$('#toast');e.className='toast show '+t;e.textContent=m;clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',3400);}
+// --- Theme (light / dark) -----------------------------------------------------
+function applyTheme(t){const light=t==='light';document.documentElement.setAttribute('data-theme',light?'light':'dark');
+  const ico=$('#themeIco'),lbl=$('#themeLbl');if(ico)ico.textContent=light?'☀️':'🌙';if(lbl)lbl.textContent=light?'Φωτεινό':'Σκούρο';}
+function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='light'?'light':'dark';
+  const next=cur==='light'?'dark':'light';localStorage.setItem('etim_theme',next);applyTheme(next);}
+applyTheme(localStorage.getItem('etim_theme')||'dark');
 
 async function api(params){const q=new URLSearchParams(params);if(ACCOUNT)q.set('account',ACCOUNT);
   const r=await fetch(API+'?'+q.toString());const txt=await r.text();
@@ -713,6 +796,7 @@ function showView(v){
   if(v==='delivery'){if(!$('#dnDate').value)dset('dnDate',new Date().toISOString().slice(0,10));if(!$('#dnLines tbody').children.length)addDnLine();dnInit();}
   if(v==='issue'){if(!$('#iLines tbody').children.length)addLine();loadIssueTypes();renderTaxes();loadTaxCats();}
   if(v==='drafts')loadDrafts();
+  if(v==='bulk')loadBulkView();
   if(v==='series')loadSeriesView();
   if(v==='settings')loadSettings();
   if(v==='admin')loadAdmin();
@@ -742,7 +826,15 @@ async function loadSettings(){try{const d=await api({accounts:1});
   $('#settAccts tbody').innerHTML=(d.accounts||[]).map(a=>`<tr><td>${esc(a.vat)}</td><td>${esc(a.label)}</td><td class="muted">•••</td></tr>`).join('')||'<tr><td colspan="3" class="muted">Δεν έχει συνδεθεί λογαριασμός AADE.</td></tr>';
 }catch(e){}}
 async function apost(params){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(params)});return r.json();}
-async function loadAdmin(){try{const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);}catch(e){toast('Διαχείριση: '+e.message,'err');}}
+async function loadAdmin(){try{const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);
+    const a=await apost({auth:'admin_accounts'});renderBiz(a.accounts||[]);
+  }catch(e){toast('Διαχείριση: '+e.message,'err');}}
+function renderBiz(accs){const el=$('#adminBiz');if(!el)return;
+  $('#adminBizCount').textContent=accs.length+' επιχειρήσεις';
+  el.querySelector('tbody').innerHTML=accs.map(a=>`<tr>
+    <td><b>${esc(a.label||'—')}</b></td><td>${esc(a.vat||'')}</td><td>${esc(a.owner_email||'—')}</td>
+    <td class="right"><button class="ghost sm" onclick="openAcctModal(${a.user_id},'${q1(a.label||a.vat)}')" data-tip="Επεξεργασία διαπιστευτηρίων AADE">Διαχείριση</button></td></tr>`).join('')
+    ||'<tr><td colspan="4" class="muted">Καμία συνδεδεμένη επιχείρηση. Πάτησε «+ Νέα επιχείρηση».</td></tr>';}
 function renderAdmin(users){$('#adminUsers tbody').innerHTML=users.map(u=>{
   const st=u.status==='active'?'<span class="pill ok">ενεργός</span>':u.status==='pending'?'<span class="pill warn">εκκρεμεί</span>':'<span class="pill bad">ανενεργός</span>';
   const isMaster=u.role==='master';
@@ -1064,6 +1156,63 @@ async function seriesChange(){const sel=$('#iSeries');if(sel.value!=='__new')ret
     if(d.success===false)throw new Error(d.error||'σφάλμα');
     toast('Η σειρά δημιουργήθηκε','ok');await loadIssueTypes();$('#iType').value=t;fillSeries();$('#iSeries').value=code.trim();
   }catch(e){toast('Σειρά: '+e.message,'err');fillSeries();}}
+
+// --- Μαζική έκδοση (bulk) ------------------------------------------------------
+async function loadBulkView(){await loadInvTypes();
+  try{if(!SERIES||!SERIES.length){const d=await api({list_series:1});SERIES=d.series||[];}
+    const seen=new Set(),opts=[];
+    SERIES.forEach(s=>{const v=String(s.invoice_type_code||'').trim();if(v&&!seen.has(v)){seen.add(v);opts.push({v,label:invLabelByValue(v)!==v?invLabelByValue(v):(s.invoice_type||v)});}});
+    const sel=$('#blkType');
+    sel.innerHTML=opts.length?opts.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join(''):'<option value="">— καμία ενεργή σειρά —</option>';
+    blkFillSeries();
+  }catch(e){}}
+function blkFillSeries(){const t=$('#blkType').value;const sel=$('#blkSeries');
+  const list=(SERIES||[]).filter(s=>String(s.invoice_type_code||'')===t);
+  sel.innerHTML=list.length?list.map(s=>`<option value="${esc(s.series_code)}">${esc(s.series_code)}${s.description?(' — '+esc(s.description)):''}</option>`).join(''):'<option value="">—</option>';}
+// Parse the CSV textarea → array of bulk items using the common type/series/payment.
+function bulkParse(announce){
+  const type=$('#blkType').value, series=$('#blkSeries').value, pay=$('#blkPay').value, lang=$('#blkLang').value;
+  if(!type){toast('Επίλεξε τύπο παραστατικού','err');return null;}
+  if(!series){toast('Επίλεξε σειρά','err');return null;}
+  const raw=$('#blkCsv').value.split(/\r?\n/);const items=[];const errs=[];
+  raw.forEach((ln,i)=>{const s=ln.trim();if(!s||s.startsWith('#'))return;
+    const p=s.split(/[;,\t]/).map(x=>x.trim());
+    if(p.length<4){errs.push(`Γραμμή ${i+1}: χρειάζονται 4 πεδία (ΑΦΜ, κωδικός, ποσότητα, τιμή)`);return;}
+    const [afm,code,qty,price]=p;
+    if(!/^\d{9}$/.test(afm)){errs.push(`Γραμμή ${i+1}: μη έγκυρο ΑΦΜ «${afm}»`);return;}
+    const q=parseFloat(qty.replace(',','.'))||0, pr=parseFloat(price.replace(',','.'))||0;
+    if(!code){errs.push(`Γραμμή ${i+1}: λείπει ο κωδικός είδους`);return;}
+    if(q<=0){errs.push(`Γραμμή ${i+1}: μη έγκυρη ποσότητα`);return;}
+    items.push({afm,type,series,payment:pay,issue_lang:lang,lines:[{code,qty:q,price:pr}]});
+  });
+  if(announce){
+    let html=`<div class="card"><span class="pill ${errs.length?'warn':'ok'}">${items.length} έγκυρες γραμμές</span>`;
+    if(errs.length)html+=`<div style="margin-top:8px;color:#c0392b">${errs.map(esc).join('<br>')}</div>`;
+    html+='</div>';$('#blkResult').innerHTML=html;
+  }
+  return {items,errs};
+}
+async function bulkRun(live){
+  const parsed=bulkParse(false);if(!parsed)return;
+  const {items,errs}=parsed;
+  if(!items.length){toast('Καμία έγκυρη γραμμή'+(errs.length?' — δες Έλεγχος':''),'err');bulkParse(true);return;}
+  if(errs.length&&!confirm(`${errs.length} γραμμές έχουν σφάλμα και θα παραλειφθούν. Συνέχεια με ${items.length};`)){bulkParse(true);return;}
+  if(live&&!confirm(`ΟΡΙΣΤΙΚΗ μαζική έκδοση ${items.length} παραστατικών στην ΑΑΔΕ — καθένα θα λάβει ΜΑΡΚ και ΔΕΝ αναιρείται. Συνέχεια;`))return;
+  $('#blkResult').innerHTML='<span class="spin"></span> '+(live?'Μαζική έκδοση…':'Δημιουργία προχείρων…')+' ('+items.length+')';
+  try{
+    // POST — the items payload can be large (GET would truncate).
+    const body=new URLSearchParams();body.set('bulk_issue','1');body.set('items',JSON.stringify(items));if(live)body.set('live','1');if(ACCOUNT)body.set('account',ACCOUNT);
+    const resp=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body});
+    const txt=await resp.text();let d;try{d=JSON.parse(txt);}catch(e){throw new Error(txt.slice(0,200));}
+    if(!d||d.success===false){$('#blkResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc((d&&d.error)||'')+'</div>';return;}
+    const rows=(d.results||[]).map(r=>`<tr><td>${r.index+1}</td><td>${esc(r.afm||'')}</td><td>${esc(invLabelByValue(r.type)||r.type||'')}</td>
+      <td>${r.success?`<span class="pill ok">${live?'ΜΑΡΚ '+esc(r.mark||''):'Πρόχειρο'}</span>${!live&&r.temp_id?` <span class="muted">${esc(r.temp_id.slice(0,8))}</span>`:''}`:`<span class="pill bad">Σφάλμα</span> <span class="muted">${esc(r.error||'')}</span>`}</td>
+      <td class="num">${r.amount_total!=null?fmt(r.amount_total)+' €':''}</td></tr>`).join('');
+    $('#blkResult').innerHTML=`<div class="card"><div class="row" style="justify-content:space-between"><b>${live?'Μαζική έκδοση':'Πρόχειρα'}</b><span><span class="pill ok">${d.ok} επιτυχή</span> ${d.failed?`<span class="pill bad">${d.failed} απέτυχαν</span>`:''}</span></div>
+      <table style="margin-top:8px"><thead><tr><th>#</th><th>ΑΦΜ</th><th>Τύπος</th><th>Αποτέλεσμα</th><th class="num">Σύνολο</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    toast(`${d.ok}/${d.total} ${live?'εκδόθηκαν':'πρόχειρα'}`,d.failed?'warn':'ok');
+  }catch(e){$('#blkResult').innerHTML='';toast('Μαζική: '+e.message,'err');}
+}
 
 // --- Σειρές: dedicated management view (list + create per type + delete) -------
 async function loadSeriesView(){
@@ -1505,18 +1654,20 @@ document.addEventListener('click',e=>{const p=$('#cxAcPanel');if(p&&!e.target.cl
 async function cxLoadInvoices(){let vat=$('#cxVat').value.trim();
   // If the user typed the name/AFM without clicking a suggestion, resolve it here.
   if(!vat){const term=($('#cxCust').value||'').trim().toLowerCase();
-    if(!ALL_CUSTOMERS.length)await loadCustomers();
-    const m=ALL_CUSTOMERS.map(custFields).find(c=>c.vat===term||c.name.toLowerCase()===term)
-      ||(/^\d{9}$/.test(term)?{vat:term}:null);
-    if(m){vat=m.vat;$('#cxVat').value=vat;}
+    if(term){if(!ALL_CUSTOMERS.length)await loadCustomers();
+      const m=ALL_CUSTOMERS.map(custFields).find(c=>c.vat===term||c.name.toLowerCase()===term)
+        ||(/^\d{9}$/.test(term)?{vat:term}:null);
+      if(m){vat=m.vat;$('#cxVat').value=vat;}
+      else toast('Ο πελάτης δεν βρέθηκε — αναζήτηση μόνο με το διάστημα','warn');
+    }
   }
-  if(!vat){toast('Διάλεξε πελάτη από τη λίστα (κάνε κλικ στο όνομα) ή γράψε 9ψήφιο ΑΦΜ','err');return;}
   cxRange();
-  $('#cxTable tbody').innerHTML='<tr><td colspan="7"><span class="spin"></span></td></tr>';$('#cxSel').innerHTML='';
-  try{const d=await api({search_invoices:1,buyer_vat:vat,issue_date_from:di('cxFrom'),issue_date_to:di('cxTo')});
+  $('#cxTable tbody').innerHTML='<tr><td colspan="8"><span class="spin"></span></td></tr>';$('#cxSel').innerHTML='';
+  try{const p={search_invoices:1,issue_date_from:di('cxFrom'),issue_date_to:di('cxTo')};if(vat)p.buyer_vat=vat;
+    const d=await api(p);
     const inv=(d.invoices||[]).filter(i=>i.mark);
     CX_INV=inv;
-    $('#cxTable tbody').innerHTML=inv.map((i,idx)=>`<tr><td>${esc(i.issue_date||'')}</td><td>${esc(i.type||'')}</td><td>${esc((i.series||'')+' '+(i.aa||''))}</td><td class="num">${esc(i.net_value||'')}</td><td class="num">${esc(i.total||'')}</td><td>${esc(i.mark)}</td><td class="right"><button class="primary sm" onclick="cxPick(${idx})">Επιλογή</button></td></tr>`).join('')||'<tr><td colspan="7" class="muted">Κανένα χρεωστικό στο διάστημα.</td></tr>';
+    $('#cxTable tbody').innerHTML=inv.map((i,idx)=>`<tr><td>${esc(i.issue_date||'')}</td><td>${esc(i.type||'')}</td><td>${esc((i.series||'')+' '+(i.aa||''))}</td><td>${esc(i.counterpart_vat||i.buyer_vat||i.counterpart||'—')}</td><td class="num">${esc(i.net_value||'')}</td><td class="num">${esc(i.total||'')}</td><td>${esc(i.mark)}</td><td class="right"><button class="primary sm" onclick="cxPick(${idx})">Επιλογή</button></td></tr>`).join('')||'<tr><td colspan="8" class="muted">Κανένα χρεωστικό στο διάστημα.</td></tr>';
   }catch(e){$('#cxTable tbody').innerHTML='';toast('Παραστατικά: '+e.message,'err');}}
 let CX_INV=[];
 function cxPick(idx){const i=CX_INV[idx];if(!i)return;const net=parseGr(i.net_value);window.__cxTempId=null;
