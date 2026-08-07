@@ -146,6 +146,16 @@ $__business = $__user['business_name'];
   .col-filter{width:100%;font-size:11px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--txt)}
   .col-filter::placeholder{color:var(--muted);opacity:.7}
   th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
+  /* Guided page tour */
+  #tourOverlay{position:fixed;inset:0;z-index:200;display:none}
+  #tourOverlay.on{display:block}
+  #tourBackdrop{position:absolute;inset:0;background:transparent}
+  #tourRing{position:absolute;border:2px solid var(--accent);border-radius:12px;box-shadow:0 0 0 9999px rgba(3,10,20,.55),0 0 22px rgba(56,189,248,.6);transition:all .25s ease;pointer-events:none}
+  #tourBox{position:absolute;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:16px 18px;z-index:201}
+  #tourBox h4{margin:0 0 6px;font-size:15px}
+  #tourBox p{margin:0 0 12px;font-size:13px;color:var(--muted);line-height:1.45}
+  #tourBox .tour-actions{display:flex;gap:8px;align-items:center}
+  #tourBox .tour-step{font-size:11px;color:var(--muted);margin-left:auto}
   .num{text-align:right;font-variant-numeric:tabular-nums}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:4px 0}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
@@ -237,6 +247,8 @@ $__business = $__user['business_name'];
       <b><?= htmlspecialchars($__business ?: $__email, ENT_QUOTES) ?></b><br>
       <span class="muted"><?= htmlspecialchars($__email, ENT_QUOTES) ?><?= $__role==='master'?' · 🛡️ admin':'' ?></span>
     </span>
+    <button class="ghost sm" onclick="startTour()" data-tip="Γρήγορη ξενάγηση στην εφαρμογή" style="margin-left:6px">🧭 Ξενάγηση</button>
+    <button class="ghost sm" onclick="downloadManual()" data-tip="Κατέβασε το εγχειρίδιο χρήσης (PDF)">📄 Εγχειρίδιο</button>
     <button class="ghost sm" onclick="logout()" title="Αποσύνδεση" style="margin-left:6px">Έξοδος</button>
   </header>
 
@@ -815,6 +827,19 @@ $__business = $__user['business_name'];
 </div></div>
 
 <div class="toast" id="toast"></div>
+
+<!-- Guided page tour -->
+<div id="tourOverlay"><div id="tourBackdrop" onclick="endTour()"></div><div id="tourRing"></div>
+  <div id="tourBox">
+    <h4 id="tourTitle"></h4><p id="tourText"></p>
+    <div class="tour-actions">
+      <button class="ghost sm" onclick="endTour()">Παράλειψη</button>
+      <button class="ghost sm" id="tourPrev" onclick="tourPrev()">← Πίσω</button>
+      <button class="primary sm" id="tourNext" onclick="tourNext()">Επόμενο →</button>
+      <span class="tour-step" id="tourStep"></span>
+    </div>
+  </div>
+</div>
 
 <!-- Voice assistant / chatbot -->
 <style>
@@ -2270,7 +2295,82 @@ $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').val
 // so we don't hammer the AADE session with parallel logins.
 async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions','drafts'];
   for(const k of kinds){try{await api({sync:k});}catch(e){}}}
-(async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();})();
+
+// --- Guided page tour ---------------------------------------------------------
+const TOUR=[
+  {sel:'[data-view="issue"]',view:'issue',title:'🧾 Έκδοση',text:'Ξεκίνα εδώ. Ένας οδηγός σε ρωτά τι θέλεις να εκδώσεις (Τιμολόγιο/Απόδειξη ή Δελτίο) και αν ο πελάτης είναι επαγγελματίας ή ιδιώτης, και προσαρμόζει τη φόρμα.'},
+  {sel:'[data-view="bulk"]',title:'📚 Μαζική έκδοση',text:'Έκδοση πολλών παραστατικών μαζί: μία γραμμή ανά παραστατικό με picker πελάτη & είδους — χωρίς πληκτρολόγηση ΑΦΜ/κωδικών.'},
+  {sel:'[data-view="customers"]',title:'👥 Πελάτες',text:'Το πελατολόγιό σου με φίλτρα ανά στήλη. Από κάθε γραμμή εκδίδεις κατευθείαν ή ανοίγεις την καρτέλα.'},
+  {sel:'[data-view="card"]',title:'📇 Καρτέλα πελάτη',text:'Τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + τρέχον υπόλοιπο, με εξαγωγή σε PDF.'},
+  {sel:'[data-view="bankimp"]',title:'🏦 Εισαγωγή πληρωμών',text:'Ανέβασε extrait τράπεζας (CSV/XLSX). Η εφαρμογή αντιστοιχίζει κάθε κατάθεση σε πελάτη και καταχωρεί μαζικά τις εισπράξεις.'},
+  {sel:'[data-view="series"]',title:'🔢 Σειρές',text:'Κάθε τύπος παραστατικού χρειάζεται μία σειρά για να εκδοθεί. Δημιούργησέ τες με το πράσινο κουμπί «➕ Νέα σειρά».'},
+  {sel:'[data-view="drafts"]',title:'📝 Πρόχειρα',text:'Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ): προεπισκόπηση PDF και μαζική διαγραφή με τα checkboxes.'},
+  {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα Ctrl+K οποιαδήποτε στιγμή για να βρεις πελάτη αστραπιαία.'},
+  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Κάτω αριστερά αλλάζεις φωτεινό/σκοτεινό θέμα και ενεργοποιείς/απενεργοποιείς τις επεξηγήσεις (tooltips).'}
+];
+let tourI=0;
+function startTour(){tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
+function endTour(){$('#tourOverlay').classList.remove('on');}
+function tourPrev(){if(tourI>0)tourShow(tourI-1);}
+function tourNext(){if(tourI<TOUR.length-1)tourShow(tourI+1);else endTour();}
+function tourShow(i){tourI=i;const s=TOUR[i];if(s.view)showView(s.view);
+  $('#tourTitle').textContent=s.title;$('#tourText').textContent=s.text;$('#tourStep').textContent=(i+1)+' / '+TOUR.length;
+  $('#tourPrev').style.visibility=i===0?'hidden':'visible';$('#tourNext').textContent=i===TOUR.length-1?'Τέλος':'Επόμενο →';
+  const el=document.querySelector(s.sel),ring=$('#tourRing'),box=$('#tourBox');
+  setTimeout(()=>{
+    if(!el){ring.style.display='none';box.style.left='50%';box.style.top='40%';box.style.transform='translate(-50%,-50%)';return;}
+    el.scrollIntoView({block:'center',behavior:'smooth'});
+    const r=el.getBoundingClientRect();
+    ring.style.display='block';ring.style.left=(r.left-6)+'px';ring.style.top=(r.top-6)+'px';ring.style.width=(r.width+12)+'px';ring.style.height=(r.height+12)+'px';
+    box.style.transform='none';let bx=r.right+16,by=r.top;
+    if(bx+340>window.innerWidth){bx=Math.max(14,r.left);by=r.bottom+14;}
+    if(by+190>window.innerHeight)by=Math.max(14,window.innerHeight-200);
+    box.style.left=Math.max(14,bx)+'px';box.style.top=by+'px';
+  },s.view?60:0);
+}
+
+// --- User manual (PDF) --------------------------------------------------------
+const MANUAL=[
+  ['e-Timologio Pro — Εγχειρίδιο χρήσης','h1'],
+  ['Εφαρμογή έκδοσης παραστατικών & διαχείρισης πελατών πάνω από το e-timologio της ΑΑΔΕ. Παρακάτω τα βασικά βήματα και οι λειτουργίες.','p'],
+  ['1. Έκδοση παραστατικού','h2'],
+  ['Στην «Έκδοση» ο οδηγός σε ρωτά: Τιμολόγιο/Απόδειξη ή Δελτίο; και μετά αν ο πελάτης είναι επαγγελματίας ή ιδιώτης, επιλέγοντας αυτόματα τον σωστό τύπο. Συμπλήρωσε ΑΦΜ (αυτόματη άντληση στοιχείων), πρόσθεσε γραμμές ειδών, φόρους/κρατήσεις (υπολογίζονται αυτόματα από το ποσοστό) και πάτα «Αποθήκευση & Προεπισκόπηση» για το PDF της ΑΑΔΕ. Η «Οριστική Έκδοση» υποβάλλει και δίνει ΜΑΡΚ.','p'],
+  ['2. Μαζική έκδοση','h2'],
+  ['Πολλά παραστατικά μαζί: μία γραμμή ανά παραστατικό με επιλογή πελάτη & είδους. Κοινός τύπος/σειρά/πληρωμή από πάνω. «Δημιουργία προχείρων» για δοκιμή, «Οριστική έκδοση όλων» για υποβολή.','p'],
+  ['3. Πελάτες & Καρτέλα','h2'],
+  ['Στους «Πελάτες» αναζητάς και φιλτράρεις ανά στήλη. Η «Καρτέλα» δείχνει τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + υπόλοιπο, με εξαγωγή PDF.','p'],
+  ['4. Εισαγωγή πληρωμών (extrait)','h2'],
+  ['Ανέβασε αρχείο κινήσεων τράπεζας (CSV/XLSX). Η εφαρμογή αναγνωρίζει ημερομηνία/περιγραφή/ποσό, αντιστοιχίζει κάθε κατάθεση σε πελάτη (με ΑΦΜ ή επωνυμία) και καταχωρεί μαζικά τις εισπράξεις. Το ποσό κατάθεσης καταχωρείται όπως είναι — δεν «κλείνει» υποχρεωτικά υπόλοιπο.','p'],
+  ['5. Σειρές','h2'],
+  ['Κάθε τύπος παραστατικού χρειάζεται τουλάχιστον μία σειρά. Δημιούργησέ τες από το κουμπί «➕ Νέα σειρά».','p'],
+  ['6. Πρόχειρα','h2'],
+  ['Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ). Προεπισκόπηση του πραγματικού PDF της ΑΑΔΕ και μαζική διαγραφή με τα checkboxes.','p'],
+  ['7. Χρήσιμα','h2'],
+  ['• Ctrl+K: γρήγορη αναζήτηση πελάτη.  • Κάτω αριστερά: φωτεινό/σκοτεινό θέμα και επεξηγήσεις (tooltips).  • Τα δεδομένα (πληρωμές, ρυθμίσεις) αποθηκεύονται τοπικά & κρυπτογραφημένα.','p']
+];
+async function downloadManual(){
+  if(!window.jspdf){toast('Η βιβλιοθήκη PDF δεν φόρτωσε','err');return;}
+  toast('Δημιουργία εγχειριδίου…','ok');
+  try{await ensureFont();
+    const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'pt',format:'a4'});
+    doc.addFileToVFS('DejaVuSans.ttf',FONT_B64);doc.addFont('DejaVuSans.ttf','DejaVu','normal');doc.setFont('DejaVu');
+    const W=doc.internal.pageSize.getWidth(),H=doc.internal.pageSize.getHeight();const AC=[14,165,233],DK=[35,45,60],MUT=[90,100,120];const L=48,R=W-48;
+    doc.setFillColor(...AC);doc.rect(0,0,W,6,'F');
+    let y=64;
+    const nl=(h)=>{if(y+h>H-48){doc.addPage();doc.setFillColor(...AC);doc.rect(0,0,W,6,'F');y=64;}};
+    for(const [txt,kind] of MANUAL){
+      if(kind==='h1'){nl(30);doc.setTextColor(...DK);doc.setFontSize(20);doc.text(txt,L,y);y+=30;}
+      else if(kind==='h2'){nl(26);doc.setTextColor(...AC);doc.setFontSize(14);doc.text(txt,L,y);y+=20;}
+      else{doc.setTextColor(...MUT);doc.setFontSize(11);const lines=doc.splitTextToSize(txt,R-L);for(const ln of lines){nl(16);doc.text(ln,L,y);y+=16;}y+=8;}
+    }
+    doc.setTextColor(...MUT);doc.setFontSize(8);doc.text('e-Timologio Pro · '+new Date().toLocaleDateString('el-GR'),L,H-24);
+    doc.save('e-timologio-egheiridio.pdf');
+  }catch(e){toast('Εγχειρίδιο: '+e.message,'err');}
+}
+(async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+  // First-time visitors: gently offer the tour once.
+  if(!localStorage.getItem('etim_tour_done'))setTimeout(()=>{try{if(confirm('Καλωσήρθες! Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;'))startTour();else localStorage.setItem('etim_tour_done','1');}catch(e){}},900);
+})();
 </script>
 </body>
 </html>
