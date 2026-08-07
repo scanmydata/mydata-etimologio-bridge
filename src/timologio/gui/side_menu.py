@@ -115,6 +115,12 @@ class SideMenu(QWidget):
                   "Προσθήκη πελάτη — χειροκίνητα ή από Excel")
         layout.addSpacing(6)
 
+        # --- Εναλλαγή εφαρμογής: Downloader ↔ e-Τιμολόγιο Pro (ανά πάσα στιγμή)
+        layout.addWidget(self._separator("ΕΦΑΡΜΟΓΕΣ"))
+        self._add(layout, "etimologio", "e-Τιμολόγιο Pro",
+                  "Έκδοση παραστατικών ΑΑΔΕ (e-τιμολόγιο) — έκδοση, πελάτες, καρτέλες")
+        layout.addSpacing(6)
+
         # --- η καθημερινή ροή
         self._pages = ("clients", "sync", "documents")
         for name, text, tip in [

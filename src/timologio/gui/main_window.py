@@ -113,7 +113,7 @@ _COL_LAST = 9
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
 
 #: Η σειρά τους είναι η σειρά τους στο QStackedWidget.
-_PAGES = ("clients", "sync", "documents", "control")
+_PAGES = ("clients", "sync", "documents", "control", "etimologio")
 
 #: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
 #: εσόδων/εξόδων κόβεται στα δεξιά.
@@ -408,6 +408,14 @@ class MainWindow(QMainWindow):
         self.control.start_minimized_changed.connect(self._on_start_minimized)
         self.control.reconnect_requested.connect(self.reload_clients)
         self.stack.addWidget(self.control)
+
+        # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
+        # ξεκινά τεμπέλικα την πρώτη φορά που ανοίγει η ενότητα, ώστε να μην
+        # επιβαρύνει την εκκίνηση του Downloader.
+        from ..etimologio.shell import EtimologioShell
+
+        self.etimologio = EtimologioShell(self.settings.data_dir)
+        self.stack.addWidget(self.etimologio)
         root.addWidget(self.stack, 1)
 
         root.addWidget(self._progress_strip())
@@ -1078,6 +1086,11 @@ class MainWindow(QMainWindow):
     def _current_page(self) -> str:
         return _PAGES[self.stack.currentIndex()]
 
+    def _open_etimologio(self) -> None:
+        """Switch to e-Τιμολόγιο Pro, starting its backend on first open."""
+        self.etimologio.start()
+        self._show_page("etimologio")
+
     def _open_documents(self) -> None:
         self._open_documents_filtered("all")
 
@@ -1125,6 +1138,7 @@ class MainWindow(QMainWindow):
             "wipe": lambda: self.on_wipe(),
             "password": self.on_password,
             "control": lambda: self._show_page("control"),
+            "etimologio": self._open_etimologio,
             "tour": self.start_tour,
             "manual": self.on_manual,
             "logfile": self.on_open_log,
@@ -2437,6 +2451,9 @@ class MainWindow(QMainWindow):
             self._worker.cancel()
             self._teardown()
         log.info("── Τερματισμός εφαρμογής")
+        # Σταμάτα τον τοπικό PHP server του e-Τιμολόγιο (αν ξεκίνησε).
+        if getattr(self, "etimologio", None):
+            self.etimologio.shutdown()
         if getattr(self, "tray", None):
             self.tray.hide()
         self.conn.close()
