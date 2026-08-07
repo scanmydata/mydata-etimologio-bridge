@@ -1289,10 +1289,13 @@ function pdTypeChange(){$('#pdUnitField').style.display=$('#pdType').value==='2'
 async function suggestCatClsFromProduct(){
   const goods=$('#pdType').value==='1';
   if(!INV_TYPES.length){await loadCatCls();}
+  toast('Φόρτωση προτεινόμενων χαρακτηρισμών…','');
+  // Fetch every invoice type's options IN PARALLEL (was sequential → ~24 slow
+  // round-trips). Server-side cache makes repeats near-instant.
+  const opts=await Promise.all(INV_TYPES.map(async t=>({t,code:String(t.value||''),o:await clsOptions(String(t.value||''))})));
   const rows=[];
-  for(const t of INV_TYPES){
-    const code=String(t.value||'');const o=await clsOptions(code);const cats=o.categories||[];
-    if(!cats.length)continue;
+  for(const {t,code,o} of opts){
+    const cats=o.categories||[];if(!cats.length)continue;
     const want=goods?['category1_1','category1_2','category1_3']:['category1_3','category1_1'];
     const cat=want.map(w=>cats.find(c=>c.category===w)).find(Boolean)||cats[0];
     if(!cat)continue;

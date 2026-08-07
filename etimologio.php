@@ -3233,6 +3233,16 @@ if ($custDelivSet) {
     jsonResponse(['success' => true, 'deliv' => customer_deliv_get(COMPANY_VAT, $cv)]);
 }
 
+// cls_options is static per (invoice type, self) — serve from cache WITHOUT an
+// AADE login when available. This makes the «Νέα κατηγορία με προτεινόμενο
+// χαρακτηρισμό» flow (which asks for every invoice type) near-instant.
+if (!empty($_GET['cls_options'] ?? $_POST['cls_options'] ?? '')) {
+    $selfEarly = !empty($_GET['self'] ?? $_POST['self'] ?? '');
+    $clsKey = 'clsopt:' . $type . ':' . ($selfEarly ? '1' : '0');
+    $cHit = cache_get(COMPANY_VAT, $clsKey);
+    if ($cHit && !empty($cHit['rows'])) jsonResponse($cHit['rows']);
+}
+
 $ch = login();
 
 // Serve e-timologio's own client-side PDF scripts through the bridge so the UI can
@@ -3389,6 +3399,8 @@ if (!empty($_GET['cls_options'] ?? $_POST['cls_options'] ?? '')) {
     $selfP  = !empty($_GET['self'] ?? $_POST['self'] ?? '');
     $result = getClassificationOptions($ch, $type, $selfP);
     curl_close($ch);
+    // Cache the static result so future requests skip the AADE round-trip.
+    if (!empty($result['success'])) cache_set(COMPANY_VAT, 'clsopt:' . $type . ':' . ($selfP ? '1' : '0'), $result);
     jsonResponse($result);
 }
 
