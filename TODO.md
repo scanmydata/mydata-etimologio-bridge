@@ -67,7 +67,11 @@ Done & verified (real bridge, %PDF where relevant):
 Open (requested, next):
 - [x] Έκδοση **guided start screen** (`#issueWizard`): step 1 Τιμολόγιο/Απόδειξη vs Δελτίο (routes to the Δελτίο view); step 2 Επαγγελματίας vs Ιδιώτης → auto-picks the matching registered invoice type (τιμολ / λιανικ) and focuses ΑΦΜ (pro) or Επωνυμία (ιδιώτης). `wizSkip()` bypasses it for Πελάτες→Έκδοση (`issueFor`) and the φωνητικό (`cbDoIssue`). Shows on fresh open; «↺ Αλλαγή επιλογής» re-opens it. Voice map already routes «τραπέζ/μαζικ» too.
 - [ ] **Interactive μαζική έκδοση** (customer/product pickers instead of typing ΑΦΜ/codes).
-- [ ] **Column filters + row selection** (checkboxes, select-all) + restyle ALL tables to the *timologio-downloader* look; better panels/frames in Έκδοση.
+- [~] **Column filters + row selection** (checkboxes, select-all) + restyle ALL tables to the *timologio-downloader* look; better panels/frames in Έκδοση.
+  - [x] Table restyle to the grid look: sticky headers, zebra rows (`nth-child(even)`), stronger header underline, hover — applied globally via the base `table`/`thead th` CSS (affects every view's table at once).
+  - [ ] Still open: per-column filter inputs + row checkboxes + select-all header control.
+- [x] **Theme toggle overlap fixed**: the theme switch was `position:fixed` bottom-left and overlapped the «Τοπικά δεδομένα / Ctrl+K» footer. Moved both toggles into a `.side-controls` block inside the sidebar (normal flow, no overlap).
+- [x] **Tooltips on/off switch**: second sidebar toggle (`#tipsToggle`) suppresses all `[data-tip]` tooltips via a `:root.tips-off` rule; persisted in `localStorage` (`etim_tips`).
 - [ ] **Auto-compute taxes/withholdings** (φόροι-κρατήσεις) on the issue form.
 - [x] **Number formatting** on blur for unit-price & total-with-VAT (el-GR thousands `.`, decimals `,`): fields are now text+inputmode=decimal, formatted on blur (price ≤4 decimals, gross 2). `elNum()` parses el-GR OR plain (last separator = decimal) and `elFmt()` renders; every read of `.ln-price`/`.ln-gross` uses `elNum` so the invoice math is unchanged. Verified with parse/format/round-trip unit tests (all pass).
 - [ ] **Prefill issue form** correctly from Πελάτες→Έκδοση (`issueFor`).

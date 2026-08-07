@@ -56,16 +56,18 @@ $__business = $__user['business_name'];
   :root[data-theme="light"] button.primary{color:#fff}
   :root[data-theme="light"] .toast{color:var(--txt)}
   /* Theme toggle switch (fixed bottom-left, clear of content) */
-  #themeToggle{position:fixed;left:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;gap:8px;
-    background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px 5px 6px;cursor:pointer;
-    box-shadow:var(--shadow);color:var(--muted);font-size:12px;user-select:none}
-  #themeToggle:hover{border-color:var(--accent)}
-  #themeToggle .tt-switch{position:relative;width:40px;height:22px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);flex:0 0 auto}
-  #themeToggle .tt-knob{position:absolute;top:1px;left:1px;width:18px;height:18px;border-radius:50%;background:var(--accent);
+  /* Sidebar toggles (theme + tooltips) — live inside the aside, no overlap */
+  .side-controls{padding:10px 12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:9px}
+  .side-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
+  .side-toggle:hover{color:var(--txt)}
+  .side-toggle .tt-switch{position:relative;width:40px;height:22px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);flex:0 0 auto}
+  .side-toggle .tt-knob{position:absolute;top:1px;left:1px;width:18px;height:18px;border-radius:50%;background:var(--accent);
     display:flex;align-items:center;justify-content:center;font-size:11px;transition:transform .2s,background .2s}
   :root[data-theme="light"] #themeToggle .tt-knob{transform:translateX(18px)}
-  /* Lightweight CSS tooltips for elements carrying data-tip */
+  #tipsToggle.on .tt-knob{transform:translateX(18px)}
+  /* Lightweight CSS tooltips for elements carrying data-tip (suppressed when tips off) */
   [data-tip]{position:relative}
+  :root.tips-off [data-tip]:hover::after,:root.tips-off [data-tip]:hover::before{display:none!important}
   [data-tip]:hover::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);
     background:#0f1b2e;color:#e6edf6;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12px;
     white-space:nowrap;z-index:80;box-shadow:0 6px 20px rgba(0,0,0,.35);pointer-events:none}
@@ -128,12 +130,16 @@ $__business = $__user['business_name'];
   .field{display:flex;flex-direction:column;gap:4px}
   .field.grow{flex:1;min-width:160px}
   .field label{font-size:12px;color:var(--muted)}
+  /* Data grid — timologio-downloader look: sticky header, zebra rows, hover */
   table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}
   th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
-  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
-  table.sortable thead th{cursor:pointer;user-select:none;white-space:nowrap}
-  table.sortable thead th:hover{color:var(--accent)}
+  thead th{position:sticky;top:0;z-index:2;background:var(--panel);color:var(--muted);font-weight:700;
+    font-size:11px;text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid var(--line)}
+  tbody tr:nth-child(even){background:rgba(148,163,184,.05)}
   tbody tr:hover{background:var(--hover)}
+  tbody tr:last-child td{border-bottom:none}
+  table.sortable thead th{cursor:pointer;user-select:none}
+  table.sortable thead th:hover{color:var(--accent)}
   tr.clickable{cursor:pointer}
   .num{text-align:right;font-variant-numeric:tabular-nums}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:4px 0}
@@ -206,6 +212,12 @@ $__business = $__user['business_name'];
       <div class="nav-item" data-view="admin"><span class="ic">🛡️</span> Διαχείριση</div>
       <?php endif; ?>
     </nav>
+    <div class="side-controls">
+      <div class="side-toggle" id="themeToggle" onclick="toggleTheme()" data-tip="Εναλλαγή φωτεινού / σκοτεινού θέματος">
+        <span class="tt-switch"><span class="tt-knob" id="themeIco">🌙</span></span><span id="themeLbl">Σκούρο θέμα</span></div>
+      <div class="side-toggle on" id="tipsToggle" onclick="toggleTips()" data-tip="Εμφάνιση/απόκρυψη επεξηγήσεων (tooltips)">
+        <span class="tt-switch"><span class="tt-knob">💡</span></span><span id="tipsLbl">Επεξηγήσεις</span></div>
+    </div>
     <div class="side-foot">🔒 Τοπικά δεδομένα κρυπτογραφημένα<br>Πάτα <b>Ctrl+K</b> για γρήγορη αναζήτηση</div>
   </aside>
 
@@ -833,9 +845,6 @@ $__business = $__user['business_name'];
   </div>
 </div>
 
-<div id="themeToggle" onclick="toggleTheme()" data-tip="Εναλλαγή φωτεινού / σκοτεινού θέματος">
-  <span class="tt-switch"><span class="tt-knob" id="themeIco">🌙</span></span><span id="themeLbl">Σκούρο</span>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
@@ -864,10 +873,17 @@ function payMethod(m){return PAYMETHODS[parseInt(m,10)]||'';}
 function toast(m,t=''){const e=$('#toast');e.className='toast show '+t;e.textContent=m;clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',3400);}
 // --- Theme (light / dark) -----------------------------------------------------
 function applyTheme(t){const light=t==='light';document.documentElement.setAttribute('data-theme',light?'light':'dark');
-  const ico=$('#themeIco'),lbl=$('#themeLbl');if(ico)ico.textContent=light?'☀️':'🌙';if(lbl)lbl.textContent=light?'Φωτεινό':'Σκούρο';}
+  const ico=$('#themeIco'),lbl=$('#themeLbl');if(ico)ico.textContent=light?'☀️':'🌙';if(lbl)lbl.textContent=(light?'Φωτεινό':'Σκούρο')+' θέμα';}
 function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='light'?'light':'dark';
   const next=cur==='light'?'dark':'light';localStorage.setItem('etim_theme',next);applyTheme(next);}
 applyTheme(localStorage.getItem('etim_theme')||'dark');
+// --- Tooltips on/off ----------------------------------------------------------
+function applyTips(on){document.documentElement.classList.toggle('tips-off',!on);
+  const t=$('#tipsToggle');if(t)t.classList.toggle('on',on);
+  const l=$('#tipsLbl');if(l)l.textContent=on?'Επεξηγήσεις':'Χωρίς επεξηγήσεις';}
+function toggleTips(){const on=!document.documentElement.classList.contains('tips-off')?false:true;
+  localStorage.setItem('etim_tips',on?'1':'0');applyTips(on);}
+applyTips((localStorage.getItem('etim_tips')||'1')==='1');
 
 async function api(params){const q=new URLSearchParams(params);if(ACCOUNT)q.set('account',ACCOUNT);
   const r=await fetch(API+'?'+q.toString());const txt=await r.text();
