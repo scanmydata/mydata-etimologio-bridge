@@ -3295,6 +3295,20 @@ if ($syncKind !== '') {
         $r = listProducts($ch); $rows = $r['products'] ?? [];
     } elseif ($syncKind === 'invoices') {
         $r = searchInvoices($ch, $issueDateFrom, $issueDateTo, '', '', '', '', '0'); $rows = $r['invoices'] ?? [];
+    } elseif ($syncKind === 'series') {
+        $r = listSeries($ch); $rows = $r['series'] ?? [];
+    } elseif ($syncKind === 'deductions') {
+        $r = listDeductions($ch); $rows = $r['deductions'] ?? [];
+    } elseif ($syncKind === 'categories') {
+        $r = listCategoryClassifications($ch); $rows = $r['categories'] ?? [];
+    } elseif ($syncKind === 'invtypes') {
+        // invoice types with code/name split out (same shape the UI expects)
+        $rows = getClassificationInvoiceTypes($ch);
+        foreach ($rows as &$t) {
+            if (preg_match('/^\s*([\d.]+)\s*-\s*(.+)$/u', $t['label'], $m)) { $t['code'] = $m[1]; $t['name'] = trim($m[2]); }
+            else { $t['code'] = ''; $t['name'] = $t['label']; }
+        }
+        unset($t);
     } else {
         curl_close($ch); jsonError('Unknown sync kind: ' . $syncKind);
     }

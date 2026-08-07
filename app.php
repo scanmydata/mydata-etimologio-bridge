@@ -196,7 +196,6 @@ $__business = $__user['business_name'];
       <div class="nav-item" data-view="customers"><span class="ic">👥</span> Πελάτες</div>
       <div class="nav-item" data-view="card"><span class="ic">📇</span> Καρτέλα</div>
       <div class="nav-item" data-view="bankimp"><span class="ic">🏦</span> Εισαγωγή τραπέζης</div>
-      <div class="nav-item" data-view="delivery"><span class="ic">🚚</span> Δελτίο</div>
       <div class="nav-item" data-view="products"><span class="ic">📦</span> Είδη</div>
       <div class="nav-item" data-view="series"><span class="ic">🔢</span> Σειρές</div>
       <div class="nav-item" data-view="drafts"><span class="ic">📝</span> Πρόχειρα</div>
@@ -347,15 +346,9 @@ $__business = $__user['business_name'];
     <section class="view" id="view-series">
       <h2 class="title">Σειρές παραστατικών</h2><p class="sub">Δημιουργία & διαχείριση σειρών ανά τύπο παραστατικού (όπως στο e-timologio). Κάθε τύπος χρειάζεται τουλάχιστον μία σειρά για να εκδοθεί.</p>
       <div class="panel">
-        <div class="row" style="justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
-          <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
-            <div class="field"><label>Τύπος παραστατικού</label><select id="srType" style="min-width:280px"></select></div>
-            <div class="field"><label>Κωδικός σειράς</label><input id="srCode" placeholder="π.χ. ΔΑ" style="width:120px" maxlength="10"></div>
-            <div class="field"><label>Αρχικό Α/Α</label><input id="srAa" type="number" min="1" value="1" style="width:90px"></div>
-            <div class="field grow"><label>Περιγραφή (προαιρετικό)</label><input id="srDesc" placeholder="Περιγραφή"></div>
-            <button class="primary" onclick="createSeriesUI()">+ Δημιουργία σειράς</button>
-          </div>
+        <div class="row" style="justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
           <button class="ghost" onclick="loadSeriesView()">↻ Ανανέωση</button>
+          <button class="add" onclick="openSeriesModal()">➕ Νέα σειρά</button>
         </div>
         <div id="srResult" style="margin-top:10px"></div>
         <table id="srTable" style="margin-top:12px"><thead><tr><th>Τύπος παραστατικού</th><th>Σειρά</th><th>Αρχικό Α/Α</th><th>Περιγραφή</th><th></th></tr></thead><tbody></tbody></table>
@@ -677,6 +670,22 @@ $__business = $__user['business_name'];
   </div>
 </div></dialog>
 
+<!-- Series create modal -->
+<dialog id="seriesModal"><div class="modal-body" style="max-width:560px">
+  <div class="modal-head">🔢 Νέα σειρά παραστατικού</div>
+  <div class="row"><div class="field grow"><label>Τύπος παραστατικού *</label><select id="srType" style="min-width:280px"></select></div></div>
+  <div class="row" style="margin-top:8px">
+    <div class="field"><label>Κωδικός σειράς *</label><input id="srCode" placeholder="π.χ. Α, ΤΠΥ, ΔΑ" style="width:150px" maxlength="10"></div>
+    <div class="field"><label>Αρχικό Α/Α</label><input id="srAa" type="number" min="1" value="1" style="width:100px"></div>
+    <div class="field grow"><label>Περιγραφή (προαιρετικό)</label><input id="srDesc" placeholder="Περιγραφή"></div>
+  </div>
+  <div id="srModalResult" style="margin-top:10px"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end">
+    <button class="ghost" onclick="seriesModal.close()">Άκυρο</button>
+    <button class="add" onclick="createSeriesUI()">➕ Εισαγωγή σειράς</button>
+  </div>
+</div></dialog>
+
 <!-- Category classifications modal -->
 <dialog id="catClsModal"><div class="modal-body" style="max-width:820px">
   <div class="modal-head">🏷️ <span id="catClsTitle">Χαρακτηρισμοί κατηγορίας</span></div>
@@ -970,9 +979,10 @@ async function loadStats(){
 // Invoice-type catalogue (verbal labels) — loaded once, used by stats/PDF/issue.
 let INVTYPES=[],INVBYCODE={},INVBYVALUE={};
 async function loadInvTypes(){if(INVTYPES.length)return INVTYPES;
-  try{const d=await api({invoice_types:1});INVTYPES=d.invoice_types||[];
-    INVBYCODE={};INVBYVALUE={};INVTYPES.forEach(t=>{if(t.code)INVBYCODE[t.code]=t;INVBYVALUE[String(t.value)]=t;});
-  }catch(e){}return INVTYPES;}
+  const apply=rows=>{INVTYPES=rows||[];INVBYCODE={};INVBYVALUE={};INVTYPES.forEach(t=>{if(t.code)INVBYCODE[t.code]=t;INVBYVALUE[String(t.value)]=t;});};
+  try{const c=await api({cached:'invtypes'});if(c.rows&&c.rows.length)apply(c.rows);}catch(e){}    // instant from cache
+  if(!INVTYPES.length){try{const d=await api({invoice_types:1});apply(d.invoice_types||[]);}catch(e){}} // fallback live
+  return INVTYPES;}
 function invName(code){const t=INVBYCODE[code];return t?t.name:'';}          // "Τιμολόγιο Παροχής Υπηρεσιών"
 function invLabel(code){const t=INVBYCODE[code];return t?t.label:code;}      // "2.1 - Τιμολόγιο …"
 function invLabelByValue(v){const t=INVBYVALUE[String(v)];return t?t.label:String(v);}
@@ -1238,7 +1248,11 @@ async function delProduct(code){if(!confirm('Διαγραφή είδους '+cod
 
 // Category-level classifications (χαρακτηρισμοί ανά κατηγορία, myDATA §9)
 let CAT_CLS=[],INV_TYPES=[],CLS_OPTS={};
-async function loadCatCls(){try{const d=await api({category_cls:1});CAT_CLS=d.categories||[];INV_TYPES=d.invoice_types||[];renderCatCls();}catch(e){toast('Χαρακτηρισμοί: '+e.message,'err');}}
+async function loadCatCls(){
+  // cache-first: show cached categories + invoice types instantly, then refresh
+  try{const cc=await api({cached:'categories'}),ci=await api({cached:'invtypes'});
+    if(cc.rows&&cc.rows.length){CAT_CLS=cc.rows;if(ci.rows&&ci.rows.length)INV_TYPES=ci.rows;renderCatCls();}}catch(e){}
+  try{const d=await api({category_cls:1});CAT_CLS=d.categories||[];INV_TYPES=d.invoice_types||[];renderCatCls();}catch(e){if(!CAT_CLS.length)toast('Χαρακτηρισμοί: '+e.message,'err');}}
 function renderCatCls(){$('#catClsTable tbody').innerHTML=CAT_CLS.map(c=>{
   const chips=(c.classifications||[]).map(x=>`<span class="pill" title="${esc(x.invoice_type_label)} · ${esc(x.category_title)} · ${esc(x.code_title)}">${esc(x.invoice_type_label.split(' - ')[0]||x.invoice_type)} → ${esc(x.category)}/${esc(x.code)}</span>`).join(' ')||'<span class="muted">—</span>';
   return `<tr><td>${esc(c.name)}</td><td>${chips}</td><td class="right"><button class="ghost sm" onclick='editCatCls(${JSON.stringify(c.category_id)},${JSON.stringify(c.name)})'>✎ Χαρακτηρισμοί</button></td></tr>`;
@@ -1281,15 +1295,19 @@ async function saveCatCls(){const name=$('#ccName').value.trim();if(!name){$('#c
 
 // Issue — invoice types limited to the account's ACTIVE series (series is mandatory)
 let SERIES=[];
+// Rebuild the issue #iType dropdown from the current SERIES array
+function applyIssueSeries(){const seen=new Set(),opts=[];
+  SERIES.forEach(s=>{const v=String(s.invoice_type_code||'').trim();if(v&&!seen.has(v)){seen.add(v);opts.push({v,label:invLabelByValue(v)!==v?invLabelByValue(v):(s.invoice_type||v)});}});
+  const sel=$('#iType');const cur=sel.value;
+  if(opts.length){sel.innerHTML=opts.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join('');
+    if(opts.some(o=>o.v===cur))sel.value=cur;sel.title='';}
+  else sel.innerHTML='<option value="">— καμία ενεργή σειρά —</option>';
+  fillSeries();showIssueCls();}
 async function loadIssueTypes(){await loadInvTypes();
-  try{const d=await api({list_series:1});SERIES=d.series||[];const seen=new Set(),opts=[];
-    SERIES.forEach(s=>{const v=String(s.invoice_type_code||'').trim();if(v&&!seen.has(v)){seen.add(v);opts.push({v,label:invLabelByValue(v)!==v?invLabelByValue(v):(s.invoice_type||v)});}});
-    const sel=$('#iType');const cur=sel.value;
-    if(opts.length){sel.innerHTML=opts.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join('');
-      if(opts.some(o=>o.v===cur))sel.value=cur;
-      sel.title='';
-    }else{sel.innerHTML='<option value="">— καμία ενεργή σειρά —</option>';toast('Δεν υπάρχει ενεργή σειρά. Δημιούργησε σειρά για να εκδώσεις.','err');}
-    fillSeries();showIssueCls();
+  // cache-first: render instantly from cached series, then refresh in background
+  try{const c=await api({cached:'series'});if(c.rows&&c.rows.length){SERIES=c.rows;applyIssueSeries();}}catch(e){}
+  try{const d=await api({sync:'series'});SERIES=d.rows||[];applyIssueSeries();
+    if(!SERIES.length)toast('Δεν υπάρχει ενεργή σειρά. Δημιούργησε σειρά για να εκδώσεις.','err');
   }catch(e){}}
 function issueTypeChange(){fillSeries();sumTotals();}
 // Populate the Σειρά dropdown for the selected invoice type (+ "new series" option).
@@ -1412,20 +1430,28 @@ async function loadSeriesView(){
       <td>${esc(s.start_aa||'')}</td>
       <td class="muted">${esc(s.description||'')}</td>
       <td class="right"><button class="danger sm" onclick="delSeries('${q1(s.series_id||s.delete_id||'')}','${q1(s.series_code||'')}')">✕ Διαγραφή</button></td>
-    </tr>`).join('')||'<tr><td colspan="5" class="muted">Καμία σειρά. Δημιούργησε μία παραπάνω.</td></tr>';
+    </tr>`).join('')||'<tr><td colspan="5" class="muted">Καμία σειρά. Δημιούργησε μία με το κουμπί «➕ Νέα σειρά».</td></tr>';
   }catch(e){$('#srTable tbody').innerHTML='';toast('Σειρές: '+e.message,'err');}
+}
+// Open the "new series" popup (populates the type dropdown if needed)
+async function openSeriesModal(){
+  const sel=$('#srType');
+  if(!sel.options.length){try{const it=await api({invoice_types:1});const types=it.invoice_types||[];
+    sel.innerHTML=types.map(t=>`<option value="${esc(t.value||t.code)}">${esc(t.label||((t.code||'')+' - '+(t.name||'')))}</option>`).join('');}catch(e){}}
+  $('#srCode').value='';$('#srAa').value='1';$('#srDesc').value='';$('#srModalResult').innerHTML='';
+  seriesModal.showModal();
 }
 async function createSeriesUI(){
   const t=$('#srType').value;const code=$('#srCode').value.trim();
   if(!t){toast('Επίλεξε τύπο παραστατικού','err');return;}
   if(!code){toast('Δώσε κωδικό σειράς','err');return;}
-  $('#srResult').innerHTML='<span class="spin"></span> Δημιουργία…';
+  $('#srModalResult').innerHTML='<span class="spin"></span> Δημιουργία…';
   try{const d=await api({new_series:1,series_invoice_type:t,series_code:code,series_start_aa:$('#srAa').value||'1',series_description:$('#srDesc').value.trim()});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
+    seriesModal.close();toast(`Η σειρά «${code}» δημιουργήθηκε`,'ok');
     $('#srResult').innerHTML=`<div class="card"><span class="pill ok">Η σειρά «${esc(code)}» δημιουργήθηκε</span></div>`;
-    $('#srCode').value='';$('#srDesc').value='';
     SERIES=[];loadSeriesView();
-  }catch(e){$('#srResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(e.message)+'</div>';}
+  }catch(e){$('#srModalResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(e.message)+'</div>';}
 }
 async function delSeries(id,code){if(!id){toast('Λείπει το id σειράς','err');return;}
   if(!confirm('Διαγραφή σειράς '+(code||'')+';'))return;
@@ -2093,7 +2119,12 @@ async function cbDoIssue(o){cbBot('Ετοιμάζω το πρόχειρο…');
 $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').value;});
 
 // boot
-(async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');})();
+// Warm ALL e-timologio caches in the background so every view opens instantly
+// (same snapshot-cache mechanism used for πελάτες). Fire-and-forget, staggered
+// so we don't hammer the AADE session with parallel logins.
+async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions'];
+  for(const k of kinds){try{await api({sync:k});}catch(e){}}}
+(async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();})();
 </script>
 </body>
 </html>
