@@ -187,6 +187,7 @@ $__business = $__user['business_name'];
       <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική</div>
       <div class="nav-item" data-view="customers"><span class="ic">👥</span> Πελάτες</div>
       <div class="nav-item" data-view="card"><span class="ic">📇</span> Καρτέλα</div>
+      <div class="nav-item" data-view="bankimp"><span class="ic">🏦</span> Εισαγωγή τραπέζης</div>
       <div class="nav-item" data-view="delivery"><span class="ic">🚚</span> Δελτίο</div>
       <div class="nav-item" data-view="products"><span class="ic">📦</span> Είδη</div>
       <div class="nav-item" data-view="series"><span class="ic">🔢</span> Σειρές</div>
@@ -272,6 +273,40 @@ $__business = $__user['business_name'];
         <div id="cardHead" style="margin-top:12px"></div>
         <div class="cards" id="cardCards"></div>
         <table id="cardTable"><thead><tr><th>Ημ/νία</th><th>Κίνηση</th><th>Στοιχεία</th><th class="num">Χρέωση</th><th class="num">Πίστωση</th><th class="num">Υπόλοιπο</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- BANK IMPORT -->
+    <section class="view" id="view-bankimp">
+      <h2 class="title">Εισαγωγή κινήσεων τραπέζης</h2>
+      <p class="sub">Ανέβασε extrait (CSV/XLSX) — κάθε <b>κατάθεση</b> γίνεται υποψήφια πληρωμή πελάτη. Το ποσό κατάθεσης <b>δεν</b> «κλείνει» υπόλοιπο· καταχωρείται όπως είναι (μερική/υπερβάλλουσα επιτρέπονται).</p>
+      <div class="panel">
+        <div class="row">
+          <div class="field"><label>Τράπεζα</label>
+            <select id="biBank">
+              <option value="">Αυτόματα</option>
+              <option value="eurobank">Eurobank</option>
+              <option value="optima">Optima</option>
+              <option value="ethniki">Εθνική (NBG)</option>
+              <option value="generic">Άλλη (γενικό)</option>
+            </select></div>
+          <div class="field grow"><label>Αρχείο extrait (.csv / .xlsx)</label>
+            <input id="biFile" type="file" accept=".csv,.xlsx,.txt"></div>
+          <button class="primary" onclick="biPreview()">🔎 Ανάλυση</button>
+        </div>
+        <div class="hint" id="biInfo"></div>
+        <div class="row" id="biBar" style="display:none;gap:14px;align-items:center;margin-top:6px">
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="biOnlyCredit" checked onchange="biRender()"> Μόνο εισπράξεις (καταθέσεις)</label>
+          <span class="hint" id="biSel"></span>
+          <div style="flex:1"></div>
+          <button class="ghost sm" onclick="biToggleAll(true)">Επιλογή όλων</button>
+          <button class="ghost sm" onclick="biToggleAll(false)">Καμία</button>
+          <button class="primary" onclick="biImport()">💾 Καταχώρηση επιλεγμένων</button>
+        </div>
+        <table id="biTable" style="margin-top:10px"><thead><tr>
+          <th style="width:34px"><input type="checkbox" id="biAll" onchange="biToggleAll(this.checked)"></th>
+          <th>Ημ/νία</th><th>Περιγραφή</th><th class="num">Ποσό</th><th>Κίνηση</th>
+          <th style="min-width:220px">Πελάτης (αντιστοίχιση)</th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 
@@ -796,6 +831,7 @@ function showView(v){
   if(v==='delivery'){if(!$('#dnDate').value)dset('dnDate',new Date().toISOString().slice(0,10));if(!$('#dnLines tbody').children.length)addDnLine();dnInit();}
   if(v==='issue'){if(!$('#iLines tbody').children.length)addLine();loadIssueTypes();renderTaxes();loadTaxCats();}
   if(v==='drafts')loadDrafts();
+  if(v==='bankimp'){if(!ALL_CUSTOMERS.length)loadCustomers();}
   if(v==='bulk')loadBulkView();
   if(v==='series')loadSeriesView();
   if(v==='settings')loadSettings();
@@ -990,6 +1026,88 @@ function cardAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel
   panel.classList.add('open');}
 function pickCardCust(vat,name){$('#cardVat').value=vat;$('#cardCust').value=name||vat;$('#cardAcPanel').classList.remove('open');loadCard();}
 document.addEventListener('click',e=>{const p=$('#cardAcPanel');if(p&&!e.target.closest('#cardAcPanel')&&e.target!==$('#cardCust'))p.classList.remove('open');});
+
+// ---- BANK IMPORT (extrait → local payments) --------------------------------
+let BI_TX=[]; // parsed transactions (with .customer selection attached)
+// POST helper that carries the active account (needed to resolve COMPANY_VAT)
+async function apostAcc(params){const b=new URLSearchParams(params);if(ACCOUNT)b.set('account',ACCOUNT);
+  const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:b});
+  const t=await r.text();try{return JSON.parse(t);}catch(e){throw new Error(t.slice(0,200));}}
+function biStrip(s){return (s||'').toString().toUpperCase()
+  .replace(/[ΆΑ]/g,'Α').replace(/[ΈΕ]/g,'Ε').replace(/[ΉΗ]/g,'Η').replace(/[ΊΪΙ]/g,'Ι')
+  .replace(/[ΌΟ]/g,'Ο').replace(/[ΎΫΥ]/g,'Υ').replace(/[ΏΩ]/g,'Ω').replace(/[^Α-ΩA-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();}
+// Guess the best customer for a transaction from its ΑΦΜ or description text
+function biGuess(tx){const custs=ALL_CUSTOMERS.map(custFields);
+  if(tx.guess_vat){const byVat=custs.find(c=>c.vat===tx.guess_vat);if(byVat)return byVat;}
+  const desc=biStrip(tx.description);if(!desc)return null;
+  let best=null,bestScore=0;
+  for(const c of custs){const nm=biStrip(c.name);if(!nm||nm.length<4)continue;
+    // full-name substring, else count matching name-words (≥4 chars) found in desc
+    let score=0;if(desc.includes(nm))score=100+nm.length;
+    else{const w=nm.split(' ').filter(x=>x.length>=4);let hit=0;for(const x of w)if(desc.includes(x))hit++;
+      if(w.length&&hit>=Math.max(1,Math.ceil(w.length/2)))score=hit*10;}
+    if(score>bestScore){bestScore=score;best=c;}}
+  return bestScore>=10?best:null;}
+async function biPreview(){const f=$('#biFile').files[0];if(!f){toast('Επίλεξε αρχείο','err');return;}
+  if(!ALL_CUSTOMERS.length)await loadCustomers();
+  $('#biInfo').innerHTML='<span class="spin"></span> Ανάλυση αρχείου…';
+  try{const b64=await new Promise((res,rej)=>{const rd=new FileReader();
+      rd.onload=()=>res(rd.result.split(',')[1]);rd.onerror=rej;rd.readAsDataURL(f);});
+    const d=await apostAcc({bank_preview:1,filename:f.name,bank:$('#biBank').value,file_b64:b64});
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    BI_TX=(d.transactions||[]).map(tx=>{const g=biGuess(tx);return{...tx,
+      cust:g?{vat:g.vat,name:g.name,code:g.code}:null,
+      include:tx.direction==='credit',
+      pay_date:tx.date||new Date().toISOString().slice(0,10)};});
+    const cr=BI_TX.filter(t=>t.direction==='credit').length,matched=BI_TX.filter(t=>t.cust).length;
+    $('#biInfo').innerHTML=`Βρέθηκαν <b>${BI_TX.length}</b> κινήσεις · <b>${cr}</b> εισπράξεις · αυτόματη αντιστοίχιση: <b>${matched}</b>${d.bank?' · τράπεζα: '+esc(d.bank):''}`;
+    $('#biBar').style.display='flex';biRender();
+  }catch(e){$('#biInfo').textContent='Σφάλμα: '+e.message;toast('Ανάλυση: '+e.message,'err');}}
+function biRender(){const onlyCr=$('#biOnlyCredit').checked;
+  const rows=BI_TX.map((t,i)=>({t,i})).filter(o=>!onlyCr||o.t.direction==='credit');
+  $('#biTable tbody').innerHTML=rows.map(({t,i})=>{
+    const dir=t.direction==='credit'?'<span class="pill ok">Είσπραξη</span>':'<span class="pill">Πληρωμή</span>';
+    const amtCls=t.amount<0?'style="color:#f87171"':'style="color:#86efac"';
+    const cval=t.cust?esc(t.cust.name||t.cust.vat):'';
+    return `<tr>
+      <td><input type="checkbox" ${t.include?'checked':''} onchange="BI_TX[${i}].include=this.checked;biSelInfo()"></td>
+      <td>${esc(t.date)}</td>
+      <td title="${esc(t.description)}">${esc((t.description||'').slice(0,60))}</td>
+      <td class="num" ${amtCls}>${fmt(Math.abs(t.amount))}</td>
+      <td>${dir}</td>
+      <td style="position:relative"><input class="biCust" value="${cval}" placeholder="Αναζήτηση πελάτη…" autocomplete="off"
+           oninput="biAc(this,${i})" onfocus="biAc(this,${i})"><div class="ac-panel" id="biAc${i}"></div></td>
+    </tr>`;}).join('')||'<tr><td colspan="6" class="muted">Καμία κίνηση.</td></tr>';
+  biSelInfo();}
+function biAc(inp,i){const term=biStrip(inp.value);const panel=$('#biAc'+i);
+  let rows=ALL_CUSTOMERS.map(custFields);
+  if(term)rows=rows.filter(c=>biStrip(c.vat+' '+c.name+' '+c.city).includes(term));
+  rows=rows.slice(0,20);
+  if(!rows.length){panel.classList.remove('open');return;}
+  panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="biPick(${i},'${q1(c.vat)}','${q1(c.name)}','${q1(c.code)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
+  panel.classList.add('open');}
+function biPick(i,vat,name,code){BI_TX[i].cust={vat,name,code};BI_TX[i].include=true;$('#biAc'+i).classList.remove('open');biRender();}
+document.addEventListener('click',e=>{if(e.target.closest&&!e.target.closest('#biTable td'))document.querySelectorAll('#biTable .ac-panel.open').forEach(p=>p.classList.remove('open'));});
+function biToggleAll(on){const onlyCr=$('#biOnlyCredit').checked;
+  BI_TX.forEach(t=>{if(!onlyCr||t.direction==='credit')t.include=!!on;});$('#biAll').checked=!!on;biRender();}
+function biSelInfo(){const sel=BI_TX.filter(t=>t.include);const withCust=sel.filter(t=>t.cust).length;
+  const sum=sel.reduce((a,t)=>a+Math.abs(t.amount),0);
+  $('#biSel').innerHTML=`Επιλεγμένες: <b>${sel.length}</b> (με πελάτη: ${withCust}) · σύνολο <b>${fmt(sum)} €</b>`;}
+async function biImport(){const sel=BI_TX.filter(t=>t.include);
+  if(!sel.length){toast('Δεν επέλεξες κινήσεις','err');return;}
+  const noCust=sel.filter(t=>!t.cust);
+  if(noCust.length&&!confirm(`${noCust.length} κινήσεις δεν έχουν πελάτη και θα καταχωρηθούν χωρίς αντιστοίχιση. Συνέχεια;`))return;
+  const items=sel.map(t=>({customer_vat:t.cust?t.cust.vat:'',customer_name:t.cust?t.cust.name:'',customer_code:t.cust?t.cust.code:'',
+    amount:Math.abs(t.amount),pay_date:t.pay_date||t.date,method:1,
+    notes:(t.direction==='debit'?'[ΠΛΗΡΩΜΗ] ':'')+(t.description||'').slice(0,180)}));
+  $('#biInfo').innerHTML='<span class="spin"></span> Καταχώρηση…';
+  try{const d=await apostAcc({bank_import:1,items:JSON.stringify(items)});
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    toast(`Καταχωρήθηκαν ${d.ok}/${d.total} πληρωμές`,'ok');
+    $('#biInfo').innerHTML=`✅ Καταχωρήθηκαν <b>${d.ok}</b>${d.failed?` · αποτυχίες: ${d.failed}`:''}. Δες τις στην <b>Καρτέλα</b> κάθε πελάτη.`;
+    BI_TX=BI_TX.filter(t=>!t.include);biRender();if(!BI_TX.length)$('#biBar').style.display='none';
+  }catch(e){toast('Καταχώρηση: '+e.message,'err');$('#biInfo').textContent='Σφάλμα: '+e.message;}}
+
 let CARD={};
 async function loadCard(){const vat=$('#cardVat').value.trim();if(!vat){toast('Επίλεξε πελάτη','err');return;}defaultRange();
   $('#cardCards').innerHTML='<div class="card"><div class="v"><span class="spin"></span></div></div>';$('#cardTable tbody').innerHTML='';
@@ -1855,7 +1973,7 @@ function cbFindProd(s){for(const c in PRODMAP){const dsc=(PRODMAP[c].desc||'').t
 async function cbHandle(t){const s=t.toLowerCase();
   const isIssue=/έκδοσ|εκδοσ|τιμολόγ|τιμολογ|παραστατ|issue|invoice/.test(s);
   // Navigation (not when it's an issue command)
-  const nav=[['καρτέλ','card'],['καρτελ','card'],['πελάτ','customers'],['πελατ','customers'],['στατιστ','stats'],['δελτί','delivery'],['δελτι','delivery'],['σειρέ','series'],['σειρε','series'],['σειρά','series'],['σειρων','series'],['σειρών','series'],['είδη','products'],['ειδη','products'],['πρόχειρ','drafts'],['προχειρ','drafts'],['ρυθμίσ','settings'],['ρυθμισ','settings'],['ακύρωσ','cancel'],['ακυρωσ','cancel']];
+  const nav=[['καρτέλ','card'],['καρτελ','card'],['πελάτ','customers'],['πελατ','customers'],['στατιστ','stats'],['δελτί','delivery'],['δελτι','delivery'],['σειρέ','series'],['σειρε','series'],['σειρά','series'],['σειρων','series'],['σειρών','series'],['είδη','products'],['ειδη','products'],['πρόχειρ','drafts'],['προχειρ','drafts'],['ρυθμίσ','settings'],['ρυθμισ','settings'],['ακύρωσ','cancel'],['ακυρωσ','cancel'],['τραπέζ','bankimp'],['τραπεζ','bankimp'],['extrait','bankimp'],['εξτρέ','bankimp'],['μαζικ','bulk']];
   if(/πήγαινε|πηγαινε|άνοιξε|ανοιξε|go to|open|δείξε|δειξε|εμφάνισε/.test(s)&&!isIssue){
     for(const[k,v]of nav){if(s.includes(k)){showView(v);cbBot('Άνοιξα την ενότητα.');return;}}
     if(/έκδοσ|εκδοσ/.test(s)){showView('issue');cbBot('Άνοιξα την Έκδοση.');return;}}

@@ -107,6 +107,7 @@
 // ============================================================================
 
 require __DIR__ . '/auth.php';   // session + config + localdb + account resolution
+require __DIR__ . '/bankimport.php'; // bank statement (extrait) parsing → local payments
 
 // --- RESPONSE HELPERS --------------------------------------------------------
 
@@ -3130,6 +3131,63 @@ if ($addPaymentFlag) {
 if ($deletePaymentId !== '') {
     $ok = payment_delete(COMPANY_VAT, (int)$deletePaymentId);
     jsonResponse(['success' => $ok, 'deleted' => $ok ? (int)$deletePaymentId : null]);
+}
+
+// --- Bank statement (extrait) import → local payments -----------------------
+// STEP 1: parse an uploaded file into normalised transactions for the UI to
+// review. The bank deposit amount is NOT tied to any balance — each row is a
+// standalone candidate payment (partial / over-payment allowed).
+if (!empty($_GET['bank_preview'] ?? $_POST['bank_preview'] ?? '')) {
+    $b64  = (string)($_POST['file_b64'] ?? $_GET['file_b64'] ?? '');
+    $raw  = $b64 !== '' ? (base64_decode($b64, true) ?: '') : '';
+    if ($raw === '') jsonError('Λείπει το αρχείο (file_b64)');
+    $fn   = trim($_POST['filename'] ?? $_GET['filename'] ?? '');
+    $bank = trim($_POST['bank'] ?? $_GET['bank'] ?? '');
+    $res  = bank_parse($raw, $fn, $bank);
+    // Attach the account's known customers so the UI can auto-suggest matches.
+    $custCache = cache_get(COMPANY_VAT, 'customers');
+    $customers = [];
+    foreach (($custCache['rows'] ?? []) as $c) {
+        $customers[] = [
+            'vat'  => (string)($c['vat'] ?? $c['afm'] ?? $c['vatNumber'] ?? ''),
+            'name' => (string)($c['name'] ?? $c['fullName'] ?? $c['customer_name'] ?? ''),
+            'code' => (string)($c['code'] ?? $c['customer_code'] ?? ''),
+        ];
+    }
+    $res['success']   = true;
+    $res['customers'] = $customers;
+    jsonResponse($res);
+}
+
+// STEP 2: register the reviewed rows as local payments. `items` is a JSON array
+// of {customer_vat, customer_name, customer_code, amount, pay_date, method,
+// mark, notes}. We do NOT reconcile against invoices — amounts are stored as-is.
+if (!empty($_GET['bank_import'] ?? $_POST['bank_import'] ?? '')) {
+    $itemsRaw = $_POST['items'] ?? $_GET['items'] ?? '';
+    $items = is_array($itemsRaw) ? $itemsRaw : json_decode((string)$itemsRaw, true);
+    if (!is_array($items) || !$items) jsonError('Λείπουν εγγραφές (items)');
+    if (count($items) > 500) jsonError('Πάρα πολλές εγγραφές (μέγιστο 500)');
+    $results = []; $ok = 0; $failed = 0;
+    foreach ($items as $it) {
+        try {
+            $id = payment_add(COMPANY_VAT, [
+                'customer_vat'  => trim((string)($it['customer_vat']  ?? '')),
+                'customer_code' => trim((string)($it['customer_code'] ?? '')),
+                'customer_name' => trim((string)($it['customer_name'] ?? '')),
+                'amount'        => (float)($it['amount'] ?? 0),
+                'method'        => (int)($it['method'] ?? 1), // 1 = Επαγγ. Λογ. Πληρωμών (τράπεζα)
+                'pay_date'      => trim((string)($it['pay_date'] ?? date('Y-m-d'))),
+                'mark'          => trim((string)($it['mark'] ?? '')),
+                'notes'         => trim((string)($it['notes'] ?? '')),
+            ]);
+            $results[] = ['ok' => true, 'payment_id' => $id];
+            $ok++;
+        } catch (\Throwable $e) {
+            $results[] = ['ok' => false, 'error' => $e->getMessage()];
+            $failed++;
+        }
+    }
+    jsonResponse(['success' => true, 'total' => count($items), 'ok' => $ok, 'failed' => $failed, 'results' => $results]);
 }
 
 if ($listPaymentsFlag) {

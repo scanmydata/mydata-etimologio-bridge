@@ -69,11 +69,8 @@ Open (requested, next):
 - [ ] **Number formatting** on blur for unit-price & total-with-VAT (thousands `.`, decimals `,`).
 - [ ] **Prefill issue form** correctly from Πελάτες→Έκδοση (`issueFor`).
 - [ ] Perf: new-category-with-suggested-classification loads slowly.
-- [ ] **Bulk payment import from bank extraits** — parse per-bank statements and register payments in bulk. Sample formats provided (bank name only in the filename for setup):
-  - **Eurobank** (CSV, `;`-sep, Greek ANSI): cols = Ημ/νία συναλλαγής; Ημ/νία αξίας; Περιγραφή; Ποσό (`-1.500,00`); Υπόλοιπο; (5th blank). Data starts row 2; footer rows carry IBAN + account holder.
-  - **Optima** (`accountTransactionHistory(2)-...xlsx`).
-  - **Εθνική/National** (`ibank_print_pendingTransactions_...xlsx`).
-  - TODO: build a per-bank column mapping (date, description, amount sign, balance), match description→customer/MARK, create a ledger + bulk-payment registration flow.
+- [x] **Bulk payment import from bank extraits** — `bankimport.php` parses CSV (Eurobank, `;`-sep, **CP1253 via iconv** — mbstring here lacks the codepage) and XLSX (Optima/Εθνική, ZipArchive+SimpleXML). Column mapping is by **header-keyword detection** (not fixed indices) so it tolerates layout differences; handles both a single signed `Ποσό` column and separate `Χρέωση/Πίστωση`; parses Greek money `1.234,56` / `(…)` / Excel serial dates; sniffs a 9-digit ΑΦΜ from the description. Endpoints `?bank_preview` (parse + attach customers) and `?bank_import` (register up to 500 payments). UI: **Εισαγωγή τραπέζης** view — upload → analyse → per-row customer auto-match (ΑΦΜ or fuzzy name) with editable picker + include checkboxes/select-all → «Καταχώρηση». **IMPORTANT: deposit amount ≠ customer balance** — each row is a standalone payment stored as-is (partial/over-payments allowed), NO invoice reconciliation. Verified end-to-end via harness (CSV+XLSX, add+delete). Voice: «τραπέζ/extrait» → bankimp.
+  - Still open: real per-bank sample files were not on disk this session — detection is generic; when actual Optima/Εθνική exports are available, confirm their exact headers land on the right fields (add explicit presets if needed). MARK-level matching (link a payment to a specific invoice) not implemented — payments attach to the customer only.
 - [ ] Future: merge into `github.com/scanmydata/MyData-Invoice-Downloader` — run all locally; web = client-side; single client logs in & issues; admin-accountant notified of new movements (issue/save/payment).
 
 ## Notes
