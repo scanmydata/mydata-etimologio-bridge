@@ -62,7 +62,9 @@ Done & verified (real bridge, %PDF where relevant):
 - [x] **Admin**: businesses list (all AADE accounts) so ΤΟ ΒΑΨΙΜΟ shows; admin framed as manager, not a business.
 - [x] **Δελτίο removed from the side menu** — reachable via the Έκδοση wizard (step 1). View kept.
 - [x] **Σειρές creation → popup** (`#seriesModal`) opened by «➕ Νέα σειρά», with a green «➕ Εισαγωγή σειράς» button; result/refresh in place.
-- [x] **Cache everything from e-timologio** (like πελάτες): sync now also handles `series`/`invtypes`/`categories`/`deductions`; cache-first loaders (`loadInvTypes`, `loadIssueTypes` via `applyIssueSeries()`, `loadCatCls`) read the SQLite snapshot instantly then refresh; `prewarmAll()` warms all snapshots in the background on login. Verified end-to-end (series 5, invtypes 24, categories 3; cached read = 0 AADE logins).
+- [x] **Cache everything from e-timologio** (like πελάτες): sync now also handles `series`/`invtypes`/`categories`/`deductions`/`drafts`; cache-first loaders (`loadInvTypes`, `loadIssueTypes` via `applyIssueSeries()`, `loadCatCls`, `loadProductList` via `buildProdMap()`, `loadDrafts` via `renderDrafts()`, `loadSeriesView` via `renderSeriesTable()`) read the SQLite snapshot instantly then refresh; `prewarmAll()` warms all snapshots in the background on login. Verified end-to-end (products 10, drafts 1, series 5; cached read = 0 AADE logins).
+- [x] Side menu «Εισαγωγή τραπέζης» → «**Εισαγωγή πληρωμών**».
+- [x] Έκδοση: default τρόπος εξόφλησης = **Επί πιστώσει** (5).
 
 Open (requested, next):
 - [x] Έκδοση **guided start screen** (`#issueWizard`): step 1 Τιμολόγιο/Απόδειξη vs Δελτίο (routes to the Δελτίο view); step 2 Επαγγελματίας vs Ιδιώτης → auto-picks the matching registered invoice type (τιμολ / λιανικ) and focuses ΑΦΜ (pro) or Επωνυμία (ιδιώτης). `wizSkip()` bypasses it for Πελάτες→Έκδοση (`issueFor`) and the φωνητικό (`cbDoIssue`). Shows on fresh open; «↺ Αλλαγή επιλογής» re-opens it. Voice map already routes «τραπέζ/μαζικ» too.

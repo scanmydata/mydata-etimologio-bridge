@@ -201,7 +201,7 @@ $__business = $__user['business_name'];
       <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική</div>
       <div class="nav-item" data-view="customers"><span class="ic">👥</span> Πελάτες</div>
       <div class="nav-item" data-view="card"><span class="ic">📇</span> Καρτέλα</div>
-      <div class="nav-item" data-view="bankimp"><span class="ic">🏦</span> Εισαγωγή τραπέζης</div>
+      <div class="nav-item" data-view="bankimp"><span class="ic">🏦</span> Εισαγωγή πληρωμών</div>
       <div class="nav-item" data-view="products"><span class="ic">📦</span> Είδη</div>
       <div class="nav-item" data-view="series"><span class="ic">🔢</span> Σειρές</div>
       <div class="nav-item" data-view="drafts"><span class="ic">📝</span> Πρόχειρα</div>
@@ -411,8 +411,8 @@ $__business = $__user['business_name'];
           <div class="field"><label>Σειρά</label><select id="iSeries" onchange="seriesChange()"></select></div>
           <div class="field"><label>Πληρωμή</label>
             <select id="iPay"><option value="3">Μετρητά</option><option value="1">Τραπεζικός λογ.</option>
-              <option value="5">Επί πιστώσει</option><option value="6">Web Banking</option>
-              <option value="7" selected>POS</option><option value="8">IRIS</option></select></div>
+              <option value="5" selected>Επί πιστώσει</option><option value="6">Web Banking</option>
+              <option value="7">POS</option><option value="8">IRIS</option></select></div>
           <div class="field"><label>Γλώσσα</label>
             <select id="iLang" title="Γλώσσα παραστατικού"><option value="el">Ελληνικά</option><option value="en">English</option></select></div>
         </div>
@@ -1219,11 +1219,15 @@ let PRODMAP={};
 const VATPCT={1:24,2:13,3:6,4:17,5:9,6:4,7:0,8:0};
 // Accepts a myDATA VAT category (1-8), a percent string ("24%"), or a plain number.
 function vatPct(v){if(v===undefined||v===null||v==='')return 24;const s=String(v);if(s.includes('%'))return parseFloat(s)||0;const n=parseInt(s,10);if(n>=1&&n<=8)return VATPCT[n];return isNaN(n)?24:n;}
-async function loadProductList(){try{const d=await api({list_products:1});const dl=$('#prodList');dl.innerHTML='';PRODMAP={};
-  (d.products||[]).forEach(p=>{const code=p.product_code||p.code;if(!code)return;const desc=p.description||'';const vat=p.vat||p.vat_category||'';const price=parseFloat(p.unit_price||p.price||0)||0;
+// Build PRODMAP + the <datalist> from a product rows array
+function buildProdMap(products){const dl=$('#prodList');if(dl)dl.innerHTML='';PRODMAP={};
+  (products||[]).forEach(p=>{const code=p.product_code||p.code;if(!code)return;const desc=p.description||'';const vat=p.vat||p.vat_category||'';const price=parseFloat(p.unit_price||p.price||0)||0;
     const good=String(p.type||'').trim()!=='Υπηρεσία';  // delivery notes accept goods only
-    PRODMAP[code]={desc,vat,price,good};const o=document.createElement('option');o.value=code;o.textContent=desc;dl.appendChild(o);});
-}catch(e){}}
+    PRODMAP[code]={desc,vat,price,good};if(dl){const o=document.createElement('option');o.value=code;o.textContent=desc;dl.appendChild(o);}});}
+async function loadProductList(){
+  // cache-first: build the picker instantly from cached products, then refresh
+  try{const c=await api({cached:'products'});if(c.rows&&c.rows.length)buildProdMap(c.rows);}catch(e){}
+  try{const d=await api({list_products:1});buildProdMap(d.products||[]);}catch(e){}}
 let PROD_EDIT=null,PROD_ONSAVED=null;
 // Services carry no unit of measurement — hide the field for type=2 (Υπηρεσία).
 function pdTypeChange(){$('#pdUnitField').style.display=$('#pdType').value==='2'?'none':'';
@@ -1442,24 +1446,26 @@ async function bulkRun(live){
 }
 
 // --- Σειρές: dedicated management view (list + create per type + delete) -------
+function renderSeriesTable(rows){$('#srTable tbody').innerHTML=(rows||[]).map(s=>`<tr>
+    <td>${esc(s.invoice_type||s.invoice_type_code||'')}</td>
+    <td><strong>${esc(s.series_code||'')}</strong></td>
+    <td>${esc(s.start_aa||'')}</td>
+    <td class="muted">${esc(s.description||'')}</td>
+    <td class="right"><button class="danger sm" onclick="delSeries('${q1(s.series_id||s.delete_id||'')}','${q1(s.series_code||'')}')">✕ Διαγραφή</button></td>
+  </tr>`).join('')||'<tr><td colspan="5" class="muted">Καμία σειρά. Δημιούργησε μία με το κουμπί «➕ Νέα σειρά».</td></tr>';}
 async function loadSeriesView(){
   const sel=$('#srType');
-  try{
-    // populate the invoice-type dropdown (all types, so any series can be created)
-    const it=await api({invoice_types:1});const types=it.invoice_types||[];
-    sel.innerHTML=types.map(t=>`<option value="${esc(t.value||t.code)}">${esc(t.label||((t.code||'')+' - '+(t.name||'')))}</option>`).join('');
-  }catch(e){/* keep whatever is there */}
-  $('#srTable tbody').innerHTML='<tr><td colspan="5"><span class="spin"></span></td></tr>';
-  try{
-    const d=await api({list_series:1});const rows=d.series||[];
-    $('#srTable tbody').innerHTML=rows.map(s=>`<tr>
-      <td>${esc(s.invoice_type||s.invoice_type_code||'')}</td>
-      <td><strong>${esc(s.series_code||'')}</strong></td>
-      <td>${esc(s.start_aa||'')}</td>
-      <td class="muted">${esc(s.description||'')}</td>
-      <td class="right"><button class="danger sm" onclick="delSeries('${q1(s.series_id||s.delete_id||'')}','${q1(s.series_code||'')}')">✕ Διαγραφή</button></td>
-    </tr>`).join('')||'<tr><td colspan="5" class="muted">Καμία σειρά. Δημιούργησε μία με το κουμπί «➕ Νέα σειρά».</td></tr>';
-  }catch(e){$('#srTable tbody').innerHTML='';toast('Σειρές: '+e.message,'err');}
+  // invoice-type dropdown for the "new series" popup (cache-first)
+  try{const ci=await api({cached:'invtypes'});const types=(ci.rows&&ci.rows.length)?ci.rows:null;
+    if(types)sel.innerHTML=types.map(t=>`<option value="${esc(t.value||t.code)}">${esc(t.label||((t.code||'')+' - '+(t.name||'')))}</option>`).join('');}catch(e){}
+  if(!sel.options.length){try{const it=await api({invoice_types:1});const types=it.invoice_types||[];
+    sel.innerHTML=types.map(t=>`<option value="${esc(t.value||t.code)}">${esc(t.label||((t.code||'')+' - '+(t.name||'')))}</option>`).join('');}catch(e){}}
+  // series table (cache-first, then refresh)
+  let shown=false;
+  try{const c=await api({cached:'series'});if(c.rows&&c.rows.length){SERIES=c.rows;renderSeriesTable(c.rows);shown=true;}}catch(e){}
+  if(!shown)$('#srTable tbody').innerHTML='<tr><td colspan="5"><span class="spin"></span></td></tr>';
+  try{const d=await api({sync:'series'});SERIES=d.rows||[];renderSeriesTable(SERIES);}
+  catch(e){if(!shown){$('#srTable tbody').innerHTML='';toast('Σειρές: '+e.message,'err');}}
 }
 // Open the "new series" popup (populates the type dropdown if needed)
 async function openSeriesModal(){
@@ -1961,16 +1967,21 @@ async function doCredit(viaIssue,mark){if(!mark){toast('Επίλεξε παρα�
 
 // Drafts (προσωρινά αποθηκευμένα)
 function draftRange(){const y=new Date().getFullYear();if(!$('#dfFrom').value)dset('dfFrom',y+'-01-01');if(!$('#dfTo').value)dset('dfTo',y+'-12-31');}
-async function loadDrafts(){draftRange();$('#draftsTable tbody').innerHTML='<tr><td colspan="5"><span class="spin"></span></td></tr>';
-  try{const d=await api({search_temp:1,save_date_from:di('dfFrom'),save_date_to:di('dfTo')});
-    const rows=d.temp_invoices||d.items||d.results||[];$('#dfCount').textContent=rows.length+' πρόχειρα';
-    const nameFor=v=>{const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===v);return c?c.name:'';};
-    $('#draftsTable tbody').innerHTML=rows.map(t=>{const bv=t.buyer_vat||'';const nm=nameFor(bv);
-      return `<tr><td>${esc(t.save_date||'')}</td><td>${esc(t.type||'')}</td><td>${esc(t.series||'')}</td><td>${esc(nm||bv||'—')}</td>
-      <td class="right"><button class="info sm" onclick="previewDraft('${q1(t.enc_id||t.temp_id)}',this)" title="Φέρε το PDF προεπισκόπησης αυτού του προχείρου (χωρίς νέο πρόχειρο)">👁 Προεπισκόπηση</button>
-      <button class="danger sm" onclick="delDraft('${q1(t.temp_id)}','${q1(t.seller_vat||'')}')">✕ Διαγραφή</button></td></tr>`;}).join('')
-      ||'<tr><td colspan="5" class="muted">Κανένα πρόχειρο.</td></tr>';
-  }catch(e){$('#draftsTable tbody').innerHTML='';toast('Πρόχειρα: '+e.message,'err');}}
+function renderDrafts(rows){rows=rows||[];$('#dfCount').textContent=rows.length+' πρόχειρα';
+  const nameFor=v=>{const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===v);return c?c.name:'';};
+  $('#draftsTable tbody').innerHTML=rows.map(t=>{const bv=t.buyer_vat||'';const nm=nameFor(bv);
+    return `<tr><td>${esc(t.save_date||'')}</td><td>${esc(t.type||'')}</td><td>${esc(t.series||'')}</td><td>${esc(nm||bv||'—')}</td>
+    <td class="right"><button class="info sm" onclick="previewDraft('${q1(t.enc_id||t.temp_id)}',this)" title="Φέρε το PDF προεπισκόπησης αυτού του προχείρου (χωρίς νέο πρόχειρο)">👁 Προεπισκόπηση</button>
+    <button class="danger sm" onclick="delDraft('${q1(t.temp_id)}','${q1(t.seller_vat||'')}')">✕ Διαγραφή</button></td></tr>`;}).join('')
+    ||'<tr><td colspan="5" class="muted">Κανένα πρόχειρο.</td></tr>';}
+async function loadDrafts(){draftRange();
+  // cache-first: show the last cached drafts snapshot instantly, then refresh
+  // (sync:'drafts' both fetches for the selected range AND updates the cache)
+  let shown=false;
+  try{const c=await api({cached:'drafts'});if(c.rows&&c.rows.length){renderDrafts(c.rows);shown=true;}}catch(e){}
+  if(!shown)$('#draftsTable tbody').innerHTML='<tr><td colspan="5"><span class="spin"></span></td></tr>';
+  try{const d=await api({sync:'drafts',save_date_from:di('dfFrom'),save_date_to:di('dfTo')});renderDrafts(d.rows||[]);}
+  catch(e){if(!shown)$('#draftsTable tbody').innerHTML='';toast('Πρόχειρα: '+e.message,'err');}}
 // Preview the PDF of an EXISTING draft by its id — reuses the cached model, no new draft.
 async function previewDraft(id,btn){const old=btn?btn.textContent:'';if(btn){btn.disabled=true;btn.textContent='…';}
   try{const d=await api({preview_temp:id});
@@ -2162,7 +2173,7 @@ $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').val
 // Warm ALL e-timologio caches in the background so every view opens instantly
 // (same snapshot-cache mechanism used for πελάτες). Fire-and-forget, staggered
 // so we don't hammer the AADE session with parallel logins.
-async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions'];
+async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions','drafts'];
   for(const k of kinds){try{await api({sync:k});}catch(e){}}}
 (async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();})();
 </script>

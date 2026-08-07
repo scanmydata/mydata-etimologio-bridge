@@ -3301,6 +3301,8 @@ if ($syncKind !== '') {
         $r = listDeductions($ch); $rows = $r['deductions'] ?? [];
     } elseif ($syncKind === 'categories') {
         $r = listCategoryClassifications($ch); $rows = $r['categories'] ?? [];
+    } elseif ($syncKind === 'drafts') {
+        $r = searchTempInvoices($ch, $saveDateFrom, $saveDateTo, '', '', ''); $rows = $r['temp_invoices'] ?? [];
     } elseif ($syncKind === 'invtypes') {
         // invoice types with code/name split out (same shape the UI expects)
         $rows = getClassificationInvoiceTypes($ch);
