@@ -845,6 +845,18 @@ const ROLE=<?= json_encode($__role) ?>;
 let ACCOUNT='';
 const $=s=>document.querySelector(s);
 const fmt=n=>(Number(n)||0).toLocaleString('el-GR',{minimumFractionDigits:2,maximumFractionDigits:2});
+// Parse a number that may be el-GR formatted (1.234,56) OR plain (1234.56 / 12.3456).
+// Rule: if both separators present, the LAST one is the decimal; comma-only ⇒ decimal
+// comma; dot-only ⇒ treated as a normal decimal point (matches product prices).
+function elNum(v){if(typeof v==='number')return v;let s=(v==null?'':v).toString().trim();if(!s)return 0;
+  s=s.replace(/[^\d,.\-]/g,'');const lc=s.lastIndexOf(','),ld=s.lastIndexOf('.');
+  if(lc>-1&&ld>-1){s=lc>ld?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');}
+  else if(lc>-1){s=s.replace(',','.');}
+  return parseFloat(s)||0;}
+// el-GR display: gross/totals = 2 decimals; unit price up to 4 (prices can be finer).
+function elFmt(n,max=2){if(n===''||n==null||isNaN(Number(n)))return '';return (Number(n)).toLocaleString('el-GR',{minimumFractionDigits:2,maximumFractionDigits:max});}
+// Format a line input field in place (on blur), preserving empty.
+function elFmtField(el,max){if(!el)return;const v=(el.value||'').trim();if(v==='')return;el.value=elFmt(elNum(v),max);}
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const q1=s=>String(s??'').replace(/'/g,"\\'");
 const PAYMETHODS={3:'Μετρητά',1:'Τραπεζική μεταφορά',4:'Επιταγή'};
@@ -1493,10 +1505,10 @@ function rowVatLabel(row){if(['22','23'].includes($('#iType').value))return '0%'
 function lineRowHtml(code,qty,price,disc){return `<tr>
   <td style="position:relative"><input class="ln-code" value="${esc(prodText(code))}" data-code="${esc(code||'')}" oninput="prodAc(this)" onfocus="prodAc(this)" placeholder="Επιλογή / αναζήτηση είδους…" autocomplete="off" style="width:100%"><div class="ac-panel ln-ac"></div></td>
   <td><input class="ln-qty" type="number" step="0.01" min="0" value="${esc(qty)}" oninput="lineFromInputs(this.closest('tr'))" style="width:72px"></td>
-  <td class="num"><input class="ln-price" type="number" step="0.0001" min="0" value="${esc(price)}" oninput="lineFromInputs(this.closest('tr'))" placeholder="0.00" style="width:100px;text-align:right"></td>
+  <td class="num"><input class="ln-price" type="text" inputmode="decimal" value="${esc(price)}" oninput="lineFromInputs(this.closest('tr'))" onblur="elFmtField(this,4);lineFromInputs(this.closest('tr'))" placeholder="0,00" style="width:100px;text-align:right"></td>
   <td class="num"><input class="ln-disc" type="number" step="0.01" min="0" max="100" value="${esc(disc||'')}" oninput="lineFromInputs(this.closest('tr'))" placeholder="0" style="width:70px;text-align:right"></td>
   <td class="num ln-vat">—</td>
-  <td class="num"><input class="ln-gross" type="number" step="0.01" min="0" oninput="lineFromGross(this.closest('tr'))" placeholder="0.00" style="width:110px;text-align:right"></td>
+  <td class="num"><input class="ln-gross" type="text" inputmode="decimal" oninput="lineFromGross(this.closest('tr'))" onblur="elFmtField(this,2);sumTotals()" placeholder="0,00" style="width:110px;text-align:right"></td>
   <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove();sumTotals()">✕</button></td></tr>`;}
 function addLine(code='',qty=1,price='',disc=''){$('#iLines tbody').insertAdjacentHTML('beforeend',lineRowHtml(code,qty,price,disc));sumTotals();}
 // Product combobox dropdown for a line's code input
@@ -1510,36 +1522,36 @@ function prodAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel
   panel.classList.add('open');}
 function pickProd(el,code){const row=el.closest('tr');const inp=row.querySelector('.ln-code');const p=PRODMAP[code]||{};
   inp.value=prodText(code);inp.dataset.code=code;
-  if(p.price&&!parseFloat(row.querySelector('.ln-price').value))row.querySelector('.ln-price').value=p.price;
+  if(p.price&&!elNum(row.querySelector('.ln-price').value))row.querySelector('.ln-price').value=elFmt(elNum(p.price),4);
   row.querySelector('.ln-ac').classList.remove('open');lineFromInputs(row);}
 function newProdForLine(el){const row=el.closest('tr');const inp=row.querySelector('.ln-code');row.querySelector('.ln-ac').classList.remove('open');
   const typed=(inp.value||'').trim();
   openProductModal(/^[\w.-]{1,20}$/.test(typed)&&!PRODMAP[typed]?typed:'',code=>{pickProd(el,code);});}
 document.addEventListener('click',e=>{if(!e.target.closest('.ln-code')&&!e.target.closest('.ln-ac'))document.querySelectorAll('.ln-ac.open').forEach(p=>p.classList.remove('open'));});
 // Recompute a line from unit price / qty / discount → gross (source of truth = unit price).
-function lineFromInputs(row){const u=parseFloat(row.querySelector('.ln-price').value)||0;const q=parseFloat(row.querySelector('.ln-qty').value)||0;const d=Math.min(parseFloat(row.querySelector('.ln-disc').value)||0,100);const r=rowRate(row);
+function lineFromInputs(row){const u=elNum(row.querySelector('.ln-price').value);const q=parseFloat(row.querySelector('.ln-qty').value)||0;const d=Math.min(parseFloat(row.querySelector('.ln-disc').value)||0,100);const r=rowRate(row);
   const net=u*q*(1-d/100);const gross=net*(1+r);
-  const g=row.querySelector('.ln-gross');if(document.activeElement!==g)g.value=net?gross.toFixed(2):'';
+  const g=row.querySelector('.ln-gross');if(document.activeElement!==g)g.value=net?elFmt(gross,2):'';
   sumTotals();}
 // User typed the gross (with VAT) directly → derive unit price / discount.
 // If the item's list unit price is higher than the implied one, express the gap as a discount %.
-function lineFromGross(row){const G=parseFloat(row.querySelector('.ln-gross').value)||0;const q=parseFloat(row.querySelector('.ln-qty').value)||0;const r=rowRate(row);
+function lineFromGross(row){const G=elNum(row.querySelector('.ln-gross').value);const q=parseFloat(row.querySelector('.ln-qty').value)||0;const r=rowRate(row);
   const netFromG=G/(1+r);const priceInp=row.querySelector('.ln-price');const discInp=row.querySelector('.ln-disc');
-  const u=parseFloat(priceInp.value)||0;
+  const u=elNum(priceInp.value);
   if(q>0&&u>0){const baseNet=u*q;
     if(baseNet>0&&netFromG<baseNet-0.005){discInp.value=((1-netFromG/baseNet)*100).toFixed(2);}      // list price higher ⇒ discount
-    else{discInp.value='';priceInp.value=(netFromG/q).toFixed(4);}
-  }else if(q>0){priceInp.value=(netFromG/q).toFixed(4);discInp.value='';}
+    else{discInp.value='';priceInp.value=elFmt(netFromG/q,4);}
+  }else if(q>0){priceInp.value=elFmt(netFromG/q,4);discInp.value='';}
   sumTotals();}
 function collectLines(){const out=[];document.querySelectorAll('#iLines tbody tr').forEach(r=>{
-  const code=(r.querySelector('.ln-code').dataset.code||'').trim();const qty=parseFloat(r.querySelector('.ln-qty').value)||0;const price=parseFloat(r.querySelector('.ln-price').value)||0;const disc=parseFloat(r.querySelector('.ln-disc').value)||0;
+  const code=(r.querySelector('.ln-code').dataset.code||'').trim();const qty=parseFloat(r.querySelector('.ln-qty').value)||0;const price=elNum(r.querySelector('.ln-price').value);const disc=parseFloat(r.querySelector('.ln-disc').value)||0;
   if(code&&price>0&&qty>0){const o={code,qty,price};if(disc>0)o.disc=disc;out.push(o);}});return out;}
 // Totals: net + VAT (per-line rate) − withholding = payable.
 function sumTotals(){let net=0,vat=0;document.querySelectorAll('#iLines tbody tr').forEach(r=>{
-  const u=parseFloat(r.querySelector('.ln-price').value)||0;const q=parseFloat(r.querySelector('.ln-qty').value)||0;const d=Math.min(parseFloat(r.querySelector('.ln-disc').value)||0,100);const rate=rowRate(r);
+  const u=elNum(r.querySelector('.ln-price').value);const q=parseFloat(r.querySelector('.ln-qty').value)||0;const d=Math.min(parseFloat(r.querySelector('.ln-disc').value)||0,100);const rate=rowRate(r);
   const ln=u*q*(1-d/100);net+=ln;vat+=ln*rate;
   r.querySelector('.ln-vat').textContent=rowVatLabel(r);
-  const g=r.querySelector('.ln-gross');if(document.activeElement!==g)g.value=ln?(ln*(1+rate)).toFixed(2):'';});
+  const g=r.querySelector('.ln-gross');if(document.activeElement!==g)g.value=ln?elFmt(ln*(1+rate),2):'';});
   // Taxes: withheld(1) & deductions(5) reduce payable; fees(2)/other(3)/digital(4) add.
   let plus=0,minus=0;(ITAXES||[]).forEach(t=>{if(t.type===1||t.type===5)minus+=t.amount;else plus+=t.amount;});
   $('#iNet').textContent=fmt(net);$('#iVat').textContent=fmt(vat);
@@ -2110,7 +2122,7 @@ async function cbDoIssue(o){cbBot('Ετοιμάζω το πρόχειρο…');
   $('#iLines tbody').innerHTML='';addLine(o.code||'',o.qty||1,o.price||'');
   const row=$('#iLines tbody tr:last-child');
   if(o.code&&PRODMAP[o.code]){pickProd(row.querySelector('.ln-code'),o.code);}
-  if(o.price){row.querySelector('.ln-price').value=o.price;lineFromInputs(row);}
+  if(o.price){row.querySelector('.ln-price').value=elFmt(elNum(o.price),4);lineFromInputs(row);}
   await new Promise(r=>setTimeout(r,150));
   if(!collectLines().length){cbBot('Χρειάζεται είδος/τιμή — συμπλήρωσέ τα στη φόρμα και πάτα «Πρόχειρο».');return;}
   await submitInvoice(false);
