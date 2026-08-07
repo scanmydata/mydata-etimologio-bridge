@@ -296,10 +296,10 @@ $__business = $__user['business_name'];
         </div>
         <div class="hint" id="custCount"></div>
         <table id="custTable" class="sortable"><thead><tr>
-          <th onclick="sortCustomers('code')" id="cs-code">Κωδ.</th>
-          <th onclick="sortCustomers('vat')" id="cs-vat">ΑΦΜ</th>
-          <th onclick="sortCustomers('name')" id="cs-name">Επωνυμία</th>
-          <th onclick="sortCustomers('city')" id="cs-city">Πόλη</th>
+          <th onclick="sortCustomers('code')" id="cs-code">Κωδ.<span class="sort-ind" id="si-code"></span></th>
+          <th onclick="sortCustomers('vat')" id="cs-vat">ΑΦΜ<span class="sort-ind" id="si-vat"></span></th>
+          <th onclick="sortCustomers('name')" id="cs-name">Επωνυμία<span class="sort-ind" id="si-name"></span></th>
+          <th onclick="sortCustomers('city')" id="cs-city">Πόλη<span class="sort-ind" id="si-city"></span></th>
           <th></th></tr></thead><tbody></tbody></table>
       </div>
     </section>
@@ -1170,8 +1170,9 @@ function renderCustomers(){
   rows.sort((a,b)=>{let x=a[k]||'',y=b[k]||'';
     if(k==='code'||k==='vat'){const nx=parseFloat(x)||0,ny=parseFloat(y)||0;if(nx!==ny)return(nx-ny)*dir;}
     return String(x).localeCompare(String(y),'el')*dir;});
-  // header sort indicators
-  ['code','vat','name','city'].forEach(c=>{const th=document.getElementById('cs-'+c);if(th)th.textContent=th.textContent.replace(/ [▲▼]$/,'')+(CUST_SORT.key===c?(CUST_SORT.dir>0?' ▲':' ▼'):'');});
+  // header sort indicators — update a dedicated span so the ▾ funnel button
+  // (added by attachColumnFilters) is never clobbered by textContent writes.
+  ['code','vat','name','city'].forEach(c=>{const si=document.getElementById('si-'+c);if(si)si.textContent=(CUST_SORT.key===c?(CUST_SORT.dir>0?' ▲':' ▼'):'');});
   $('#custCount').textContent=rows.length+' / '+ALL_CUSTOMERS.length+' πελάτες';
   $('#custTable tbody').innerHTML=rows.slice(0,500).map(c=>
     `<tr class="clickable" onclick="openCard('${q1(c.vat)}','${q1(c.name)}')"><td>${esc(c.code)}</td><td>${esc(c.vat)}</td><td>${esc(c.name)}</td><td>${esc(c.city)}</td>
