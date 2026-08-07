@@ -142,9 +142,14 @@ $__business = $__user['business_name'];
   table.sortable thead th:hover{color:var(--accent)}
   tr.clickable{cursor:pointer}
   /* Per-column filter row (timologio-downloader style) */
-  thead tr.filter-row th{position:static;padding:4px 6px;border-bottom:1px solid var(--line);background:var(--panel2)}
-  .col-filter{width:100%;font-size:11px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--txt)}
-  .col-filter::placeholder{color:var(--muted);opacity:.7}
+  thead tr.filter-row th{position:static;padding:4px 6px;border-bottom:1px solid var(--line);background:var(--panel2);
+    text-transform:none;letter-spacing:normal;font-weight:400;cursor:default}
+  table.sortable thead tr.filter-row th{cursor:default}
+  table.sortable thead tr.filter-row th:hover{color:inherit}
+  .col-filter{width:100%;font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal;
+    padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--txt)}
+  .col-filter:focus{outline:none;border-color:var(--accent)}
+  .col-filter::placeholder{color:var(--muted);opacity:.7;text-transform:none}
   th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
   /* Guided page tour */
   #tourOverlay{position:fixed;inset:0;z-index:200;display:none}
