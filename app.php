@@ -1590,10 +1590,22 @@ async function txTypeChange(){const t=$('#txType').value;const sel=$('#txCat');$
   const list=(TAXCATS&&TAXCATS[TAXTYPE_KEY[t]])||[];
   sel.innerHTML='<option value="">Επιλέξτε…</option>'+list.map(c=>`<option value="${esc(c.code)}">${esc(c.label)}</option>`).join('')
     +(t==='5'?'<option value="__new">➕ Νέα κράτηση…</option>':'');}
+// Extract a percentage rate from a tax-category label ("… 3%" / "1,5%") → 0.03
+function taxRateFromLabel(label){const m=(label||'').match(/(\d+(?:[.,]\d+)?)\s*%/);return m?parseFloat(m[1].replace(',','.'))/100:0;}
+// Current net (pre-VAT) total of the issue lines — the base for withholdings.
+function issueNetTotal(){let net=0;document.querySelectorAll('#iLines tbody tr').forEach(r=>{
+  const u=elNum(r.querySelector('.ln-price').value);const q=parseFloat(r.querySelector('.ln-qty').value)||0;
+  const d=Math.min(parseFloat(r.querySelector('.ln-disc').value)||0,100);net+=u*q*(1-d/100);});return net;}
 $('#txCat')&&$('#txCat').addEventListener('change',function(){
   const t=$('#txType').value;$('#txWarn').textContent='';
   if(this.value==='__new'){createNewDeduction();return;}
   if(t==='1'&&this.value==='3')$('#txWarn').textContent='«Αμοιβές Συμβούλων Διοίκησης 20%»: μόνο για ατομικές επιχειρήσεις.';
+  // Auto-compute the amount from the category's % over the current net total
+  const list=(TAXCATS&&TAXCATS[TAXTYPE_KEY[t]])||[];const c=list.find(x=>x.code===this.value);
+  const rate=taxRateFromLabel(c&&c.label);
+  if(rate>0){const net=issueNetTotal();const amt=Math.round(net*rate*100)/100;
+    $('#txAmount').value=amt.toFixed(2);
+    $('#txWarn').textContent=`Αυτόματο ποσό: ${(rate*100).toLocaleString('el-GR')}% × καθαρή ${fmt(net)} € = ${fmt(amt)} € (μπορείς να το αλλάξεις).`;}
 });
 // Create a new custom deduction (κράτηση) and refresh the dropdown selecting it.
 async function createNewDeduction(){

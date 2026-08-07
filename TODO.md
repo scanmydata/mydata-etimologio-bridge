@@ -72,7 +72,7 @@ Open (requested, next):
   - [ ] Still open: per-column filter inputs + row checkboxes + select-all header control.
 - [x] **Theme toggle overlap fixed**: the theme switch was `position:fixed` bottom-left and overlapped the «Τοπικά δεδομένα / Ctrl+K» footer. Moved both toggles into a `.side-controls` block inside the sidebar (normal flow, no overlap).
 - [x] **Tooltips on/off switch**: second sidebar toggle (`#tipsToggle`) suppresses all `[data-tip]` tooltips via a `:root.tips-off` rule; persisted in `localStorage` (`etim_tips`).
-- [ ] **Auto-compute taxes/withholdings** (φόροι-κρατήσεις) on the issue form.
+- [x] **Auto-compute taxes/withholdings** on the issue form: when a tax category whose label carries a `%` is selected in the Φόρος/Κράτηση popup, the amount auto-fills as `net × rate` (net = current line totals pre-VAT) with a hint, still overridable. `taxRateFromLabel()` + `issueNetTotal()`; verified with a rate-extractor unit test.
 - [x] **Number formatting** on blur for unit-price & total-with-VAT (el-GR thousands `.`, decimals `,`): fields are now text+inputmode=decimal, formatted on blur (price ≤4 decimals, gross 2). `elNum()` parses el-GR OR plain (last separator = decimal) and `elFmt()` renders; every read of `.ln-price`/`.ln-gross` uses `elNum` so the invoice math is unchanged. Verified with parse/format/round-trip unit tests (all pass).
 - [ ] **Prefill issue form** correctly from Πελάτες→Έκδοση (`issueFor`).
 - [ ] Perf: new-category-with-suggested-classification loads slowly.
