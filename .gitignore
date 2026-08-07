@@ -10,6 +10,9 @@ etimologio_cookies.txt
 # Local SQLite data (payments, ledgers, customer notes)
 .localdata.sqlite
 .localdata.sqlite-*
+
+# Scheduler single-instance lock
+.scheduler.lock
  
 # OS & editor
 .DS_Store

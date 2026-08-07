@@ -55,13 +55,59 @@ const ZERO_VAT_TYPES = ['22', '23'];
 const MASTER_ADMIN_EMAIL    = 'admin@example.com';
 const MASTER_ADMIN_PASSWORD = 'change-this-strong-password';
 
-// Optional SMTP for password-reset emails. Leave SMTP_FROM empty to disable email
-// (the master admin can then hand reset tokens over manually from the admin panel).
+// ----------------------------------------------------------------------------
+// EMAIL — transactional mail for signup/activation/forgot-password, member
+// invitations, and issuance notifications. Two providers are supported:
+//   • Resend (HTTPS API, recommended)  — set RESEND_API_KEY + a verified sender
+//   • SMTP (PHP mail())                — set SMTP_FROM
+// MAIL_PROVIDER selects: 'auto' (Resend if key set, else SMTP), 'resend', 'smtp'.
+// Leave everything empty to disable email (reset/invite links are then shown
+// in-app to the admin as a manual fallback).
+// ----------------------------------------------------------------------------
+const MAIL_PROVIDER      = 'auto';
+// Resend — https://resend.com/api-keys ; the sender domain must be verified.
+const RESEND_API_KEY     = '';        // e.g. 're_xxxxxxxxxxxxxxxxxxxx'
+const RESEND_EMAIL_SENDER = '';       // e.g. 'e-Τιμολόγιο <no-reply@yourdomain.gr>'
+// SMTP fallback (PHP mail()). Leave SMTP_FROM empty to disable the SMTP path.
 const SMTP_FROM = '';                 // e.g. 'no-reply@yourdomain.gr'
 const SMTP_HOST = '';
 const SMTP_PORT = 587;
 const SMTP_USER = '';
 const SMTP_PASS = '';
+// Public base URL of the app — used to build links inside emails (activation,
+// reset, "open the app"). No trailing slash. Falls back to APP_BASE_URL, then
+// to the current request host.
+const APP_URL = '';                   // e.g. 'https://timologio.yourdomain.gr'
+
+// ----------------------------------------------------------------------------
+// SCHEDULED ISSUANCE (χρονοπρογραμματισμός) — TODO 90
+// ----------------------------------------------------------------------------
+// The UI can queue a παραστατικό (single or bulk) to be issued automatically at
+// a future date/time. A background runner (scheduler.php) polls the job store
+// and replays each due job against this same app over loopback HTTP.
+//
+//  • SCHED_TOKEN  — a shared secret the runner presents to authenticate as a
+//                   service. Generate: php -r "echo bin2hex(random_bytes(24)).PHP_EOL;"
+//                   Leave empty to DISABLE scheduled issuance entirely.
+//  • APP_BASE_URL — the loopback origin the runner calls (this app's own URL as
+//                   seen from the machine running the cron/Task Scheduler entry),
+//                   e.g. 'http://127.0.0.1/mydata-etimologio-bridge' or
+//                   'http://127.0.0.1:8080'. No trailing slash.
+//
+// Then schedule scheduler.php to run every minute, e.g.:
+//   Windows Task Scheduler:  php C:\path\to\scheduler.php   (trigger: every 1 min)
+//   cron:                    * * * * * php /path/to/scheduler.php
+const SCHED_TOKEN  = '';
+const APP_BASE_URL = 'http://127.0.0.1';
+
+// ----------------------------------------------------------------------------
+// ISSUANCE NOTIFICATIONS (ειδοποίηση λογιστή/admin) — TODO 91
+// ----------------------------------------------------------------------------
+// Every real issue (ΜΑΡΚ obtained), EXCEPT δελτία αποστολής (9.x), is recorded
+// in an in-app feed for the master admin (and the issuing business). If SMTP is
+// configured above and NOTIFY_ADMIN_EMAIL is set, a copy is emailed too.
+// Leave empty to fall back to MASTER_ADMIN_EMAIL, or set to '-' to disable email.
+const NOTIFY_ADMIN_EMAIL = '';
 
 // ----------------------------------------------------------------------------
 // Legacy single-tenant account resolution — used ONLY when auth.php is not in

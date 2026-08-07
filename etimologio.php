@@ -2859,6 +2859,101 @@ function toDbDate(string $d): string {
     return normDate($d);
 }
 
+// --- Issuance notifications (TODO 91) ---------------------------------------
+// Human label for an e-timologio invoice-type id (numeric). Falls back to the
+// raw code. δελτία αποστολής (9.x → ids 50x) are handled by the caller (never
+// notified) but mapped here for completeness.
+function docTypeLabel(string $code): string {
+    static $m = [
+        '1'  => 'Τιμολόγιο Πώλησης (1.1)',   '2'  => 'Τιμολόγιο Ενδοκοινοτικό (1.2)',
+        '3'  => 'Τιμολόγιο Τρίτων Χωρών (1.3)',
+        '20' => 'Τιμολόγιο Παροχής Υπηρεσιών (2.1)', '21' => 'ΤΠΥ Ενδοκοινοτικό (2.2)',
+        '22' => 'ΤΠΥ Τρίτων Χωρών (2.3)',    '23' => 'ΤΠΥ Τρίτων Χωρών',
+        '57' => 'ΑΛΠ (11.1)',               '58' => 'ΑΠΥ (11.2)',
+        '59' => 'Απόδειξη Λιανικής (11.3)',  '60' => 'Απόδειξη (11.4)',
+        '61' => 'Απόδειξη (11.5)',
+        '50' => 'Πιστωτικό Τιμολόγιο (5.1)',
+    ];
+    return $m[$code] ?? ('Παραστατικό τύπου ' . $code);
+}
+
+// Movement category for notification email filtering: 'invoice' | 'receipt' | 'credit'.
+function notif_category(string $docType, string $docLabel = ''): string {
+    if (mb_stripos($docLabel, 'Πιστωτικ') !== false || mb_stripos($docLabel, 'Ακύρωσ') !== false) return 'credit';
+    if (in_array($docType, ['57', '58', '59', '60', '61'], true)) return 'receipt';
+    if (in_array($docType, ['50', '51'], true)) return 'credit';
+    return 'invoice';
+}
+
+// Record a notification (and optionally email the admin) after a successful REAL
+// issue. NEVER call this for δελτία αποστολής (9.x). Safe to call with a draft/
+// failed result — it no-ops unless a ΜΑΡΚ was obtained.
+function notifyIssue(array $result, array $ctx): void {
+    if (empty($result['success']) || empty($result['mark'])) return;
+    $accountVat = defined('COMPANY_VAT') ? COMPANY_VAT : (string)($ctx['account_vat'] ?? '');
+    if ($accountVat === '') return;
+    $u = function_exists('current_user') ? current_user() : null;
+    $docType = (string)($ctx['doc_type'] ?? '');
+    $label   = (string)($ctx['doc_label'] ?? docTypeLabel($docType));
+    $data = [
+        'actor_user_id' => (int)($u['id'] ?? 0),
+        'actor_email'   => (string)($u['email'] ?? ''),
+        'actor_name'    => (string)($u['business_name'] ?? ''),
+        'doc_type'      => $docType,
+        'doc_label'     => $label,
+        'series'        => (string)($ctx['series'] ?? ''),
+        'aa'            => (string)($result['aa'] ?? ''),
+        'mark'          => (string)$result['mark'],
+        'buyer_vat'     => (string)($ctx['buyer_vat'] ?? ''),
+        'buyer_name'    => (string)($ctx['buyer_name'] ?? ''),
+        'amount_total'  => (float)($result['amount_total'] ?? 0),
+        'source'        => (string)($ctx['source'] ?? ($GLOBALS['__issueSource'] ?? 'manual')),
+    ];
+    try { notification_add($accountVat, $data); } catch (\Throwable $e) { /* never block issuance */ }
+    try { notifyIssueEmail($accountVat, $data); } catch (\Throwable $e) {}
+}
+
+// Best-effort branded email of an issuance notification to the accountant/admins
+// (Resend or SMTP, per config). Each active staff member is emailed only if their
+// personal preferences opt them in for this company + movement type. Config
+// fallback addresses (MASTER_ADMIN_EMAIL / NOTIFY_ADMIN_EMAIL) always receive it.
+function notifyIssueEmail(string $accountVat, array $d): void {
+    if (!function_exists('mail_enabled') || !mail_enabled()) return;   // no email provider
+    $category = notif_category((string)($d['doc_type'] ?? ''), (string)($d['doc_label'] ?? ''));
+    $recipients = [];
+    foreach (users_all() as $u) {
+        if (!in_array($u['role'], ['master', 'editor'], true) || $u['status'] !== 'active' || $u['email'] === '') continue;
+        if (notify_prefs_match(notify_prefs_get((int)$u['id']), $accountVat, $category)) $recipients[] = $u['email'];
+    }
+    // Config fallback addresses have no per-user prefs — always include them.
+    if (defined('NOTIFY_ADMIN_EMAIL') && trim(NOTIFY_ADMIN_EMAIL) !== '' && trim(NOTIFY_ADMIN_EMAIL) !== '-') $recipients[] = trim(NOTIFY_ADMIN_EMAIL);
+    if (defined('MASTER_ADMIN_EMAIL') && trim(MASTER_ADMIN_EMAIL) !== '') $recipients[] = trim(MASTER_ADMIN_EMAIL);
+    $recipients = array_values(array_unique(array_filter($recipients)));
+    if (empty($recipients)) return;
+    $amount = number_format((float)$d['amount_total'], 2, ',', '.');
+    $srcL = $d['source'] === 'scheduled' ? 'προγραμματισμένη έκδοση' : ($d['source'] === 'bulk' ? 'μαζική έκδοση' : 'χειροκίνητη');
+    $subject = 'Νέο παραστατικό: ' . $d['doc_label'] . ' · ΜΑΡΚ ' . $d['mark'];
+    $rows = [
+        ['Επιχείρηση (ΑΦΜ)', $accountVat],
+        ['Χρήστης', $d['actor_name'] ?: $d['actor_email']],
+        ['Τύπος', $d['doc_label']],
+        ['Σειρά / ΑΑ', ($d['series'] !== '' ? $d['series'] . ' / ' : '') . $d['aa']],
+        ['Πελάτης', $d['buyer_name'] ?: $d['buyer_vat']],
+        ['Σύνολο', $amount . ' €'],
+        ['ΜΑΡΚ', $d['mark']],
+        ['Τρόπος', $srcL],
+        ['Ημ/νία', date('d/m/Y H:i')],
+    ];
+    $trs = '';
+    foreach ($rows as [$k, $v]) {
+        $trs .= '<tr><td style="padding:4px 10px 4px 0;color:#5b6b84;white-space:nowrap">' . htmlspecialchars($k, ENT_QUOTES)
+             . '</td><td style="padding:4px 0;font-weight:600">' . htmlspecialchars((string)$v, ENT_QUOTES) . '</td></tr>';
+    }
+    $inner = '<p>Εκδόθηκε νέο παραστατικό.</p><table style="border-collapse:collapse;font-size:14px">' . $trs . '</table>';
+    $html = mail_template('Νέο παραστατικό', $inner);
+    foreach ($recipients as $to) { try { send_mail($to, $subject, $html); } catch (\Throwable $e) {} }
+}
+
 // --- API ENTRY POINT ---------------------------------------------------------
 
 // ===========================================================================
@@ -2876,14 +2971,56 @@ if ($authAction !== '') {
             jsonResponse(auth_forgot(trim($_POST['email'] ?? $_GET['email'] ?? '')));
         case 'reset':
             jsonResponse(auth_reset(trim($_POST['token'] ?? $_GET['token'] ?? ''), (string)($_POST['password'] ?? '')));
+        case 'login_totp':   // second login step when 2FA is enabled
+            jsonResponse(auth_login_totp(trim($_POST['code'] ?? $_GET['code'] ?? '')));
         case 'logout':
             auth_logout(); jsonResponse(['success' => true]);
+        // ---- 2FA enrollment (logged-in user) ----
+        case 'totp_setup': {
+            if (!current_user()) jsonError('Απαιτείται σύνδεση', 401);
+            jsonResponse(auth_totp_setup());
+        }
+        case 'totp_enable': {
+            if (!current_user()) jsonError('Απαιτείται σύνδεση', 401);
+            jsonResponse(auth_totp_enable(trim($_POST['code'] ?? $_GET['code'] ?? '')));
+        }
+        case 'totp_disable': {
+            if (!current_user()) jsonError('Απαιτείται σύνδεση', 401);
+            jsonResponse(auth_totp_disable((string)($_POST['verify'] ?? $_GET['verify'] ?? '')));
+        }
+        // ---- Per-admin email notification preferences (staff only) ----
+        case 'notif_prefs_get': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            jsonResponse([
+                'success' => true,
+                'prefs'   => notify_prefs_get((int)$u['id']),
+                'companies' => array_map(fn($a) => ['vat' => (string)$a['vat'], 'label' => $a['label'] ?: $a['vat']], accounts_all()),
+            ]);
+        }
+        case 'notif_prefs_set': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $companiesRaw = trim((string)($_POST['companies'] ?? $_GET['companies'] ?? '*'));
+            $typesRaw     = trim((string)($_POST['types'] ?? $_GET['types'] ?? '*'));
+            $split = fn($s) => ($s === '' || $s === '*') ? ['*'] : array_values(array_filter(array_map('trim', explode(',', $s))));
+            notify_prefs_set((int)$u['id'], [
+                'email_enabled' => !in_array(strtolower((string)($_POST['email_enabled'] ?? $_GET['email_enabled'] ?? '1')), ['0','false','no',''], true),
+                'companies'     => $split($companiesRaw),
+                'types'         => $split($typesRaw),
+            ]);
+            jsonResponse(['success' => true, 'prefs' => notify_prefs_get((int)$u['id'])]);
+        }
         case 'me': {
             $u = current_user();
             if (!$u) jsonResponse(['success' => true, 'authenticated' => false]);
-            $accts = accounts_for_user((int)$u['id']);
+            $staff = user_is_staff($u);
+            $accts = $staff ? accounts_all() : accounts_for_user((int)$u['id']);
             jsonResponse([
                 'success' => true, 'authenticated' => true, 'user' => user_public($u),
+                'is_staff' => $staff,
                 'accounts' => array_map(fn($a) => ['vat' => $a['vat'], 'label' => $a['label'] ?: $a['vat']], $accts),
                 'active' => defined('COMPANY_VAT') ? COMPANY_VAT : '',
             ]);
@@ -2901,7 +3038,7 @@ if ($authAction !== '') {
         case 'admin_users': case 'admin_approve': case 'admin_set_status':
         case 'admin_reset_pw': case 'admin_add_account': case 'admin_update_account':
         case 'admin_delete_account': case 'admin_user_accounts': case 'admin_create_user':
-        case 'admin_accounts': {
+        case 'admin_accounts': case 'admin_invite': case 'admin_set_role': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             switch ($authAction) {
                 case 'admin_users':
@@ -2913,12 +3050,38 @@ if ($authAction !== '') {
                     if ($r['success']) user_update((int)$r['id'], ['status' => 'active']);   // admin-created = active
                     jsonResponse($r);
                 }
-                case 'admin_approve':
-                    user_update((int)($_POST['user_id'] ?? 0), ['status' => 'active']);
+                case 'admin_invite': {
+                    $me = current_user();
+                    jsonResponse(auth_invite(
+                        trim($_POST['email'] ?? ''),
+                        trim($_POST['role'] ?? 'editor'),
+                        trim($_POST['name'] ?? $_POST['business_name'] ?? ''),
+                        (int)($me['id'] ?? 0)
+                    ));
+                }
+                case 'admin_set_role': {
+                    $uid = (int)($_POST['user_id'] ?? 0);
+                    $role = in_array($_POST['role'] ?? '', ['master','editor','business'], true) ? $_POST['role'] : 'business';
+                    $me = current_user();
+                    if ($uid === (int)($me['id'] ?? 0)) jsonError('Δεν μπορείτε να αλλάξετε τον δικό σας ρόλο');
+                    user_update($uid, ['role' => $role]);
                     jsonResponse(['success' => true]);
-                case 'admin_set_status':
-                    user_update((int)($_POST['user_id'] ?? 0), ['status' => in_array($_POST['status'] ?? '', ['active','pending','disabled'], true) ? $_POST['status'] : 'pending']);
+                }
+                case 'admin_approve': {
+                    $uid = (int)($_POST['user_id'] ?? 0);
+                    user_update($uid, ['status' => 'active']);
+                    $tu = user_by_id($uid);
+                    if ($tu) auth_email_account_approved($tu['email'], $tu['business_name']);
                     jsonResponse(['success' => true]);
+                }
+                case 'admin_set_status': {
+                    $uid = (int)($_POST['user_id'] ?? 0);
+                    $newSt = in_array($_POST['status'] ?? '', ['active','pending','disabled'], true) ? $_POST['status'] : 'pending';
+                    $prev = user_by_id($uid);
+                    user_update($uid, ['status' => $newSt]);
+                    if ($newSt === 'active' && $prev && $prev['status'] !== 'active') auth_email_account_approved($prev['email'], $prev['business_name']);
+                    jsonResponse(['success' => true]);
+                }
                 case 'admin_reset_pw': {
                     $uid = (int)($_POST['user_id'] ?? 0);
                     $token = bin2hex(random_bytes(24));
@@ -2942,9 +3105,99 @@ if ($authAction !== '') {
     }
 }
 
+// ---- SERVICE (SCHEDULER) AUTH — loopback only (TODO 90) --------------------
+// The background runner (scheduler.php) replays queued issues over loopback HTTP.
+// It presents SCHED_TOKEN + the owning user id; we establish that user's session
+// and resolve the requested AADE account, then fall through to the normal issue
+// dispatch below. Strictly limited to loopback callers.
+$schedTok = (string)($_POST['sched_token'] ?? $_GET['sched_token'] ?? '');
+if ($schedTok !== '' && defined('SCHED_TOKEN') && SCHED_TOKEN !== '' && hash_equals((string)SCHED_TOKEN, $schedTok)) {
+    $remote     = $_SERVER['REMOTE_ADDR'] ?? '';
+    $isLoopback = in_array($remote, ['127.0.0.1', '::1', ''], true);
+    $sUid       = (int)($_POST['sched_uid'] ?? $_GET['sched_uid'] ?? 0);
+    if ($isLoopback && $sUid > 0) {
+        $su = user_by_id($sUid);
+        if ($su && $su['status'] !== 'disabled') {
+            $_SESSION['uid'] = $sUid;
+            $GLOBALS['__issueSource'] = 'scheduled';
+            if (!defined('COMPANY_VAT')) auth_resolve_account();   // resolves ?account=
+        }
+    }
+}
+
 // ---- LOGIN GATE: everything past here needs an authenticated user ----------
 $__user = current_user();
 if (!$__user) jsonError('Απαιτείται σύνδεση', 401);
+
+// ===========================================================================
+// LOCAL ENDPOINTS THAT NEED ONLY A LOGIN (no AADE session): issuance
+// notifications + scheduled-jobs management. These run BEFORE the AADE gate so
+// a master admin WITHOUT a linked AADE account can still use them.
+// Scope: master admins see every account ('' scope); a business sees its own.
+// ===========================================================================
+$__isStaff    = user_is_staff($__user);      // master|editor → all companies
+$__acctScope  = $__isStaff ? '' : (defined('COMPANY_VAT') ? COMPANY_VAT : '__none__');
+
+// --- Notifications (TODO 91) ---
+if (!empty($_GET['notif_count'] ?? $_POST['notif_count'] ?? '')) {
+    jsonResponse(['success' => true, 'unread' => notifications_unread_count($__acctScope)]);
+}
+if (!empty($_GET['notifications'] ?? $_POST['notifications'] ?? '')) {
+    $unreadOnly = !empty($_GET['unread'] ?? $_POST['unread'] ?? '');
+    $limit = min(500, max(1, (int)($_GET['limit'] ?? $_POST['limit'] ?? 200)));
+    jsonResponse([
+        'success' => true,
+        'scope'   => $__isStaff ? 'all' : $__acctScope,
+        'unread'  => notifications_unread_count($__acctScope),
+        'items'   => notifications_list($__acctScope, $unreadOnly, $limit),
+    ]);
+}
+if (!empty($_GET['notif_read'] ?? $_POST['notif_read'] ?? '')) {
+    notification_mark_read((int)($_GET['id'] ?? $_POST['id'] ?? 0), $__acctScope);
+    jsonResponse(['success' => true, 'unread' => notifications_unread_count($__acctScope)]);
+}
+if (!empty($_GET['notif_read_all'] ?? $_POST['notif_read_all'] ?? '')) {
+    notifications_mark_all_read($__acctScope);
+    jsonResponse(['success' => true, 'unread' => 0]);
+}
+
+// --- Scheduled jobs (TODO 90) ---
+if (!empty($_GET['sched_list'] ?? $_POST['sched_list'] ?? '')) {
+    jsonResponse(['success' => true, 'jobs' => sched_list($__acctScope)]);
+}
+if (!empty($_GET['sched_cancel'] ?? $_POST['sched_cancel'] ?? '')) {
+    $ok = sched_cancel((int)($_GET['id'] ?? $_POST['id'] ?? 0), $__isStaff ? '' : $__acctScope);
+    jsonResponse(['success' => $ok]);
+}
+if (!empty($_GET['sched_add'] ?? $_POST['sched_add'] ?? '')) {
+    if (!defined('SCHED_TOKEN') || SCHED_TOKEN === '') {
+        jsonError('Ο χρονοπρογραμματισμός δεν είναι ενεργοποιημένος (ορίστε SCHED_TOKEN στο config.php).', 409);
+    }
+    if (!defined('COMPANY_VAT')) {
+        jsonError('Επιλέξτε λογαριασμό επιχείρησης πριν τον προγραμματισμό.', 409);
+    }
+    $payloadRaw = (string)($_POST['sched_payload'] ?? $_GET['sched_payload'] ?? '');
+    $payload = json_decode($payloadRaw, true);
+    if (!is_array($payload) || empty($payload)) jsonError('Άκυρο ή κενό περιεχόμενο (sched_payload)');
+    $runAt = trim((string)($_POST['run_at'] ?? $_GET['run_at'] ?? ''));
+    // Accept 'YYYY-MM-DD HH:MM' or ISO 'YYYY-MM-DDTHH:MM'; normalise to 'Y-m-d H:i:s'.
+    $runAt = str_replace('T', ' ', $runAt);
+    $ts = strtotime($runAt);
+    if ($ts === false) jsonError('Άκυρη ημερομηνία/ώρα (run_at)');
+    $runAtNorm = date('Y-m-d H:i:s', $ts);
+    $rec = trim((string)($_POST['recurrence'] ?? $_GET['recurrence'] ?? 'none'));
+    // The runner must issue for real — force live=1 into the replayed params.
+    $payload['live'] = 1;
+    $id = sched_add(COMPANY_VAT, (int)$__user['id'], [
+        'title'      => (string)($_POST['title'] ?? $_GET['title'] ?? ''),
+        'kind'       => (string)($_POST['kind'] ?? $_GET['kind'] ?? 'invoice'),
+        'payload'    => $payload,
+        'run_at'     => $runAtNorm,
+        'recurrence' => $rec,
+    ]);
+    jsonResponse(['success' => true, 'id' => $id, 'run_at' => $runAtNorm, 'recurrence' => $rec]);
+}
+
 // A logged-in business user with no linked AADE account yet can't hit AADE.
 if (!defined('COMPANY_VAT')) {
     jsonError('Δεν έχει συνδεθεί λογαριασμός AADE στον χρήστη σας (εκκρεμεί ρύθμιση από τον διαχειριστή).', 409);
@@ -3096,11 +3349,14 @@ $custDelivSet        = !empty(($_GET['save_cust_deliv']          ?? $_POST['save
 // LOCAL-ONLY actions (no e-timologio login needed → fast)
 // ----------------------------------------------------------------------------
 if ($listAccountsFlag) {
+    // Staff (accountant/admin) switch among ALL companies; a business user only
+    // among the companies it owns.
+    $src = user_is_staff($__user) ? accounts_all() : accounts_for_user((int)$__user['id']);
     $out = [];
-    foreach (accounts_for_user((int)$__user['id']) as $a) {
+    foreach ($src as $a) {
         $out[] = ['label' => $a['label'] ?: $a['vat'], 'vat' => (string)$a['vat']];
     }
-    jsonResponse(['success' => true, 'active' => COMPANY_VAT, 'accounts' => $out]);
+    jsonResponse(['success' => true, 'active' => COMPANY_VAT, 'active_staff' => user_is_staff($__user), 'accounts' => $out]);
 }
 
 // Instant cache read (no AADE login) — UI renders from this immediately
@@ -3350,6 +3606,7 @@ if ($creditNoteFlag || $cancelMark !== '') {
     if ($cancelMark === '') { curl_close($ch); jsonError('Λείπει το cancel_mark (ΜΑΡΚ αρχικού παραστατικού)'); }
     $result = createCreditNote($ch, $cancelMark, $live, $creditReason, $descr, $amount, $previewFlag, $issueLang, $reuseTempId);
     curl_close($ch);
+    if ($live && !$previewFlag) notifyIssue($result, ['doc_type' => (string)($result['type'] ?? '50'), 'doc_label' => 'Πιστωτικό / Ακύρωση', 'buyer_vat' => $afm, 'buyer_name' => $name]);
     jsonResponse($result);
 }
 
@@ -3472,7 +3729,10 @@ if (!empty($_GET['bulk_issue'] ?? $_POST['bulk_issue'] ?? '')) {
         ];
         if ($r['success'] ?? false) {
             $okCount++;
-            if ($bulkLive) { $row['mark'] = $r['mark'] ?? ''; $row['aa'] = $r['aa'] ?? ''; }
+            if ($bulkLive) {
+                $row['mark'] = $r['mark'] ?? ''; $row['aa'] = $r['aa'] ?? '';
+                notifyIssue($r, ['doc_type' => $bType, 'series' => $bSeries, 'buyer_vat' => $bAfm, 'buyer_name' => $bName, 'source' => 'bulk']);
+            }
             else { $row['temp_id'] = $r['temp_id'] ?? ''; }
         } else {
             $row['error'] = $r['error'] ?? 'Άγνωστο σφάλμα';
@@ -3591,6 +3851,7 @@ if ($linesJson !== '') {
         trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr, $issueSeries, $taxesArr, $previewFlag, $issueLang, [], $reuseTempId
     );
     curl_close($ch);
+    if ($live && !$previewFlag) notifyIssue($result, ['doc_type' => $type, 'series' => $issueSeries, 'buyer_vat' => $afm, 'buyer_name' => $name]);
     jsonResponse($result);
 }
 
@@ -3880,6 +4141,9 @@ if ($amount > 0) {
         $afm, $name, $address, $city, $zip, $country, $branch,
         $withholdingCategory, $withholdingAmount, $live, '', '', -1.0, 0, [], [], $issueSeries
     );
+    curl_close($ch);
+    if ($live) notifyIssue($result, ['doc_type' => $type, 'series' => $issueSeries, 'buyer_vat' => $afm, 'buyer_name' => $name]);
+    jsonResponse($result);
 } else {
     // Customer lookup flow
     if ($afm === '') jsonError('Missing AFM parameter');

@@ -81,9 +81,19 @@ function localdb(): \PDO {
             business_name TEXT NOT NULL DEFAULT '',
             reset_token   TEXT NOT NULL DEFAULT '',
             reset_expires INTEGER NOT NULL DEFAULT 0,
+            totp_secret   TEXT NOT NULL DEFAULT '',   -- encrypted Base32 secret
+            totp_enabled  INTEGER NOT NULL DEFAULT 0,
+            invited_by    INTEGER NOT NULL DEFAULT 0,
             created_at    TEXT NOT NULL DEFAULT (datetime('now'))
         )
     ");
+    // Upgrade path for DBs created before 2FA / invitations / notify-prefs existed.
+    foreach ([
+        "ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN invited_by INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN notify_prefs TEXT NOT NULL DEFAULT ''",   // encrypted JSON
+    ] as $ddl) { try { $pdo->exec($ddl); } catch (\Throwable $e) {} }
 
     // AADE (e-timologio) credentials per business user. vat/label plaintext (used
     // for scoping local data + cookie file + account switching); the e-timologio
@@ -101,6 +111,59 @@ function localdb(): \PDO {
     ");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_acc_user ON aade_accounts(user_id)");
 
+    // --- Scheduled issuance (χρονοπρογραμματισμός) ---------------------------
+    // A persistent job store: each row is a παραστατικό (single or bulk) queued
+    // to be issued automatically at `run_at`. The `payload` is the ENCRYPTED set
+    // of request params the runner replays against the bridge (see scheduler.php).
+    // run_at / next_run_at are 'Y-m-d H:i:s' in Europe/Athens local time.
+    // status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'.
+    // recurrence: 'none' | 'daily' | 'weekly' | 'monthly'.
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_vat  TEXT NOT NULL,
+            user_id      INTEGER NOT NULL,
+            title        TEXT NOT NULL DEFAULT '',   -- encrypted (human label)
+            kind         TEXT NOT NULL DEFAULT 'invoice',
+            payload      TEXT NOT NULL DEFAULT '',    -- encrypted JSON of request params
+            run_at       TEXT NOT NULL,
+            recurrence   TEXT NOT NULL DEFAULT 'none',
+            status       TEXT NOT NULL DEFAULT 'pending',
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            last_run_at  TEXT NOT NULL DEFAULT '',
+            last_result  TEXT NOT NULL DEFAULT '',    -- encrypted JSON (mark/aa or error)
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_jobs(status, run_at)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sched_acc ON scheduled_jobs(account_vat)");
+
+    // --- Issuance notifications (ειδοποιήσεις λογιστή/admin) -----------------
+    // One row per successfully issued παραστατικό (ΜΑΡΚ obtained), EXCLUDING
+    // δελτία αποστολής (9.x). Surfaced to the master admin (all accounts) and to
+    // the business itself (own account). Buyer name / amount encrypted at rest.
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS issue_notifications (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_vat   TEXT NOT NULL,
+            actor_user_id INTEGER NOT NULL DEFAULT 0,
+            actor_email   TEXT NOT NULL DEFAULT '',
+            actor_name    TEXT NOT NULL DEFAULT '',
+            doc_type      TEXT NOT NULL DEFAULT '',
+            doc_label     TEXT NOT NULL DEFAULT '',
+            series        TEXT NOT NULL DEFAULT '',
+            aa            TEXT NOT NULL DEFAULT '',
+            mark          TEXT NOT NULL DEFAULT '',
+            buyer_vat     TEXT NOT NULL DEFAULT '',
+            buyer_name    TEXT NOT NULL DEFAULT '',   -- encrypted
+            amount_total  TEXT NOT NULL DEFAULT '',    -- encrypted
+            source        TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'scheduled' | 'bulk'
+            is_read       INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_notif_acc ON issue_notifications(account_vat, is_read)");
+
     return $pdo;
 }
 
@@ -113,6 +176,7 @@ function user_public(array $r): array {
         'role'          => $r['role'],
         'status'        => $r['status'],
         'business_name' => $r['business_name'],
+        'totp_enabled'  => (int)($r['totp_enabled'] ?? 0),
         'created_at'    => $r['created_at'] ?? '',
     ];
 }
@@ -142,7 +206,7 @@ function user_create(string $email, string $passwordHash, string $role, string $
 }
 
 function user_update(int $id, array $fields): void {
-    $allowed = ['password_hash', 'role', 'status', 'business_name', 'reset_token', 'reset_expires', 'email'];
+    $allowed = ['password_hash', 'role', 'status', 'business_name', 'reset_token', 'reset_expires', 'email', 'totp_secret', 'totp_enabled', 'invited_by'];
     $sets = []; $args = [':id' => $id];
     foreach ($fields as $k => $v) {
         if (!in_array($k, $allowed, true)) continue;
@@ -194,6 +258,22 @@ function accounts_all(): array {
         $a['owner_email'] = $r['owner_email'] ?? '';
         return $a;
     }, $rows);
+}
+
+// All linked AADE businesses WITH credentials — for internal account resolution
+// by staff (accountant/admin) acting on any company. NEVER expose to the UI.
+function accounts_all_full(): array {
+    $rows = localdb()->query("SELECT * FROM aade_accounts ORDER BY id ASC")->fetchAll();
+    return array_map('account_row', $rows);
+}
+
+function account_by_vat(string $vat): ?array {
+    $vat = preg_replace('/\D/', '', $vat);
+    if ($vat === '') return null;
+    $st = localdb()->prepare("SELECT * FROM aade_accounts WHERE vat = :v ORDER BY id ASC LIMIT 1");
+    $st->execute([':v' => $vat]);
+    $r = $st->fetch();
+    return $r ? account_row($r) : null;
 }
 
 function account_get(int $id): ?array {
@@ -379,4 +459,279 @@ function customer_deliv_set(string $accountVat, string $customerVat, array $d): 
         ':cv'  => $customerVat,
         ':dm'  => enc(json_encode($d, JSON_UNESCAPED_UNICODE)),
     ]);
+}
+
+// --- Scheduled issuance jobs -------------------------------------------------
+
+function sched_row(array $r): array {
+    $result = $r['last_result'] !== '' ? json_decode(dec($r['last_result']), true) : null;
+    return [
+        'id'          => (int)$r['id'],
+        'account_vat' => $r['account_vat'],
+        'user_id'     => (int)$r['user_id'],
+        'title'       => $r['title'] !== '' ? dec($r['title']) : '',
+        'kind'        => $r['kind'],
+        'run_at'      => $r['run_at'],
+        'recurrence'  => $r['recurrence'],
+        'status'      => $r['status'],
+        'attempts'    => (int)$r['attempts'],
+        'last_run_at' => $r['last_run_at'],
+        'last_result' => is_array($result) ? $result : null,
+        'created_at'  => $r['created_at'],
+    ];
+}
+
+function sched_add(string $accountVat, int $userId, array $d): int {
+    $st = localdb()->prepare("
+        INSERT INTO scheduled_jobs (account_vat, user_id, title, kind, payload, run_at, recurrence, status)
+        VALUES (:acc, :uid, :title, :kind, :payload, :run_at, :rec, 'pending')
+    ");
+    $st->execute([
+        ':acc'     => $accountVat,
+        ':uid'     => $userId,
+        ':title'   => enc(trim((string)($d['title'] ?? ''))),
+        ':kind'    => trim((string)($d['kind'] ?? 'invoice')),
+        ':payload' => enc(json_encode($d['payload'] ?? [], JSON_UNESCAPED_UNICODE)),
+        ':run_at'  => trim((string)($d['run_at'] ?? '')),
+        ':rec'     => in_array($d['recurrence'] ?? 'none', ['none','daily','weekly','monthly'], true) ? $d['recurrence'] : 'none',
+    ]);
+    return (int)localdb()->lastInsertId();
+}
+
+// List jobs for the UI. Master (accountVat === '') sees every account's jobs.
+function sched_list(string $accountVat = '', int $limit = 500): array {
+    if ($accountVat === '') {
+        $st = localdb()->prepare("SELECT * FROM scheduled_jobs ORDER BY (status='pending') DESC, run_at DESC LIMIT :l");
+        $st->bindValue(':l', $limit, \PDO::PARAM_INT);
+    } else {
+        $st = localdb()->prepare("SELECT * FROM scheduled_jobs WHERE account_vat = :acc ORDER BY (status='pending') DESC, run_at DESC LIMIT :l");
+        $st->bindValue(':acc', $accountVat);
+        $st->bindValue(':l', $limit, \PDO::PARAM_INT);
+    }
+    $st->execute();
+    return array_map('sched_row', $st->fetchAll());
+}
+
+// Full row incl. decrypted payload — used by the runner only.
+function sched_get_full(int $id): ?array {
+    $st = localdb()->prepare("SELECT * FROM scheduled_jobs WHERE id = :id");
+    $st->execute([':id' => $id]);
+    $r = $st->fetch();
+    if (!$r) return null;
+    $out = sched_row($r);
+    $out['payload'] = $r['payload'] !== '' ? (json_decode(dec($r['payload']), true) ?: []) : [];
+    return $out;
+}
+
+// Due jobs across all accounts (runner). $now = 'Y-m-d H:i:s'.
+function sched_due(string $now, int $limit = 100): array {
+    $st = localdb()->prepare("
+        SELECT * FROM scheduled_jobs
+        WHERE status = 'pending' AND run_at <= :now
+        ORDER BY run_at ASC LIMIT :l
+    ");
+    $st->bindValue(':now', $now);
+    $st->bindValue(':l', $limit, \PDO::PARAM_INT);
+    $st->execute();
+    return array_map(function ($r) {
+        $out = sched_row($r);
+        $out['payload'] = $r['payload'] !== '' ? (json_decode(dec($r['payload']), true) ?: []) : [];
+        return $out;
+    }, $st->fetchAll());
+}
+
+function sched_set_status(int $id, string $status): void {
+    $st = localdb()->prepare("UPDATE scheduled_jobs SET status = :s WHERE id = :id");
+    $st->execute([':s' => $status, ':id' => $id]);
+}
+
+// Record a run outcome. If $nextRunAt is given the job is re-queued (recurrence);
+// otherwise it lands on the terminal $status ('done' | 'failed').
+function sched_record_result(int $id, string $status, array $result, ?string $nextRunAt = null): void {
+    if ($nextRunAt !== null) {
+        $st = localdb()->prepare("
+            UPDATE scheduled_jobs
+               SET status='pending', attempts = attempts + 1, last_run_at = :lr,
+                   last_result = :res, run_at = :next
+             WHERE id = :id
+        ");
+        $st->execute([
+            ':lr' => date('Y-m-d H:i:s'), ':res' => enc(json_encode($result, JSON_UNESCAPED_UNICODE)),
+            ':next' => $nextRunAt, ':id' => $id,
+        ]);
+        return;
+    }
+    $st = localdb()->prepare("
+        UPDATE scheduled_jobs
+           SET status = :s, attempts = attempts + 1, last_run_at = :lr, last_result = :res
+         WHERE id = :id
+    ");
+    $st->execute([
+        ':s' => $status, ':lr' => date('Y-m-d H:i:s'),
+        ':res' => enc(json_encode($result, JSON_UNESCAPED_UNICODE)), ':id' => $id,
+    ]);
+}
+
+// Cancel a pending job (scoped by account for safety; master passes '' to skip scope).
+function sched_cancel(int $id, string $accountVat = ''): bool {
+    if ($accountVat === '') {
+        $st = localdb()->prepare("UPDATE scheduled_jobs SET status='cancelled' WHERE id = :id AND status='pending'");
+        $st->execute([':id' => $id]);
+    } else {
+        $st = localdb()->prepare("UPDATE scheduled_jobs SET status='cancelled' WHERE id = :id AND account_vat = :acc AND status='pending'");
+        $st->execute([':id' => $id, ':acc' => $accountVat]);
+    }
+    return $st->rowCount() > 0;
+}
+
+// Compute the next run for a recurring job from a base 'Y-m-d H:i:s'. Returns
+// null for non-recurring jobs.
+function sched_next_run(string $baseRunAt, string $recurrence): ?string {
+    if ($recurrence === 'none' || $recurrence === '') return null;
+    $ts = strtotime($baseRunAt);
+    if ($ts === false) return null;
+    $map = ['daily' => '+1 day', 'weekly' => '+1 week', 'monthly' => '+1 month'];
+    if (!isset($map[$recurrence])) return null;
+    // Advance until strictly in the future so a long-overdue job doesn't fire in a loop.
+    $next = $ts;
+    $guard = 0;
+    do { $next = strtotime($map[$recurrence], $next); $guard++; }
+    while ($next !== false && $next <= time() && $guard < 4000);
+    return $next ? date('Y-m-d H:i:s', $next) : null;
+}
+
+// --- Issuance notifications --------------------------------------------------
+
+function notification_row(array $r): array {
+    return [
+        'id'           => (int)$r['id'],
+        'account_vat'  => $r['account_vat'],
+        'actor_email'  => $r['actor_email'],
+        'actor_name'   => $r['actor_name'],
+        'doc_type'     => $r['doc_type'],
+        'doc_label'    => $r['doc_label'],
+        'series'       => $r['series'],
+        'aa'           => $r['aa'],
+        'mark'         => $r['mark'],
+        'buyer_vat'    => $r['buyer_vat'],
+        'buyer_name'   => $r['buyer_name'] !== '' ? dec($r['buyer_name']) : '',
+        'amount_total' => $r['amount_total'] !== '' ? round(dec_num($r['amount_total']), 2) : null,
+        'source'       => $r['source'],
+        'is_read'      => (int)$r['is_read'],
+        'created_at'   => $r['created_at'],
+    ];
+}
+
+function notification_add(string $accountVat, array $d): int {
+    $st = localdb()->prepare("
+        INSERT INTO issue_notifications
+            (account_vat, actor_user_id, actor_email, actor_name, doc_type, doc_label,
+             series, aa, mark, buyer_vat, buyer_name, amount_total, source)
+        VALUES (:acc, :uid, :ae, :an, :dt, :dl, :se, :aa, :mk, :bv, :bn, :amt, :src)
+    ");
+    $st->execute([
+        ':acc' => $accountVat,
+        ':uid' => (int)($d['actor_user_id'] ?? 0),
+        ':ae'  => trim((string)($d['actor_email'] ?? '')),
+        ':an'  => trim((string)($d['actor_name'] ?? '')),
+        ':dt'  => trim((string)($d['doc_type'] ?? '')),
+        ':dl'  => trim((string)($d['doc_label'] ?? '')),
+        ':se'  => trim((string)($d['series'] ?? '')),
+        ':aa'  => trim((string)($d['aa'] ?? '')),
+        ':mk'  => trim((string)($d['mark'] ?? '')),
+        ':bv'  => trim((string)($d['buyer_vat'] ?? '')),
+        ':bn'  => enc(trim((string)($d['buyer_name'] ?? ''))),
+        ':amt' => enc_num(round((float)($d['amount_total'] ?? 0), 2)),
+        ':src' => trim((string)($d['source'] ?? 'manual')),
+    ]);
+    return (int)localdb()->lastInsertId();
+}
+
+// Master (accountVat === '') sees all accounts; a business sees its own account.
+function notifications_list(string $accountVat = '', bool $unreadOnly = false, int $limit = 200): array {
+    $sql = "SELECT * FROM issue_notifications";
+    $conds = []; $args = [];
+    if ($accountVat !== '') { $conds[] = "account_vat = :acc"; $args[':acc'] = $accountVat; }
+    if ($unreadOnly)        { $conds[] = "is_read = 0"; }
+    if ($conds) $sql .= " WHERE " . implode(' AND ', $conds);
+    $sql .= " ORDER BY id DESC LIMIT :l";
+    $st = localdb()->prepare($sql);
+    foreach ($args as $k => $v) $st->bindValue($k, $v);
+    $st->bindValue(':l', $limit, \PDO::PARAM_INT);
+    $st->execute();
+    return array_map('notification_row', $st->fetchAll());
+}
+
+function notifications_unread_count(string $accountVat = ''): int {
+    if ($accountVat === '') {
+        return (int)localdb()->query("SELECT COUNT(*) FROM issue_notifications WHERE is_read = 0")->fetchColumn();
+    }
+    $st = localdb()->prepare("SELECT COUNT(*) FROM issue_notifications WHERE account_vat = :acc AND is_read = 0");
+    $st->execute([':acc' => $accountVat]);
+    return (int)$st->fetchColumn();
+}
+
+function notification_mark_read(int $id, string $accountVat = ''): void {
+    if ($accountVat === '') {
+        $st = localdb()->prepare("UPDATE issue_notifications SET is_read = 1 WHERE id = :id");
+        $st->execute([':id' => $id]);
+    } else {
+        $st = localdb()->prepare("UPDATE issue_notifications SET is_read = 1 WHERE id = :id AND account_vat = :acc");
+        $st->execute([':id' => $id, ':acc' => $accountVat]);
+    }
+}
+
+function notifications_mark_all_read(string $accountVat = ''): void {
+    if ($accountVat === '') {
+        localdb()->exec("UPDATE issue_notifications SET is_read = 1 WHERE is_read = 0");
+    } else {
+        $st = localdb()->prepare("UPDATE issue_notifications SET is_read = 1 WHERE account_vat = :acc AND is_read = 0");
+        $st->execute([':acc' => $accountVat]);
+    }
+}
+
+// --- Per-user email notification preferences (staff/admin) ------------------
+// Which companies + movement types a staff member wants EMAILED about. Stored as
+// encrypted JSON on the user row. Shape:
+//   { email_enabled: bool,
+//     companies: ["*"] | ["999999999", …],   // "*"/empty ⇒ all companies
+//     types:     ["*"] | subset of invoice|receipt|credit }  // "*"/empty ⇒ all
+// Default (unset) = receive everything.
+function notify_prefs_default(): array {
+    return ['email_enabled' => true, 'companies' => ['*'], 'types' => ['*']];
+}
+
+function notify_prefs_get(int $userId): array {
+    $st = localdb()->prepare("SELECT notify_prefs FROM users WHERE id = :id");
+    $st->execute([':id' => $userId]);
+    $raw = $st->fetchColumn();
+    if ($raw === false || $raw === null || $raw === '') return notify_prefs_default();
+    $json = dec($raw);
+    $d = $json !== '' ? json_decode($json, true) : null;
+    if (!is_array($d)) return notify_prefs_default();
+    return [
+        'email_enabled' => array_key_exists('email_enabled', $d) ? (bool)$d['email_enabled'] : true,
+        'companies'     => is_array($d['companies'] ?? null) ? array_values($d['companies']) : ['*'],
+        'types'         => is_array($d['types'] ?? null) ? array_values($d['types']) : ['*'],
+    ];
+}
+
+function notify_prefs_set(int $userId, array $prefs): void {
+    $clean = [
+        'email_enabled' => (bool)($prefs['email_enabled'] ?? true),
+        'companies'     => is_array($prefs['companies'] ?? null) && $prefs['companies'] ? array_values(array_map('strval', $prefs['companies'])) : ['*'],
+        'types'         => is_array($prefs['types'] ?? null) && $prefs['types'] ? array_values(array_map('strval', $prefs['types'])) : ['*'],
+    ];
+    $st = localdb()->prepare("UPDATE users SET notify_prefs = :p WHERE id = :id");
+    $st->execute([':p' => enc(json_encode($clean, JSON_UNESCAPED_UNICODE)), ':id' => $userId]);
+}
+
+// Does a staff member's prefs opt them in to an email for this company + movement?
+function notify_prefs_match(array $prefs, string $accountVat, string $category): bool {
+    if (empty($prefs['email_enabled'])) return false;
+    $companies = $prefs['companies'] ?? ['*'];
+    if (!in_array('*', $companies, true) && !in_array($accountVat, $companies, true)) return false;
+    $types = $prefs['types'] ?? ['*'];
+    if (!in_array('*', $types, true) && !in_array($category, $types, true)) return false;
+    return true;
 }

@@ -29,6 +29,12 @@ $__business = $__user['business_name'];
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>e-Timologio Pro</title>
+<link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="96x96" href="assets/icons/favicon-96.png">
+<link rel="icon" href="assets/icons/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
+<link rel="manifest" href="assets/icons/site.webmanifest">
+<meta name="theme-color" content="#0b1220">
 <style>
   :root{
     --bg:#0b1220; --panel:#131f33; --panel2:#18263d; --line:#2b3b54;
@@ -58,6 +64,8 @@ $__business = $__user['business_name'];
   /* Theme toggle switch (fixed bottom-left, clear of content) */
   /* Sidebar toggles (theme + tooltips) — live inside the aside, no overlap */
   .side-controls{padding:10px 12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:9px}
+  .side-actions{display:flex;flex-direction:column;gap:7px;padding-bottom:9px;margin-bottom:2px;border-bottom:1px solid var(--line)}
+  .side-actions .side-act{width:100%;text-align:left;justify-content:flex-start}
   .side-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
   .side-toggle:hover{color:var(--txt)}
   .side-toggle .tt-switch{position:relative;width:40px;height:22px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);flex:0 0 auto}
@@ -217,6 +225,34 @@ $__business = $__user['business_name'];
   .ac-row:hover,.ac-row.sel{background:var(--accent2);color:#04222f}
   .ac-row small{color:var(--muted)} .ac-row:hover small,.ac-row.sel small{color:#04343f}
   .ln-desc{font-size:11px;color:var(--muted);margin-top:2px}
+  /* Notifications bell + feed */
+  .bell-badge{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;padding:0 4px;border-radius:999px;
+    background:var(--bad);color:#fff;font-size:10px;font-weight:700;line-height:17px;text-align:center;box-shadow:0 0 0 2px var(--bg)}
+  .notif-panel{position:absolute;top:38px;right:0;width:380px;max-height:70vh;overflow:auto;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);z-index:70}
+  .notif-head{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);border-radius:12px 12px 0 0}
+  .notif-list{padding:4px}
+  .notif-item{padding:9px 10px;border-radius:9px;border:1px solid transparent;cursor:default}
+  .notif-item:hover{background:var(--hover)}
+  .notif-item.unread{background:var(--chip);border-color:var(--line)}
+  .notif-item .nt-top{display:flex;align-items:baseline;gap:6px}
+  .notif-item .nt-amt{margin-left:auto;font-weight:700;color:var(--accent)}
+  .notif-item .nt-sub{font-size:11px;color:var(--muted);margin-top:2px}
+  .notif-item .nt-mark{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;color:var(--muted);word-break:break-all}
+  .notif-empty{padding:18px;text-align:center;color:var(--muted)}
+  select.rolesel{padding:3px 6px;font-size:12px;border-radius:8px;background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
+  .np-check{display:flex;align-items:center;gap:8px;padding:4px 2px;cursor:pointer;font-size:13px}
+  .np-check input{width:16px;height:16px;accent-color:var(--accent)}
+  .sched-status{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .sched-status.pending{background:#0b2942;color:var(--accent)}
+  .sched-status.done{background:#052e1b;color:var(--ok)}
+  .sched-status.failed{background:#3a0d12;color:var(--bad)}
+  .sched-status.running{background:#3a2c07;color:var(--warn)}
+  .sched-status.cancelled{background:var(--panel2);color:var(--muted)}
+  :root[data-theme="light"] .sched-status.pending{background:#e0f2fe;color:#075985}
+  :root[data-theme="light"] .sched-status.done{background:#dcfce7;color:#166534}
+  :root[data-theme="light"] .sched-status.failed{background:#fee2e2;color:#b91c1c}
+  :root[data-theme="light"] .sched-status.running{background:#fef3c7;color:#92400e}
 </style>
 </head>
 <body>
@@ -233,6 +269,7 @@ $__business = $__user['business_name'];
       <div class="nav-item" data-view="series"><span class="ic">🔢</span> Σειρές</div>
       <div class="nav-item" data-view="drafts"><span class="ic">📝</span> Πρόχειρα</div>
       <div class="nav-item" data-view="cancel"><span class="ic">↩️</span> Ακύρωση</div>
+      <div class="nav-item" data-view="schedule"><span class="ic">⏰</span> Προγραμματισμός</div>
       <div class="nav-item" data-view="stats"><span class="ic">📊</span> Στατιστικά</div>
       <div class="nav-item" data-view="settings"><span class="ic">⚙️</span> Ρυθμίσεις</div>
       <?php if ($__role === 'master'): ?>
@@ -240,6 +277,10 @@ $__business = $__user['business_name'];
       <?php endif; ?>
     </nav>
     <div class="side-controls">
+      <div class="side-actions">
+        <button class="ghost sm side-act" id="btnTour" onclick="startTour()" data-tip="Γρήγορη ξενάγηση στην εφαρμογή">🧭 Ξενάγηση</button>
+        <button class="ghost sm side-act" id="btnManual" onclick="downloadManual()" data-tip="Κατέβασε το εγχειρίδιο χρήσης (PDF)">📄 Εγχειρίδιο</button>
+      </div>
       <div class="side-toggle" id="themeToggle" onclick="toggleTheme()" data-tip="Εναλλαγή φωτεινού / σκοτεινού θέματος">
         <span class="tt-switch"><span class="tt-knob" id="themeIco">🌙</span></span><span id="themeLbl">Σκούρο θέμα</span></div>
       <div class="side-toggle on" id="tipsToggle" onclick="toggleTips()" data-tip="Εμφάνιση/απόκρυψη επεξηγήσεων (tooltips)">
@@ -259,8 +300,15 @@ $__business = $__user['business_name'];
       <b><?= htmlspecialchars($__business ?: $__email, ENT_QUOTES) ?></b><br>
       <span class="muted"><?= htmlspecialchars($__email, ENT_QUOTES) ?><?= $__role==='master'?' · 🛡️ admin':'' ?></span>
     </span>
-    <button class="ghost sm" onclick="startTour()" data-tip="Γρήγορη ξενάγηση στην εφαρμογή" style="margin-left:6px">🧭 Ξενάγηση</button>
-    <button class="ghost sm" onclick="downloadManual()" data-tip="Κατέβασε το εγχειρίδιο χρήσης (PDF)">📄 Εγχειρίδιο</button>
+    <div class="bell-wrap" style="position:relative;margin-left:8px">
+      <button class="ghost sm bell-btn" onclick="toggleNotifPanel()" data-tip="Ειδοποιήσεις εκδόσεων παραστατικών" style="position:relative">🔔<span id="bellBadge" class="bell-badge" hidden>0</span></button>
+      <div id="notifPanel" class="notif-panel" hidden>
+        <div class="notif-head"><b>Ειδοποιήσεις</b><span class="grow"></span>
+          <button class="ghost sm" onclick="notifMarkAll()" title="Σήμανση όλων ως αναγνωσμένων">✓ Όλα</button>
+          <button class="ghost sm" onclick="loadNotifications()" title="Ανανέωση">↻</button></div>
+        <div id="notifList" class="notif-list"><div class="notif-empty">—</div></div>
+      </div>
+    </div>
     <button class="ghost sm" onclick="logout()" title="Αποσύνδεση" style="margin-left:6px">Έξοδος</button>
   </header>
 
@@ -474,6 +522,7 @@ $__business = $__user['business_name'];
             <button class="info" onclick="previewInvoice()" title="Αποθηκεύει το πρόχειρο ΚΑΙ δείχνει το PDF της ΑΑΔΕ — χωρίς υποβολή/ΜΑΡΚ. Επαναλαμβανόμενες προεπισκοπήσεις ενημερώνουν το ΙΔΙΟ πρόχειρο (δεν δημιουργούν νέο).">💾👁 Αποθήκευση &amp; Προεπισκόπηση</button>
             <button class="ghost sm" onclick="issueNewDraft()" title="Ξεκίνα νέο πρόχειρο (το επόμενο Αποθήκευση θα δημιουργήσει νέο ID)">🆕 Νέο</button>
             <div class="grow"></div>
+            <button class="tax" onclick="scheduleIssue('invoice')" title="Προγραμμάτισε την οριστική έκδοση για μελλοντική ημερομηνία/ώρα (με προαιρετική επανάληψη)">⏰ Προγραμματισμός</button>
             <button class="danger" onclick="confirmIssue()" title="ΟΡΙΣΤΙΚΗ υποβολή στην ΑΑΔΕ — το παραστατικό παίρνει ΜΑΡΚ και δεν αναιρείται">📤 Οριστική Έκδοση στην ΑΑΔΕ (ΜΑΡΚ)</button>
           </div>
         </div>
@@ -615,6 +664,7 @@ $__business = $__user['business_name'];
           <span class="hint" id="blkCount"></span>
           <div class="grow"></div>
           <button class="add" onclick="bulkRun(false)" title="Δημιουργία προχείρων για όλες τις γραμμές — χωρίς υποβολή/ΜΑΡΚ">💾 Δημιουργία προχείρων (όλα)</button>
+          <button class="tax" onclick="scheduleIssue('bulk')" title="Προγραμμάτισε την οριστική μαζική έκδοση για μελλοντική ημερομηνία/ώρα">⏰ Προγραμματισμός</button>
           <button class="danger" onclick="bulkRun(true)" title="ΟΡΙΣΤΙΚΗ μαζική έκδοση στην ΑΑΔΕ — κάθε παραστατικό παίρνει ΜΑΡΚ">📤 Οριστική έκδοση όλων (ΜΑΡΚ)</button>
         </div>
         <div id="blkResult" style="margin-top:14px"></div>
@@ -635,6 +685,69 @@ $__business = $__user['business_name'];
         <div id="cpResult" class="sub" style="margin-top:8px"></div>
       </div>
       <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🔐 Έλεγχος ταυτότητας δύο παραγόντων (2FA)</strong>
+          <span id="twofaState" class="pill">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">Προαιρετική προστασία: εκτός από τον κωδικό, θα ζητείται και ένας 6ψήφιος κωδικός από εφαρμογή authenticator (Google Authenticator, Authy, Microsoft Authenticator, 1Password κ.λπ.).</p>
+        <div id="twofaDisabled" style="display:none">
+          <button class="primary" onclick="start2fa()">Ενεργοποίηση 2FA</button>
+        </div>
+        <div id="twofaSetup" style="display:none;margin-top:12px">
+          <div class="row" style="gap:22px;align-items:flex-start;flex-wrap:wrap">
+            <div style="text-align:center">
+              <div id="twofaQr" style="background:#fff;padding:12px;border-radius:12px;display:inline-block;min-width:196px;min-height:196px"></div>
+              <div class="sub" style="margin-top:6px">Σκάναρε τον κωδικό QR</div>
+            </div>
+            <div style="flex:1;min-width:240px">
+              <p class="sub">Ή καταχώρησε χειροκίνητα αυτό το κλειδί στην εφαρμογή authenticator:</p>
+              <code id="twofaSecret" style="display:block;background:var(--panel2);border:1px solid var(--line);padding:8px 10px;border-radius:8px;word-break:break-all;letter-spacing:1px"></code>
+              <div class="field" style="margin-top:12px"><label>Κωδικός επιβεβαίωσης (6 ψηφία)</label>
+                <input id="twofaCode" inputmode="numeric" maxlength="6" placeholder="••••••" style="letter-spacing:6px;text-align:center;font-size:18px;max-width:160px"></div>
+              <div class="row" style="margin-top:10px">
+                <button class="primary" onclick="confirm2fa()">Επιβεβαίωση & ενεργοποίηση</button>
+                <button class="ghost" onclick="cancel2fa()">Άκυρο</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="twofaEnabled" style="display:none;margin-top:8px">
+          <p class="sub">Το 2FA είναι <b style="color:var(--ok)">ενεργό</b>. Για απενεργοποίηση δώσε τον τρέχοντα κωδικό authenticator ή τον κωδικό σου.</p>
+          <div class="row"><div class="field"><label>Κωδικός authenticator ή password</label><input id="twofaOff" type="text" placeholder="123456 ή ο κωδικός σου" style="max-width:220px"></div>
+            <button class="danger" onclick="disable2fa()">Απενεργοποίηση 2FA</button></div>
+        </div>
+        <div id="twofaResult" class="sub" style="margin-top:8px"></div>
+      </div>
+      <?php if (in_array($__role, ['master','editor'], true)): ?>
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🔔 Ειδοποιήσεις email — εταιρίες & κινήσεις</strong>
+          <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="npEnabled" checked> Λαμβάνω email</label>
+        </div>
+        <p class="sub" style="margin-top:4px">Επίλεξε για <b>ποιες εταιρίες-πελάτες</b> και <b>ποιες κινήσεις</b> θέλεις να λαμβάνεις email όταν εκδίδεται παραστατικό. Οι ειδοποιήσεις μέσα στην εφαρμογή (🔔) δεν επηρεάζονται.</p>
+        <div class="row" style="gap:26px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
+          <div style="min-width:240px">
+            <div class="hint" style="margin-bottom:6px"><b>Εταιρίες-πελάτες</b></div>
+            <label class="np-check"><input type="checkbox" id="npCompAll" checked onchange="npToggleAll('comp')"> <b>(Όλες)</b></label>
+            <div id="npCompanies" style="max-height:180px;overflow:auto;margin-top:4px"></div>
+          </div>
+          <div style="min-width:220px">
+            <div class="hint" style="margin-bottom:6px"><b>Κινήσεις (τύποι)</b></div>
+            <label class="np-check"><input type="checkbox" id="npTypeAll" checked onchange="npToggleAll('type')"> <b>(Όλες)</b></label>
+            <div id="npTypes" style="margin-top:4px">
+              <label class="np-check"><input type="checkbox" class="np-type" value="invoice"> 🧾 Τιμολόγια</label>
+              <label class="np-check"><input type="checkbox" class="np-type" value="receipt"> 🧾 Αποδείξεις λιανικής</label>
+              <label class="np-check"><input type="checkbox" class="np-type" value="credit"> ↩️ Πιστωτικά / Ακυρώσεις</label>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <button class="primary" onclick="saveNotifPrefs()">Αποθήκευση προτιμήσεων</button>
+          <span id="npResult" class="sub"></span>
+        </div>
+      </div>
+      <?php endif; ?>
+      <div class="panel" style="margin-top:16px">
         <strong>🏢 Συνδεδεμένοι λογαριασμοί AADE</strong>
         <p class="sub" style="margin-top:4px">Τα διαπιστευτήρια e-timologio αποθηκεύονται κρυπτογραφημένα και ρυθμίζονται από τον διαχειριστή.</p>
         <table id="settAccts"><thead><tr><th>ΑΦΜ</th><th>Ετικέτα</th><th>Username</th></tr></thead><tbody></tbody></table>
@@ -644,16 +757,18 @@ $__business = $__user['business_name'];
     <?php if ($__role === 'master'): ?>
     <!-- ADMIN -->
     <section class="view" id="view-admin">
-      <h2 class="title">🛡️ Διαχείριση επιχειρήσεων</h2><p class="sub">Έγκριση εγγραφών, διαχείριση χρηστών και σύνδεση διαπιστευτηρίων AADE.</p>
+      <h2 class="title">🛡️ Διαχείριση επιχειρήσεων & μελών</h2><p class="sub">Έγκριση εγγραφών, ρόλοι/προσκλήσεις μελών (λογιστές/διαχειριστές) και σύνδεση διαπιστευτηρίων AADE.</p>
       <div class="panel">
         <div class="row" style="justify-content:space-between">
-          <strong>Χρήστες</strong>
+          <strong>Χρήστες & μέλη</strong>
           <div class="row">
             <button class="ghost" onclick="loadAdmin()">↻ Ανανέωση</button>
+            <button class="add" onclick="openInviteModal()">✉️ Πρόσκληση μέλους</button>
             <button class="primary" onclick="openUserModal()">+ Νέα επιχείρηση</button>
           </div>
         </div>
-        <table id="adminUsers"><thead><tr><th>Επωνυμία</th><th>Email</th><th>Ρόλος</th><th>Κατάσταση</th><th>Λογ. AADE</th><th></th></tr></thead><tbody></tbody></table>
+        <p class="sub" style="margin-top:4px">Ρόλοι: <b>Διαχειριστής</b> = πλήρη δικαιώματα σε όλες τις εταιρίες + διαχείριση μελών· <b>Λογιστής</b> = πρόσβαση/έκδοση/χρονοπρογραμματισμός σε όλες τις εταιρίες· <b>Επιχείρηση</b> = μόνο οι δικές της εταιρίες.</p>
+        <table id="adminUsers"><thead><tr><th>Επωνυμία / Όνομα</th><th>Email</th><th>Ρόλος</th><th>Κατάσταση</th><th>2FA</th><th>Λογ. AADE</th><th></th></tr></thead><tbody></tbody></table>
       </div>
       <div class="panel" style="margin-top:14px">
         <div class="row" style="justify-content:space-between">
@@ -665,6 +780,22 @@ $__business = $__user['business_name'];
       </div>
     </section>
     <?php endif; ?>
+
+    <!-- SCHEDULED ISSUANCE -->
+    <section class="view" id="view-schedule">
+      <h2 class="title">Προγραμματισμός εκδόσεων</h2>
+      <p class="sub">Προγραμματισμένη αυτόματη έκδοση παραστατικών (μεμονωμένων ή μαζικών) σε μελλοντική ημερομηνία/ώρα, με προαιρετική επανάληψη. Δημιούργησε ένα πρόγραμμα από το κουμπί «⏰ Προγραμματισμός» στην <a href="#" onclick="showView('issue');return false">Έκδοση</a> ή στη <a href="#" onclick="showView('bulk');return false">Μαζική έκδοση</a>.</p>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <span class="hint" id="schedCount"></span>
+          <button class="ghost" onclick="loadSchedule()">↻ Ανανέωση</button>
+        </div>
+        <div id="schedNote" class="hint" style="margin:6px 0 0"></div>
+        <table id="schedTable"><thead><tr>
+          <th>Περιγραφή</th><th>Τύπος</th><th>Πότε</th><th>Επανάληψη</th><th>Κατάσταση</th><th>Τελευταία εκτέλεση</th><th></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -794,6 +925,27 @@ $__business = $__user['business_name'];
   </div>
   <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="ghost" onclick="acctModal.close()">Κλείσιμο</button></div>
 </div></dialog>
+
+<!-- Invite member modal -->
+<dialog id="inviteModal"><div class="modal-body" style="max-width:520px">
+  <div class="modal-head">✉️ Πρόσκληση μέλους</div>
+  <p class="sub" style="margin:-4px 0 12px">Στέλνεται email με σύνδεσμο ενεργοποίησης όπου το μέλος ορίζει κωδικό.</p>
+  <div class="row"><div class="field grow"><label>Email *</label><input id="invEmail" type="email" placeholder="name@example.gr"></div></div>
+  <div class="row" style="margin-top:8px">
+    <div class="field grow"><label>Όνομα / Επωνυμία (προαιρετικό)</label><input id="invName" placeholder="π.χ. Λογιστήριο ή Επωνυμία"></div>
+    <div class="field"><label>Ρόλος *</label>
+      <select id="invRole">
+        <option value="editor">Λογιστής (όλες οι εταιρίες)</option>
+        <option value="master">Διαχειριστής (πλήρη + μέλη)</option>
+        <option value="business">Επιχείρηση (δικές της εταιρίες)</option>
+      </select></div>
+  </div>
+  <div id="invResult" style="margin-top:10px"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end">
+    <button class="ghost" onclick="inviteModal.close()">Άκυρο</button>
+    <button class="add" onclick="sendInvite()">✉️ Αποστολή πρόσκλησης</button>
+  </div>
+</div></dialog>
 <?php endif; ?>
 
 <!-- New tax / withholding / fee (Νέος Φόρος) -->
@@ -829,6 +981,30 @@ $__business = $__user['business_name'];
   <div class="row" style="margin-top:16px;justify-content:flex-end">
     <button class="ghost" onclick="issueConfirm.close()">Άκυρο</button>
     <button class="primary" id="icOk" onclick="issueConfirm.close();submitInvoice(true)">✔ Επιβεβαίωση</button>
+  </div>
+</div></dialog>
+
+<!-- Schedule issuance modal -->
+<dialog id="schedModal"><div class="modal-body" style="max-width:520px">
+  <div class="modal-head">⏰ Προγραμματισμός έκδοσης</div>
+  <div class="sub" style="margin:-4px 0 10px">Το παραστατικό θα εκδοθεί <b>οριστικά (με ΜΑΡΚ)</b> αυτόματα την ώρα που θα ορίσεις. Απαιτείται ενεργός runner (scheduler.php) στον server.</div>
+  <div id="schedSummary" class="card" style="margin-bottom:10px"></div>
+  <div class="row">
+    <div class="field"><label>Ημερομηνία *</label><input id="schDate" type="date"></div>
+    <div class="field"><label>Ώρα *</label><input id="schTime" type="time" value="09:00"></div>
+    <div class="field grow"><label>Επανάληψη</label>
+      <select id="schRec">
+        <option value="none">Καμία (μία φορά)</option>
+        <option value="daily">Καθημερινά</option>
+        <option value="weekly">Εβδομαδιαία</option>
+        <option value="monthly">Μηνιαία</option>
+      </select></div>
+  </div>
+  <div class="field" style="margin-top:8px"><label>Περιγραφή (προαιρετικό)</label><input id="schTitle" placeholder="π.χ. Μηνιαίο τιμολόγιο ΑCME"></div>
+  <div id="schResult" style="margin-top:10px"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end">
+    <button class="ghost" onclick="schedModal.close()">Άκυρο</button>
+    <button class="primary" onclick="confirmSchedule()">⏰ Προγραμματισμός</button>
   </div>
 </div></dialog>
 
@@ -901,9 +1077,12 @@ $__business = $__user['business_name'];
 
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
 <script>
 const API='etimologio.php';
 const ROLE=<?= json_encode($__role) ?>;
+const ME_ID=<?= (int)$__user['id'] ?>;
+const IS_STAFF=<?= json_encode(in_array($__role, ['master','editor'], true)) ?>;
 let ACCOUNT='';
 const $=s=>document.querySelector(s);
 const fmt=n=>(Number(n)||0).toLocaleString('el-GR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -956,6 +1135,7 @@ function showView(v){
   if(v==='drafts'){attachColumnFilters('draftsTable');loadDrafts();}
   if(v==='bankimp'){if(!ALL_CUSTOMERS.length)loadCustomers();}
   if(v==='bulk')loadBulkView();
+  if(v==='schedule')loadSchedule();
   if(v==='series')loadSeriesView();
   if(v==='settings')loadSettings();
   if(v==='admin')loadAdmin();
@@ -983,7 +1163,65 @@ async function changePassword(){const o=$('#cpOld').value,n=$('#cpNew').value,n2
   }catch(e){$('#cpResult').textContent='Σφάλμα δικτύου';}}
 async function loadSettings(){try{const d=await api({accounts:1});
   $('#settAccts tbody').innerHTML=(d.accounts||[]).map(a=>`<tr><td>${esc(a.vat)}</td><td>${esc(a.label)}</td><td class="muted">•••</td></tr>`).join('')||'<tr><td colspan="3" class="muted">Δεν έχει συνδεθεί λογαριασμός AADE.</td></tr>';
-}catch(e){}}
+}catch(e){}
+  load2fa();loadNotifPrefs();}
+// --- Email notification preferences (staff) ----------------------------------
+async function loadNotifPrefs(){if(!IS_STAFF)return;
+  try{const d=await apost({auth:'notif_prefs_get'});if(!d.success)return;
+    const p=d.prefs||{},comps=d.companies||[];
+    $('#npEnabled').checked=p.email_enabled!==false;
+    const allComp=(p.companies||['*']).includes('*');
+    $('#npCompAll').checked=allComp;
+    $('#npCompanies').innerHTML=comps.map(c=>`<label class="np-check"><input type="checkbox" class="np-comp" value="${esc(c.vat)}"${(allComp||(p.companies||[]).includes(c.vat))?' checked':''}> ${esc(c.label)} <span class="muted">(${esc(c.vat)})</span></label>`).join('')||'<span class="muted">Καμία εταιρία.</span>';
+    const allType=(p.types||['*']).includes('*');
+    $('#npTypeAll').checked=allType;
+    document.querySelectorAll('.np-type').forEach(cb=>cb.checked=allType||(p.types||[]).includes(cb.value));
+    npSyncDisabled();
+  }catch(e){}}
+function npToggleAll(which){const all=$(which==='comp'?'#npCompAll':'#npTypeAll').checked;
+  document.querySelectorAll(which==='comp'?'.np-comp':'.np-type').forEach(cb=>{cb.checked=all;cb.disabled=all;});}
+function npSyncDisabled(){document.querySelectorAll('.np-comp').forEach(cb=>cb.disabled=$('#npCompAll').checked);
+  document.querySelectorAll('.np-type').forEach(cb=>cb.disabled=$('#npTypeAll').checked);}
+async function saveNotifPrefs(){
+  const enabled=$('#npEnabled').checked;
+  const companies=$('#npCompAll').checked?'*':[...document.querySelectorAll('.np-comp:checked')].map(c=>c.value).join(',');
+  const types=$('#npTypeAll').checked?'*':[...document.querySelectorAll('.np-type:checked')].map(c=>c.value).join(',');
+  if(enabled){
+    if(companies!=='*'&&!companies){$('#npResult').textContent='Επίλεξε τουλάχιστον μία εταιρία (ή «Όλες»).';return;}
+    if(types!=='*'&&!types){$('#npResult').textContent='Επίλεξε τουλάχιστον μία κίνηση (ή «Όλες»).';return;}
+  }
+  $('#npResult').textContent='Αποθήκευση…';
+  try{const d=await apost({auth:'notif_prefs_set',email_enabled:enabled?'1':'0',companies,types});
+    if(d.success){$('#npResult').innerHTML='<span class="pill ok">Αποθηκεύτηκε</span>';toast('Οι προτιμήσεις email αποθηκεύτηκαν','ok');}
+    else $('#npResult').textContent=d.error||'Αποτυχία';
+  }catch(e){$('#npResult').textContent='Σφάλμα δικτύου';}}
+// --- 2FA (authenticator) -----------------------------------------------------
+let TWOFA_ENABLED=null;
+async function load2fa(){try{const d=await apost({auth:'me'});TWOFA_ENABLED=!!(d.user&&d.user.totp_enabled);render2fa();}catch(e){}}
+function render2fa(){const on=TWOFA_ENABLED;
+  $('#twofaState').innerHTML=on?'<span class="pill ok">ενεργό</span>':'<span class="pill">ανενεργό</span>';
+  $('#twofaDisabled').style.display=on?'none':'';
+  $('#twofaEnabled').style.display=on?'':'none';
+  $('#twofaSetup').style.display='none';$('#twofaResult').textContent='';}
+async function start2fa(){$('#twofaResult').textContent='';
+  try{const d=await apost({auth:'totp_setup'});
+    if(!d.success){$('#twofaResult').textContent=d.error||'Αποτυχία';return;}
+    $('#twofaSecret').textContent=d.secret;$('#twofaCode').value='';
+    $('#twofaDisabled').style.display='none';$('#twofaSetup').style.display='';
+    const box=$('#twofaQr');box.innerHTML='';
+    if(window.QRCode){QRCode.toCanvas(d.otpauth,{width:176,margin:1},(err,cv)=>{if(!err){box.appendChild(cv);}else{box.innerHTML='<span class="muted" style="font-size:11px">QR σφάλμα — χρησιμοποίησε το κλειδί</span>';}});}
+    else{box.innerHTML='<span class="muted" style="font-size:11px">Χρησιμοποίησε το κλειδί δεξιά</span>';}
+    setTimeout(()=>$('#twofaCode').focus(),60);
+  }catch(e){$('#twofaResult').textContent='Σφάλμα δικτύου';}}
+function cancel2fa(){render2fa();}
+async function confirm2fa(){const code=$('#twofaCode').value.trim();if(!/^\d{6}$/.test(code)){$('#twofaResult').textContent='Δώσε 6ψήφιο κωδικό.';return;}
+  try{const d=await apost({auth:'totp_enable',code});
+    if(d.success){toast('Το 2FA ενεργοποιήθηκε','ok');TWOFA_ENABLED=true;render2fa();}
+    else $('#twofaResult').textContent=d.error||'Αποτυχία';}catch(e){$('#twofaResult').textContent='Σφάλμα δικτύου';}}
+async function disable2fa(){const v=$('#twofaOff').value.trim();if(!v){$('#twofaResult').textContent='Δώσε κωδικό authenticator ή το password σου.';return;}
+  try{const d=await apost({auth:'totp_disable',verify:v});
+    if(d.success){toast('Το 2FA απενεργοποιήθηκε','ok');TWOFA_ENABLED=false;$('#twofaOff').value='';render2fa();}
+    else $('#twofaResult').textContent=d.error||'Αποτυχία';}catch(e){$('#twofaResult').textContent='Σφάλμα δικτύου';}}
 async function apost(params){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(params)});return r.json();}
 async function loadAdmin(){try{const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);
     const a=await apost({auth:'admin_accounts'});renderBiz(a.accounts||[]);
@@ -994,19 +1232,38 @@ function renderBiz(accs){const el=$('#adminBiz');if(!el)return;
     <td><b>${esc(a.label||'—')}</b></td><td>${esc(a.vat||'')}</td><td>${esc(a.owner_email||'—')}</td>
     <td class="right"><button class="ghost sm" onclick="openAcctModal(${a.user_id},'${q1(a.label||a.vat)}')" data-tip="Επεξεργασία διαπιστευτηρίων AADE">Διαχείριση</button></td></tr>`).join('')
     ||'<tr><td colspan="4" class="muted">Καμία συνδεδεμένη επιχείρηση. Πάτησε «+ Νέα επιχείρηση».</td></tr>';}
+const ROLE_LABELS={master:'Διαχειριστής',editor:'Λογιστής',business:'Επιχείρηση'};
+let ADMIN_ME=ME_ID;
 function renderAdmin(users){$('#adminUsers tbody').innerHTML=users.map(u=>{
-  const st=u.status==='active'?'<span class="pill ok">ενεργός</span>':u.status==='pending'?'<span class="pill warn">εκκρεμεί</span>':'<span class="pill bad">ανενεργός</span>';
-  const isMaster=u.role==='master';
+  const st=u.status==='active'?'<span class="pill ok">ενεργός</span>':u.status==='pending'?'<span class="pill warn">εκκρεμεί</span>':u.status==='invited'?'<span class="pill">προσκεκλημένος</span>':'<span class="pill bad">ανενεργός</span>';
+  const staff=u.role==='master'||u.role==='editor';
+  const self=u.id===ADMIN_ME;
+  const roleCell=self?`<b>${esc(ROLE_LABELS[u.role]||u.role)}</b> 🛡️`
+    :`<select class="rolesel" onchange="setRole(${u.id},this.value)">
+        ${['master','editor','business'].map(r=>`<option value="${r}"${u.role===r?' selected':''}>${ROLE_LABELS[r]}</option>`).join('')}
+      </select>`;
+  const twofa=u.totp_enabled?'<span class="pill ok">✔</span>':'<span class="muted">—</span>';
   let act='';
-  if(!isMaster){
-    if(u.status==='pending')act+=`<button class="primary sm" onclick="approveUser(${u.id})">Έγκριση</button> `;
+  if(!self){
+    if(u.status==='pending'||u.status==='invited')act+=`<button class="primary sm" onclick="approveUser(${u.id})">Έγκριση</button> `;
     if(u.status!=='disabled')act+=`<button class="danger sm" onclick="setStatus(${u.id},'disabled')">Απενεργ.</button> `;
     else act+=`<button class="ghost sm" onclick="setStatus(${u.id},'active')">Ενεργοπ.</button> `;
     act+=`<button class="ghost sm" onclick="resetPw(${u.id})">Reset</button>`;
   }
-  const accBtn=isMaster?'<span class="muted">—</span>':`<button class="ghost sm" onclick="openAcctModal(${u.id},'${q1(u.business_name||u.email)}')">Διαχείριση</button>`;
-  return `<tr><td>${esc(u.business_name||'—')}${isMaster?' 🛡️':''}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${st}</td><td>${accBtn}</td><td class="right">${act}</td></tr>`;
-}).join('')||'<tr><td colspan="6" class="muted">Καμία εγγραφή.</td></tr>';}
+  const accBtn=staff?'<span class="muted">όλες</span>':`<button class="ghost sm" onclick="openAcctModal(${u.id},'${q1(u.business_name||u.email)}')">Διαχείριση</button>`;
+  return `<tr><td>${esc(u.business_name||'—')}</td><td>${esc(u.email)}</td><td>${roleCell}</td><td>${st}</td><td>${twofa}</td><td>${accBtn}</td><td class="right">${act}</td></tr>`;
+}).join('')||'<tr><td colspan="7" class="muted">Καμία εγγραφή.</td></tr>';}
+async function setRole(id,role){const d=await apost({auth:'admin_set_role',user_id:id,role});if(d.success){toast('Ο ρόλος ενημερώθηκε','ok');loadAdmin();}else{toast(d.error||'Αποτυχία','err');loadAdmin();}}
+function openInviteModal(){$('#invEmail').value='';$('#invName').value='';$('#invRole').value='editor';$('#invResult').innerHTML='';inviteModal.showModal();}
+async function sendInvite(){const email=$('#invEmail').value.trim(),role=$('#invRole').value,name=$('#invName').value.trim();
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){$('#invResult').innerHTML='<span class="pill bad">Μη έγκυρο email</span>';return;}
+  $('#invResult').innerHTML='<span class="spin"></span> Αποστολή…';
+  try{const d=await apost({auth:'admin_invite',email,role,name});
+    if(d.success){let h=`<div class="card"><span class="pill ok">${d.emailed?'Στάλθηκε πρόσκληση':'Πρόσκληση δημιουργήθηκε'}</span>`;
+      if(!d.emailed)h+=`<div style="margin-top:8px">Δώσε χειροκίνητα τον σύνδεσμο ενεργοποίησης:<br><code style="word-break:break-all">${esc(d.invite_link)}</code></div>`;
+      h+='</div>';$('#invResult').innerHTML=h;loadAdmin();}
+    else $('#invResult').innerHTML='<span class="pill bad">'+esc(d.error||'Αποτυχία')+'</span>';
+  }catch(e){$('#invResult').innerHTML='<span class="pill bad">Σφάλμα δικτύου</span>';}}
 async function approveUser(id){if(!confirm('Έγκριση χρήστη;'))return;const d=await apost({auth:'admin_approve',user_id:id});if(d.success){toast('Εγκρίθηκε','ok');loadAdmin();}else toast(d.error||'Αποτυχία','err');}
 async function setStatus(id,s){const d=await apost({auth:'admin_set_status',user_id:id,status:s});if(d.success){toast('Ενημερώθηκε','ok');loadAdmin();}else toast(d.error||'Αποτυχία','err');}
 async function resetPw(id){const d=await apost({auth:'admin_reset_pw',user_id:id});if(d.success){prompt('Σύνδεσμος επαναφοράς (δώστε τον στον χρήστη — ισχύει 24ω):',d.reset_link);}else toast(d.error||'Αποτυχία','err');}
@@ -2452,8 +2709,13 @@ const TOUR=[
   {sel:'[data-view="bankimp"]',title:'🏦 Εισαγωγή πληρωμών',text:'Ανέβασε extrait τράπεζας (CSV/XLSX). Η εφαρμογή αντιστοιχίζει κάθε κατάθεση σε πελάτη και καταχωρεί μαζικά τις εισπράξεις.'},
   {sel:'[data-view="series"]',title:'🔢 Σειρές',text:'Κάθε τύπος παραστατικού χρειάζεται μία σειρά για να εκδοθεί. Δημιούργησέ τες με το πράσινο κουμπί «➕ Νέα σειρά».'},
   {sel:'[data-view="drafts"]',title:'📝 Πρόχειρα',text:'Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ): προεπισκόπηση PDF και μαζική διαγραφή με τα checkboxes.'},
+  {sel:'[data-view="schedule"]',title:'⏰ Προγραμματισμός',text:'Προγραμμάτισε την αυτόματη έκδοση παραστατικών (μεμονωμένων ή μαζικών) σε μελλοντική ώρα, με προαιρετική επανάληψη. Εδώ βλέπεις κατάσταση & ιστορικό.'},
+  {sel:'#account',title:'🏢 Επιλογή εταιρίας',text:'Διάλεξε εδώ την επιχείρηση με την οποία δουλεύεις. Ως λογιστής/διαχειριστής βλέπεις ΟΛΕΣ τις εταιρίες-πελάτες και εργάζεσαι για οποιαδήποτε.'},
+  {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.'},
+  {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις & προτιμήσεις email',text:'Αλλαγή κωδικού, ενεργοποίηση 2FA με authenticator, και — για λογιστή/διαχειριστή — επιλογή για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις email ειδοποιήσεων.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα Ctrl+K οποιαδήποτε στιγμή για να βρεις πελάτη αστραπιαία.'},
-  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Κάτω αριστερά αλλάζεις φωτεινό/σκοτεινό θέμα και ενεργοποιείς/απενεργοποιείς τις επεξηγήσεις (tooltips).'}
+  {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τον διακόπτη θέματος, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
+  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Ακριβώς από κάτω αλλάζεις φωτεινό/σκοτεινό θέμα και ενεργοποιείς/απενεργοποιείς τις επεξηγήσεις (tooltips).'}
 ];
 let tourI=0;
 function startTour(){tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
@@ -2479,21 +2741,56 @@ function tourShow(i){tourI=i;const s=TOUR[i];if(s.view)showView(s.view);
 // --- User manual (PDF) --------------------------------------------------------
 const MANUAL=[
   ['e-Timologio Pro — Εγχειρίδιο χρήσης','h1'],
-  ['Εφαρμογή έκδοσης παραστατικών & διαχείρισης πελατών πάνω από το e-timologio της ΑΑΔΕ. Παρακάτω τα βασικά βήματα και οι λειτουργίες.','p'],
+  ['Πλήρης εφαρμογή έκδοσης παραστατικών & διαχείρισης πελατών πάνω από το e-timologio της ΑΑΔΕ (myDATA). Υποστηρίζει πολλαπλές επιχειρήσεις, ρόλους (διαχειριστής/λογιστής/επιχείρηση), χρονοπρογραμματισμό εκδόσεων, ειδοποιήσεις και προαιρετικό 2FA. Το παρόν εγχειρίδιο καλύπτει αναλυτικά κάθε λειτουργία.','p'],
+
+  ['0. Γρήγορη εκκίνηση','h2'],
+  ['1) Συνδέσου με email/κωδικό (αν έχεις ενεργό 2FA, δώσε και τον 6ψήφιο κωδικό authenticator). 2) Πάνω αριστερά διάλεξε «Λογαριασμό» (επιχείρηση) — αν είσαι λογιστής/διαχειριστής βλέπεις όλες τις εταιρίες. 3) Στην «Έκδοση» ο οδηγός σε καθοδηγεί βήμα-βήμα. 4) Δοκίμασε πάντα πρώτα με «Αποθήκευση & Προεπισκόπηση» (πρόχειρο, χωρίς ΜΑΡΚ) και μόνο όταν είσαι σίγουρος πάτα «Οριστική Έκδοση».','p'],
+  ['Βασικός κανόνας ασφάλειας: τίποτα δεν υποβάλλεται στην ΑΑΔΕ (δεν παίρνει ΜΑΡΚ) παρά μόνο με το κόκκινο κουμπί «Οριστική Έκδοση» — ή αυτόματα, μόνο για όσα εσύ έχεις προγραμματίσει.','p'],
+
   ['1. Έκδοση παραστατικού','h2'],
-  ['Στην «Έκδοση» ο οδηγός σε ρωτά: Τιμολόγιο/Απόδειξη ή Δελτίο; και μετά αν ο πελάτης είναι επαγγελματίας ή ιδιώτης, επιλέγοντας αυτόματα τον σωστό τύπο. Συμπλήρωσε ΑΦΜ (αυτόματη άντληση στοιχείων), πρόσθεσε γραμμές ειδών, φόρους/κρατήσεις (υπολογίζονται αυτόματα από το ποσοστό) και πάτα «Αποθήκευση & Προεπισκόπηση» για το PDF της ΑΑΔΕ. Η «Οριστική Έκδοση» υποβάλλει και δίνει ΜΑΡΚ.','p'],
+  ['Ο οδηγός έκδοσης ρωτά πρώτα «Τιμολόγιο/Απόδειξη ή Δελτίο αποστολής;» και μετά «Επαγγελματίας ή Ιδιώτης;», επιλέγοντας αυτόματα τον σωστό τύπο παραστατικού (τιμολόγιο vs απόδειξη) και εστιάζοντας στο κατάλληλο πεδίο (ΑΦΜ για επαγγελματία, Επωνυμία για ιδιώτη).','p'],
+  ['Βήματα: (α) Δώσε ΑΦΜ — τα στοιχεία του πελάτη αντλούνται αυτόματα από το Taxisnet/e-timologio (ή δημιουργείται νέος πελάτης). (β) Επίλεξε Σειρά και Τρόπο εξόφλησης (προεπιλογή «Επί πιστώσει»). (γ) Πρόσθεσε γραμμές ειδών με το picker (κωδικός + περιγραφή + ΦΠΑ)· η τιμή μονάδας συμπληρώνεται από το είδος. (δ) Προαιρετικά πρόσθεσε έκπτωση % ανά γραμμή, φόρους/κρατήσεις (το ποσό υπολογίζεται αυτόματα από το ποσοστό) και σημειώσεις.','p'],
+  ['Κουμπιά: «💾👁 Αποθήκευση & Προεπισκόπηση» δημιουργεί/ενημερώνει πρόχειρο και δείχνει το πραγματικό PDF προεπισκόπησης της ΑΑΔΕ (χωρίς ΜΑΡΚ)· «🆕 Νέο» ξεκινά νέο πρόχειρο· «⏰ Προγραμματισμός» προγραμματίζει την έκδοση για αργότερα· «📤 Οριστική Έκδοση» υποβάλλει στην ΑΑΔΕ και δίνει ΜΑΡΚ. Μετά την έκδοση προσφέρεται και δημιουργία σχετικού Δελτίου αποστολής για τα ίδια αγαθά.','p'],
+  ['Φωνητικός/έξυπνος βοηθός: μπορείς να πεις/γράψεις π.χ. «έκδοση τιμολογίου στην <επωνυμία> καθαρή αξία <ποσό> με παρακράτηση <%> είδος <περιγραφή>» — ο βοηθός βρίσκει τον πελάτη με το όνομα, βρίσκει/δημιουργεί το είδος και εφαρμόζει την παρακράτηση, ετοιμάζοντας πάντα ΠΡΟΧΕΙΡΟ.','p'],
+
   ['2. Μαζική έκδοση','h2'],
-  ['Πολλά παραστατικά μαζί: μία γραμμή ανά παραστατικό με επιλογή πελάτη & είδους. Κοινός τύπος/σειρά/πληρωμή από πάνω. «Δημιουργία προχείρων» για δοκιμή, «Οριστική έκδοση όλων» για υποβολή.','p'],
+  ['Για πολλά παραστατικά ταυτόχρονα: μία γραμμή ανά παραστατικό, με picker πελάτη και είδους (χωρίς πληκτρολόγηση ΑΦΜ/κωδικών) και κοινό τύπο/σειρά/τρόπο πληρωμής/γλώσσα από πάνω. «➕ Γραμμή» για νέα εγγραφή, «➕ Νέος πελάτης…»/«➕ Νέο είδος…» εν κινήσει. Για προχωρημένους υπάρχει και εισαγωγή από CSV (ΑΦΜ;κωδικός;ποσότητα;τιμή).','p'],
+  ['«💾 Δημιουργία προχείρων (όλα)» για δοκιμή, «⏰ Προγραμματισμός» για μελλοντική μαζική έκδοση, «📤 Οριστική έκδοση όλων» για υποβολή. Τα αποτελέσματα εμφανίζονται ανά γραμμή (ΜΑΡΚ ή σφάλμα), ώστε μια μερική αποτυχία να είναι διαφανής.','p'],
+
   ['3. Πελάτες & Καρτέλα','h2'],
-  ['Στους «Πελάτες» αναζητάς και φιλτράρεις ανά στήλη. Η «Καρτέλα» δείχνει τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + υπόλοιπο, με εξαγωγή PDF.','p'],
-  ['4. Εισαγωγή πληρωμών (extrait)','h2'],
-  ['Ανέβασε αρχείο κινήσεων τράπεζας (CSV/XLSX). Η εφαρμογή αναγνωρίζει ημερομηνία/περιγραφή/ποσό, αντιστοιχίζει κάθε κατάθεση σε πελάτη (με ΑΦΜ ή επωνυμία) και καταχωρεί μαζικά τις εισπράξεις. Το ποσό κατάθεσης καταχωρείται όπως είναι — δεν «κλείνει» υποχρεωτικά υπόλοιπο.','p'],
+  ['«Πελάτες»: όλο το πελατολόγιο με ταξινόμηση και φίλτρα ανά στήλη (χωνάκι ▾ με λίστα τιμών, τύπου Excel). Από κάθε γραμμή εκδίδεις κατευθείαν ή ανοίγεις την καρτέλα. «+ Νέος πελάτης» με ΑΦΜ (άντληση από Taxisnet) ή ως ιδιώτης χωρίς ΑΦΜ.','p'],
+  ['«Καρτέλα»: συνδυάζει τα παραστατικά της ΑΑΔΕ με τις τοπικές πληρωμές σε μια κίνηση χρέωσης/πίστωσης με τρέχον υπόλοιπο. «+ Πληρωμή» για καταχώρηση είσπραξης, «📄 PDF καρτέλας» για εκτύπωση και «🗜️ ZIP παραστατικών» για μαζική λήψη PDF.','p'],
+
+  ['4. Εισαγωγή πληρωμών (extrait τράπεζας)','h2'],
+  ['Ανέβασε αρχείο κινήσεων τράπεζας (CSV Eurobank, XLSX Optima/Εθνικής κ.ά.). Η εφαρμογή αναγνωρίζει αυτόματα ημερομηνία/περιγραφή/ποσό (και ελληνικά νούμερα 1.234,56), αντιστοιχίζει κάθε κατάθεση σε πελάτη (με ΑΦΜ ή ασαφή αντιστοίχιση ονόματος), σου επιτρέπει να διορθώσεις/επιλέξεις πελάτη ανά γραμμή, και καταχωρεί μαζικά τις εισπράξεις. Προσοχή: το ποσό κατάθεσης καταχωρείται όπως είναι — δεν «κλείνει» υποχρεωτικά υπόλοιπο (μερικές/υπερβάλλουσες πληρωμές επιτρέπονται).','p'],
+
   ['5. Σειρές','h2'],
-  ['Κάθε τύπος παραστατικού χρειάζεται τουλάχιστον μία σειρά. Δημιούργησέ τες από το κουμπί «➕ Νέα σειρά».','p'],
+  ['Κάθε τύπος παραστατικού απαιτεί τουλάχιστον μία καταχωρημένη σειρά για να εκδοθεί. Στη «Σειρές» βλέπεις όλες τις σειρές και δημιουργείς νέα με το πράσινο «➕ Νέα σειρά» (τύπος, κωδικός π.χ. Α/ΤΠΥ/ΔΑ, αρχικό Α/Α, περιγραφή). Χωρίς σειρά, ο τύπος δεν εμφανίζεται στη λίστα έκδοσης.','p'],
+
   ['6. Πρόχειρα','h2'],
-  ['Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ). Προεπισκόπηση του πραγματικού PDF της ΑΑΔΕ και μαζική διαγραφή με τα checkboxes.','p'],
-  ['7. Χρήσιμα','h2'],
-  ['• Ctrl+K: γρήγορη αναζήτηση πελάτη.  • Κάτω αριστερά: φωτεινό/σκοτεινό θέμα και επεξηγήσεις (tooltips).  • Τα δεδομένα (πληρωμές, ρυθμίσεις) αποθηκεύονται τοπικά & κρυπτογραφημένα.','p']
+  ['Τα προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ). Προεπισκόπηση του πραγματικού PDF της ΑΑΔΕ για οποιοδήποτε πρόχειρο, μαζική επιλογή με checkboxes και μαζική διαγραφή. Ιδανικό για να ετοιμάζεις παραστατικά και να τα οριστικοποιείς αργότερα.','p'],
+
+  ['7. Προγραμματισμός εκδόσεων (χρονοπρογραμματισμός)','h2'],
+  ['Προγραμμάτισε την αυτόματη οριστική έκδοση ενός παραστατικού ή μιας ολόκληρης μαζικής παρτίδας για μελλοντική ημερομηνία/ώρα, με προαιρετική επανάληψη (καθημερινά/εβδομαδιαία/μηνιαία). Στην «Έκδοση» ή τη «Μαζική έκδοση» πάτα «⏰ Προγραμματισμός», όρισε ημερομηνία/ώρα (τοπική ώρα Ελλάδας) και επανάληψη, και προαιρετικά μια περιγραφή.','p'],
+  ['Στην ενότητα «Προγραμματισμός» βλέπεις όλα τα προγράμματα με κατάσταση (σε αναμονή / ολοκληρώθηκε / απέτυχε / ακυρώθηκε), την τελευταία εκτέλεση με το ΜΑΡΚ ή το σφάλμα, και κουμπί ακύρωσης. Ο λογιστής/διαχειριστής βλέπει τα προγράμματα όλων των εταιριών· η επιχείρηση μόνο τα δικά της. Για να προγραμματίσεις για συγκεκριμένη εταιρία, επίλεξέ την πρώτα από τον διακόπτη «Λογαριασμός».','p'],
+  ['Τεχνική προϋπόθεση: πρέπει να τρέχει ο runner scheduler.php στον server κάθε λεπτό (Windows Task Scheduler ή cron), με ορισμένα τα SCHED_TOKEN και APP_BASE_URL στο config.php.','p'],
+
+  ['8. Ειδοποιήσεις εκδόσεων','h2'],
+  ['Κάθε πραγματική έκδοση (λαμβάνει ΜΑΡΚ) — εκτός από τα δελτία αποστολής (9.x) — καταγράφει ειδοποίηση για τον λογιστή/διαχειριστή. Το κουδουνάκι 🔔 πάνω δεξιά δείχνει το πλήθος των αδιάβαστων και ανοίγει τη λίστα με το ποιος εξέδωσε τι και πότε: τύπος παραστατικού, πελάτης, σειρά/ΑΑ, σύνολο, ΜΑΡΚ και ένδειξη πηγής (⏰ προγραμματισμένη, 📚 μαζική). Ο λογιστής/διαχειριστής βλέπει τις εκδόσεις όλων των εταιριών· η κάθε επιχείρηση μόνο τις δικές της. Πάτησε μια ειδοποίηση για να τη σημάνεις αναγνωσμένη, ή «✓ Όλα».','p'],
+
+  ['9. Προτιμήσεις email ειδοποιήσεων (ανά εταιρία & κίνηση)','h2'],
+  ['Ο λογιστής/διαχειριστής ρυθμίζει από «Ρυθμίσεις → Ειδοποιήσεις email» για ΠΟΙΕΣ εταιρίες-πελάτες και ΠΟΙΕΣ κινήσεις θέλει να λαμβάνει email όταν εκδίδεται παραστατικό: επίλεξε «(Όλες)» ή συγκεκριμένες εταιρίες, και τύπους κίνησης (Τιμολόγια, Αποδείξεις λιανικής, Πιστωτικά/Ακυρώσεις). Ο γενικός διακόπτης «Λαμβάνω email» ενεργοποιεί/απενεργοποιεί εντελώς τα email. Οι εντός εφαρμογής ειδοποιήσεις (🔔) δεν επηρεάζονται — φιλτράρονται μόνο τα email. Απαιτείται ρυθμισμένος πάροχος email (Resend ή SMTP) στο config.php.','p'],
+
+  ['10. Ρόλοι & μέλη (διαχειριστής/λογιστής/επιχείρηση)','h2'],
+  ['Τρεις ρόλοι: «Διαχειριστής» = πλήρη δικαιώματα, διαχείριση μελών και πρόσβαση σε όλες τις εταιρίες· «Λογιστής» = πρόσβαση/έκδοση/χρονοπρογραμματισμός/ειδοποιήσεις σε όλες τις εταιρίες, χωρίς διαχείριση μελών· «Επιχείρηση» = μόνο οι δικές της εταιρίες.','p'],
+  ['Ο διαχειριστής, από τη «Διαχείριση»: εγκρίνει νέες εγγραφές, αλλάζει ρόλο κάθε μέλους από το αναπτυσσόμενο μενού, βλέπει την κατάσταση 2FA, και προσκαλεί νέα μέλη με email («✉️ Πρόσκληση μέλους» → email με σύνδεσμο ενεργοποίησης όπου το μέλος ορίζει κωδικό). Αν δεν υπάρχει πάροχος email, εμφανίζεται ο σύνδεσμος ενεργοποίησης για χειροκίνητη αποστολή.','p'],
+  ['Ως λογιστής/διαχειριστής, επίλεξε εταιρία από τον διακόπτη «Λογαριασμός» πάνω και εργάσου (έκδοση, καρτέλες, πληρωμές, χρονοπρογραμματισμός, ειδοποιήσεις) για οποιαδήποτε εταιρία-πελάτη.','p'],
+
+  ['11. Ασφάλεια — 2FA με authenticator','h2'],
+  ['Προαιρετική επαλήθευση δύο παραγόντων. Από «Ρυθμίσεις → 2FA» πάτα «Ενεργοποίηση», σκάναρε τον κωδικό QR με εφαρμογή authenticator (Google Authenticator, Authy, Microsoft Authenticator, 1Password κ.λπ.) ή καταχώρησε το εμφανιζόμενο κλειδί χειροκίνητα, και επιβεβαίωσε με τον 6ψήφιο κωδικό. Στο εξής, σε κάθε σύνδεση θα ζητείται ο τρέχων κωδικός. Απενεργοποίηση με τον κωδικό authenticator ή με τον κωδικό πρόσβασής σου. Το μυστικό 2FA αποθηκεύεται κρυπτογραφημένο.','p'],
+
+  ['12. Χρήσιμα & συντομεύσεις','h2'],
+  ['• Ctrl+K: αστραπιαία αναζήτηση πελάτη από παντού.  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']
 ];
 async function downloadManual(){
   if(!window.jspdf){toast('Η βιβλιοθήκη PDF δεν φόρτωσε','err');return;}
@@ -2514,7 +2811,105 @@ async function downloadManual(){
     doc.save('e-timologio-egheiridio.pdf');
   }catch(e){toast('Εγχειρίδιο: '+e.message,'err');}
 }
+// ===== Issuance notifications (TODO 91) ======================================
+async function pollNotifCount(){try{const d=await api({notif_count:1});setBell(d.unread||0);}catch(e){}}
+function setBell(n){const b=$('#bellBadge');if(!b)return;n=+n||0;if(n>0){b.hidden=false;b.textContent=n>99?'99+':n;}else b.hidden=true;}
+async function toggleNotifPanel(){const p=$('#notifPanel');const willOpen=p.hidden;p.hidden=!willOpen;if(willOpen)await loadNotifications();}
+document.addEventListener('click',e=>{const w=document.querySelector('.bell-wrap');const p=$('#notifPanel');if(w&&p&&!w.contains(e.target))p.hidden=true;});
+async function loadNotifications(){const list=$('#notifList');if(!list)return;list.innerHTML='<div class="notif-empty">Φόρτωση…</div>';
+  try{const d=await api({notifications:1,limit:100});setBell(d.unread||0);renderNotifications(d.items||[]);}
+  catch(e){list.innerHTML='<div class="notif-empty">Σφάλμα: '+esc(e.message)+'</div>';}}
+function renderNotifications(items){const list=$('#notifList');
+  if(!items.length){list.innerHTML='<div class="notif-empty">Καμία ειδοποίηση ακόμη.</div>';return;}
+  list.innerHTML=items.map(n=>{
+    const amt=n.amount_total!=null?fmt(n.amount_total)+' €':'';
+    const who=esc(n.actor_name||n.actor_email||'');
+    const buyer=esc(n.buyer_name||n.buyer_vat||'');
+    const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':'');
+    const acct=(IS_STAFF&&n.account_vat)?(' · ΑΦΜ '+esc(n.account_vat)):'';
+    const seri=n.series?(' · Σειρά '+esc(n.series)+(n.aa?('/'+esc(n.aa)):'')):'';
+    return `<div class="notif-item ${n.is_read?'':'unread'}" onclick="notifRead(${n.id},this)">
+      <div class="nt-top"><b>${esc(n.doc_label||n.doc_type)}</b>${src}<span class="nt-amt">${amt}</span></div>
+      <div class="nt-sub">${buyer?('Πελάτης: '+buyer):''}${who?(' · από '+who):''}${acct}</div>
+      <div class="nt-sub">${esc(n.created_at||'')}${seri}</div>
+      <div class="nt-mark">ΜΑΡΚ ${esc(n.mark)}</div>
+    </div>`;}).join('');}
+async function notifRead(id,el){if(el)el.classList.remove('unread');try{const d=await api({notif_read:1,id});setBell(d.unread||0);}catch(e){}}
+async function notifMarkAll(){try{await api({notif_read_all:1});setBell(0);await loadNotifications();}catch(e){}}
+
+// ===== Scheduled issuance (TODO 90) ==========================================
+let SCHED_CTX=null;
+function scheduleIssue(kind){
+  let payload,summary;
+  if(kind==='bulk'){
+    const parsed=blkCollectRows(false);if(!parsed)return;const {items,errs}=parsed;
+    if(!items.length){toast('Καμία έγκυρη γραμμή','err');blkCollectRows(true);return;}
+    payload={bulk_issue:'1',items:JSON.stringify(items),live:1};
+    summary=`📚 Μαζική έκδοση · ${items.length} παραστατικά`+(errs.length?` (${errs.length} με σφάλμα θα παραλειφθούν)`:'');
+  }else{
+    const lines=collectLines();if(!lines.length){toast('Πρόσθεσε τουλάχιστον μία γραμμή (είδος + ποσότητα + τιμή)','err');return;}
+    const ser=$('#iSeries').value;if(!ser||ser==='__new'){toast('Επίλεξε σειρά παραστατικού','err');return;}
+    const p={lines:JSON.stringify(lines),type:$('#iType').value,issue_series:ser,payment:$('#iPay').value,issue_lang:$('#iLang').value,afm:$('#iAfm').value.trim(),name:$('#iName').value,address:$('#iAddress').value,city:$('#iCity').value,zip:$('#iZip').value,live:1};
+    if(ITAXES.length)p.taxes=JSON.stringify(ITAXES.map(t=>({type:t.type,category:t.category,amount:t.amount,notes:t.notes})));
+    const notes=$('#iNotes').value.trim();if(notes)p.notes=notes;
+    payload=p;
+    const nm=$('#iName').value||$('#iAfm').value||'—';
+    const tl=(typeof invLabelByValue==='function'?invLabelByValue($('#iType').value):'')||$('#iType').value;
+    summary=`🧾 ${tl} · ${lines.length} γραμμές · ${nm}`;
+  }
+  SCHED_CTX={kind,payload,summary};
+  $('#schedSummary').textContent=summary;
+  $('#schResult').innerHTML='';
+  const t=new Date(Date.now()+864e5);$('#schDate').value=t.toISOString().slice(0,10);$('#schTime').value='09:00';
+  $('#schRec').value='none';$('#schTitle').value='';
+  schedModal.showModal();
+}
+async function confirmSchedule(){if(!SCHED_CTX)return;
+  const date=$('#schDate').value,time=$('#schTime').value||'09:00';
+  if(!date){toast('Επίλεξε ημερομηνία','err');return;}
+  const runAt=date+' '+time;const when=new Date(runAt.replace(' ','T'));
+  if(isNaN(when.getTime())){toast('Μη έγκυρη ημερομηνία/ώρα','err');return;}
+  if(when.getTime()<Date.now()-60000&&!confirm('Η ώρα είναι στο παρελθόν — θα εκτελεστεί στο επόμενο πέρασμα του runner. Συνέχεια;'))return;
+  const body=new URLSearchParams();
+  body.set('sched_add','1');body.set('sched_payload',JSON.stringify(SCHED_CTX.payload));
+  body.set('run_at',runAt);body.set('recurrence',$('#schRec').value);body.set('kind',SCHED_CTX.kind);
+  body.set('title',($('#schTitle').value||'').trim());if(ACCOUNT)body.set('account',ACCOUNT);
+  $('#schResult').innerHTML='<span class="spin"></span> Αποθήκευση…';
+  try{const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body});
+    const d=await r.json();
+    if(d.success){$('#schResult').innerHTML=`<div class="card"><span class="pill ok">Προγραμματίστηκε</span> για ${esc(d.run_at)}${d.recurrence&&d.recurrence!=='none'?' · επανάληψη: '+esc(d.recurrence):''}</div>`;
+      toast('Προγραμματίστηκε','ok');setTimeout(()=>{try{schedModal.close();}catch(e){}showView('schedule');},900);}
+    else $('#schResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(d.error||'')+'</div>';
+  }catch(e){$('#schResult').innerHTML='';toast('Προγραμματισμός: '+e.message,'err');}}
+const SCHED_STATUS={pending:'Σε αναμονή',done:'Ολοκληρώθηκε',failed:'Απέτυχε',running:'Εκτελείται',cancelled:'Ακυρώθηκε'};
+const SCHED_REC={none:'—',daily:'Καθημερινά',weekly:'Εβδομαδιαία',monthly:'Μηνιαία'};
+async function loadSchedule(){const tb=$('#schedTable tbody');if(!tb)return;tb.innerHTML='<tr><td colspan="7"><span class="spin"></span> Φόρτωση…</td></tr>';
+  const note=$('#schedNote');if(note)note.innerHTML=IS_STAFF
+    ?'👁 Ως λογιστής/διαχειριστής βλέπεις τα προγράμματα <b>όλων</b> των εταιριών. Για να προγραμματίσεις για συγκεκριμένη εταιρία, επίλεξέ την από τον διακόπτη «Λογαριασμός» πάνω και χρησιμοποίησε το «⏰ Προγραμματισμός» στην Έκδοση/Μαζική.'
+    :'Βλέπεις τα προγράμματα της επιχείρησής σου.';
+  try{const d=await api({sched_list:1});renderSchedule(d.jobs||[]);}
+  catch(e){tb.innerHTML='<tr><td colspan="7">Σφάλμα: '+esc(e.message)+'</td></tr>';}}
+function renderSchedule(jobs){const tb=$('#schedTable tbody');$('#schedCount').textContent=jobs.length?(jobs.length+' προγράμματα'):'';
+  if(!jobs.length){tb.innerHTML='<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">Κανένα προγραμματισμένο παραστατικό. Χρησιμοποίησε το «⏰ Προγραμματισμός» στην Έκδοση ή τη Μαζική έκδοση.</td></tr>';return;}
+  tb.innerHTML=jobs.map(j=>{
+    const lr=j.last_result;let res='';
+    if(lr)res=lr.success?`<span class="pill ok">ΜΑΡΚ ${esc(lr.mark||'')||'OK'}</span>`:`<span class="pill bad" title="${esc(lr.error||'')}">Σφάλμα</span>`;
+    const acct=(IS_STAFF&&j.account_vat)?`<div class="ln-desc">ΑΦΜ ${esc(j.account_vat)}</div>`:'';
+    return `<tr>
+      <td>${esc(j.title||('#'+j.id))}${acct}</td>
+      <td>${j.kind==='bulk'?'📚 Μαζική':'🧾 Παραστατικό'}</td>
+      <td>${esc(j.run_at||'')}</td>
+      <td>${SCHED_REC[j.recurrence]||esc(j.recurrence)}</td>
+      <td><span class="sched-status ${esc(j.status)}">${SCHED_STATUS[j.status]||esc(j.status)}</span></td>
+      <td>${j.last_run_at?esc(j.last_run_at)+' '+res:'<span class="muted">—</span>'}</td>
+      <td>${j.status==='pending'?`<button class="danger sm" onclick="cancelJob(${j.id})">Ακύρωση</button>`:''}</td>
+    </tr>`;}).join('');}
+async function cancelJob(id){if(!confirm('Ακύρωση αυτού του προγράμματος;'))return;
+  try{const d=await api({sched_cancel:1,id});if(d.success){toast('Ακυρώθηκε','ok');loadSchedule();}else toast('Δεν ακυρώθηκε (ίσως εκτελέστηκε ήδη)','warn');}
+  catch(e){toast('Ακύρωση: '+e.message,'err');}}
+
 (async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+  pollNotifCount();setInterval(pollNotifCount,60000);
   // First-time visitors: gently offer the tour once.
   if(!localStorage.getItem('etim_tour_done'))setTimeout(()=>{try{if(confirm('Καλωσήρθες! Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;'))startTour();else localStorage.setItem('etim_tour_done','1');}catch(e){}},900);
 })();

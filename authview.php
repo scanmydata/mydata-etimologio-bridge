@@ -5,6 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>e-Timologio Pro — Σύνδεση</title>
+<link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
+<link rel="icon" href="assets/icons/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
 <style>
   :root{--bg:#0b1220;--panel:#131f33;--panel2:#18263d;--line:#2b3b54;--txt:#e6edf6;--muted:#93a4bd;--accent:#38bdf8;--accent2:#0ea5e9;--ok:#22c55e;--bad:#ef4444;--radius:14px;--shadow:0 10px 30px rgba(0,0,0,.4)}
   *{box-sizing:border-box} html,body{height:100%}
@@ -70,6 +73,15 @@
     <button class="primary" type="submit">Αποστολή οδηγιών επαναφοράς</button>
     <div class="foot">Θα λάβετε σύνδεσμο επαναφοράς αν υπάρχει λογαριασμός.</div>
   </form>
+
+  <!-- 2FA step (shown after a correct password when authenticator is enabled) -->
+  <form id="f-2fa" onsubmit="return do2fa(event)">
+    <label>Κωδικός authenticator (6 ψηφία)</label>
+    <input type="text" id="tf-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" required style="letter-spacing:6px;text-align:center;font-size:20px">
+    <button class="primary" type="submit">Επαλήθευση & Σύνδεση</button>
+    <div style="text-align:center"><button type="button" class="link" onclick="back2fa()">← Πίσω</button></div>
+    <div class="foot">Άνοιξε την εφαρμογή authenticator και δώσε τον τρέχοντα κωδικό.</div>
+  </form>
   <?php endif; ?>
 
   <div class="msg" id="msg"></div>
@@ -83,7 +95,20 @@ function tab(w){['login','signup','forgot'].forEach(x=>{document.getElementById(
   document.getElementById('subtitle').textContent=w==='login'?'Συνδεθείτε στον λογαριασμό της επιχείρησής σας':w==='signup'?'Δημιουργήστε λογαριασμό επιχείρησης':'Επαναφορά κωδικού πρόσβασης';}
 const g=id=>document.getElementById(id);
 async function post(params){const b=new URLSearchParams(params);const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});return r.json();}
-async function doLogin(e){e.preventDefault();try{const d=await post({auth:'login',email:g('l-email').value,password:g('l-pass').value});if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+function show2fa(on){
+  ['login','signup','forgot'].forEach(x=>g('f-'+x).classList.remove('on'));
+  const tabsEl=document.querySelector('.tabs');if(tabsEl)tabsEl.style.display=on?'none':'';
+  g('f-2fa').classList.toggle('on',on);
+  g('subtitle').textContent=on?'Επαλήθευση δύο παραγόντων (2FA)':'Συνδεθείτε στον λογαριασμό της επιχείρησής σας';
+  if(on)setTimeout(()=>g('tf-code').focus(),50);
+}
+function back2fa(){g('tf-code').value='';show2fa(false);g('f-login').classList.add('on');g('msg').className='msg';}
+async function doLogin(e){e.preventDefault();try{const d=await post({auth:'login',email:g('l-email').value,password:g('l-pass').value});
+  if(d.success){location.href='app.php';}
+  else if(d.totp_required){msg('');show2fa(true);}
+  else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+async function do2fa(e){e.preventDefault();try{const d=await post({auth:'login_totp',code:g('tf-code').value});
+  if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doSignup(e){e.preventDefault();try{const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doForgot(e){e.preventDefault();try{const d=await post({auth:'forgot',email:g('fg-email').value});msg(d.note||'Στάλθηκαν οδηγίες.',true);}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doReset(e){e.preventDefault();if(g('r-pass').value!==g('r-pass2').value){msg('Οι κωδικοί δεν ταιριάζουν');return false;}try{const d=await post({auth:'reset',token:g('r-token').value,password:g('r-pass').value});if(d.success){msg('Ο κωδικός ενημερώθηκε. Ανακατεύθυνση…',true);setTimeout(()=>location.href='app.php',1200);}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
