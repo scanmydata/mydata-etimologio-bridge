@@ -85,6 +85,14 @@ $__business = $__user['business_name'];
   .nav-item .ic{width:20px;text-align:center;font-size:16px}
   .nav-item:hover{background:var(--panel2);color:var(--txt)}
   .nav-item.active{background:var(--accent2);color:#04222f}
+  .wiz .wiz-q{font-size:17px;font-weight:800;margin-bottom:14px}
+  .wiz-opts{display:flex;gap:16px;flex-wrap:wrap}
+  .wiz-card{flex:1;min-width:240px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;
+    padding:20px;border-radius:14px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);cursor:pointer;transition:.15s}
+  .wiz-card:hover{border-color:var(--accent);background:var(--hover);transform:translateY(-2px)}
+  .wiz-card .wic{font-size:30px}
+  .wiz-card b{font-size:16px}
+  .wiz-card small{color:var(--muted);font-weight:500}
   .side-foot{padding:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
   /* Topbar */
   header{grid-area:top;display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);background:rgba(10,18,32,.85);backdrop-filter:blur(6px)}
@@ -357,7 +365,31 @@ $__business = $__user['business_name'];
     <!-- ISSUE -->
     <section class="view active" id="view-issue">
       <h2 class="title">Έκδοση παραστατικού</h2><p class="sub">Με αυτόματη συμπλήρωση πελάτη από Taxisnet.</p>
-      <div class="panel">
+
+      <!-- Guided start -->
+      <div class="panel wiz" id="issueWizard">
+        <div id="wizStep1">
+          <div class="wiz-q">1️⃣ Τι θέλεις να εκδώσεις;</div>
+          <div class="wiz-opts">
+            <button class="wiz-card" onclick="wizDoc('invoice')"><span class="wic">🧾</span><b>Τιμολόγιο / Απόδειξη</b><small>Πώληση αγαθών ή παροχή υπηρεσιών (με αξίες & ΦΠΑ)</small></button>
+            <button class="wiz-card" onclick="wizDoc('delivery')"><span class="wic">🚚</span><b>Δελτίο αποστολής</b><small>Διακίνηση αγαθών (μόνο ποσότητες, χωρίς αξίες)</small></button>
+          </div>
+        </div>
+        <div id="wizStep2" style="display:none">
+          <div class="wiz-q">2️⃣ Ο πελάτης είναι;</div>
+          <div class="wiz-opts">
+            <button class="wiz-card" onclick="wizWho('pro')"><span class="wic">🏢</span><b>Επαγγελματίας</b><small>Έχει ΑΦΜ → Τιμολόγιο (πώλησης / παροχής)</small></button>
+            <button class="wiz-card" onclick="wizWho('idiot')"><span class="wic">👤</span><b>Ιδιώτης</b><small>Χωρίς ΑΦΜ → Απόδειξη λιανικής</small></button>
+          </div>
+          <button class="ghost sm" style="margin-top:12px" onclick="wizReset()">← Πίσω</button>
+        </div>
+      </div>
+
+      <div class="panel" id="issueFormPanel">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span class="hint" id="issueMode"></span>
+          <button class="ghost sm" onclick="wizReset()" title="Άλλαξε τύπο παραστατικού / πελάτη">↺ Αλλαγή επιλογής</button>
+        </div>
         <div class="row" style="position:relative">
           <div class="field"><label>ΑΦΜ πελάτη</label><input id="iAfm" placeholder="9 ψηφία ή αναζήτηση" autocomplete="off" oninput="lookupAfm();custAc(this)" onfocus="custAc(this)"></div>
           <div class="field grow"><label>Επωνυμία</label><input id="iName" autocomplete="off" oninput="custAc(this)" onfocus="custAc(this)"></div>
@@ -829,7 +861,7 @@ function showView(v){
   if(v==='customers')loadCustomers();
   if(v==='products'){loadProducts();loadCategories();loadCatCls();}
   if(v==='delivery'){if(!$('#dnDate').value)dset('dnDate',new Date().toISOString().slice(0,10));if(!$('#dnLines tbody').children.length)addDnLine();dnInit();}
-  if(v==='issue'){if(!$('#iLines tbody').children.length)addLine();loadIssueTypes();renderTaxes();loadTaxCats();}
+  if(v==='issue'){if(!$('#iLines tbody').children.length)addLine();loadIssueTypes();renderTaxes();loadTaxCats();wizShow(!WIZ_DONE);}
   if(v==='drafts')loadDrafts();
   if(v==='bankimp'){if(!ALL_CUSTOMERS.length)loadCustomers();}
   if(v==='bulk')loadBulkView();
@@ -1275,6 +1307,37 @@ async function seriesChange(){const sel=$('#iSeries');if(sel.value!=='__new')ret
     toast('Η σειρά δημιουργήθηκε','ok');await loadIssueTypes();$('#iType').value=t;fillSeries();$('#iSeries').value=code.trim();
   }catch(e){toast('Σειρά: '+e.message,'err');fillSeries();}}
 
+// --- Guided Έκδοση wizard (doc type → πελάτης) --------------------------------
+let WIZ_DONE=false;
+function wizShow(on){const w=$('#issueWizard'),f=$('#issueFormPanel');if(!w||!f)return;
+  w.style.display=on?'':'none';f.style.display=on?'none':'';
+  if(on){$('#wizStep1').style.display='';$('#wizStep2').style.display='none';}}
+function wizReset(){WIZ_DONE=false;wizShow(true);}
+function wizDoc(kind){
+  if(kind==='delivery'){wizReset();showView('delivery');return;}
+  $('#wizStep1').style.display='none';$('#wizStep2').style.display='';}
+async function wizWho(who){WIZ_DONE=true;wizShow(false);
+  if(!$('#iType').value)await loadIssueTypes();
+  wizPickType(who);
+  $('#issueMode').innerHTML=who==='pro'
+    ?'🏢 <b>Τιμολόγιο</b> προς επαγγελματία — συμπλήρωσε ΑΦΜ (αυτόματη άντληση στοιχείων).'
+    :'👤 <b>Απόδειξη λιανικής</b> προς ιδιώτη — ο ΑΦΜ είναι προαιρετικός.';
+  setTimeout(()=>{const el=who==='idiot'?$('#iName'):$('#iAfm');if(el)el.focus();},60);}
+// Pick the most suitable registered invoice type for the chosen customer kind
+function wizPickType(who){const sel=$('#iType');const opts=[...sel.options].filter(o=>o.value);
+  if(!opts.length)return;
+  const nm=o=>((invLabelByValue(o.value)||o.textContent)||'').toLowerCase();
+  let pick=who==='idiot'
+    ?opts.find(o=>/λιανικ|αποδειξη|απόδειξη/.test(nm(o)))
+    :opts.find(o=>/τιμολ/.test(nm(o)));
+  if(pick){sel.value=pick.value;issueTypeChange();}
+  else toast(who==='idiot'
+    ?'Δεν υπάρχει σειρά λιανικής — δημιούργησέ την στις «Σειρές».'
+    :'Δεν υπάρχει σειρά τιμολογίου — δημιούργησέ την στις «Σειρές».','err');}
+// Called by prefill flows (Πελάτες→Έκδοση, φωνητικό) to bypass the wizard
+function wizSkip(who){WIZ_DONE=true;wizShow(false);
+  const m=$('#issueMode');if(m)m.innerHTML=who==='idiot'?'👤 <b>Απόδειξη λιανικής</b>':'🏢 <b>Τιμολόγιο</b> προς επαγγελματία';}
+
 // --- Μαζική έκδοση (bulk) ------------------------------------------------------
 async function loadBulkView(){await loadInvTypes();
   try{if(!SERIES||!SERIES.length){const d=await api({list_series:1});SERIES=d.series||[];}
@@ -1388,7 +1451,7 @@ function newCustFromIssue(){$('#iCustAc').classList.remove('open');const typed=(
   openCustomerModal(c=>{if(c){$('#iAfm').value=c.vat||$('#iAfm').value;$('#iName').value=c.name||'';$('#iAddress').value=c.address||'';$('#iCity').value=c.city||'';$('#iZip').value=c.zip||'';}},/^\d{9}$/.test(typed)?typed:'');}
 document.addEventListener('click',e=>{const p=$('#iCustAc');if(p&&!e.target.closest('#iCustAc')&&e.target!==$('#iAfm')&&e.target!==$('#iName'))p.classList.remove('open');});
 // Pre-fill the issue form for a specific customer (from the Πελάτες list)
-function issueFor(vat,name){showView('issue');$('#iAfm').value=vat;$('#iName').value=name||'';
+function issueFor(vat,name){showView('issue');wizSkip(/^\d{9}$/.test(vat)?'pro':'idiot');$('#iAfm').value=vat;$('#iName').value=name||'';
   if(/^\d{9}$/.test(vat))lookupAfm();toast('Έκδοση για '+(name||vat),'ok');}
 
 let afmTimer;
@@ -2016,7 +2079,7 @@ async function cbHandle(t){const s=t.toLowerCase();
 }
 // Execute an issue command → fills the form and saves a DRAFT (preview) for review.
 async function cbDoIssue(o){cbBot('Ετοιμάζω το πρόχειρο…');
-  showView('issue');await loadIssueTypes();await new Promise(r=>setTimeout(r,200));
+  showView('issue');wizSkip('pro');await loadIssueTypes();await new Promise(r=>setTimeout(r,200));
   if(o.afm){$('#iAfm').value=o.afm;if(/^\d{9}$/.test(o.afm)){lookupAfm();await new Promise(r=>setTimeout(r,700));}}
   $('#iLines tbody').innerHTML='';addLine(o.code||'',o.qty||1,o.price||'');
   const row=$('#iLines tbody tr:last-child');

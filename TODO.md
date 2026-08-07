@@ -62,7 +62,7 @@ Done & verified (real bridge, %PDF where relevant):
 - [x] **Admin**: businesses list (all AADE accounts) so ΤΟ ΒΑΨΙΜΟ shows; admin framed as manager, not a business.
 
 Open (requested, next):
-- [ ] Έκδοση **guided start screen**: Τιμολόγιο/Απόδειξη ή Δελτίο; → Επαγγελματίας ή Ιδιώτης; → route the flow (merge Έκδοση+Δελτίο). Update the voice/chat intents to match.
+- [x] Έκδοση **guided start screen** (`#issueWizard`): step 1 Τιμολόγιο/Απόδειξη vs Δελτίο (routes to the Δελτίο view); step 2 Επαγγελματίας vs Ιδιώτης → auto-picks the matching registered invoice type (τιμολ / λιανικ) and focuses ΑΦΜ (pro) or Επωνυμία (ιδιώτης). `wizSkip()` bypasses it for Πελάτες→Έκδοση (`issueFor`) and the φωνητικό (`cbDoIssue`). Shows on fresh open; «↺ Αλλαγή επιλογής» re-opens it. Voice map already routes «τραπέζ/μαζικ» too.
 - [ ] **Interactive μαζική έκδοση** (customer/product pickers instead of typing ΑΦΜ/codes).
 - [ ] **Column filters + row selection** (checkboxes, select-all) + restyle ALL tables to the *timologio-downloader* look; better panels/frames in Έκδοση.
 - [ ] **Auto-compute taxes/withholdings** (φόροι-κρατήσεις) on the issue form.
