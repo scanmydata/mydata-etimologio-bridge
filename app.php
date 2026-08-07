@@ -141,15 +141,22 @@ $__business = $__user['business_name'];
   table.sortable thead th{cursor:pointer;user-select:none}
   table.sortable thead th:hover{color:var(--accent)}
   tr.clickable{cursor:pointer}
-  /* Per-column filter row (timologio-downloader style) */
-  thead tr.filter-row th{position:static;padding:4px 6px;border-bottom:1px solid var(--line);background:var(--panel2);
-    text-transform:none;letter-spacing:normal;font-weight:400;cursor:default}
-  table.sortable thead tr.filter-row th{cursor:default}
-  table.sortable thead tr.filter-row th:hover{color:inherit}
-  .col-filter{width:100%;font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal;
-    padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--txt)}
-  .col-filter:focus{outline:none;border-color:var(--accent)}
-  .col-filter::placeholder{color:var(--muted);opacity:.7;text-transform:none}
+  /* Per-column dropdown filters (Excel-style) */
+  .filter-btn{display:inline-block;cursor:pointer;margin-left:6px;color:var(--muted);font-size:10px;user-select:none;vertical-align:middle}
+  .filter-btn:hover{color:var(--accent)}
+  .filter-btn.active{color:var(--accent)}
+  #colFilterPop{position:absolute;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;box-shadow:var(--shadow);padding:14px;display:none}
+  #colFilterPop.on{display:block}
+  #colFilterPop h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
+  #colFilterPop .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px}
+  #colFilterPop .cf-search:focus{outline:none;border-color:var(--accent)}
+  #colFilterPop .cf-list{max-height:230px;overflow:auto;display:flex;flex-direction:column;gap:1px}
+  #colFilterPop .cf-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #colFilterPop .cf-item:hover{background:var(--hover)}
+  #colFilterPop .cf-item input{accent-color:var(--accent);flex:0 0 auto}
+  #colFilterPop .cf-actions{display:flex;gap:8px;margin-top:12px}
+  #colFilterPop .cf-actions button{flex:1}
   th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
   /* Guided page tour */
   #tourOverlay{position:fixed;inset:0;z-index:200;display:none}
@@ -218,7 +225,7 @@ $__business = $__user['business_name'];
     <div class="brand">e-Timologio <span>Pro</span></div>
     <nav class="menu" id="menu">
       <div class="nav-item active" data-view="issue"><span class="ic">🧾</span> Έκδοση</div>
-      <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική</div>
+      <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική έκδοση</div>
       <div class="nav-item" data-view="customers"><span class="ic">👥</span> Πελάτες</div>
       <div class="nav-item" data-view="card"><span class="ic">📇</span> Καρτέλα</div>
       <div class="nav-item" data-view="bankimp"><span class="ic">🏦</span> Εισαγωγή πληρωμών</div>
@@ -832,6 +839,7 @@ $__business = $__user['business_name'];
 </div></div>
 
 <div class="toast" id="toast"></div>
+<div id="colFilterPop"></div>
 
 <!-- Guided page tour -->
 <div id="tourOverlay"><div id="tourBackdrop" onclick="endTour()"></div><div id="tourRing"></div>
@@ -1070,32 +1078,78 @@ async function cachedThenSync(kind,onRows){
   }catch(e){if(!shown)toast(kind+': '+e.message,'err');}
 }
 
-// --- Reusable per-column table filters (timologio-downloader style) -----------
-// Adds a second header row of filter inputs; filtering is live and non-invasive
-// (it only hides rows), so it works with any custom tbody renderer.
+// --- Excel-style per-column dropdown filters ---------------------------------
+// A funnel on each header opens a popup with a search box + a checkbox list of
+// the column's distinct values (+ «(Όλα)»). State is kept per table+column and
+// re-applied after every re-render (non-invasive — only hides rows).
+let GRID_FILTERS={}; // { tableId: { colIdx: Set(allowedValues) } }  (missing = no filter)
+function gridState(id){return GRID_FILTERS[id]||(GRID_FILTERS[id]={});}
 function attachColumnFilters(tableId){
   const table=$('#'+tableId);if(!table||!table.tHead||!table.tHead.rows.length)return;
-  if(table.tHead.querySelector('.filter-row'))return; // already attached
-  const cells=[...table.tHead.rows[0].cells];
-  const fr=document.createElement('tr');fr.className='filter-row';
-  cells.forEach((th,idx)=>{const td=document.createElement('th');
+  const hdr=table.tHead.rows[0];
+  [...hdr.cells].forEach((th,idx)=>{
+    if(th.querySelector('.filter-btn'))return; // already has a funnel
     const label=(th.textContent||'').trim();
-    if(label&&!th.classList.contains('nofilter')&&!th.classList.contains('grid-check')){
-      const inp=document.createElement('input');inp.type='text';inp.className='col-filter';inp.placeholder='φίλτρο…';inp.dataset.col=idx;
-      inp.addEventListener('input',()=>applyColumnFilters(tableId));
-      td.appendChild(inp);
-    }
-    fr.appendChild(td);});
-  table.tHead.appendChild(fr);
+    if(!label||th.classList.contains('nofilter')||th.classList.contains('grid-check'))return;
+    const b=document.createElement('span');b.className='filter-btn';b.textContent='▾';b.title='Φίλτρο στήλης';b.dataset.col=idx;
+    b.onclick=(e)=>{e.stopPropagation();openColFilter(tableId,idx,th,label);};
+    th.appendChild(b);
+    if(gridState(tableId)[idx])b.classList.add('active');
+  });
 }
+function colDistinct(table,col){const set=new Set();
+  [...table.tBodies[0].rows].forEach(tr=>{if(tr.cells.length===1)return;const v=(tr.cells[col]?.textContent||'').trim();if(v!=='')set.add(v);});
+  return [...set].sort((a,b)=>a.localeCompare(b,'el'));}
+function openColFilter(tableId,col,th,label){
+  const table=$('#'+tableId),pop=$('#colFilterPop');
+  const values=colDistinct(table,col);const st=gridState(tableId);
+  const isAllowed=v=>!st[col]||st[col].has(v);
+  pop.innerHTML=`<h5>Φίλτρο: ${esc(label)}</h5>
+    <input class="cf-search" placeholder="Αναζήτηση τιμής…" autocomplete="off">
+    <div class="cf-list"></div>
+    <div class="cf-actions"><button class="ghost sm cf-clear">Καθαρισμός</button><button class="primary sm cf-close">Κλείσιμο</button></div>`;
+  const listEl=pop.querySelector('.cf-list');
+  function render(term){term=(term||'').toLowerCase();
+    const shown=values.filter(v=>!term||v.toLowerCase().includes(term));
+    listEl.innerHTML=`<label class="cf-item" data-all="1"><input type="checkbox" ${!st[col]?'checked':''}> <b>(Όλα)</b></label>`+
+      shown.map(v=>`<label class="cf-item"><input type="checkbox" data-v="${esc(v)}" ${isAllowed(v)?'checked':''}> ${esc(v)}</label>`).join('')
+      ||'<div class="muted" style="padding:6px">—</div>';
+  }
+  render('');
+  pop.querySelector('.cf-search').oninput=function(){render(this.value);};
+  listEl.onchange=function(e){const cb=e.target;if(!cb||cb.type!=='checkbox')return;
+    if(cb.parentElement.dataset.all){
+      if(cb.checked)delete st[col]; else st[col]=new Set();      // all vs none
+    }else{
+      if(!st[col])st[col]=new Set(values);                       // start from "all"
+      if(cb.checked)st[col].add(cb.dataset.v);else st[col].delete(cb.dataset.v);
+      if(st[col].size===values.length)delete st[col];            // all selected → no filter
+    }
+    applyColumnFilters(tableId);
+    const btn=th.querySelector('.filter-btn');if(btn)btn.classList.toggle('active',!!st[col]);
+    render(pop.querySelector('.cf-search').value);
+  };
+  pop.querySelector('.cf-clear').onclick=()=>{delete st[col];applyColumnFilters(tableId);
+    const btn=th.querySelector('.filter-btn');if(btn)btn.classList.remove('active');render(pop.querySelector('.cf-search').value);};
+  pop.querySelector('.cf-close').onclick=closeColFilter;
+  const r=th.getBoundingClientRect();
+  pop.style.left=Math.max(8,Math.min(r.left,window.innerWidth-300))+'px';
+  pop.style.top=(r.bottom+4)+'px';pop.classList.add('on');
+  setTimeout(()=>pop.querySelector('.cf-search').focus(),30);
+}
+function closeColFilter(){$('#colFilterPop').classList.remove('on');}
+document.addEventListener('click',e=>{const pop=$('#colFilterPop');
+  if(pop&&pop.classList.contains('on')&&!e.target.closest('#colFilterPop')&&!e.target.closest('.filter-btn'))closeColFilter();});
 function applyColumnFilters(tableId){
-  const table=$('#'+tableId);if(!table||!table.tHead||!table.tBodies.length)return;
-  const filters=[...table.tHead.querySelectorAll('.col-filter')].map(i=>({col:+i.dataset.col,val:(i.value||'').toLowerCase().trim()})).filter(f=>f.val);
+  const table=$('#'+tableId);if(!table||!table.tBodies.length)return;const st=gridState(tableId);
   [...table.tBodies[0].rows].forEach(tr=>{
     if(tr.cells.length===1){tr.style.display='';return;} // placeholder ("Κανένα…") row
     let show=true;
-    for(const f of filters){const c=tr.cells[f.col];if(!c||!(c.textContent||'').toLowerCase().includes(f.val)){show=false;break;}}
+    for(const col in st){const allowed=st[col];if(!allowed)continue;const v=(tr.cells[col]?.textContent||'').trim();if(!allowed.has(v)){show=false;break;}}
     tr.style.display=show?'':'none';});
+  // keep funnel active-state in sync after re-renders
+  const hdr=table.tHead&&table.tHead.rows[0];
+  if(hdr)[...hdr.querySelectorAll('.filter-btn')].forEach(b=>b.classList.toggle('active',!!st[b.dataset.col]));
 }
 
 // Customers (cached + instant client-side filter)
@@ -1496,18 +1550,25 @@ function blkAddRow(vat='',name='',code='',qty=1,price=''){
 function blkCustAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
   if(!ALL_CUSTOMERS.length)loadCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));rows=rows.slice(0,30);
-  if(!rows.length){panel.classList.remove('open');return;}
-  panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="blkPickCust(this,'${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
+  const newRow=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="blkNewCust(this)">➕ Νέος πελάτης…</div>`;
+  panel.innerHTML=newRow+rows.map(c=>`<div class="ac-row" onmousedown="blkPickCust(this,'${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
   panel.classList.add('open');}
 function blkPickCust(el,vat,name){const td=el.closest('td');const inp=td.querySelector('.blk-cust');inp.value=name||vat;inp.dataset.vat=vat;td.querySelector('.ac-panel').classList.remove('open');blkCountUpd();}
+function blkNewCust(el){const td=el.closest('td');const inp=td.querySelector('.blk-cust');td.querySelector('.ac-panel').classList.remove('open');
+  const typed=(inp.value||'').trim();
+  openCustomerModal(c=>{if(c){inp.value=c.name||c.vat||'';inp.dataset.vat=c.vat||'';blkCountUpd();}},/^\d{9}$/.test(typed)?typed:'');}
 function blkProdAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
   let items=Object.keys(PRODMAP).map(code=>({code,desc:PRODMAP[code].desc||'',vat:PRODMAP[code].vat}));
   if(term)items=items.filter(x=>(x.code+' '+x.desc).toLowerCase().includes(term));items=items.slice(0,40);
-  if(!items.length){panel.classList.remove('open');return;}
-  panel.innerHTML=items.map(x=>`<div class="ac-row" onmousedown="blkPickProd(this,'${q1(x.code)}')"><b>${esc(x.code)}</b> <small>${esc(x.desc)}${x.vat!==undefined&&x.vat!==''?' · ΦΠΑ '+vatPct(x.vat)+'%':''}</small></div>`).join('');
+  const newRow=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="blkNewProd(this)">➕ Νέο είδος…</div>`;
+  panel.innerHTML=newRow+items.map(x=>`<div class="ac-row" onmousedown="blkPickProd(this,'${q1(x.code)}')"><b>${esc(x.code)}</b> <small>${esc(x.desc)}${x.vat!==undefined&&x.vat!==''?' · ΦΠΑ '+vatPct(x.vat)+'%':''}</small></div>`).join('');
   panel.classList.add('open');}
 function blkPickProd(el,code){const td=el.closest('td');const inp=td.querySelector('.blk-code');inp.value=prodText(code);inp.dataset.code=code;td.querySelector('.ac-panel').classList.remove('open');
   const tr=el.closest('tr');const priceInp=tr.querySelector('.blk-price');const p=PRODMAP[code];if(p&&p.price&&!elNum(priceInp.value))priceInp.value=elFmt(p.price,4);blkCountUpd();}
+function blkNewProd(el){const td=el.closest('td');const inp=td.querySelector('.blk-code');td.querySelector('.ac-panel').classList.remove('open');
+  const typed=(inp.value||'').trim();
+  openProductModal(/^[\w.-]{1,20}$/.test(typed)&&!PRODMAP[typed]?typed:'',code=>{inp.value=prodText(code);inp.dataset.code=code;
+    const tr=td.closest('tr');const priceInp=tr.querySelector('.blk-price');const p=PRODMAP[code];if(p&&p.price&&!elNum(priceInp.value))priceInp.value=elFmt(p.price,4);blkCountUpd();});}
 document.addEventListener('click',e=>{if(!e.target.closest('#blkTable td'))document.querySelectorAll('#blkTable .ac-panel.open').forEach(p=>p.classList.remove('open'));});
 function blkCountUpd(){const n=document.querySelectorAll('#blkTable tbody tr').length;$('#blkCount').textContent=n?(n+' γραμμές'):'';}
 // Collect the interactive rows into bulk items using the common type/series/pay/lang
@@ -2235,8 +2296,10 @@ function cbToggleMic(){if(!cbRec)cbRec=cbInitRec();
 function cbNum(re,t){const m=t.match(re);return m?parseFloat(m[1].replace(',','.')):null;}
 function cbFindProd(s){for(const c in PRODMAP){const dsc=(PRODMAP[c].desc||'').toLowerCase();if(dsc.length>=4&&s.includes(dsc.slice(0,Math.min(8,dsc.length))))return c;}return '';}
 // Intent router
+let CB_CTX=null; // pending multi-step flow (e.g. resolving an unknown customer)
 async function cbHandle(t){const s=t.toLowerCase();
-  const isIssue=/έκδοσ|εκδοσ|τιμολόγ|τιμολογ|παραστατ|issue|invoice/.test(s);
+  if(CB_CTX)return cbContinue(t);              // we're mid-conversation
+  const isIssue=/έκδοσ|εκδοσ|τιμολόγ|τιμολογ|απόδειξ|αποδειξ|παραστατ|issue|invoice/.test(s);
   // Navigation (not when it's an issue command)
   const nav=[['καρτέλ','card'],['καρτελ','card'],['πελάτ','customers'],['πελατ','customers'],['στατιστ','stats'],['δελτί','delivery'],['δελτι','delivery'],['σειρέ','series'],['σειρε','series'],['σειρά','series'],['σειρων','series'],['σειρών','series'],['είδη','products'],['ειδη','products'],['πρόχειρ','drafts'],['προχειρ','drafts'],['ρυθμίσ','settings'],['ρυθμισ','settings'],['ακύρωσ','cancel'],['ακυρωσ','cancel'],['τραπέζ','bankimp'],['τραπεζ','bankimp'],['extrait','bankimp'],['εξτρέ','bankimp'],['μαζικ','bulk']];
   if(/πήγαινε|πηγαινε|άνοιξε|ανοιξε|go to|open|δείξε|δειξε|εμφάνισε/.test(s)&&!isIssue){
@@ -2244,7 +2307,7 @@ async function cbHandle(t){const s=t.toLowerCase();
     if(/έκδοσ|εκδοσ/.test(s)){showView('issue');cbBot('Άνοιξα την Έκδοση.');return;}}
   // Help
   if(/βοήθεια|βοηθεια|help|τι μπορείς|τι μπορεις|τι κάνεις/.test(s)){
-    cbBot('Μπορώ (πάντα ως ΠΡΟΧΕΙΡΟ — καμία οριστική έκδοση/ΜΑΡΚ χωρίς εσένα):\n• «έκδοση τιμολογίου στον <ΑΦΜ> για <ποσότητα> <είδος> <τιμή> ευρώ»\n• «νέος πελάτης <ΑΦΜ>»\n• «νέο είδος <περιγραφή> <τιμή> ευρώ»\n• «νέα σειρά» (διαχείριση σειρών ανά τύπο)\n• «πήγαινε στην καρτέλα/πελάτες/είδη/σειρές/δελτίο/…»\n• «πόσα τιμολόγια φέτος»\n\nℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
+    cbBot('Μπορώ (πάντα ως ΠΡΟΧΕΙΡΟ — καμία οριστική έκδοση/ΜΑΡΚ χωρίς εσένα):\n• «έκδοση τιμολογίου στην <επωνυμία ή ΑΦΜ> καθαρή αξία <ποσό> με παρακράτηση φόρου <%> είδος <περιγραφή>»\n  → βρίσκω τον πελάτη με το όνομα· αν δεν υπάρχει ρωτάω αν είναι επαγγελματίας/ιδιώτης και ζητάω τα στοιχεία· βρίσκω ή δημιουργώ το είδος· υπολογίζω την παρακράτηση.\n• «νέος πελάτης <ΑΦΜ>»  • «νέο είδος <περιγραφή> <τιμή> ευρώ»  • «νέα σειρά»\n• «πήγαινε στην καρτέλα/πελάτες/είδη/σειρές/…»  • «πόσα τιμολόγια φέτος»\n\nℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
   // New series
   if(/νέα? σειρά|νεα? σειρα|new series|δημιούργησε σειρά|φτιάξε σειρά/.test(s)){
     showView('series');cbBot('Άνοιξα τη διαχείριση Σειρών. Διάλεξε τύπο παραστατικού, δώσε κωδικό σειράς (π.χ. Α, ΤΠΥ, ΔΑ) και πάτα «Δημιουργία σειράς».');return;}
@@ -2265,32 +2328,110 @@ async function cbHandle(t){const s=t.toLowerCase();
     cbBot('Ανοίγω φόρμα νέου είδους'+(desc?(' «'+desc+'»'):'')+(price?(' τιμή '+price+'€'):'')+'. Έλεγξε και πάτα Αποθήκευση.');
     openProductModal('',c=>{if(c)cbBot('✔ Το είδος αποθηκεύτηκε.');});
     setTimeout(()=>{if(desc&&$('#pdDesc'))$('#pdDesc').value=desc;if(price&&$('#pdPrice'))$('#pdPrice').value=price;},180);return;}
-  // Issue invoice → preview/draft
-  if(isIssue){
-    const afm=(t.match(/\b(\d{9})\b/)||[])[1]||'';
-    const qty=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:τεμ|τεμάχ|τεμαχ|x|χ|ποσότ|ποσοτ)/i,t)||1;
-    const price=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur)/i,t);
-    let code=(t.match(/κωδ(?:ικός|ικος)?\s*([\w.\-]+)/i)||[])[1]||'';
-    if(code&&!PRODMAP[code])code='';
-    if(!code)code=cbFindProd(s);
-    const o={afm,code,qty:qty||1,price};
-    let sum='Θα ετοιμάσω ΠΡΟΧΕΙΡΟ παραστατικό:\n• Πελάτης: '+(afm||'(επίλεξέ τον στη φόρμα)')+'\n• Είδος: '+(code?(code+' '+(PRODMAP[code].desc||'')):'(επίλεξέ το στη φόρμα)')+'\n• Ποσότητα: '+(qty||1)+(price?(' • Τιμή: '+price+'€'):'');
-    const id='__cbi'+Date.now();window[id]=o;
-    cbBot(sum,`<div class="cbAct"><button class="go" onclick="cbDoIssue(window['${id}'])">✔ Ετοίμασε πρόχειρο</button><button onclick="showView('issue')">Άνοιξε φόρμα</button></div>`);return;}
+  // Issue invoice → smart flow (resolve customer & item, apply withholding)
+  if(isIssue){cbStartIssue(cbParseIssue(t));return;}
   cbBot('Δεν το κατάλαβα. Πες «βοήθεια» για παραδείγματα.');
+}
+
+// --- Smart issue assistant ----------------------------------------------------
+// Parse a free-text issue command into a structured object.
+function cbParseIssue(t){
+  const afm=(t.match(/\b(\d{9})\b/)||[])[1]||'';
+  // customer reference (name) after στην/στον/στη/στο/πελάτη/για
+  let ref='';const m=t.match(/(?:στην|στον|στη|στο|πελάτ\S*|πελατ\S*|για\s+τον?ν?)\s+([\wΑ-Ωα-ωΆ-Ώά-ώ&.\-]+(?:\s+[\wΑ-Ωα-ωΆ-Ώά-ώ&.\-]+){0,3})/i);
+  if(m)ref=m[1].replace(/\s+(καθαρ\S*|ποσ[όο]|αξ[ίι]α|με|είδος|ειδος|παρακρ\S*|,).*$/i,'').trim();
+  // net / amount
+  let net=cbNum(/καθαρ\S*\s*αξ\S*\s*(\d+(?:[.,]\d+)?)/i,t);
+  if(net==null)net=cbNum(/(?:ποσ[όο]|αξ[ίι]α)\s*(\d+(?:[.,]\d+)?)/i,t);
+  if(net==null)net=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur)/i,t);
+  const wpct=cbNum(/παρακρ\S*\s*(?:φ[όο]ρου)?\s*(\d+(?:[.,]\d+)?)\s*%/i,t);
+  // item description after ειδος/είδος (up to a trailing amount/withholding clause)
+  let item='';const mi=t.match(/ε[ίι]δος\s*[:\-]?\s*(.+)$/i);
+  if(mi)item=mi[1].replace(/\s*(με\s+παρακρ\S*.*|καθαρ\S*\s*αξ\S*.*)$/i,'').trim();
+  const qty=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:τεμ|τεμάχ|τεμαχ|\bx\b|\bχ\b)/i,t)||1;
+  return {afm,customerRef:ref,net,withholdingPct:wpct,item,qty:qty||1};
+}
+function cbResolveCustomer(ref,afm){const custs=ALL_CUSTOMERS.map(custFields);
+  if(afm){const c=custs.find(x=>x.vat===afm);if(c)return c;}
+  if(ref){const q=ref.toLowerCase();
+    return custs.find(x=>x.name.toLowerCase()===q)||custs.find(x=>x.name.toLowerCase().includes(q))||null;}
+  return null;}
+function cbFindProdByDesc(desc){if(!desc)return '';const d=desc.toLowerCase();let best='',bs=0;
+  for(const c in PRODMAP){const pd=(PRODMAP[c].desc||'').toLowerCase();if(pd.length<3)continue;
+    let hit=0;if(d.includes(pd)||pd.includes(d))hit+=5;
+    for(const w of pd.split(/\s+/).filter(w=>w.length>=4))if(d.includes(w))hit++;
+    if(hit>bs){bs=hit;best=c;}}
+  return bs>=2?best:'';}
+async function cbStartIssue(o){
+  if(!ALL_CUSTOMERS.length)await loadCustomers();
+  const cust=cbResolveCustomer(o.customerRef,o.afm);
+  if(cust){o.afm=cust.vat;o.name=cust.name;return cbResolveProduct(o);}
+  CB_CTX={stage:'who',o};
+  cbBot('Δεν βρήκα πελάτη «'+(o.customerRef||o.afm||'—')+'». Είναι επαγγελματίας ή ιδιώτης;',
+    `<div class="cbAct"><button class="go" onclick="cbWho('pro')">🏢 Επαγγελματίας</button><button class="go" onclick="cbWho('idiot')">👤 Ιδιώτης</button></div>`);
+}
+function cbWho(kind){if(!CB_CTX)return;const o=CB_CTX.o;
+  if(kind==='pro'){CB_CTX.stage='afm';cbBot('Δώσε το <b>ΑΦΜ</b> της επιχείρησης «'+(o.customerRef||'')+'» για να τον καταχωρήσω.');}
+  else{CB_CTX=null;o.retail=true;
+    cbBot('Άνοιξα φόρμα νέου ιδιώτη — συμπλήρωσε ονοματεπώνυμο & στοιχεία και πάτα Αποθήκευση· μετά ετοιμάζω το παραστατικό.');
+    openCustomerModal(c=>{if(c){o.afm=c.vat||'';o.name=c.name||o.customerRef||'';cbResolveProduct(o);}else CB_CTX=null;});
+    setTimeout(()=>{custTab('personal');if(o.customerRef&&$('#cpName'))$('#cpName').value=o.customerRef.toUpperCase();},160);
+  }
+}
+async function cbContinue(t){const s=t.toLowerCase();
+  if(CB_CTX.stage==='who'){
+    if(/επαγγελ|επιχειρ|εταιρ|professional/.test(s))return cbWho('pro');
+    if(/ιδι[ώω]τ|φυσικ|individual/.test(s))return cbWho('idiot');
+    cbBot('Πες «επαγγελματίας» ή «ιδιώτης».');return;}
+  if(CB_CTX.stage==='afm'){const afm=(t.match(/\b(\d{9})\b/)||[])[1];
+    if(!afm){cbBot('Δώσε ένα έγκυρο 9ψήφιο ΑΦΜ (ή «άκυρο»).');if(/άκυρ|ακυρ|cancel/.test(s))CB_CTX=null;return;}
+    const o=CB_CTX.o;CB_CTX=null;o.afm=afm;o.name=o.customerRef||'';
+    cbBot('✔ ΑΦΜ '+afm+' — θα δημιουργηθεί/βρεθεί αυτόματα κατά την έκδοση.');
+    return cbResolveProduct(o);}
+  CB_CTX=null;cbBot('Εντάξει, ακυρώθηκε.');
+}
+async function cbResolveProduct(o){
+  if(!Object.keys(PRODMAP).length)await loadProductList();
+  let code=o.code||'';
+  if(!code&&o.item)code=cbFindProdByDesc(o.item);
+  if(code){o.code=code;cbBot('✔ Βρήκα υπάρχον είδος: '+code+' — '+(PRODMAP[code]?.desc||''));return cbFinalizeIssue(o);}
+  if(o.item){
+    cbBot('Το είδος «'+o.item+'» δεν υπάρχει — το ανοίγω για δημιουργία. Έλεγξε κατηγορία/ΦΠΑ και πάτα Αποθήκευση.');
+    openProductModal('',c=>{if(c){o.code=c;cbFinalizeIssue(o);}});
+    setTimeout(()=>{if($('#pdDesc'))$('#pdDesc').value=o.item;if(o.net&&$('#pdPrice'))$('#pdPrice').value=o.net;},180);
+    return;}
+  cbFinalizeIssue(o);
+}
+function cbFinalizeIssue(o){
+  const price=(o.net!=null?o.net:o.price)||'';
+  const sum='Θα ετοιμάσω ΠΡΟΧΕΙΡΟ:\n• Πελάτης: '+(o.name||o.afm||'—')
+    +'\n• Είδος: '+(o.code?(o.code+' '+(PRODMAP[o.code]?.desc||'')):(o.item||'(στη φόρμα)'))
+    +'\n• Ποσότητα: '+(o.qty||1)+(price!==''?('\n• Καθαρή αξία: '+fmt(price)+' €'):'')
+    +(o.withholdingPct?('\n• Παρακράτηση φόρου: '+o.withholdingPct+'%'):'');
+  const id='__cbi'+Date.now();window[id]={afm:o.afm,name:o.name,code:o.code,qty:o.qty||1,price,withholdingPct:o.withholdingPct,retail:o.retail};
+  cbBot(sum,`<div class="cbAct"><button class="go" onclick="cbDoIssue(window['${id}'])">✔ Ετοίμασε πρόχειρο</button><button onclick="showView('issue')">Άνοιξε φόρμα</button></div>`);
+}
+async function cbApplyWithholding(pct){await loadTaxCats();
+  const list=(TAXCATS&&TAXCATS.withheld)||[];
+  const target=list.find(c=>Math.abs(taxRateFromLabel(c.label)*100-pct)<0.01)||list.find(c=>(c.label||'').includes(pct+'%'));
+  if(!target){cbBot('⚠ Δεν βρήκα κατηγορία παρακράτησης '+pct+'% — πρόσθεσέ την χειροκίνητα από «💶 Φόρος/Κράτηση».');return;}
+  const net=issueNetTotal();const amt=Math.round(net*(pct/100)*100)/100;
+  ITAXES.push({type:1,category:target.code,amount:amt,notes:'',label:target.label});renderTaxes();sumTotals();
 }
 // Execute an issue command → fills the form and saves a DRAFT (preview) for review.
 async function cbDoIssue(o){cbBot('Ετοιμάζω το πρόχειρο…');
-  showView('issue');wizSkip('pro');await loadIssueTypes();await new Promise(r=>setTimeout(r,200));
+  showView('issue');wizSkip(o.retail?'idiot':'pro');await loadIssueTypes();await new Promise(r=>setTimeout(r,200));
   if(o.afm){$('#iAfm').value=o.afm;if(/^\d{9}$/.test(o.afm)){lookupAfm();await new Promise(r=>setTimeout(r,700));}}
+  if(o.name&&!$('#iName').value)$('#iName').value=o.name;
   $('#iLines tbody').innerHTML='';addLine(o.code||'',o.qty||1,o.price||'');
   const row=$('#iLines tbody tr:last-child');
   if(o.code&&PRODMAP[o.code]){pickProd(row.querySelector('.ln-code'),o.code);}
   if(o.price){row.querySelector('.ln-price').value=elFmt(elNum(o.price),4);lineFromInputs(row);}
   await new Promise(r=>setTimeout(r,150));
+  if(o.withholdingPct)await cbApplyWithholding(o.withholdingPct);
   if(!collectLines().length){cbBot('Χρειάζεται είδος/τιμή — συμπλήρωσέ τα στη φόρμα και πάτα «Πρόχειρο».');return;}
   await submitInvoice(false);
-  cbBot('✔ Το πρόχειρο ετοιμάστηκε. Έλεγξέ το εδώ ή στα «Πρόχειρα» και έκδωσέ το χειροκίνητα.');
+  cbBot('✔ Το πρόχειρο ετοιμάστηκε'+(o.withholdingPct?(' με παρακράτηση '+o.withholdingPct+'%'):'')+'. Έλεγξέ το εδώ ή στα «Πρόχειρα» και έκδωσέ το χειροκίνητα.');
 }
 $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').value;});
 
