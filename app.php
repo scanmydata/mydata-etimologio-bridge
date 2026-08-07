@@ -141,6 +141,11 @@ $__business = $__user['business_name'];
   table.sortable thead th{cursor:pointer;user-select:none}
   table.sortable thead th:hover{color:var(--accent)}
   tr.clickable{cursor:pointer}
+  /* Per-column filter row (timologio-downloader style) */
+  thead tr.filter-row th{position:static;padding:4px 6px;border-bottom:1px solid var(--line);background:var(--panel2)}
+  .col-filter{width:100%;font-size:11px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--txt)}
+  .col-filter::placeholder{color:var(--muted);opacity:.7}
+  th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
   .num{text-align:right;font-variant-numeric:tabular-nums}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:4px 0}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
@@ -548,9 +553,12 @@ $__business = $__user['business_name'];
             <div class="field"><label>Έως</label><input id="dfTo" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
             <button class="primary" onclick="loadDrafts()">Φόρτωση</button>
           </div>
-          <div class="hint" id="dfCount"></div>
+          <div class="row" style="align-items:center">
+            <span class="hint" id="dfCount"></span>
+            <button class="danger sm" onclick="delSelectedDrafts()" data-tip="Διαγραφή όλων των επιλεγμένων προχείρων">🗑 Διαγραφή επιλεγμένων</button>
+          </div>
         </div>
-        <table id="draftsTable"><thead><tr><th>Ημ/νία</th><th>Τύπος</th><th>Σειρά</th><th>Πελάτης</th><th></th></tr></thead><tbody></tbody></table>
+        <table id="draftsTable"><thead><tr><th class="grid-check nofilter"><input type="checkbox" id="dfAll" onchange="dfToggleAll(this.checked)"></th><th>Ημ/νία</th><th>Τύπος</th><th>Σειρά</th><th>Πελάτης</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 
@@ -902,11 +910,12 @@ function showView(v){
   document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
   $('#view-'+v).classList.add('active');
   if(v==='stats')loadStats();
-  if(v==='customers')loadCustomers();
-  if(v==='products'){loadProducts();loadCategories();loadCatCls();}
+  if(v==='customers'){attachColumnFilters('custTable');loadCustomers();}
+  if(v==='products'){attachColumnFilters('prodTable');loadProducts();loadCategories();loadCatCls();}
   if(v==='delivery'){if(!$('#dnDate').value)dset('dnDate',new Date().toISOString().slice(0,10));if(!$('#dnLines tbody').children.length)addDnLine();dnInit();}
   if(v==='issue'){if(!$('#iLines tbody').children.length)addLine();loadIssueTypes();renderTaxes();loadTaxCats();wizShow(!WIZ_DONE);}
-  if(v==='drafts')loadDrafts();
+  if(v==='cancel')attachColumnFilters('cxTable');
+  if(v==='drafts'){attachColumnFilters('draftsTable');loadDrafts();}
   if(v==='bankimp'){if(!ALL_CUSTOMERS.length)loadCustomers();}
   if(v==='bulk')loadBulkView();
   if(v==='series')loadSeriesView();
@@ -1031,6 +1040,34 @@ async function cachedThenSync(kind,onRows){
   }catch(e){if(!shown)toast(kind+': '+e.message,'err');}
 }
 
+// --- Reusable per-column table filters (timologio-downloader style) -----------
+// Adds a second header row of filter inputs; filtering is live and non-invasive
+// (it only hides rows), so it works with any custom tbody renderer.
+function attachColumnFilters(tableId){
+  const table=$('#'+tableId);if(!table||!table.tHead||!table.tHead.rows.length)return;
+  if(table.tHead.querySelector('.filter-row'))return; // already attached
+  const cells=[...table.tHead.rows[0].cells];
+  const fr=document.createElement('tr');fr.className='filter-row';
+  cells.forEach((th,idx)=>{const td=document.createElement('th');
+    const label=(th.textContent||'').trim();
+    if(label&&!th.classList.contains('nofilter')&&!th.classList.contains('grid-check')){
+      const inp=document.createElement('input');inp.type='text';inp.className='col-filter';inp.placeholder='φίλτρο…';inp.dataset.col=idx;
+      inp.addEventListener('input',()=>applyColumnFilters(tableId));
+      td.appendChild(inp);
+    }
+    fr.appendChild(td);});
+  table.tHead.appendChild(fr);
+}
+function applyColumnFilters(tableId){
+  const table=$('#'+tableId);if(!table||!table.tHead||!table.tBodies.length)return;
+  const filters=[...table.tHead.querySelectorAll('.col-filter')].map(i=>({col:+i.dataset.col,val:(i.value||'').toLowerCase().trim()})).filter(f=>f.val);
+  [...table.tBodies[0].rows].forEach(tr=>{
+    if(tr.cells.length===1){tr.style.display='';return;} // placeholder ("Κανένα…") row
+    let show=true;
+    for(const f of filters){const c=tr.cells[f.col];if(!c||!(c.textContent||'').toLowerCase().includes(f.val)){show=false;break;}}
+    tr.style.display=show?'':'none';});
+}
+
 // Customers (cached + instant client-side filter)
 let ALL_CUSTOMERS=[];
 $('#custSearch').addEventListener('input',renderCustomers);
@@ -1057,6 +1094,7 @@ function renderCustomers(){
       <td class="right"><button class="primary sm" title="Έκδοση παραστατικού" onclick="event.stopPropagation();issueFor('${q1(c.vat)}','${q1(c.name)}')">🧾 Έκδοση</button>
       <button class="ghost sm" onclick="event.stopPropagation();editCustomer('${q1(c.vat)}','${q1(c.name)}','${q1(c.address)}','${q1(c.city)}','${q1(c.zip)}')">✎</button>
       <button class="ghost sm" onclick="event.stopPropagation();openCard('${q1(c.vat)}','${q1(c.name)}')">Καρτέλα →</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">Κανένα αποτέλεσμα.</td></tr>';
+  applyColumnFilters('custTable');
 }
 async function loadCustomers(){await cachedThenSync('customers',rows=>{ALL_CUSTOMERS=rows;renderCustomers();});}
 
@@ -1220,7 +1258,8 @@ function renderProducts(){const f=($('#prodFilter').value||'').toLowerCase();
   const rows=PRODUCTS.filter(p=>!f||JSON.stringify(p).toLowerCase().includes(f));
   $('#prodTable tbody').innerHTML=rows.map(p=>{const code=p.product_code||p.code||'',desc=p.description||'',cat=p.category||'',vat=p.vat||p.vat_category||'',price=p.unit_price||p.price||'';
     return `<tr><td>${esc(code)}</td><td>${esc(desc)}</td><td>${esc(cat)}</td><td>${esc(vat)}</td><td class="num">${price!==''?fmt(price):''}</td>
-      <td class="right"><button class="ghost sm" onclick="editProduct('${q1(code)}','${q1(desc)}')">✎</button> <button class="danger sm" onclick="delProduct('${q1(code)}')">✕</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="muted">Κανένα είδος.</td></tr>';}
+      <td class="right"><button class="ghost sm" onclick="editProduct('${q1(code)}','${q1(desc)}')">✎</button> <button class="danger sm" onclick="delProduct('${q1(code)}')">✕</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="muted">Κανένα είδος.</td></tr>';
+  applyColumnFilters('prodTable');}
 async function loadCategories(){try{const d=await api({list_product_categories:1});CATEGORIES=d.product_categories||d.categories||d.items||[];const sel=$('#pdCategory');if(sel){sel.innerHTML='<option value="">—</option>'+CATEGORIES.map(c=>`<option value="${esc(c.id||c.category_id||'')}">${esc(c.name||c.category||c.category_name||'')}</option>`).join('');}}catch(e){}}
 let PRODMAP={};
 const VATPCT={1:24,2:13,3:6,4:17,5:9,6:4,7:0,8:0};
@@ -1963,6 +2002,7 @@ async function cxLoadInvoices(){let vat=$('#cxVat').value.trim();
     const inv=(d.invoices||[]).filter(i=>i.mark);
     CX_INV=inv;
     $('#cxTable tbody').innerHTML=inv.map((i,idx)=>`<tr><td>${esc(i.issue_date||'')}</td><td>${esc(i.type||'')}</td><td>${esc((i.series||'')+' '+(i.aa||''))}</td><td>${esc(i.counterpart_vat||i.buyer_vat||i.counterpart||'—')}</td><td class="num">${esc(i.net_value||'')}</td><td class="num">${esc(i.total||'')}</td><td>${esc(i.mark)}</td><td class="right"><button class="primary sm" onclick="cxPick(${idx})">Επιλογή</button></td></tr>`).join('')||'<tr><td colspan="8" class="muted">Κανένα χρεωστικό στο διάστημα.</td></tr>';
+    applyColumnFilters('cxTable');
   }catch(e){$('#cxTable tbody').innerHTML='';toast('Παραστατικά: '+e.message,'err');}}
 let CX_INV=[];
 function cxPick(idx){const i=CX_INV[idx];if(!i)return;const net=parseGr(i.net_value);window.__cxTempId=null;
@@ -2010,12 +2050,22 @@ async function doCredit(viaIssue,mark){if(!mark){toast('Επίλεξε παρα�
 // Drafts (προσωρινά αποθηκευμένα)
 function draftRange(){const y=new Date().getFullYear();if(!$('#dfFrom').value)dset('dfFrom',y+'-01-01');if(!$('#dfTo').value)dset('dfTo',y+'-12-31');}
 function renderDrafts(rows){rows=rows||[];$('#dfCount').textContent=rows.length+' πρόχειρα';
+  const df=$('#dfAll');if(df)df.checked=false;
   const nameFor=v=>{const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===v);return c?c.name:'';};
   $('#draftsTable tbody').innerHTML=rows.map(t=>{const bv=t.buyer_vat||'';const nm=nameFor(bv);
-    return `<tr><td>${esc(t.save_date||'')}</td><td>${esc(t.type||'')}</td><td>${esc(t.series||'')}</td><td>${esc(nm||bv||'—')}</td>
+    return `<tr><td class="grid-check"><input type="checkbox" class="df-chk" data-tid="${esc(t.temp_id||'')}" data-seller="${esc(t.seller_vat||'')}"></td><td>${esc(t.save_date||'')}</td><td>${esc(t.type||'')}</td><td>${esc(t.series||'')}</td><td>${esc(nm||bv||'—')}</td>
     <td class="right"><button class="info sm" onclick="previewDraft('${q1(t.enc_id||t.temp_id)}',this)" title="Φέρε το PDF προεπισκόπησης αυτού του προχείρου (χωρίς νέο πρόχειρο)">👁 Προεπισκόπηση</button>
     <button class="danger sm" onclick="delDraft('${q1(t.temp_id)}','${q1(t.seller_vat||'')}')">✕ Διαγραφή</button></td></tr>`;}).join('')
-    ||'<tr><td colspan="5" class="muted">Κανένα πρόχειρο.</td></tr>';}
+    ||'<tr><td colspan="6" class="muted">Κανένα πρόχειρο.</td></tr>';
+  applyColumnFilters('draftsTable');}
+function dfToggleAll(on){document.querySelectorAll('#draftsTable tbody tr').forEach(tr=>{if(tr.style.display==='none')return;const c=tr.querySelector('.df-chk');if(c)c.checked=!!on;});}
+async function delSelectedDrafts(){
+  const chks=[...document.querySelectorAll('#draftsTable .df-chk:checked')];
+  if(!chks.length){toast('Δεν επέλεξες πρόχειρα','err');return;}
+  if(!confirm(`Διαγραφή ${chks.length} επιλεγμένων προχείρων;`))return;
+  let ok=0,fail=0;
+  for(const c of chks){try{const d=await api({delete_temp_id:c.dataset.tid,seller_vat:c.dataset.seller||''});if(d.success===false)throw 0;ok++;}catch(e){fail++;}}
+  toast(`Διαγράφηκαν ${ok}${fail?` · ${fail} απέτυχαν`:''}`,fail?'warn':'ok');loadDrafts();}
 async function loadDrafts(){draftRange();
   // cache-first: show the last cached drafts snapshot instantly, then refresh
   // (sync:'drafts' both fetches for the selected range AND updates the cache)
