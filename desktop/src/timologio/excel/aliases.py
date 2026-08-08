@@ -1,0 +1,98 @@
+"""Αντιστοίχιση επικεφαλίδων -> πεδία.
+
+ΚΡΙΣΙΜΟ: το ταίριασμα είναι **whole-string**, ποτέ substring.
+
+Το ένα παλιότερο εργαλείο κάνει substring match, και το alias «subscription key»
+περιέχεται στο «Subscription key e-timologio» (στήλη BL). Έτσι θα άρπαζε το
+κλειδί του e-timologio και θα το έστελνε ως myDATA key -> 403 σε κάθε πελάτη.
+Τα δύο προϊόντα έχουν διαφορετικά κλειδιά:
+
+    BI = «Api myData»                  <- ΑΥΤΟ θέλουμε (REST API)
+    BL = «Subscription key e-timologio» <- ΑΛΛΟ προϊόν
+
+Οι πελάτες που έχουν BL αλλά όχι BI είναι ακριβώς η παγίδα.
+"""
+
+from __future__ import annotations
+
+import re
+
+from ..normalize import norm_header
+
+#: πεδίο -> κανονικοποιημένες επικεφαλίδες που το ορίζουν
+FIELD_ALIASES: dict[str, set[str]] = {
+    "afm": {"αφμ", "α φ μ", "afm", "vat", "vat number", "αφμ υποχρεου"},
+    "name": {
+        "επωνυμια επωνυμο",
+        "επωνυμια",
+        "επωνυμο",
+        "ονομασια",
+        "name",
+    },
+    "first_name": {"ονομα", "first name"},
+    "mydata_user": {
+        "ονομα χρηστη mydata",
+        "ονομα χρηστη my data",
+        "aade user id",
+        "aade user",
+        "χρηστης mydata",
+    },
+    "mydata_key": {
+        "api mydata",
+        "api my data",
+        "ocp apim subscription key",
+        "subscription key mydata",
+        "κλειδι api mydata",
+    },
+}
+
+#: Επικεφαλίδες που μοιάζουν σχετικές αλλά ΔΕΝ πρέπει ποτέ να διαβαστούν ως
+#: myDATA credentials. Τις ονομάζουμε ρητά ώστε μια μελλοντική προσθήκη alias
+#: να μη μπορεί να τις αρπάξει σιωπηλά.
+NEVER_MYDATA: dict[str, str] = {
+    "subscription key e timologio": "κλειδί e-timologio (άλλο προϊόν)",
+    "ονομα χρηστη e timologio": "χρήστης e-timologio (άλλο προϊόν)",
+    "συνθηματικο e timologio": "συνθηματικό e-timologio (άλλο προϊόν)",
+    "συνθηματικο mydata": "συνθηματικό web myDATA, όχι το API key",
+}
+
+#: Στήλες που ΚΑΝΟΝΙΚΑ δεν είναι το κλειδί API, αλλά κάποιοι λογιστές (ιδίως σε
+#: εξαγωγές taxsystem) καταχωρούν εκεί κατά λάθος το σωστό κλειδί myDATA. Δεν τις
+#: διαβάζουμε ως κλειδί άμεσα — μόνο αν η κανονική στήλη «Api myData» λείπει ΚΑΙ
+#: η τιμή εδώ μοιάζει αδιαμφισβήτητα με κλειδί (32 hex). Βλ. format_b.parse.
+SECONDARY_KEY_HEADERS: set[str] = {
+    "συνθηματικο mydata",
+    "συνθηματικο my data",
+}
+
+#: Το κλειδί myDATA είναι GUID χωρίς παύλες: ακριβώς 32 δεκαεξαδικά. Ένα
+#: συνθηματικό web (που κανονικά ζει σε αυτή τη στήλη) δεν έχει αυτή τη μορφή,
+#: οπότε το ταίριασμα είναι ασφαλές σημάδι ότι μπήκε το κλειδί κατά λάθος.
+_KEY_SHAPE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+_LOOKUP: dict[str, str] = {}
+for _field, _headers in FIELD_ALIASES.items():
+    for _header in _headers:
+        _LOOKUP[_header] = _field
+
+
+def field_for(header: object) -> str | None:
+    """Επιστρέφει το πεδίο για μια επικεφαλίδα, ή None.
+
+    Whole-string μόνο. Ό,τι είναι στο NEVER_MYDATA επιστρέφει ρητά None.
+    """
+    key = norm_header(header)
+    if not key or key in NEVER_MYDATA:
+        return None
+    return _LOOKUP.get(key)
+
+
+def is_secondary_key_header(header: object) -> bool:
+    """Αληθές αν η στήλη ΜΠΟΡΕΙ να κρύβει κατά λάθος καταχωρημένο κλειδί myDATA."""
+    return norm_header(header) in SECONDARY_KEY_HEADERS
+
+
+def looks_like_key(value: object) -> bool:
+    """Αληθές αν η τιμή έχει τη μορφή κλειδιού myDATA (32 hex)."""
+    return bool(_KEY_SHAPE.match(str(value or "").strip()))

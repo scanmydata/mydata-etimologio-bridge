@@ -1,0 +1,315 @@
+"""Tests για τις λειτουργίες που ζητήθηκαν μαζικά.
+
+Καλύπτουν τη λογική που μπορεί να ελεγχθεί χωρίς οθόνη: την πρώτη-εκκίνηση
+ξενάγηση (πλέον στη βάση, όχι στο μητρώο), τη μορφοποίηση της «τελευταίας
+λήψης», και τη συμπεριφορά του datepicker στη ρόδα του ποντικιού — που ήταν η
+αιτία που «άλλαζε μόνο του».
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("PySide6")
+
+from timologio import repo  # noqa: E402
+from timologio.db import init_db  # noqa: E402
+
+
+@pytest.fixture
+def conn(tmp_path) -> sqlite3.Connection:
+    return init_db(tmp_path / "t.db")
+
+
+# --- meta / πρώτη εκκίνηση --------------------------------------------------
+
+
+def test_meta_roundtrip(conn):
+    assert repo.get_meta(conn, "tour_seen") == ""
+    repo.set_meta(conn, "tour_seen", "1")
+    assert repo.get_meta(conn, "tour_seen") == "1"
+
+
+def test_meta_default(conn):
+    assert repo.get_meta(conn, "λείπει", "x") == "x"
+
+
+def test_meta_travels_with_the_database(tmp_path):
+    """Η κατάσταση ζει στη βάση: μια νέα βάση δεν «θυμάται» την ξενάγηση.
+
+    Αυτό ήταν το bug — το μητρώο επιβίωνε των εγκαταστάσεων, οπότε ένα καθαρό
+    install δεν έδειχνε ποτέ την ξενάγηση.
+    """
+    a = init_db(tmp_path / "a.db")
+    repo.set_meta(a, "tour_seen", "1")
+    b = init_db(tmp_path / "b.db")
+    assert repo.get_meta(b, "tour_seen") == ""
+
+
+# --- μορφοποίηση τελευταίας λήψης ------------------------------------------
+
+
+def test_fmt_last_download_none():
+    from timologio.gui.main_window import _fmt_last_download
+
+    assert _fmt_last_download(None) == ("—", 0.0)
+    assert _fmt_last_download("") == ("—", 0.0)
+
+
+def test_fmt_last_download_parses_and_sorts():
+    from timologio.gui.main_window import _fmt_last_download
+
+    older_text, older_key = _fmt_last_download("2026-01-01 08:00:00")
+    newer_text, newer_key = _fmt_last_download("2026-07-19 12:00:00")
+    assert "/" in older_text and ":" in older_text
+    # Το κλειδί ταξινόμησης σέβεται τη χρονική σειρά.
+    assert newer_key > older_key
+
+
+def test_fmt_last_download_survives_garbage():
+    from timologio.gui.main_window import _fmt_last_download
+
+    assert _fmt_last_download("όχι ημερομηνία") == ("—", 0.0)
+
+
+# --- datepicker ------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def app():
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+def test_datepicker_ignores_wheel_when_unfocused(app):
+    """Η ρόδα πάνω από το πεδίο ΔΕΝ αλλάζει την ημερομηνία αν δεν έχει εστίαση.
+
+    Αλλιώς, κάθε κύλιση της σελίδας που περνούσε από πάνω άλλαζε σιωπηλά την
+    περίοδο — το «datepicker δεν δουλεύει σταθερά»."""
+    from datetime import date
+
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    from timologio.gui.widgets import GrDateEdit
+
+    edit = GrDateEdit(date(2026, 6, 15))
+    before = edit.date()
+    event = QWheelEvent(
+        QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, 120),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    edit.wheelEvent(event)
+    assert edit.date() == before
+
+
+def test_datepicker_roundtrips_greek_format(app):
+    from timologio.gui.widgets import GrDateEdit
+
+    edit = GrDateEdit()
+    edit.set_gr("07/03/2026")
+    assert edit.gr() == "07/03/2026"
+
+
+# --- έλεγχος ενημερώσεων ----------------------------------------------------
+
+
+def test_parse_version():
+    from timologio.updates import parse_version
+
+    assert parse_version("v0.2.3") == (0, 2, 3)
+    assert parse_version("0.2.3") == (0, 2, 3)
+    # Αριθμητική σύγκριση, όχι αλφαβητική: 0.2.10 > 0.2.9.
+    assert parse_version("0.2.10") > parse_version("0.2.9")
+
+
+def test_parse_version_survives_garbage():
+    from timologio.updates import parse_version
+
+    assert parse_version("") == (0,)
+    assert parse_version("έκδοση") == (0,)
+
+
+@pytest.mark.parametrize(
+    "current, latest, expected",
+    [
+        ("0.2.2", "0.3.0", True),
+        ("0.2.2", "0.2.2", False),
+        ("0.2.3", "0.2.2", False),   # ποτέ «ενημέρωση» προς τα πίσω
+        ("0.2.2", "?", False),       # άκυρη απάντηση δεν προτείνει ενημέρωση
+    ],
+)
+def test_update_is_newer(current, latest, expected):
+    from timologio.updates import UpdateInfo
+
+    assert UpdateInfo(current, latest, "http://x").is_newer is expected
+
+
+def test_can_auto_install_needs_an_asset():
+    from timologio.updates import UpdateInfo
+
+    assert UpdateInfo("0.1", "0.2", "u", asset_url="http://a/s.exe").can_auto_install
+    assert not UpdateInfo("0.1", "0.2", "u").can_auto_install
+
+
+# --- auto-updater script ---------------------------------------------------
+
+
+def test_updater_script_waits_installs_relaunches():
+    from timologio.updates import build_updater_script
+
+    script = build_updater_script(
+        pid=4321,
+        setup=Path(r"C:\Temp\setup.exe"),
+        app_exe=Path(r"C:\Programs\App\App.exe"),
+        data_dir=Path(r"C:\Users\x\Documents\Παραστατικά myDATA"),
+        role="terminal",
+        tray=False,
+        install_dir=Path(r"C:\Programs\App"),
+    )
+    # Σειρά: περίμενε το κλείσιμο -> εγκατέστησε -> ξαναάνοιξε (η επανεκκίνηση
+    # είναι το ΤΕΛΕΥΤΑΙΟ App.exe, μετά τον installer).
+    assert script.index("Wait-Process -Id 4321") < script.index("setup.exe")
+    assert script.index("Start-Process -Wait") < script.rindex(r"C:\Programs\App\App.exe")
+    # Οι τρέχουσες ρυθμίσεις περνούν στον installer ώστε να μη χαθούν.
+    assert "/ROLE=terminal" in script
+    assert "/TRAY=0" in script
+    assert "Παραστατικά myDATA" in script
+    assert "/SILENT" in script
+    # ΚΡΙΣΙΜΟ: ρητό /DIR στον φάκελο που τρέχει η εφαρμογή — αλλιώς η νέα έκδοση
+    # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά.
+    assert r"/DIR=C:\Programs\App" in script
+    # Αναμονή για ξεκλείδωμα αρχείων πριν την εγκατάσταση: πρώτα κάθε instance
+    # με το όνομα, μετά force-kill ό,τι επιμένει, μετά ενεργή αναμονή μέχρι το exe
+    # να ξεκλειδώσει — αλλιώς η αναβάθμιση δεν πιάνει.
+    assert "Get-Process -Name 'App'" in script
+    assert "Stop-Process -Name 'App' -Force" in script
+    assert "[IO.File]::Open($exe" in script  # ενεργή αναμονή ξεκλειδώματος
+    # Μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να μαζευτεί
+    # στο tray: η επανεκκίνηση περνά --show.
+    assert "-ArgumentList '--show'" in script
+    assert script.index("Get-Process -Name 'App'") < script.index("setup.exe")
+    assert script.index("[IO.File]::Open($exe") < script.index("setup.exe")
+    # Ο installer γράφει log, ΚΑΙ το ίδιο το script καταγράφει κάθε βήμα με ώρα,
+    # ώστε μια αποτυχία «η ενημέρωση δεν δουλεύει» να είναι πάντα ορατή.
+    assert "/LOG=" in script
+    assert "timologio_update_run.log" in script
+    assert "installer exit=" in script
+
+
+def test_updater_script_self_deletes_scheduled_task():
+    """Αν μας ξεκίνησε το Task Scheduler, το task σβήνεται στην αρχή του script
+    ώστε να μη μένει εγγεγραμμένο· αν όχι, το /Delete αποτυγχάνει σιωπηλά."""
+    from timologio.updates import UPDATE_TASK_NAME, build_updater_script
+
+    script = build_updater_script(
+        pid=1, setup=Path(r"C:\s.exe"), app_exe=Path(r"C:\a\App.exe"),
+        data_dir=Path(r"C:\d"), role="standalone", tray=True,
+    )
+    assert f"schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F" in script
+    # Το σβήσιμο γίνεται ΠΡΙΝ τρέξει ο installer (στην αρχή, όχι στο τέλος).
+    assert script.index("/Delete") < script.index("running installer")
+
+
+def test_schedule_via_task_builds_correct_schtasks_call(monkeypatch):
+    """Ο φρουρός auto-update περνά από Task Scheduler: /Create με το script και
+    μετά /Run για άμεση πυροδότηση — έξω από το job της εφαρμογής."""
+    from timologio import updates
+
+    calls: list[list[str]] = []
+
+    class _R:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _R()
+
+    monkeypatch.setattr(updates.subprocess, "run", fake_run)
+    ok = updates._schedule_via_task("powershell.exe", Path(r"C:\Temp\u.ps1"))
+    assert ok is True
+    assert any("/Create" in c and updates.UPDATE_TASK_NAME in c for c in calls)
+    assert any("/Run" in c and updates.UPDATE_TASK_NAME in c for c in calls)
+    # Το /Create προηγείται του /Run.
+    create_i = next(i for i, c in enumerate(calls) if "/Create" in c)
+    run_i = next(i for i, c in enumerate(calls) if "/Run" in c)
+    assert create_i < run_i
+
+
+def test_launch_detached_falls_back_to_popen_when_task_fails(monkeypatch):
+    """Αν το schtasks δεν είναι διαθέσιμο, πέφτουμε στον detached-process τρόπο —
+    ποτέ δεν μένουμε χωρίς εκκίνηση σιωπηλά."""
+    from timologio import updates
+
+    monkeypatch.setattr(updates, "_schedule_via_task", lambda *a, **k: False)
+    used: dict[str, bool] = {}
+    monkeypatch.setattr(
+        updates, "_launch_via_popen",
+        lambda *a, **k: used.setdefault("popen", True),
+    )
+    assert updates.launch_detached(Path(r"C:\Temp\u.ps1")) is True
+    assert used.get("popen") is True
+
+
+def test_updater_script_omits_dir_when_not_given():
+    from timologio.updates import build_updater_script
+
+    script = build_updater_script(
+        pid=1, setup=Path(r"C:\s.exe"), app_exe=Path(r"C:\a\App.exe"),
+        data_dir=Path(r"C:\d"), role="standalone", tray=True,
+    )
+    assert "/DIR=" not in script
+
+
+def test_updater_script_escapes_quotes_in_paths():
+    from timologio.updates import build_updater_script
+
+    script = build_updater_script(
+        pid=1, setup=Path(r"C:\O'Brien\setup.exe"), app_exe=Path(r"C:\a\App.exe"),
+        data_dir=Path(r"C:\d"), role="standalone", tray=True,
+    )
+    # Το μονό εισαγωγικό διπλασιάζεται για ασφαλές PowerShell literal.
+    assert "C:\\O''Brien\\setup.exe" in script
+
+
+# --- ακύρωση ---------------------------------------------------------------
+
+
+def test_mydata_fetch_raises_on_cancel():
+    """Η ακύρωση πιάνεται ανάμεσα στις σελίδες, πριν από κάθε δικτυακή κλήση."""
+    from pathlib import Path
+
+    import pytest
+
+    from timologio.config import Settings
+    from timologio.models import Direction, OperationCancelled
+    from timologio.mydata.client import MydataClient
+
+    client = MydataClient("user", "k" * 32, Settings(data_dir=Path("x")))
+    called = {"n": 0}
+    client._get = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or b""
+    with pytest.raises(OperationCancelled):
+        client.fetch(Direction.INCOMING, should_cancel=lambda: True)
+    # Ακυρώθηκε ΠΡΙΝ ακουμπήσει το δίκτυο.
+    assert called["n"] == 0
+
+
+def test_mydata_fetch_e3_raises_on_cancel():
+    from pathlib import Path
+
+    import pytest
+
+    from timologio.config import Settings
+    from timologio.models import OperationCancelled
+    from timologio.mydata.client import MydataClient
+
+    client = MydataClient("user", "k" * 32, Settings(data_dir=Path("x")))
+    client._get = lambda *a, **k: b""
+    with pytest.raises(OperationCancelled):
+        client.fetch_e3(should_cancel=lambda: True)

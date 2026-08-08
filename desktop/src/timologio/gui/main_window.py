@@ -1,0 +1,2495 @@
+"""Κύριο παράθυρο.
+
+Ροή: Πελάτες (ποιοι) → Λήψη (πότε) → Παραστατικά (τι κατέβηκε). Ό,τι δεν είναι
+αυτή η ροή ζει στο πλαϊνό μενού.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QSettings,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+)
+from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QProgressDialog,
+    QPushButton,
+    QSplitter,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from PySide6.QtWidgets import QApplication, QCheckBox
+
+from .. import demo, logs, presence, repo
+from ..backup import backup_dir, create_backup, list_backups, restore
+from ..config import (
+    APP_VERSION,
+    ROLE_LABELS_EL,
+    load_role,
+    load_settings,
+    load_start_minimized,
+    save_start_minimized,
+)
+from ..coverage import to_gr
+from .. import crypto as crypto_mod
+from ..crypto import Crypto
+from ..db import init_db
+from ..download.storage import find_client_folder
+from ..reports import export_documents, export_documents_xlsx
+from .analysis_panel import AnalysisPanel
+from .busy import BusyOverlay
+from .client_dialog import ClientDialog
+from .control_panel import ControlPanel
+from .documents_view import DEFAULT_FILTER, DocumentsView, SortableItem
+from .icons import icon, logo_pixmap
+from .import_dialog import ImportDialog
+from .manual import ensure_manual
+from .side_menu import SideMenu
+from .sync_page import SyncPage
+from .theme import CURRENT, apply_theme, money, paint_title_bar
+from .tour import Step, Tour
+from .tray import Tray
+from . import unlock, updater
+from .widgets import resort, setup_columns
+from .workers import HeadlessWorker, SyncWorker
+
+log = logging.getLogger(__name__)
+
+#: (επικεφαλίδα, πλάτος, tooltip). 0 = Stretch.
+_COLUMN_SPEC: list[tuple[str, int, str]] = [
+    ("", 30, "Επιλέξτε για ποιους πελάτες θα γίνει λήψη"),
+    ("ΑΦΜ", 84, ""),
+    ("Επωνυμία", 0, "Διπλό κλικ για τα παραστατικά του πελάτη"),
+    ("Κατάσταση", 96, "Αν ο πελάτης έχει κλειδί myDATA API"),
+    ("Παρ.", 54, "Σύνολο παραστατικών"),
+    ("PDF", 54, "Παραστατικά που κατέβηκαν ως PDF"),
+    ("Αχαρ.", 54, "Αχαρακτήριστα κατά το RequestE3Info"),
+    ("Έσοδα", 88, "Αξία όσων εξέδωσε ο πελάτης"),
+    ("Έξοδα", 88, "Αξία όσων εξέδωσαν άλλοι προς αυτόν"),
+    ("Τελευταία λήψη", 132, "Ημερομηνία και ώρα της τελευταίας επιτυχούς λήψης"),
+]
+
+#: Έκδοση περιεχομένου ξενάγησης. Αύξησέ το όταν προστίθεται ουσιαστικά νέο βήμα:
+#: όσοι έχουν ήδη δει παλιότερη ξενάγηση την ξαναβλέπουν μία φορά — αλλά πάνω στα
+#: **δικά τους** δεδομένα (χωρίς εικονικούς πελάτες, χωρίς σβήσιμο).
+TOUR_VERSION = 2
+
+#: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
+_STATUS_READY = "Διαθέσιμος"
+_STATUS_NO_KEY = "Χωρίς κλειδί"
+_COLUMNS = [c[0] for c in _COLUMN_SPEC]
+_COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
+_COL_LAST = 9
+
+_FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
+
+#: Η σειρά τους είναι η σειρά τους στο QStackedWidget.
+_PAGES = ("clients", "sync", "documents", "control", "etimologio")
+
+#: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
+#: εσόδων/εξόδων κόβεται στα δεξιά.
+_PANEL_W = 440
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, *, force_show: bool = False) -> None:
+        super().__init__()
+        # Μετά την εγκατάσταση ο installer μας τρέχει με --show: ακόμη κι αν έχει
+        # επιλεγεί «εκκίνηση στο tray», η ΠΡΩΤΗ αυτή εμφάνιση γίνεται κανονικά,
+        # ώστε ο χρήστης να δει το πρόγραμμα αντί να «εξαφανιστεί» στο tray.
+        self._force_show = force_show
+        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self.resize(1340, 840)
+        # Κάτω από αυτό, ο πίνακας πελατών (9 στήλες) και η ανάλυση δεν χωρούν
+        # μαζί και εμφανίζεται οριζόντια μπάρα. Όποιος έχει μικρότερη οθόνη
+        # μαζεύει το πλαϊνό μενού και κερδίζει 142 pixel.
+        self.setMinimumSize(1206, 700)
+
+        self.settings = load_settings()
+        self._role = load_role()
+        self.log_path = logs.setup(self.settings.data_dir)
+        # Το τερματικό ελέγχει ΠΡΙΝ ανοίξει τη βάση: αν το share δεν απαντά, το
+        # init_db θα έφτιαχνε μια δεύτερη, άδεια βάση σε λάθος μέρος — και ο
+        # χρήστης θα έβλεπε «χάθηκαν οι πελάτες» αντί για «δεν βρίσκω τον server».
+        self._connection_problem = self._check_terminal_connection()
+        self.conn = init_db(self.settings.db_path)
+        # Η χειροκίνητη ενεργοποίηση/απενεργοποίηση καταργήθηκε — ξεκολλάμε όσους
+        # πελάτες τυχόν έμειναν «disabled» σε παλιότερη έκδοση.
+        repo.normalize_disabled_clients(self.conn)
+        self.crypto = Crypto(self.settings.enckey_path)
+        self._prefs = QSettings("scanmydata", "TimologioDownloader")
+        self._thread: QThread | None = None
+        self._worker: SyncWorker | None = None
+        # Ξεχωριστό thread για τη λήψη «μόνο online» (headless browser).
+        self._hl_thread: QThread | None = None
+        self._hl_worker: HeadlessWorker | None = None
+        self._hl_dialog: QProgressDialog | None = None
+        self._checked: set[str] = set()
+        self._pinned_vat: str | None = None
+        self._last_totals: tuple[int, int, int, int, int] | None = None
+        self._last_db_mtime: float = 0.0
+        self._tooltips_on = True
+        self._tour: Tour | None = None
+        self._stale: set[str] = set()
+        self._title_bar_done = False
+        self._reload_timer: QTimer | None = None
+
+        # Το θέμα εφαρμόζεται πριν χτιστούν τα widgets, ώστε τα εικονίδια να
+        # βαφτούν σωστά από την πρώτη φορά. Προεπιλογή το σκούρο.
+        theme = str(self._prefs.value("theme", "dark"))
+        apply_theme(QApplication.instance(), theme)
+
+        self._build_ui()
+        self.menu.chk_light.blockSignals(True)
+        self.menu.chk_light.setChecked(theme == "light")
+        self.menu.chk_light.blockSignals(False)
+        if self._prefs.value("menu_collapsed", False, type=bool):
+            self.menu.set_collapsed(True, animate=False)
+        self.busy = BusyOverlay(self)
+        # Πρώτη εκκίνηση σε άδεια βάση: εικονικά δεδομένα, ώστε η ξενάγηση να
+        # έχει τι να δείξει αντί για άδειους πίνακες. Σβήνονται μόλις ο χρήστης
+        # ολοκληρώσει την ξενάγηση (δείτε _on_tour_finished).
+        if demo.should_seed(self.conn):
+            demo.seed(self.conn, self.crypto)
+            log.info("Μπήκαν δεδομένα επίδειξης για την πρώτη εκκίνηση")
+        self.reload_clients()
+        self._start_presence()
+        self._start_db_watch()
+        self._setup_tray()
+        QTimer.singleShot(400, self._maybe_first_run_tour)
+        if self._connection_problem:
+            QTimer.singleShot(200, self._report_connection_problem)
+        # Έλεγχος ενημερώσεων σε κάθε εκκίνηση — σιωπηλά, με καθυστέρηση ώστε να
+        # μην ανταγωνίζεται το άνοιγμα. Ενοχλεί μόνο αν υπάρχει νεότερη έκδοση.
+        QTimer.singleShot(2500, self._check_updates_on_startup)
+
+    # -------------------------------------------------------------- δίκτυο
+    def _check_terminal_connection(self) -> presence.Check | None:
+        """Το πρώτο βήμα που απέτυχε, ή None αν όλα καλά.
+
+        Τρέχει μόνο για τερματικά: σε αυτόνομο ή server ο φάκελος είναι τοπικός
+        και ένα αποτυχημένο άνοιγμα είναι πραγματικό σφάλμα, όχι θέμα δικτύου.
+        """
+        if self._role != "terminal":
+            return None
+        health = presence.check_connection(self.settings.data_dir, self.settings.db_path)
+        if health.ok:
+            return None
+        problem = health.first_problem
+        log.warning("Πρόβλημα σύνδεσης τερματικού: %s — %s", problem.name, problem.detail)
+        return problem
+
+    def _report_connection_problem(self) -> None:
+        problem = self._connection_problem
+        if problem is None:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Δεν βρέθηκε ο server")
+        box.setText(f"<b>{problem.name}</b><br>{problem.detail}")
+        box.setInformativeText(
+            "Αυτός ο υπολογιστής είναι ρυθμισμένος ως τερματικό. Ελέγξτε ότι ο "
+            "server είναι ανοιχτός και ο φάκελος κοινόχρηστος, και δοκιμάστε "
+            "ξανά από τον Πίνακα ελέγχου."
+        )
+        open_panel = box.addButton("Πίνακας ελέγχου", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Κλείσιμο", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() == open_panel:
+            self._show_page("control")
+
+    def _start_presence(self) -> None:
+        """Δηλώνει την παρουσία αυτού του υπολογιστή, τώρα και ανά HEARTBEAT."""
+        presence.forget_old(self.conn)
+        self._beat()
+        self._presence_timer = QTimer(self)
+        self._presence_timer.setInterval(presence.HEARTBEAT_SECONDS * 1000)
+        self._presence_timer.timeout.connect(self._beat)
+        self._presence_timer.start()
+
+    def _beat(self) -> None:
+        presence.heartbeat(
+            self.conn,
+            role=self._role,
+            version=APP_VERSION,
+            data_dir=self.settings.data_dir,
+        )
+        # Ο δικός μας παλμός αλλάζει το αρχείο· κρατάμε την ώρα ώστε ο watcher να
+        # μην τον εκλάβει ως αλλαγή από άλλον και κάνει άσκοπη ανανέωση.
+        self._last_db_mtime = self._db_mtime()
+
+    # ----------------------------------------------------- ζωντανή ανανέωση
+    def _db_mtime(self) -> float:
+        # Σε WAL mode τα commit γράφονται στο αρχείο -wal, όχι απαραίτητα στο ίδιο
+        # το .db (η ενοποίηση γίνεται στο checkpoint). Παίρνουμε το πιο πρόσφατο
+        # και των δύο ώστε η ζωντανή ανανέωση να πιάνει τις αλλαγές αμέσως.
+        newest = 0.0
+        for path in (self.settings.db_path,
+                     self.settings.db_path.with_name(self.settings.db_path.name + "-wal")):
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+        return newest
+
+    def _start_db_watch(self) -> None:
+        """Ανανεώνει τη λίστα όταν η βάση αλλάζει από άλλον υπολογιστή.
+
+        Σε δικτυακό φάκελο δεν υπάρχει αξιόπιστη ειδοποίηση αλλαγής πάνω από
+        SMB, οπότε ελέγχουμε την ώρα τροποποίησης του αρχείου. Είναι φθηνό και
+        δουλεύει το ίδιο τοπικά και στο δίκτυο.
+        """
+        self._db_timer = QTimer(self)
+        self._db_timer.setInterval(5000)
+        self._db_timer.timeout.connect(self._poll_db)
+        self._db_timer.start()
+
+    def _poll_db(self) -> None:
+        # Όσο τρέχει η δική μας λήψη ανανεώνουμε ήδη ανά πελάτη — μην μπλέκουμε.
+        if self._thread is not None:
+            return
+        page = self._current_page()
+        # Στον Πίνακα ελέγχου δεν αγγίζουμε πίνακες παραστατικών/πελατών.
+        if page not in ("clients", "sync", "documents"):
+            return
+        mtime = self._db_mtime()
+        if mtime and mtime != self._last_db_mtime:
+            log.debug("Η βάση άλλαξε — ζωντανή ανανέωση (%s)", page)
+            # Στη σελίδα Παραστατικών ανανεώνουμε τον πίνακα του πελάτη· αλλιώς
+            # τη λίστα πελατών. (Και τα δύο ενημερώνουν έμμεσα το _last_db_mtime.)
+            if page == "documents":
+                self.docs.reload()
+                self._last_db_mtime = mtime
+            else:
+                self.reload_clients()  # ενημερώνει και το _last_db_mtime
+
+    # ---------------------------------------------------------------- tray
+    def _setup_tray(self) -> None:
+        self.tray = Tray(self, self.windowIcon(), ROLE_LABELS_EL.get(self._role, ""))
+        self.tray.show()
+        self._really_quit = False
+        self._tray_notified = False
+        self._tour_pending = False
+        # Στην πρώτη εμφάνιση μετά την εγκατάσταση (--show) δεν μαζευόμαστε στο
+        # tray, ακόμη κι αν έτσι έχει ρυθμιστεί: ο χρήστης μόλις εγκατέστησε και
+        # πρέπει να δει το πρόγραμμα. Από την επόμενη εκκίνηση ισχύει η ρύθμιση.
+        if load_start_minimized() and not self._force_show:
+            # Το hide() πρέπει να γίνει αφού το Qt δείξει το παράθυρο, αλλιώς σε
+            # κάποια συστήματα εμφανίζεται μια στιγμή και μετά εξαφανίζεται.
+            QTimer.singleShot(0, self.hide)
+
+    def _on_start_minimized(self, value: bool) -> None:
+        save_start_minimized(value)
+        log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
+
+    def _notify_done(self, title: str, body: str) -> None:
+        """Στο τέλος μιας εργασίας: ειδοποίηση Windows (κάτω δεξιά) + αναβόσβημα
+        του εικονιδίου στη γραμμή εργασιών — ώστε να το προσέξει ο χρήστης ακόμη
+        κι αν κοιτάζει άλλο παράθυρο ή η εφαρμογή είναι μαζεμένη στο tray."""
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.notify(title, body)
+            except Exception:  # noqa: BLE001 — η ειδοποίηση δεν πρέπει να σκάει
+                pass
+        # alert() αναβοσβήνει το εικονίδιο μέχρι να εστιαστεί το παράθυρο· δεν
+        # κλέβει την εστίαση (δεν πετάγεται μπροστά ενώ δουλεύει ο χρήστης).
+        if not self.isActiveWindow():
+            QApplication.alert(self, 0)
+
+    # ---------------------------------------------------------- ενημερώσεις
+    def _check_updates_on_startup(self) -> None:
+        self._updater = updater.Updater(self)
+        self._chk_thread = QThread(self)
+        self._chk_worker = updater.CheckWorker(APP_VERSION)
+        self._chk_worker.moveToThread(self._chk_thread)
+        self._chk_thread.started.connect(self._chk_worker.run)
+        self._chk_worker.ok.connect(self._on_startup_update)
+        self._chk_worker.failed.connect(
+            lambda exc: log.info("Έλεγχος ενημερώσεων: %s", exc)
+        )
+        self._chk_thread.start()
+
+    def _on_startup_update(self, info) -> None:
+        self._chk_thread.quit()
+        self._chk_thread.wait(3000)
+        # Ποτέ στη μέση λήψης: μια ενημέρωση κλείνει την εφαρμογή.
+        if info.is_newer and self._thread is None:
+            self._updater.offer(info)
+
+    # ------------------------------------------------------------------ UI
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        shell = QHBoxLayout(central)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+
+        self.menu = SideMenu()
+        self.menu.triggered.connect(self._on_menu)
+        self.menu.tooltips_toggled.connect(self._apply_tooltips)
+        self.menu.theme_toggled.connect(self._on_theme)
+        self.menu.collapsed_changed.connect(
+            lambda value: self._prefs.setValue("menu_collapsed", value)
+        )
+        shell.addWidget(self.menu)
+
+        right = QWidget()
+        root = QVBoxLayout(right)
+        root.setContentsMargins(12, 10, 12, 8)
+        root.setSpacing(9)
+        shell.addWidget(right, 1)
+
+        # Ο ενεργός πελάτης, πάνω δεξιά και μόνιμα ορατός σε κάθε σελίδα — όχι
+        # χαμένος στην κάτω-αριστερή γραμμή κατάστασης, όπου τον σκέπαζαν τα
+        # μηνύματα προόδου.
+        topbar = QHBoxLayout()
+        topbar.setContentsMargins(2, 0, 2, 0)
+        topbar.addStretch()
+        self.active_client = QLabel("Κανένας πελάτης επιλεγμένος")
+        self.active_client.setToolTip("Ο πελάτης στον οποίο δουλεύετε τώρα")
+        self.active_client.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        topbar.addWidget(self.active_client)
+        root.addLayout(topbar)
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._clients_page())
+
+        self.sync_page = SyncPage(self._prefs)
+        self.sync_page.sync_requested.connect(self.on_sync)
+        self.sync_page.cancel_requested.connect(self.on_cancel)
+        self.sync_page.selection_changed.connect(self._on_sync_selection)
+        self.sync_page.refresh_requested.connect(self.reload_clients)
+        self.stack.addWidget(self.sync_page)
+
+        self.docs = DocumentsView(self.settings, self._prefs)
+        self.docs.back_requested.connect(lambda: self._show_page("clients"))
+        self.stack.addWidget(self.docs)
+
+        self.control = ControlPanel(
+            data_dir=self.settings.data_dir,
+            db_path=self.settings.db_path,
+            role=self._role,
+            version=APP_VERSION,
+            conn=self.conn,
+        )
+        self.control.set_start_minimized(load_start_minimized())
+        self.control.start_minimized_changed.connect(self._on_start_minimized)
+        self.control.reconnect_requested.connect(self.reload_clients)
+        self.stack.addWidget(self.control)
+
+        # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
+        # ξεκινά τεμπέλικα την πρώτη φορά που ανοίγει η ενότητα, ώστε να μην
+        # επιβαρύνει την εκκίνηση του Downloader.
+        from ..etimologio.shell import EtimologioShell
+
+        self.etimologio = EtimologioShell(self.settings.data_dir)
+        self.stack.addWidget(self.etimologio)
+        root.addWidget(self.stack, 1)
+
+        root.addWidget(self._progress_strip())
+
+        self.status = self.statusBar()
+        self._build_status_bar()
+        self.menu.set_active("clients")
+        self.menu.set_enabled_action("documents", False)
+
+    def _build_status_bar(self) -> None:
+        """Η γραμμή κατάστασης μένει για τα προσωρινά μηνύματα (showMessage).
+
+        Ο ενεργός πελάτης μετακόμισε πάνω δεξιά (active_client), όπου δεν τον
+        σκεπάζει η πρόοδος της λήψης.
+        """
+        self._set_status_client([])
+
+    def _progress_strip(self) -> QWidget:
+        """Ζει έξω από το stack, ώστε η πρόοδος να φαίνεται σε όποια σελίδα κι
+        αν βρίσκεται ο χρήστης."""
+        strip = QWidget()
+        box = QVBoxLayout(strip)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(3)
+
+        line = QHBoxLayout()
+        self.progress_label = QLabel("")
+        self.progress_label.setObjectName("muted")
+        line.addWidget(self.progress_label, 1)
+        self.progress_stats = QLabel("")
+        self.progress_stats.setStyleSheet("font-weight:600;")
+        line.addWidget(self.progress_stats)
+        box.addLayout(line)
+
+        self.progress = QProgressBar()
+        self.progress.setFormat("%v / %m πελάτες")
+        box.addWidget(self.progress)
+
+        # Η τελευταία γραμμή του ιστορικού. Το πλήρες ιστορικό έφυγε από την
+        # οθόνη· εδώ μένει μόνο το «τι κάνει τώρα», που είναι και το μόνο που
+        # κοιτάει κανείς όσο τρέχει η λήψη.
+        self.progress_detail = QLabel("")
+        self.progress_detail.setObjectName("muted")
+        self.progress_detail.setToolTip(
+            "Η τελευταία ενέργεια. Το πλήρες ιστορικό γράφεται στο αρχείο "
+            "καταγραφής (μενού: Βοήθεια → Αρχείο καταγραφής)."
+        )
+        box.addWidget(self.progress_detail)
+
+        strip.setVisible(False)
+        self._strip = strip
+        return strip
+
+    def _clients_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        filters = QHBoxLayout()
+        filters.setSpacing(7)
+        self.combo_filter = QComboBox()
+        self.combo_filter.addItems(_FILTERS)
+        self.combo_filter.setFixedWidth(160)
+        self.combo_filter.setToolTip("Ποιους πελάτες να δείχνει ο πίνακας")
+        self.combo_filter.currentIndexChanged.connect(self.reload_clients)
+        filters.addWidget(self.combo_filter)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Αναζήτηση ΑΦΜ ή επωνυμίας…")
+        self.search.setToolTip("Φιλτράρει τη λίστα καθώς πληκτρολογείτε")
+        self.search.textChanged.connect(self.reload_clients)
+        self.search.textChanged.connect(lambda _: self._update_client_filter_ui())
+        filters.addWidget(self.search)
+
+        # Κόκκινο, και ορατό μόνο όταν υπάρχει ενεργό φίλτρο (αναζήτηση, φίλτρο
+        # κατάστασης ή φίλτρο στήλης) — αλλιώς δεν υπάρχει τίποτα να καθαριστεί.
+        self.btn_clear_client_filters = QPushButton("  Καθαρισμός φίλτρων")
+        self.btn_clear_client_filters.setObjectName("danger")
+        self.btn_clear_client_filters.setIcon(icon("cancel", CURRENT.bad))
+        self.btn_clear_client_filters.setToolTip(
+            "Επαναφορά αναζήτησης και φίλτρων (κατάστασης και στηλών)"
+        )
+        self.btn_clear_client_filters.clicked.connect(self._clear_client_filters)
+        filters.addWidget(self.btn_clear_client_filters)
+        filters.addStretch()
+
+        self.btn_clients_refresh = QPushButton("  Ανανέωση")
+        self.btn_clients_refresh.setIcon(icon("refresh", CURRENT.muted))
+        self.btn_clients_refresh.setToolTip("Ξαναδιαβάζει τη λίστα πελατών από τη βάση")
+        self.btn_clients_refresh.clicked.connect(self.reload_clients)
+        filters.addWidget(self.btn_clients_refresh)
+        layout.addLayout(filters)
+
+        # --- μπάρα επιλογής, ακριβώς πάνω από τον πίνακα
+        selbar = QHBoxLayout()
+        selbar.setSpacing(7)
+        self.lbl_selcount = QLabel("")
+        self.lbl_selcount.setToolTip("Πόσοι πελάτες είναι επιλεγμένοι για λήψη")
+        selbar.addWidget(self.lbl_selcount)
+        selbar.addStretch()
+
+        hint = QLabel("Κλικ στο κουτάκι για επιλογή · διπλό κλικ: επιλογή/αποεπιλογή")
+        hint.setObjectName("muted")
+        selbar.addWidget(hint)
+
+        self.btn_check_all = QPushButton("Επιλογή όλων")
+        self.btn_check_all.setToolTip("Επιλέγει όσους πελάτες δείχνει ο πίνακας")
+        self.btn_check_all.clicked.connect(lambda: self._check_shown(True))
+        selbar.addWidget(self.btn_check_all)
+
+        self.btn_check_none = QPushButton("Αποεπιλογή όλων")
+        self.btn_check_none.setToolTip("Καθαρίζει όλες τις επιλογές")
+        self.btn_check_none.clicked.connect(lambda: self._check_shown(False))
+        selbar.addWidget(self.btn_check_none)
+
+        self.btn_delete_clients = QPushButton("  Διαγραφή επιλεγμένων")
+        self.btn_delete_clients.setObjectName("danger")
+        self.btn_delete_clients.setIcon(icon("delete", CURRENT.bad))
+        self.btn_delete_clients.setToolTip(
+            "Διαγράφει τους επιλεγμένους πελάτες (ίδιο με το πλήκτρο Delete)"
+        )
+        self.btn_delete_clients.clicked.connect(self._delete_selected)
+        selbar.addWidget(self.btn_delete_clients)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Ο πίνακας μπαίνει σε δικό του container μαζί με τη μπάρα επιλογής,
+        # ώστε η μπάρα να κάθεται ΑΚΡΙΒΩΣ πάνω από τον πίνακα και όχι πάνω από
+        # ολόκληρο το splitter (που θα σκέπαζε και το panel ανάλυσης).
+        table_holder = QWidget()
+        holder_box = QVBoxLayout(table_holder)
+        holder_box.setContentsMargins(0, 0, 0, 0)
+        holder_box.setSpacing(6)
+        holder_box.addLayout(selbar)
+
+        self.table = QTableWidget(0, len(_COLUMNS))
+        self.table.setHorizontalHeaderLabels(_COLUMNS)
+        # Γρήγορα φίλτρα στην κεφαλίδα (ΑΦΜ, Επωνυμία, Κατάσταση), όπως στα
+        # παραστατικά. Πρέπει να μπει ΠΡΙΝ το setup_columns (που ρυθμίζει την
+        # κεφαλίδα), γι' αυτό κρατάμε αναφορά ώστε να μην τον μαζέψει ο GC.
+        from .table_filter import TableColumnFilter
+        self._client_col_filter = TableColumnFilter(
+            self.table, (_COL_VAT, _COL_LABEL, _COL_STATUS)
+        )
+        self._client_col_filter.filtersChanged.connect(self._update_client_filter_ui)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setSortingEnabled(True)
+        setup_columns(self.table, _COLUMN_SPEC, self._prefs, "clients")
+        self.table.itemSelectionChanged.connect(self._on_selection)
+        self.table.itemChanged.connect(self._on_item_changed)
+        self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        # Πλήκτρο Delete. Ήταν δεμένο στον πίνακα, οπότε λειτουργούσε μόνο όταν
+        # ο πίνακας είχε την εστίαση — και μετά από ένα κλικ σε checkbox ή στην
+        # αναζήτηση δεν έκανε τίποτα. Τώρα ακούει σε όλο το παράθυρο και
+        # φιλτράρει μόνο του πού επιτρέπεται (δείτε _delete_selected).
+        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self)
+        delete_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        delete_shortcut.activated.connect(self._delete_selected)
+        # Και το Backspace: στα φορητά χωρίς πλήκτρο Delete είναι ο μόνος τρόπος.
+        backspace = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
+        backspace.setContext(Qt.ShortcutContext.WindowShortcut)
+        backspace.activated.connect(self._delete_selected)
+        # Το κουτάκι επιλογής αλλάζει με άμεσο κλικ πάνω του, με τα κουμπιά
+        # «Επιλογή/Αποεπιλογή όλων», ή με διπλό κλικ στη γραμμή (γρήγορος τρόπος).
+        holder_box.addWidget(self.table)
+        splitter.addWidget(table_holder)
+
+        self.analysis = AnalysisPanel()
+        self.analysis.filter_requested.connect(self._open_documents_filtered)
+        self.analysis.supplier_requested.connect(self._open_documents_supplier)
+        self.analysis.type_requested.connect(self._open_documents_type)
+        self.analysis.fill_gaps_requested.connect(self._fill_gap)
+        splitter.addWidget(self.analysis)
+        # Ο πίνακας παίρνει τη μερίδα του λέοντος: με 9 στήλες, ό,τι δώσουμε στην
+        # ανάλυση το πληρώνει η στήλη της επωνυμίας.
+        splitter.setSizes([840, _PANEL_W])
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter)
+
+        # Κλειστό μέχρι να επιλεγεί πελάτης: χωρίς επιλογή δεν έχει τι να δείξει,
+        # και ένα άδειο panel απλώς τρώει 440 pixel από τον πίνακα.
+        self.analysis.setVisible(False)
+        self._panel_open = False
+        self._panel_anim: QPropertyAnimation | None = None
+        return page
+
+    # ------------------------------------------------------------- tooltips
+    def _apply_tooltips(self, enabled: bool) -> None:
+        """Ανάβει/σβήνει όλα τα βοηθητικά μηνύματα.
+
+        Το αρχικό κείμενο αποθηκεύεται τη στιγμή που το συναντάμε, όχι μία φορά
+        στην εκκίνηση: τα πλακίδια και οι γραμμές των πινάκων φτιάχνονται ξανά
+        συνέχεια, οπότε μια εφάπαξ συλλογή θα τα έχανε.
+        """
+        self._tooltips_on = enabled
+        for w in self.findChildren(QWidget):
+            stored = w.property("help_text")
+            if not stored and w.toolTip():
+                stored = w.toolTip()
+                w.setProperty("help_text", stored)
+            if stored:
+                w.setToolTip(stored if enabled else "")
+
+    def _refresh_tooltips(self) -> None:
+        if not self._tooltips_on:
+            self._apply_tooltips(False)
+
+    # --------------------------------------------------- φίλτρα λίστας πελατών
+    def _client_filters_active(self) -> bool:
+        return bool(
+            self.search.text().strip()
+            or self.combo_filter.currentIndex() != 0
+            or self._client_col_filter.has_filters()
+        )
+
+    def _update_client_filter_ui(self) -> None:
+        self.btn_clear_client_filters.setVisible(self._client_filters_active())
+
+    def _clear_client_filters(self) -> None:
+        self._client_col_filter.clear()
+        self.combo_filter.setCurrentIndex(0)
+        self.search.clear()  # πυροδοτεί reload_clients
+        self._update_client_filter_ui()
+
+    # ------------------------------------------------------------- δεδομένα
+    def reload_clients(self) -> None:
+        self._update_client_filter_ui()
+        all_clients = repo.list_clients(self.conn)
+        rows = list(all_clients)
+        # Κρατάμε την τρέχουσα επιλογή ΚΑΤΑ ΑΦΜ, όχι κατά index: μετά το resort ο
+        # ίδιος index δείχνει άλλον πελάτη — γι' αυτό «άλλαζε μόνος του» ο ενεργός
+        # πελάτης μετά τη λήψη. Την επαναφέρουμε στο τέλος (_reselect_vats).
+        keep_selected = set(self._selected_vats(only_ready=False))
+        stats = {
+            r["client_id"]: r
+            for r in self.conn.execute(
+                """SELECT d.client_id, COUNT(*) c,
+                          SUM(d.status='downloaded') dn,
+                          SUM(d.classification='unclassified') u,
+                          COALESCE(SUM(CASE WHEN d.issuer_vat = c.vat
+                                            THEN d.total_value ELSE 0 END),0) income,
+                          COALESCE(SUM(CASE WHEN d.issuer_vat <> c.vat
+                                            THEN d.total_value ELSE 0 END),0) expense,
+                          MAX(CASE WHEN d.status='downloaded'
+                                   THEN d.updated_at END) last_dl
+                   FROM documents d JOIN clients c ON c.id = d.client_id
+                   GROUP BY d.client_id"""
+            )
+        }
+        # Ώρα τελευταίας λήψης ανά ΑΦΜ, έτοιμη για εμφάνιση/ταξινόμηση.
+        last_dl: dict[int, tuple[str, float]] = {}
+        for cid, s in stats.items():
+            last_dl[cid] = _fmt_last_download(s["last_dl"])
+
+        needle = self.search.text().strip().lower()
+        mode = self.combo_filter.currentText()
+
+        if mode == "Διαθέσιμοι":
+            rows = [r for r in rows if r["status"] == "ready"]
+        elif mode == "Χωρίς κλειδί API":
+            rows = [r for r in rows if r["status"] != "ready"]
+        elif mode == "Με αχαρακτήριστα":
+            rows = [r for r in rows
+                    if stats.get(r["id"]) and (stats[r["id"]]["u"] or 0) > 0]
+        if needle:
+            rows = [r for r in rows
+                    if needle in r["vat"].lower() or needle in (r["label"] or "").lower()]
+
+        # Ο ενεργός / μόλις προστεθείς πελάτης πάει στην κορυφή, εφόσον ο
+        # χρήστης δεν έχει διαλέξει δική του ταξινόμηση (τότε σεβόμαστε αυτήν).
+        pin = self._pinned_vat
+        if pin and not getattr(self.table, "_sort_chosen", False):
+            rows = sorted(rows, key=lambda r: r["vat"] != pin)
+
+        self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            s = stats.get(row["id"])
+            total = (s["c"] if s else 0) or 0
+            done = (s["dn"] if s else 0) or 0
+            uncls = (s["u"] if s else 0) or 0
+            income = (s["income"] if s else 0.0) or 0.0
+            expense = (s["expense"] if s else 0.0) or 0.0
+            client_status = row["status"]
+            is_ready = client_status == "ready"
+            status_label = _STATUS_READY if is_ready else _STATUS_NO_KEY
+
+            check = QTableWidgetItem()
+            # Επιλέξιμοι ΟΛΟΙ, ακόμη κι όσοι δεν έχουν κλειδί: το τσεκάρισμα
+            # χρησιμεύει και για μαζική διαγραφή, όχι μόνο για λήψη. Όσοι δεν
+            # έχουν κλειδί απλώς παραλείπονται από την ίδια τη λήψη (on_sync).
+            check.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            check.setCheckState(
+                Qt.CheckState.Checked if row["vat"] in self._checked
+                else Qt.CheckState.Unchecked
+            )
+            check.setData(Qt.ItemDataRole.UserRole, row["vat"])
+            if not is_ready:
+                check.setToolTip(
+                    "Χωρίς κλειδί API: δεν κατεβάζει, αλλά επιλέγεται για "
+                    "διαγραφή ή άλλες μαζικές ενέργειες"
+                )
+            self.table.setItem(i, _COL_CHECK, check)
+
+            last_text, last_key = last_dl.get(row["id"], ("—", 0.0))
+            cells = {
+                _COL_VAT: row["vat"],
+                _COL_LABEL: row["label"] or "",
+                _COL_STATUS: status_label,
+                4: str(total), 5: str(done), 6: str(uncls),
+                7: money(income) if income else "—",
+                8: money(expense) if expense else "—",
+                _COL_LAST: last_text,
+            }
+            sort_keys: dict[int, float] = {4: total, 5: done, 6: uncls,
+                                           7: income, 8: expense,
+                                           _COL_LAST: last_key}
+            for col, text in cells.items():
+                if col in sort_keys:
+                    item = SortableItem(text, sort_keys[col])
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight
+                                          | Qt.AlignmentFlag.AlignVCenter)
+                else:
+                    item = QTableWidgetItem(text)
+                if col == _COL_STATUS:
+                    item.setForeground(QColor(CURRENT.ok if is_ready else CURRENT.bad))
+                if col == 5 and done:
+                    item.setForeground(QColor(CURRENT.ok))
+                if col == 6 and uncls:
+                    item.setForeground(QColor(CURRENT.warn))
+                if col == 7 and income:
+                    item.setForeground(QColor(CURRENT.ok))
+                if col == 8 and expense:
+                    item.setForeground(QColor(CURRENT.warn))
+                self.table.setItem(i, col, item)
+
+        self.table.setSortingEnabled(True)
+        resort(self.table)
+        self._highlight_pinned()
+        self._reselect_vats(keep_selected)
+        self.table.blockSignals(False)
+
+        all_rows = all_clients
+        ready = sum(1 for r in all_rows if r["status"] == "ready")
+        self.status.showMessage(
+            f"{len(all_rows)} πελάτες · {ready} διαθέσιμοι · "
+            f"{len(all_rows) - ready} χωρίς κλειδί API · "
+            f"{len(self._checked)} επιλεγμένοι για λήψη"
+        )
+        self.sync_page.checked = set(self._checked)
+        self.sync_page.load_clients(self.conn)
+        self._update_selcount()
+        self._refresh_tooltips()
+        # Σημειώνουμε την τρέχουσα κατάσταση του αρχείου: ο watcher ανανεώνει
+        # μόνο όταν αλλάξει από ΑΛΛΟΝ (δείτε _poll_db).
+        self._last_db_mtime = self._db_mtime()
+
+    def _reselect_vats(self, vats: set[str]) -> None:
+        """Επαναφέρει την επιλογή του πίνακα κατά ΑΦΜ μετά από rebuild.
+
+        Καλείται με μπλοκαρισμένα signals, ώστε να μην πυροδοτηθεί το
+        _on_selection κατά την ανανέωση — η επιλογή απλώς «ακολουθεί» τον ίδιο
+        πελάτη αντί να μένει σε σταθερή γραμμή.
+        """
+        if not vats:
+            return
+        from PySide6.QtCore import QItemSelectionModel
+
+        sel = self.table.selectionModel()
+        sel.clearSelection()
+        flag = (QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows)
+        model = self.table.model()
+        for i in range(self.table.rowCount()):
+            vit = self.table.item(i, _COL_VAT)
+            if vit is not None and vit.text() in vats:
+                sel.select(model.index(i, 0), flag)
+
+    def _set_pinned(self, vat: str | None) -> None:
+        """Ορίζει τον πελάτη που «κρατιέται» στην κορυφή και φωτίζεται.
+
+        Χρησιμοποιείται για τον μόλις προστεθέντα (ώστε να μη χαθεί μέσα στη
+        λίστα) και για τον ενεργό. Δεν φιλτράρει — απλώς φέρνει στην κορυφή.
+        """
+        self._pinned_vat = vat or None
+
+    def _highlight_pinned(self) -> None:
+        """Βρίσκει τη γραμμή του καρφιτσωμένου πελάτη, τη φωτίζει και κυλά ως εκεί."""
+        vat = self._pinned_vat
+        if not vat:
+            return
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, _COL_VAT)
+            if item is not None and item.text() == vat:
+                self.table.scrollToItem(item,
+                                        QAbstractItemView.ScrollHint.PositionAtCenter)
+                for col in range(self.table.columnCount()):
+                    cell = self.table.item(i, col)
+                    if cell is not None:
+                        cell.setBackground(QColor(CURRENT.chip))
+                return
+
+    def _on_double_click(self, index) -> None:
+        """Διπλό κλικ σε γραμμή πελάτη: επιλογή/αποεπιλογή (checkbox) του πελάτη.
+
+        Το checkbox ορίζει ποιοι μπαίνουν στις μαζικές ενέργειες (λήψη/διαγραφή).
+        Το διπλό κλικ είναι ο γρήγορος τρόπος να τον βάλει/βγάλει χωρίς να
+        σημαδέψει το μικρό κουτάκι."""
+        self._toggle_checked({index.row()})
+
+    def _toggle_checked(self, rows: set[int]) -> None:
+        self.table.blockSignals(True)
+        for row in rows:
+            item = self.table.item(row, _COL_CHECK)
+            if item is None or not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                continue
+            checked = item.checkState() is Qt.CheckState.Checked
+            item.setCheckState(
+                Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked
+            )
+            vat = item.data(Qt.ItemDataRole.UserRole)
+            if checked:
+                self._checked.discard(vat)
+            else:
+                self._checked.add(vat)
+        self.table.blockSignals(False)
+        self._sync_checked()
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != _COL_CHECK:
+            return
+        vat = item.data(Qt.ItemDataRole.UserRole)
+        if not vat:
+            return
+        if item.checkState() is Qt.CheckState.Checked:
+            self._checked.add(vat)
+        else:
+            self._checked.discard(vat)
+        self._sync_checked()
+
+    def _sync_checked(self) -> None:
+        """Οι δύο λίστες (Πελάτες / Λήψη) δείχνουν την ίδια επιλογή."""
+        self.sync_page.set_checked(self._checked)
+        self._update_selcount()
+        self.status.showMessage(
+            f"{len(self._checked)} πελάτες επιλεγμένοι για λήψη"
+            if self._checked else "Κανένας επιλεγμένος — η λήψη θα γίνει για όλους"
+        )
+
+    def _update_selcount(self) -> None:
+        n = len(self._checked)
+        if not n:
+            self.lbl_selcount.setText("Κανένας επιλεγμένος — θα κατέβουν όλοι οι διαθέσιμοι")
+            self.lbl_selcount.setStyleSheet(f"color:{CURRENT.muted};")
+            return
+        ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+        no_key = sum(1 for v in self._checked if v not in ready)
+        if no_key:
+            # Κάποιοι επιλεγμένοι δεν έχουν κλειδί: δεν κατεβαίνουν, αλλά μετρούν
+            # για μαζική διαγραφή. Το λέμε ρητά ώστε να μη μπερδευτεί ο αριθμός.
+            self.lbl_selcount.setText(
+                f"✓ {n} επιλεγμένοι ({n - no_key} για λήψη, {no_key} χωρίς κλειδί)"
+            )
+        else:
+            self.lbl_selcount.setText(f"✓ {n} επιλεγμένοι για λήψη")
+        self.lbl_selcount.setStyleSheet(f"color:{CURRENT.accent}; font-weight:600;")
+
+    def _on_sync_selection(self, _: int) -> None:
+        """Η επιλογή άλλαξε από τη σελίδα Λήψης."""
+        if self._checked != self.sync_page.checked:
+            self._checked = set(self.sync_page.checked)
+            self.reload_clients()
+
+    def _check_shown(self, checked: bool) -> None:
+        self.table.blockSignals(True)
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, _COL_CHECK)
+            if item is None or not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                continue
+            item.setCheckState(
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            )
+            vat = item.data(Qt.ItemDataRole.UserRole)
+            if checked:
+                self._checked.add(vat)
+            else:
+                self._checked.discard(vat)
+        self.table.blockSignals(False)
+        ready_vats = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+        downloadable = len(self._checked & ready_vats)
+        self.sync_page.set_target(downloadable, len(ready_vats))
+        self._update_selcount()
+        self.reload_clients()
+
+    def _selected_vats(self, only_ready: bool = True) -> list[str]:
+        """Οι *φωτισμένες* γραμμές — για ανάλυση και εξαγωγές.
+
+        Διαφορετικό από το _checked, που ορίζει ποιοι θα κατέβουν.
+        """
+        rows = {i.row() for i in self.table.selectedIndexes()}
+        out: list[str] = []
+        for r in sorted(rows):
+            vat_item = self.table.item(r, _COL_VAT)
+            status_item = self.table.item(r, _COL_STATUS)
+            if not vat_item or not status_item:
+                continue
+            if only_ready and status_item.text() != _STATUS_READY:
+                continue
+            out.append(vat_item.text())
+        return out
+
+    def _label_for(self, vat: str) -> str:
+        row = self.conn.execute("SELECT label FROM clients WHERE vat=?", (vat,)).fetchone()
+        return (row["label"] if row else "") or vat
+
+    def _on_selection(self, animate: bool = True) -> None:
+        vats = self._selected_vats(only_ready=False)
+        # Όχι πρόσβαση στα Παραστατικά όσο τρέχει λήψη (η βάση αλλάζει συνεχώς).
+        self.menu.set_enabled_action(
+            "documents", len(vats) == 1 and self._thread is None
+        )
+        # Ο ενεργός πελάτης (μονή επιλογή) γίνεται ο καρφιτσωμένος, ώστε στην
+        # επόμενη ανανέωση να εμφανίζεται στην κορυφή. Δεν ανανεώνουμε τώρα —
+        # θα ήταν ενοχλητικό να πηδά η γραμμή κάτω από το ποντίκι.
+        self._pinned_vat = vats[0] if len(vats) == 1 else self._pinned_vat
+        if vats:
+            if len(vats) == 1:
+                self.analysis.show_client(self.conn, vats[0])
+            else:
+                self.analysis.show_placeholder(f"{len(vats)} πελάτες επιλεγμένοι.")
+            already = self._panel_open
+            self._set_panel_open(True, animate=animate)
+            if already and animate:
+                self._nudge_panel()
+        else:
+            # Καμία επιλογή: το panel κλείνει αντί να δείχνει άδειο κουτί.
+            self._set_panel_open(False, animate=animate)
+        self._set_status_client(vats)
+        self._refresh_tooltips()
+
+    def _set_status_client(self, vats: list[str]) -> None:
+        if len(vats) == 1:
+            self.active_client.setText(
+                f"● Ενεργός πελάτης: {self._label_for(vats[0])} · {vats[0]}"
+            )
+            self.active_client.setStyleSheet(
+                f"color:{CURRENT.accent}; font-weight:600;"
+            )
+        else:
+            self.active_client.setText(
+                f"{len(vats)} πελάτες επιλεγμένοι" if vats
+                else "Κανένας πελάτης επιλεγμένος"
+            )
+            self.active_client.setStyleSheet(f"color:{CURRENT.muted};")
+
+    def _set_panel_open(self, open_: bool, *, animate: bool = True) -> None:
+        """Ανοίγει/κλείνει το δεξί panel με συρόμενο εφέ.
+
+        Το εφέ είναι πλάτος και όχι διαφάνεια: το fade έκανε το panel να
+        τρεμοπαίζει στη θέση του χωρίς να λέει ότι άνοιξε κάτι, ενώ το σύρσιμο
+        δείχνει από πού ήρθε.
+
+        Το minimumWidth μηδενίζεται όσο τρέχει η κίνηση — αλλιώς το layout θα
+        κρατούσε το panel στα 440 pixel και η «κίνηση» θα ήταν ένα αναπήδημα.
+        """
+        if self._panel_anim is not None:
+            self._panel_anim.stop()
+            self._panel_anim = None
+        if open_ == self._panel_open and self.analysis.isVisible() == open_:
+            return
+        self._panel_open = open_
+
+        if not animate:
+            self.analysis.setVisible(open_)
+            self.analysis.setMinimumWidth(_PANEL_W if open_ else 0)
+            self.analysis.setMaximumWidth(16777215 if open_ else 0)
+            return
+
+        self.analysis.setMinimumWidth(0)
+        start = self.analysis.width() if self.analysis.isVisible() else 0
+        if open_:
+            self.analysis.setMaximumWidth(0)
+            self.analysis.setVisible(True)
+            start = 0
+
+        animation = QPropertyAnimation(self.analysis, b"maximumWidth", self)
+        animation.setDuration(200)
+        animation.setStartValue(start)
+        animation.setEndValue(_PANEL_W if open_ else 0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda: self._panel_settled(open_))
+        self._panel_anim = animation
+        animation.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    def _panel_settled(self, open_: bool) -> None:
+        self._panel_anim = None
+        if open_:
+            # Ξεκλειδώνουμε το πλάτος ώστε ο χρήστης να σύρει το χώρισμα όπως
+            # θέλει, και ξαναβάζουμε το κατώφλι αναγνωσιμότητας.
+            self.analysis.setMaximumWidth(16777215)
+            self.analysis.setMinimumWidth(_PANEL_W)
+        else:
+            self.analysis.setVisible(False)
+
+    def _nudge_panel(self) -> None:
+        """Σύντομο «σπρώξιμο» όταν αλλάζει πελάτης με το panel ήδη ανοιχτό.
+
+        Το panel ξαναχτίζεται σε κάθε επιλογή· χωρίς ένδειξη η αλλαγή περνά
+        απαρατήρητη και δεν φαίνεται ότι αφορά τη γραμμή που μόλις πατήθηκε.
+        """
+        if self._panel_anim is not None:
+            return
+        width = self.analysis.width()
+        if width < 40:
+            return
+        self.analysis.setMinimumWidth(0)
+        animation = QPropertyAnimation(self.analysis, b"maximumWidth", self)
+        animation.setDuration(150)
+        animation.setStartValue(int(width * 0.88))
+        animation.setEndValue(width)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda: self._panel_settled(True))
+        self._panel_anim = animation
+        animation.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    def _go_sync(self) -> None:
+        """Πηγαίνει στη σελίδα λήψης φέρνοντας τον ενεργό (καρφιτσωμένο) πελάτη
+        αυτόματα **επιλεγμένο και τσεκαρισμένο** — ώστε να μη χρειάζεται να τον
+        ξαναδιαλέξει ο χρήστης. Δεν αγγίζει τυχόν άλλες υπάρχουσες επιλογές."""
+        if self._pinned_vat:
+            self._select_and_check_vat(self._pinned_vat)
+        self._show_page("sync")
+
+    def _select_and_check_vat(self, vat: str) -> None:
+        """Επιλέγει (φωτίζει) και τσεκάρει τη γραμμή του πελάτη, αν είναι
+        διαθέσιμος (έχει κλειδί). Όσοι δεν έχουν κλειδί δεν κατεβαίνουν."""
+        for i in range(self.table.rowCount()):
+            vit = self.table.item(i, _COL_VAT)
+            sit = self.table.item(i, _COL_STATUS)
+            if not vit or vit.text() != vat:
+                continue
+            if sit is None or sit.text() != _STATUS_READY:
+                return
+            self.table.selectRow(i)
+            check = self.table.item(i, _COL_CHECK)
+            if check is not None and check.checkState() is not Qt.CheckState.Checked:
+                # Το setCheckState πυροδοτεί _on_item_changed → μπαίνει στα _checked.
+                check.setCheckState(Qt.CheckState.Checked)
+            return
+
+    # ---------------------------------------------------------- πλοήγηση
+    def _show_page(self, name: str) -> None:
+        self.stack.setCurrentIndex(_PAGES.index(name))
+        self.menu.set_active(name)
+        self._restyle_page(name)
+
+    def _current_page(self) -> str:
+        return _PAGES[self.stack.currentIndex()]
+
+    def _open_etimologio(self) -> None:
+        """Switch to e-Τιμολόγιο Pro, starting its backend on first open."""
+        self.etimologio.start()
+        self._show_page("etimologio")
+
+    def _open_documents(self) -> None:
+        self._open_documents_filtered("all")
+
+    def _current_doc_client(self) -> str | None:
+        vats = self._selected_vats(only_ready=False)
+        return vats[0] if len(vats) == 1 else None
+
+    def _open_documents_filtered(self, filter_key: str) -> None:
+        self._open_documents_with(filter_key=filter_key)
+
+    def _open_documents_supplier(self, supplier_vat: str) -> None:
+        self._open_documents_with(supplier_vat=supplier_vat)
+
+    def _open_documents_type(self, invoice_type: str) -> None:
+        self._open_documents_with(invoice_type=invoice_type)
+
+    def _open_documents_with(
+        self, *, filter_key: str = "all", supplier_vat: str = "", invoice_type: str = ""
+    ) -> None:
+        vat = self._current_doc_client()
+        if vat is None:
+            return
+        # Ένας πελάτης με τρεις χιλιάδες παραστατικά χρειάζεται αισθητό χρόνο
+        # για να στηθεί ο πίνακας — χωρίς πέπλο μοιάζει με κόλλημα.
+        with self._busy("Φόρτωση παραστατικών…"):
+            self.docs.show_client(
+                self.conn, vat, self._label_for(vat), filter_key,
+                supplier_vat=supplier_vat, invoice_type=invoice_type,
+            )
+            self._show_page("documents")
+            self._refresh_tooltips()
+
+    def _on_menu(self, action: str) -> None:
+        handlers = {
+            "clients": lambda: self._show_page("clients"),
+            "sync": self._go_sync,
+            "documents": self._open_documents,
+            "add_client": self.on_add_client,
+            "import": self.on_import,
+            "folder": self.on_open_folder,
+            "csv": self.on_export,
+            "online_pdf": self.on_download_viewer_only,
+            "backup": self.on_backup,
+            "restore": self.on_restore,
+            "wipe": lambda: self.on_wipe(),
+            "password": self.on_password,
+            "control": lambda: self._show_page("control"),
+            "etimologio": self._open_etimologio,
+            "tour": self.start_tour,
+            "manual": self.on_manual,
+            "logfile": self.on_open_log,
+        }
+        handler = handlers.get(action)
+        if handler:
+            handler()
+
+    # ---------------------------------------------------------- θέμα
+    def _on_theme(self, light: bool) -> None:
+        """Αλλαγή θέματος — μόνο για ό,τι φαίνεται.
+
+        Πριν, κάθε εναλλαγή ξανάχτιζε και τους τρεις πίνακες: τρία ερωτήματα στη
+        βάση και εκατοντάδες κελιά, από τα οποία ο χρήστης έβλεπε το ένα τρίτο.
+        Τώρα ξαναχτίζεται η τρέχουσα σελίδα και οι άλλες σημειώνονται ως
+        ξεπερασμένες — πληρώνονται όταν και αν ανοίξουν.
+        """
+        name = "light" if light else "dark"
+        apply_theme(QApplication.instance(), name)
+        self._prefs.setValue("theme", name)
+        paint_title_bar(self, not light)
+        # Τα εικονίδια είναι bitmaps βαμμένα σε χρώμα και οι πίνακες βάφουν
+        # κελιά προγραμματιστικά — τίποτα από τα δύο δεν αλλάζει μόνο του από
+        # το νέο stylesheet.
+        self.menu.restyle()
+        self.sync_page.restyle()  # φθηνό: εικονίδια, χωρίς ξαναγέμισμα
+        self._set_status_client(self._selected_vats(only_ready=False))
+        self._stale = {"clients", "documents"}
+        self._restyle_page(self._current_page())
+        self._refresh_tooltips()
+        self._repaint_everything()
+
+    def _repaint_everything(self) -> None:
+        """Αναγκάζει κάθε widget να ξαναζωγραφιστεί με το νέο θέμα.
+
+        Το setStyleSheet ζητά από μόνο του update() σε όλο το δέντρο, αλλά όσα
+        widgets δεν τα αγγίζει ο χρήστης κρατούσαν τα παλιά pixel: το πλαϊνό
+        μενού έμενε σκούρο πάνω σε φωτεινή εφαρμογή μέχρι να περάσει από πάνω
+        του το ποντίκι. Ο πίνακας «διορθωνόταν» μόνος του απλώς επειδή τον
+        σκροllάρει κανείς.
+
+        Είναι φθηνό: το update() σημειώνει, δεν ζωγραφίζει.
+        """
+        for widget in self.findChildren(QWidget):
+            widget.update()
+        self.update()
+
+    @contextmanager
+    def _busy(self, text: str):
+        """Πέπλο αναμονής γύρω από δουλειά που κρατά αισθητά.
+
+        Δεν κάνει τη δουλειά πιο γρήγορη — λέει όμως ότι γίνεται, και μπλοκάρει
+        τα κλικ ώστε ένα ανυπόμονο διπλό κλικ να μην την ξεκινήσει δεύτερη φορά.
+        """
+        self.busy.start(text)
+        try:
+            yield
+        finally:
+            self.busy.stop()
+
+    def _restyle_page(self, name: str) -> None:
+        """Ξαναχτίζει μια σελίδα μόνο αν την έχει ακουμπήσει αλλαγή θέματος."""
+        if name not in self._stale:
+            return
+        self._stale.discard(name)
+        if name == "clients":
+            self.reload_clients()
+            self._on_selection(animate=False)
+        elif name == "documents":
+            self.docs.restyle()
+
+    # -------------------------------------------------------------- actions
+    def _context_menu(self, point) -> None:
+        row = self.table.rowAt(point.y())
+        if row < 0:
+            return
+        vat_item = self.table.item(row, _COL_VAT)
+        if vat_item is None:
+            return
+        vat = vat_item.text()
+        selected = self._selected_vats(only_ready=False)
+        if vat not in selected:
+            selected = [vat]
+
+        menu = QMenu(self)
+        edit = QAction(icon("edit", CURRENT.muted), "Επεξεργασία…", self)
+        edit.triggered.connect(lambda: self.on_edit_client(vat))
+        edit.setEnabled(len(selected) == 1)
+        menu.addAction(edit)
+
+        docs = QAction(icon("pdf", CURRENT.muted), "Παραστατικά", self)
+        docs.triggered.connect(self._open_documents)
+        docs.setEnabled(len(selected) == 1)
+        menu.addAction(docs)
+
+        menu.addSeparator()
+
+        wipe = QAction(icon("wipe", CURRENT.warn), "Εκκαθάριση ληφθέντων", self)
+        wipe.triggered.connect(lambda: self.on_wipe(selected))
+        menu.addAction(wipe)
+
+        label = ("Διαγραφή πελάτη" if len(selected) == 1
+                 else f"Διαγραφή {len(selected)} πελατών")
+        delete = QAction(icon("delete", CURRENT.bad), label, self)
+        delete.triggered.connect(lambda: self.on_delete_clients(selected))
+        menu.addAction(delete)
+
+        # Μαζική διαγραφή όσων έχει τσεκάρει ο χρήστης — ο φυσικός τρόπος να
+        # επιλέξει πολλούς. Εμφανίζεται μόνο όταν οι επιλεγμένοι είναι άλλοι
+        # από τη γραμμή που δείχνει το δεξί κλικ, ώστε να μην διπλασιάζεται.
+        checked = sorted(self._checked)
+        if checked and set(checked) != set(selected):
+            bulk = QAction(
+                icon("delete", CURRENT.bad),
+                f"Διαγραφή {len(checked)} επιλεγμένων πελατών", self,
+            )
+            bulk.triggered.connect(lambda: self.on_delete_clients(checked))
+            menu.addAction(bulk)
+        menu.exec(self.table.viewport().mapToGlobal(point))
+
+    def on_edit_client(self, vat: str) -> None:
+        client = repo.get_client(self.conn, vat, self.crypto)
+        if client is None:
+            return
+        dialog = ClientDialog(self.conn, existing=client, parent=self)
+        if not dialog.exec() or dialog.client is None:
+            return
+        create_backup(self.settings.db_path, reason="edit-client")
+        repo.upsert_client(self.conn, dialog.client, self.crypto)
+        repo.seed_suppliers_from_clients(self.conn)
+        self.conn.commit()
+        self.reload_clients()
+        self._log(f"Ενημερώθηκε ο πελάτης {vat}")
+
+    def _delete_selected(self) -> None:
+        """Το πλήκτρο Delete σβήνει τους ΕΠΙΛΕΓΜΕΝΟΥΣ πελάτες — ο φυσικός
+        τρόπος να επιλέξει κανείς πολλούς. Αν κανείς δεν είναι επιλεγμένος με
+        checkbox, σβήνει τους φωτισμένους. Χωρίς καμία επιλογή δεν κάνει
+        τίποτα, ώστε ένα κατά λάθος Delete να μη σβήσει «όλους»."""
+        if self._current_page() != "clients":
+            return
+        # Μέσα σε πεδίο κειμένου το Delete ανήκει στο κείμενο, όχι στους
+        # πελάτες: αλλιώς μια διόρθωση στην αναζήτηση θα ζητούσε διαγραφή.
+        focused = QApplication.focusWidget()
+        if isinstance(focused, (QLineEdit, QComboBox)):
+            return
+        targets = sorted(self._checked) or self._selected_vats(only_ready=False)
+        self.on_delete_clients(targets)
+
+    def on_delete_clients(self, vats: list[str]) -> None:
+        if not vats:
+            return
+        docs = self.conn.execute(
+            f"""SELECT COUNT(*) c FROM documents WHERE client_id IN
+                (SELECT id FROM clients WHERE vat IN ({",".join("?" * len(vats))}))""",
+            vats,
+        ).fetchone()["c"]
+        who = self._label_for(vats[0]) if len(vats) == 1 else f"{len(vats)} πελάτες"
+        answer = QMessageBox.warning(
+            self, "Διαγραφή πελατών",
+            f"Διαγραφή: {who}\n\n"
+            f"Θα σβηστούν και {docs} εγγραφές παραστατικών από τη βάση.\n"
+            "Τα αρχεία PDF στον δίσκο ΔΕΝ διαγράφονται.\n\n"
+            "Η ενέργεια δεν αναιρείται (υπάρχει όμως αντίγραφο ασφαλείας).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        with self._busy("Διαγραφή…"):
+            create_backup(self.settings.db_path, reason="delete-clients")
+            count = repo.delete_clients(self.conn, vats)
+            self.conn.commit()
+            self._checked -= set(vats)
+            self.reload_clients()
+            self._set_panel_open(False, animate=False)
+        self._log(f"Διαγράφηκαν {count} πελάτες")
+
+    def on_wipe(self, vats: list[str] | None = None) -> None:
+        """Σβήνει τα ληφθέντα και, προαιρετικά, τους ίδιους τους πελάτες.
+
+        Δύο επιλογές μέσα στο ίδιο παράθυρο: διαγραφή και των αρχείων από τον
+        δίσκο, και **μαζική διαγραφή των πελατών** (όχι μόνο των παραστατικών
+        τους). Χωρίς επιλογή πελατών αφορά όλους· με επιλεγμένους, μόνο αυτούς.
+        """
+        vats = vats or self._selected_vats(only_ready=False)
+        # Οι πραγματικοί στόχοι για μαζική διαγραφή: οι επιλεγμένοι ή, χωρίς
+        # επιλογή, όλοι οι πελάτες.
+        targets = vats or [r["vat"] for r in repo.list_clients(self.conn)]
+        if not targets:
+            QMessageBox.information(self, "Εκκαθάριση", "Δεν υπάρχουν πελάτες.")
+            return
+        scope = (
+            self._label_for(vats[0]) if len(vats) == 1
+            else f"{len(vats)} πελάτες" if vats
+            else "ΟΛΟΥΣ τους πελάτες"
+        )
+        docs = self.conn.execute(
+            "SELECT COUNT(*) c FROM documents" if not vats else
+            f"""SELECT COUNT(*) c FROM documents WHERE client_id IN
+                (SELECT id FROM clients WHERE vat IN ({",".join("?" * len(vats))}))""",
+            vats or [],
+        ).fetchone()["c"]
+
+        proceed, delete_files, delete_clients = self._ask_wipe(scope, docs, len(targets))
+        if not proceed:
+            return
+
+        with self._busy("Εκκαθάριση…"):
+            create_backup(self.settings.db_path, reason="wipe")
+            removed_files = self._delete_files(vats) if delete_files else 0
+            count = repo.wipe_documents(self.conn, vats or None)
+            deleted_clients = 0
+            if delete_clients:
+                deleted_clients = repo.delete_clients(self.conn, targets)
+                self._checked -= set(targets)
+            self.conn.commit()
+            self.reload_clients()
+            # Και ο πίνακας Παραστατικών: αν ο χρήστης τον έβλεπε, έδειχνε ακόμη
+            # τα μόλις-σβησμένα/μηδενισμένα παραστατικά μέχρι να πατήσει Ανανέωση.
+            self.docs.reload()
+            # Το reload καθαρίζει την επιλογή με μπλοκαρισμένα signals, οπότε το
+            # _on_selection δεν τρέχει· χωρίς αυτό το panel θα έμενε ανοιχτό
+            # δείχνοντας αριθμούς που μόλις σβήστηκαν.
+            self._set_panel_open(False, animate=False)
+
+        parts = [f"{count} εγγραφές"]
+        if removed_files:
+            parts.append(f"{removed_files} αρχεία")
+        if deleted_clients:
+            parts.append(f"{deleted_clients} πελάτες")
+        summary = ", ".join(parts)
+        self._log(f"Εκκαθάριση: {summary}")
+        QMessageBox.information(
+            self, "Η εκκαθάριση ολοκληρώθηκε", f"Σβήστηκαν: {summary}."
+        )
+
+    def _ask_wipe(self, scope: str, docs: int, n_targets: int) -> tuple[bool, bool, bool]:
+        """Παράθυρο επιβεβαίωσης εκκαθάρισης με δύο επιλογές.
+
+        Το QMessageBox δέχεται ένα μόνο checkbox, οπότε φτιάχνουμε δικό μας
+        παράθυρο για να χωρέσουν και οι δύο (αρχεία + μαζική διαγραφή πελατών).
+        Επιστρέφει (προχώρα, διαγραφή αρχείων, διαγραφή πελατών).
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Εκκαθάριση ληφθέντων")
+        dialog.setMinimumWidth(440)
+        root = QVBoxLayout(dialog)
+        root.setSpacing(10)
+
+        header = QHBoxLayout()
+        mark = QLabel()
+        mark.setPixmap(icon("wipe", CURRENT.warn, 26).pixmap(QSize(26, 26)))
+        header.addWidget(mark)
+        title = QLabel(f"Εκκαθάριση για: {scope}")
+        title.setObjectName("h1")
+        title.setWordWrap(True)
+        header.addWidget(title, 1)
+        root.addLayout(header)
+
+        info = QLabel(
+            f"Θα σβηστούν {docs} εγγραφές παραστατικών και θα μηδενιστεί το "
+            "ιστορικό λήψης, ώστε η επόμενη λήψη να τα ξαναφέρει όλα.\n\n"
+            "Από προεπιλογή οι πελάτες και τα κλειδιά τους παραμένουν."
+        )
+        info.setWordWrap(True)
+        info.setObjectName("muted")
+        root.addWidget(info)
+
+        chk_files = QCheckBox("Διαγραφή και των αρχείων PDF/XML από τον δίσκο")
+        chk_clients = QCheckBox(
+            "Διαγραφή και των ίδιων των πελατών από τη βάση (μαζική διαγραφή)"
+        )
+        root.addWidget(chk_files)
+        root.addWidget(chk_clients)
+
+        warn = QLabel("")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(f"color:{CURRENT.bad}; font-weight:600;")
+        root.addWidget(warn)
+
+        def _update_warn() -> None:
+            if chk_clients.isChecked():
+                warn.setText(
+                    f"⚠ Θα διαγραφούν ΟΛΟΚΛΗΡΩΤΙΚΑ {n_targets} πελάτες μαζί με τα "
+                    "κλειδιά τους. Η ενέργεια δεν αναιρείται (υπάρχει όμως "
+                    "αντίγραφο ασφαλείας)."
+                )
+            else:
+                warn.setText("")
+
+        chk_clients.toggled.connect(_update_warn)
+
+        buttons = QDialogButtonBox()
+        buttons.addButton("Εκκαθάριση", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton("Άκυρο", QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+
+        if not dialog.exec():
+            return False, False, False
+        return True, chk_files.isChecked(), chk_clients.isChecked()
+
+    def _delete_files(self, vats: list[str]) -> int:
+        """Διαγράφει τα αρχεία των πελατών από τον δίσκο.
+
+        Μόνο μέσα στον φάκελο του κάθε πελάτη — ποτέ ολόκληρη τη ρίζα, ώστε ένα
+        λάθος εδώ να μη σβήσει δεδομένα άλλων.
+        """
+        root = self.settings.storage_root
+        targets = vats or [r["vat"] for r in repo.list_clients(self.conn)]
+        removed = 0
+        for vat in targets:
+            folder = find_client_folder(root, vat, self._label_for(vat))
+            if not folder.exists() or not folder.is_relative_to(root):
+                continue
+            for path in sorted(folder.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                try:
+                    if path.is_file():
+                        path.unlink()
+                        removed += 1
+                    else:
+                        path.rmdir()
+                except OSError:
+                    pass
+        return removed
+
+    def _drop_demo_if_present(self) -> None:
+        """Τα δείγματα φεύγουν μόλις μπουν αληθινά δεδομένα.
+
+        Χωρίς αυτό, όποιος παρέλειπε την ξενάγηση και έκανε κατευθείαν εισαγωγή
+        θα κατέληγε με τους εικονικούς πελάτες ανακατεμένους με τους δικούς
+        του — και θα προσπαθούσε να κατεβάσει παραστατικά για ΑΦΜ που δεν
+        υπάρχουν.
+        """
+        if not demo.has_demo(self.conn):
+            return
+        removed = demo.clear(self.conn)
+        self._log(f"Διαγράφηκαν τα δεδομένα επίδειξης ({removed} πελάτες)")
+
+    def on_add_client(self) -> None:
+        dialog = ClientDialog(self.conn, parent=self)
+        if not dialog.exec():
+            return
+        if dialog.excel_path:
+            self._import_excel(Path(dialog.excel_path))
+            return
+        if dialog.client is None:
+            return
+        create_backup(self.settings.db_path, reason="manual-client")
+        self._drop_demo_if_present()
+        repo.upsert_client(self.conn, dialog.client, self.crypto)
+        repo.seed_suppliers_from_clients(self.conn)
+        self.conn.commit()
+        self._log(f"Προστέθηκε ο πελάτης {dialog.client.vat} {dialog.client.label}")
+        self._show_page("clients")
+        # Δεν φιλτράρουμε τη λίστα στον νέο πελάτη (θα έκρυβε όλους τους
+        # άλλους): τον φέρνουμε στην κορυφή και τον φωτίζουμε, αφήνοντας τη
+        # λίστα ολόκληρη. Καθαρίζουμε τυχόν αναζήτηση που θα τον έκρυβε.
+        self._set_pinned(dialog.client.vat)
+        self.search.clear()  # μπορεί να πυροδοτήσει reload — έχει ήδη οριστεί το pin
+        self.reload_clients()
+
+    def on_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Επιλέξτε αρχείο Excel", "", "Excel (*.xlsx)"
+        )
+        if path:
+            self._import_excel(Path(path))
+
+    def _import_excel(self, path: Path) -> None:
+        dialog = ImportDialog(Path(path), self.conn, self)
+        if dialog.preview is None or not dialog.exec():
+            return
+        with self._busy(f"Εισαγωγή {len(dialog.preview.rows)} πελατών…"):
+            create_backup(self.settings.db_path, reason="import")
+            self._drop_demo_if_present()
+            for row in dialog.preview.rows:
+                repo.upsert_client(self.conn, row.client, self.crypto)
+            repo.seed_suppliers_from_clients(self.conn)
+            self.conn.commit()
+            self.reload_clients()
+        self._log(
+            f"Εισήχθησαν {len(dialog.preview.rows)} πελάτες από {Path(path).name} "
+            f"({dialog.preview.ready} έτοιμοι, {dialog.preview.missing_key} χωρίς κλειδί)."
+        )
+
+    def _fill_gap(self, spec: str) -> None:
+        start, _, end = spec.partition("|")
+        self.sync_page.date_from.set_gr(to_gr(start))
+        self.sync_page.date_to.set_gr(to_gr(end))
+        vat = self._current_doc_client()
+        if vat:
+            self._checked = {vat}
+            self.reload_clients()
+        self._show_page("sync")
+        self._log(f"Συμπλήρωση κενού {to_gr(start)} – {to_gr(end)}")
+        self.on_sync()
+
+    def on_sync(self) -> None:
+        if self._thread is not None:
+            return
+        # Οι επιλεγμένοι μπορεί να περιλαμβάνουν και πελάτες χωρίς κλειδί (είναι
+        # επιλέξιμοι για διαγραφή)· η λήψη κρατά μόνο όσους έχουν κλειδί.
+        ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+        vats = [v for v in sorted(self._checked) if v in ready]
+        if not vats:
+            vats = sorted(ready)
+        if not vats:
+            QMessageBox.information(
+                self, "Κανένας πελάτης",
+                "Δεν υπάρχουν πελάτες με κλειδί API.\n\n"
+                "Προσθέστε πελάτη ή κάντε εισαγωγή από Excel.",
+            )
+            return
+
+        directions = self.sync_page.directions()
+        if not directions:
+            QMessageBox.information(
+                self, "Τίποτα να κατέβει",
+                "Επιλέξτε αν θα κατέβουν έσοδα, έξοδα ή και τα δύο.",
+            )
+            self._show_page("sync")
+            return
+
+        create_backup(self.settings.db_path, reason="sync")
+        self._set_running(True, len(vats))
+        self._show_page("sync")
+        self._log(
+            f"── Έναρξη λήψης για {len(vats)} πελάτες "
+            f"({', '.join(d.value for d in directions)}) "
+            f"{self.sync_page.date_from.gr()} – {self.sync_page.date_to.gr()}"
+        )
+
+        self._thread = QThread(self)
+        self._worker = SyncWorker(
+            vats,
+            self.sync_page.date_from.gr(),
+            self.sync_page.date_to.gr(),
+            self.sync_page.chk_full.isChecked(),
+            directions,
+            unclassified_expenses_only=self.sync_page.smart_expenses_only(),
+        )
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.message.connect(self._log)
+        self._worker.client_started.connect(self._on_client_started)
+        self._worker.client_finished.connect(self._on_client_finished)
+        self._worker.totals.connect(self._on_totals)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.busy.connect(self._on_busy)
+        self._thread.start()
+
+    def on_cancel(self) -> None:
+        if self._worker:
+            self._worker.cancel()
+            self.sync_page.btn_cancel.setEnabled(False)
+
+    def on_open_folder(self) -> None:
+        root = self.settings.storage_root
+        root.mkdir(parents=True, exist_ok=True)
+        _reveal(root)
+
+    # -------------------------------------------------- λήψη «μόνο online»
+    def on_download_viewer_only(self) -> None:
+        """Κατεβάζει με headless browser όσα παραστατικά ο πάροχος δείχνει
+        μόνο online (SPA προβολές που δεν δίνουν PDF στο downloadingInvoiceUrl)."""
+        # Αυτο-επούλωση: αν έμεινε αναφορά σε παλιό thread που έχει ήδη τελειώσει
+        # (π.χ. μετά από ακύρωση), την καθαρίζουμε ώστε η επανεκκίνηση να δουλέψει
+        # αντί να κολλήσει σε ψεύτικο «εκτελείται ήδη».
+        hl = getattr(self, "_hl_thread", None)
+        if hl is not None and not hl.isRunning():
+            self._teardown_headless()
+            hl = None
+        if self._thread is not None or hl is not None:
+            QMessageBox.information(
+                self, "Εκτελείται ήδη",
+                "Περιμένετε να ολοκληρωθεί η τρέχουσα εργασία.",
+            )
+            return
+
+        # Οι μόνο-online ενέργειες αφορούν τον επιλεγμένο (ενεργό) πελάτη.
+        vats = self._online_only_vats()
+        if vats:
+            placeholders = ",".join("?" * len(vats))
+            n = self.conn.execute(
+                f"SELECT COUNT(*) c FROM documents d JOIN clients c ON c.id=d.client_id "
+                f"WHERE d.status='viewer_only' AND d.downloading_invoice_url <> '' "
+                f"AND c.vat IN ({placeholders})", vats
+            ).fetchone()["c"]
+        else:
+            n = self.conn.execute(
+                "SELECT COUNT(*) c FROM documents "
+                "WHERE status='viewer_only' AND downloading_invoice_url <> ''"
+            ).fetchone()["c"]
+        if not n:
+            QMessageBox.information(
+                self, "Λήψη μόνο-online",
+                "Δεν υπάρχουν παραστατικά «μόνο online» για τον επιλεγμένο πελάτη."
+                if vats else
+                "Δεν υπάρχουν παραστατικά «μόνο online» προς λήψη.\n\n"
+                "Αυτά εμφανίζονται όταν ένας πάροχος δείχνει το παραστατικό μόνο "
+                "στη σελίδα του, χωρίς αρχείο PDF.",
+            )
+            return
+
+        # Δύο δρόμοι: (α) μέσω του browser του χρήστη — δουλεύει και για
+        # παρόχους πίσω από έλεγχο ανθρώπου (Cloudflare), γιατί τον έλεγχο τον
+        # περνά ο ίδιος· (β) αυτόματα με αόρατο browser — γρήγορο, αλλά μόνο για
+        # παρόχους χωρίς τέτοιο έλεγχο.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Λήψη μόνο-online")
+        box.setText(
+            f"<b>{n}</b> παραστατικά εμφανίζονται μόνο online στον πάροχο. "
+            "Πώς θέλετε να τα κατεβάσετε;"
+        )
+        box.setInformativeText(
+            "<b>Μέσω του browser σας</b> (προτείνεται): ανοίγουν στον browser "
+            "σας, τα αποθηκεύετε ως PDF και η εφαρμογή τα αρχειοθετεί μόνη της. "
+            "Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» "
+            "(π.χ. Epsilon, Megasoft).<br><br>"
+            "<b>Αυτόματα (αόρατα)</b>: μόνο με <b>αόρατο</b> browser (γρήγορα, "
+            "παράλληλα) — δεν ανοίγει παράθυρο. Πιάνει όσα δεν έχουν έλεγχο "
+            "«είστε άνθρωπος».<br><br>"
+            "<b>Αυτόματα (ορατός browser)</b>: ανοίγει ένα <b>ορατό</b> παράθυρο "
+            "και δοκιμάζει να αποθηκεύσει μόνο του. Την <b>πρώτη φορά</b> ίσως "
+            "χρειαστεί να συνδεθείτε στον πάροχο ή να περάσετε τον έλεγχο «είστε "
+            "άνθρωπος» μέσα στο παράθυρο — η σύνδεση θυμάται, ώστε οι επόμενες "
+            "φορές να είναι αυτόματες. <b>Δεν παρακάμπτουμε κανέναν έλεγχο.</b>"
+        )
+        btn_browser = box.addButton("Μέσω του browser μου", QMessageBox.ButtonRole.AcceptRole)
+        btn_auto = box.addButton("Αυτόματα (αόρατα)", QMessageBox.ButtonRole.ActionRole)
+        btn_auto_headed = box.addButton(
+            "Αυτόματα (ορατός browser)", QMessageBox.ButtonRole.ActionRole
+        )
+        box.addButton("Άκυρο", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_browser)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == btn_browser:
+            self._open_online_only_browser(vats)
+            return
+        if clicked not in (btn_auto, btn_auto_headed):
+            return
+
+        from ..download import headless
+
+        if not headless.available():
+            QMessageBox.warning(
+                self, "Χρειάζεται Microsoft Edge ή Google Chrome",
+                "Για την αυτόματη λήψη των «μόνο online» παραστατικών χρειάζεται "
+                "ένας browser (Edge ή Chrome) εγκατεστημένος στον υπολογιστή.\n\n"
+                "Το Microsoft Edge υπάρχει προεγκατεστημένο σε κάθε Windows "
+                "10/11· αν λείπει, εγκαταστήστε τον Edge ή τον Chrome — ή "
+                "χρησιμοποιήστε την επιλογή «Μέσω του browser μου».",
+            )
+            return
+
+        self._start_headless_worker(vats, n, headed=clicked == btn_auto_headed)
+
+    def _browser_profile_dir(self) -> str:
+        """Μόνιμος, ΤΟΠΙΚΟΣ φάκελος προφίλ για τον ορατό browser της λήψης.
+
+        Ξεχωριστός από το πραγματικό προφίλ του Chrome/Edge του χρήστη — εδώ
+        απλώς θυμόμαστε τη δική μας συνεδρία στον πάροχο. Τοπικός (LOCALAPPDATA)
+        και όχι στον φάκελο δεδομένων, που μπορεί να είναι δικτυακός.
+        """
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        return str(Path(base) / "TimologioDownloader" / "browser_profile")
+
+    def _start_headless_worker(
+        self, vats: list[str] | None, n: int, *, headed: bool
+    ) -> None:
+        create_backup(self.settings.db_path, reason="headless")
+        self._hl_dialog = QProgressDialog(
+            "Άνοιγμα browser…", "Ακύρωση", 0, n, self
+        )
+        self._hl_dialog.setWindowTitle("Λήψη μόνο-online")
+        self._hl_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._hl_dialog.setMinimumDuration(0)
+        self._hl_dialog.setAutoClose(False)
+        self._hl_dialog.setValue(0)
+
+        self._hl_thread = QThread(self)
+        if headed:
+            # Ορατό πέρασμα με μόνιμο προφίλ: ο χρήστης περνά ο ίδιος τυχόν έλεγχο
+            # «είστε άνθρωπος» στο ορατό παράθυρο· μετά η σελίδα αποθηκεύεται
+            # αυτόματα (print-to-PDF) και η συνεδρία θυμάται για τις επόμενες.
+            self._hl_worker = HeadlessWorker(
+                vats, headed_fallback=True,
+                headed_profile=self._browser_profile_dir(),
+                headed_patient=True, headed_timeout=60.0,
+            )
+        else:
+            # Αυτόματα = μόνο αόρατος browser. Τα Cloudflare-gated μένουν «μόνο online».
+            self._hl_worker = HeadlessWorker(vats, headed_fallback=False)
+        self._hl_worker.moveToThread(self._hl_thread)
+        self._hl_thread.started.connect(self._hl_worker.run)
+        self._hl_worker.message.connect(self._on_headless_message)
+        self._hl_worker.progress.connect(self._on_headless_progress)
+        self._hl_worker.finished.connect(self._on_headless_finished)
+        self._hl_worker.failed.connect(self._on_headless_failed)
+        self._hl_dialog.canceled.connect(self._on_headless_cancel)
+        self._hl_thread.start()
+
+    def _on_headless_progress(self, done: int, total: int) -> None:
+        """Ποσοστό στην μπάρα του popup της αυτόματης μόνο-online λήψης."""
+        dialog = getattr(self, "_hl_dialog", None)
+        if dialog is None:
+            return
+        dialog.setMaximum(total)
+        dialog.setValue(done)
+        pct = int(done * 100 / total) if total else 0
+        dialog.setLabelText(f"Λήψη μόνο-online…  {done} / {total}  ({pct}%)")
+
+    def _on_headless_cancel(self) -> None:
+        """Ακύρωση της μόνο-online λήψης — γίνεται αισθητή σε <1s."""
+        if getattr(self, "_hl_worker", None) is not None:
+            self._hl_worker.cancel()
+        if getattr(self, "_hl_dialog", None) is not None:
+            self._hl_dialog.setLabelText("Ακύρωση… κλείσιμο browser.")
+
+    def _online_only_vats(self) -> list[str] | None:
+        """Οι μόνο-online ενέργειες αφορούν τον επιλεγμένο (ενεργό) πελάτη.
+
+        Επιστρέφει τα ΑΦΜ των επιλεγμένων· αν δεν υπάρχει επιλογή, τον ενεργό
+        (καρφιτσωμένο). ``None`` σημαίνει «όλοι» (καμία επιλογή/ενεργός).
+        """
+        vats = self._selected_vats(only_ready=False)
+        if not vats and self._pinned_vat:
+            vats = [self._pinned_vat]
+        return vats or None
+
+    def _open_online_only_browser(self, vats: list[str] | None = None) -> None:
+        """Καθοδηγούμενη λήψη μέσω του browser του χρήστη + αυτόματη αρχειοθέτηση.
+
+        Ο χρήστης περνά ο ίδιος τυχόν έλεγχο «είστε άνθρωπος» στον πάροχο· εμείς
+        απλώς αρχειοθετούμε το PDF που κατεβάζει. Καμία παράκαμψη ελέγχου.
+        """
+        from ..gui.online_only import OnlineOnlyDialog
+
+        rows = repo.viewer_only_documents(self.conn, vats)
+        if not rows:
+            return
+        dialog = OnlineOnlyDialog(self.conn, self.settings, rows, self)
+        dialog.exec()
+        if dialog.changed:
+            self.reload_clients()
+            self._on_selection()
+            if dialog.filed_count:
+                self._log(
+                    f"Αρχειοθετήθηκαν {dialog.filed_count} μόνο-online "
+                    "παραστατικά μέσω του browser"
+                )
+
+    def _on_headless_message(self, text: str) -> None:
+        # Η μπάρα και το ποσοστό οδηγούνται πλέον από το ακριβές
+        # _on_headless_progress (done/total)· εδώ κρατάμε μόνο το ημερολόγιο,
+        # ώστε τα δύο να μη «μαλώνουν» για την ίδια ετικέτα.
+        self._log(text)
+
+    def _teardown_headless(self) -> None:
+        if getattr(self, "_hl_thread", None) is not None:
+            self._hl_thread.quit()
+            self._hl_thread.wait(5000)
+        self._hl_thread = None
+        self._hl_worker = None
+        if getattr(self, "_hl_dialog", None) is not None:
+            self._hl_dialog.close()
+            self._hl_dialog = None
+
+    def _on_headless_finished(self, saved: int, skipped: int, failed: int) -> None:
+        self._teardown_headless()
+        self.reload_clients()
+        self._on_selection()
+        self.docs.reload()  # να φανούν αμέσως τα «κατέβηκε» στα Παραστατικά
+        lines = [f"<b>{saved}</b> κατέβηκαν ως PDF"]
+        if skipped:
+            lines.append(
+                f"{skipped} παρέμειναν μόνο online (ο πάροχος δεν τα "
+                "στοιχειοθετεί σε headless browser)"
+            )
+        if failed:
+            lines.append(
+                f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα</span>'
+            )
+        body = f"{saved} κατέβηκαν ως PDF"
+        if skipped:
+            body += f" · {skipped} μόνο online"
+        self._notify_done("Η λήψη μόνο-online ολοκληρώθηκε", body)
+        QMessageBox.information(
+            self, "Η λήψη μόνο-online ολοκληρώθηκε",
+            "Ολοκληρώθηκε.<br><br>" + "<br>".join(lines),
+        )
+
+    def _on_headless_failed(self, detail: str) -> None:
+        self._teardown_headless()
+        QMessageBox.warning(
+            self, "Η λήψη μόνο-online δεν ολοκληρώθηκε",
+            f"{detail.splitlines()[0]}",
+        )
+
+    def on_open_log(self) -> None:
+        if not self.log_path.exists():
+            QMessageBox.information(
+                self, "Αρχείο καταγραφής", "Δεν έχει γραφτεί ακόμη τίποτα."
+            )
+            return
+        _reveal(self.log_path)
+
+    def on_manual(self) -> None:
+        """Ανοίγει το εγχειρίδιο· αν λείπει από το bundle, το φτιάχνει τώρα."""
+        try:
+            path = ensure_manual(self.settings.data_dir)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Το εγχειρίδιο δεν δημιουργήθηκε")
+            QMessageBox.warning(
+                self, "Εγχειρίδιο",
+                f"Το εγχειρίδιο δεν μπόρεσε να ανοίξει.\n\n{exc}",
+            )
+            return
+        _reveal(path)
+
+    # ------------------------------------------------------------- ξενάγηση
+    def _tour_steps(self) -> list[Step]:
+        return [
+            Step(
+                "Καλώς ήρθατε",
+                "Η εφαρμογή κατεβάζει τα παραστατικά των πελατών σας από το "
+                "myDATA και τα αποθηκεύει ως PDF στον υπολογιστή σας.\n\n"
+                "Η ροή είναι τρία βήματα: Πελάτες → Λήψη → Παραστατικά.",
+                lambda: self.menu,
+            ),
+            Step(
+                "1. Νέος πελάτης",
+                "Ξεκινήστε εδώ. Γράψτε μόνο το ΑΦΜ: μόλις συμπληρωθεί το 9ο "
+                "ψηφίο, η επωνυμία έρχεται μόνη της — δεν χρειάζεται να πατήσετε "
+                "τίποτα. Αν το ΑΦΜ το ξέρουμε ήδη, μπαίνει ακαριαία· αλλιώς "
+                "ρωτιέται το VIES.\n\n"
+                "Μετά συμπληρώστε το myDATA REST API key. Στο ίδιο παράθυρο "
+                "υπάρχει και η μαζική εισαγωγή από Excel.",
+                lambda: self.menu.button("add_client"),
+            ),
+            Step(
+                "2. Οι πελάτες σας",
+                "Τσεκάρετε στο πρώτο κουτάκι όσους πελάτες θέλετε — αυτή είναι "
+                "η επιλογή σας και για τη λήψη και για μαζικές ενέργειες.\n\n"
+                "Για να σβήσετε πολλούς μαζί: τσεκάρετέ τους και πατήστε "
+                "Delete, ή δεξί κλικ → «Διαγραφή N επιλεγμένων πελατών».\n\n"
+                "Διπλό κλικ σε πελάτη τον (απο)επιλέγει γρήγορα. Με δεξί κλικ: "
+                "επεξεργασία, εκκαθάριση ή διαγραφή.",
+                lambda: self.table,
+                lambda: self._show_page("clients"),
+            ),
+            Step(
+                "3. Φτιάξτε τους πίνακες όπως θέλετε",
+                "Σε κάθε πίνακα της εφαρμογής:\n\n"
+                "• Σύρετε το όριο μιας επικεφαλίδας για να αλλάξετε πλάτος.\n"
+                "• Σύρετε την ίδια την επικεφαλίδα για να αλλάξετε σειρά.\n"
+                "• Κλικ στην επικεφαλίδα ταξινομεί.\n"
+                "• Περνώντας πάνω από μια επικεφαλίδα (ΑΦΜ, επωνυμία, "
+                "κατάσταση…) εμφανίζεται ένα χωνί: πατήστε το για γρήγορο "
+                "φίλτρο με λίστα τιμών — όπως στο Excel.\n\n"
+                "Ό,τι ρυθμίσετε αποθηκεύεται και σας περιμένει την επόμενη φορά. "
+                "Η στήλη της επωνυμίας γεμίζει μόνη της τον χώρο που περισσεύει, "
+                "μέχρι να της δώσετε εσείς πλάτος.",
+                lambda: self.table.horizontalHeader(),
+                lambda: self._show_page("clients"),
+            ),
+            Step(
+                "4. Η ανάλυση",
+                "Για τον επιλεγμένο πελάτη βλέπετε έσοδα, έξοδα, τι κατέβηκε "
+                "και τι έμεινε αχαρακτήριστο.\n\n"
+                "Κάθε πλακίδιο είναι κουμπί: πατήστε το και ο πίνακας "
+                "παραστατικών ανοίγει φιλτραρισμένος σε αυτό ακριβώς.",
+                lambda: self.analysis,
+                self._tour_show_analysis,
+            ),
+            Step(
+                "5. Η λήψη",
+                "Διαλέξτε περίοδο, αν θέλετε έσοδα, έξοδα ή και τα δύο, και "
+                "ποιοι πελάτες θα κατέβουν. Ο ενεργός πελάτης έρχεται εδώ "
+                "αυτόματα επιλεγμένος και τσεκαρισμένος.\n\n"
+                "Η εφαρμογή ζητά μόνο ό,τι είναι νεότερο από την προηγούμενη "
+                "φορά, οπότε η δεύτερη λήψη είναι σχεδόν ακαριαία.\n\n"
+                "Βιάζεστε; Με την «Έξυπνη λήψη» κατεβαίνουν PDF μόνο για τα "
+                "αχαρακτήριστα έξοδα του διαστήματος — ό,τι χρειάζεστε για να "
+                "χαρακτηρίσετε — και η λήψη τελειώνει πολύ πιο γρήγορα.\n\n"
+                "Για παραστατικά που ο πάροχος δείχνει «μόνο online», το «Λήψη "
+                "μόνο-online» δίνει δύο τρόπους: «Αυτόματα» (αόρατα, χωρίς να "
+                "ανοίγει παράθυρο, με μπάρα προόδου και ποσοστό) και «Μέσω του "
+                "browser σας» (οδηγός για όσα ζητούν έλεγχο «είστε άνθρωπος»).",
+                lambda: self.sync_page,
+                self._go_sync,
+            ),
+            Step(
+                "6. Τα παραστατικά",
+                "Ο πίνακας ανοίγει στα αχαρακτήριστα — αυτά που θέλουν δουλειά "
+                "από εσάς. Η μπλε ταινία σας το θυμίζει· «Καθαρισμός» για όλα.\n\n"
+                "Τα φίλτρα συνδυάζονται: π.χ. έξοδα ΚΑΙ ελήφθησαν PDF.\n\n"
+                "Τσεκάρετε παραστατικά (η επιλογή μετράει ακόμη κι αν ένα φίλτρο "
+                "τα κρύβει) και: «Εξαγωγή σε ZIP» για να τα πακετάρετε, ή "
+                "«Μαζική εκτύπωση» που ανοίγει προεπισκόπηση και τυπώνει από εκεί.\n\n"
+                "Όσα ο πάροχος δείχνει «μόνο online» δεν έχουν PDF: με το εικονίδιο "
+                "συνδέσμου ανοίγει οδηγός που τα κατεβάζει μέσω του browser σας και "
+                "τα αρχειοθετεί μόνος του.\n\n"
+                "Συμβουλές: διπλό κλικ σε γραμμή «σε αναμονή» την κατεβάζει "
+                "επιτόπου· και κάθε στήλη έχει γρήγορο φίλτρο (το χωνί στην "
+                "επικεφαλίδα) για να δείτε π.χ. μόνο έναν προμηθευτή ή μία ημερομηνία.",
+                lambda: self.menu.button("documents"),
+            ),
+            Step(
+                "7. Πίνακας ελέγχου",
+                "ΣΥΣΤΗΜΑ → «Πίνακας ελέγχου»: δείχνει τον ρόλο του υπολογιστή, "
+                "τον φάκελο δεδομένων, το μέγεθος της βάσης και ποιος κατεβάζει "
+                "τώρα.\n\n"
+                "Ο πίνακας «Συνδέσεις» δείχνει κάθε υπολογιστή που μοιράζεται την "
+                "ίδια βάση (πράσινο = ενεργός τώρα). Το «Έλεγχος σύνδεσης» "
+                "επιβεβαιώνει φάκελο, δικαιώματα και βάση, και λέει τι φταίει.\n\n"
+                "Το «Δοκιμή browser» ανοίγει αόρατα τον Edge/Chrome και ελέγχει "
+                "ότι η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά σας.",
+                lambda: self.menu.button("control"),
+                lambda: self._show_page("control"),
+            ),
+            Step(
+                "Ασφάλεια και βοήθεια",
+                "Πριν από κάθε επικίνδυνη ενέργεια κρατιέται αντίγραφο της "
+                "βάσης, οπότε η «Επαναφορά» σας γυρίζει πίσω.\n\n"
+                "Η «Εκκαθάριση» μηδενίζει το ιστορικό λήψης ώστε η επόμενη λήψη "
+                "να τα ξαναφέρει όλα· μέσα στο ίδιο παράθυρο μπορείτε προαιρετικά "
+                "να διαγράψετε και τα αρχεία PDF/XML από τον δίσκο, αλλά και τους "
+                "ίδιους τους πελάτες (μαζική διαγραφή). Χωρίς επιλογή αφορά όλους· "
+                "με επιλεγμένους, μόνο αυτούς.\n\n"
+                "Το «Εγχειρίδιο PDF» τα εξηγεί όλα αναλυτικά. Καλή δουλειά!",
+                lambda: self.menu,
+            ),
+        ]
+
+    def _tour_show_analysis(self) -> None:
+        """Ανοίγει το panel για να έχει τι να δείξει η ξενάγηση.
+
+        Το panel είναι πλέον κλειστό όσο δεν υπάρχει επιλεγμένος πελάτης, οπότε
+        το βήμα θα φώτιζε το τίποτα. Διαλέγουμε τον πρώτο πελάτη και ανοίγουμε
+        ακαριαία: μια κίνηση 200ms θα τελείωνε αφού η ξενάγηση είχε ήδη μετρήσει
+        πού να ζωγραφίσει το πλαίσιο.
+        """
+        self._show_page("clients")
+        if not self._selected_vats(only_ready=False) and self.table.rowCount():
+            self.table.selectRow(0)
+        if self._panel_anim is not None:
+            self._panel_anim.stop()
+            self._panel_anim = None
+        if self.table.rowCount():
+            self._panel_open = True
+            self.analysis.setVisible(True)
+            self._panel_settled(True)
+
+    def start_tour(self) -> None:
+        self._tour_pending = False
+        if self._tour is not None:
+            self._tour.deleteLater()
+        self._tour = Tour(self, self._tour_steps())
+        self._tour.finished.connect(self._on_tour_finished)
+        self._tour.start()
+        self._tour.setFocus()
+
+    def _on_tour_finished(self, completed: bool) -> None:
+        """Τέλος ξενάγησης — και τέλος των δεδομένων επίδειξης.
+
+        Σβήνουμε μόνο αν ο χρήστης έφτασε ως το τέλος: όποιος πατήσει
+        «Παράλειψη» δεν έχει δει ακόμη τι κάνει η εφαρμογή, οπότε θα ήταν άδικο
+        να μείνει με άδεια οθόνη — τα δείγματα φεύγουν την επόμενη φορά.
+        """
+        repo.set_meta(self.conn, "tour_seen", "1")
+        repo.set_meta(self.conn, "tour_version", str(TOUR_VERSION))
+        if not completed or not demo.has_demo(self.conn):
+            return
+        removed = demo.clear(self.conn)
+        # Οι εικονικοί πελάτες μόλις έφυγαν: καθάρισε κάθε επιλογή και τον ενεργό
+        # πελάτη, ώστε να μη μείνει «ενεργός»/τσεκαρισμένος ένας που δεν υπάρχει
+        # πια (αλλιώς η ανάλυση/η λήψη κρατούσαν ένα φάντασμα δείγματος).
+        self._checked.clear()
+        self._pinned_vat = None
+        self.table.clearSelection()
+        self.reload_clients()
+        self._sync_checked()
+        self._set_panel_open(False, animate=False)
+        self._log(f"Διαγράφηκαν τα δεδομένα επίδειξης ({removed} πελάτες)")
+        QMessageBox.information(
+            self, "Τέλος ξενάγησης",
+            "Οι πελάτες που είδατε ήταν <b>εικονικά δεδομένα επίδειξης</b> "
+            "και μόλις διαγράφηκαν.<br><br>"
+            "Για να δουλέψει η εφαρμογή, προσθέστε τώρα τους <b>δικούς σας</b> "
+            "πελάτες:<br>"
+            "• <b>Νέος πελάτης</b> για έναν-έναν, ή<br>"
+            "• <b>Εισαγωγή από Excel…</b> για μαζική εισαγωγή από τα αρχεία "
+            "«Κωδικοί Υπόχρεων» / «Κωδικοί Υπηρεσιών μέσω Internet» της ΑΑΔΕ."
+            "<br><br>Η ξενάγηση είναι πάντα διαθέσιμη από το μενού.",
+        )
+        # Τα δικά του δεδομένα είναι πραγματικά διαπιστευτήρια πελατών: η στιγμή
+        # να προταθεί προστασία είναι εδώ, πριν μπει το πρώτο ΑΦΜ, όχι αφού
+        # γεμίσει η βάση.
+        unlock.offer(self.settings.enckey_path, self)
+        self.on_add_client()
+
+    def _maybe_first_run_tour(self) -> None:
+        """Μία φορά, στην πρώτη εκκίνηση σε αυτόν τον φάκελο δεδομένων.
+
+        Η κατάσταση ζει στη βάση (meta) και όχι στο μητρώο: το μητρώο επιβίωνε
+        των εγκαταστάσεων, οπότε μια ολοκαίνουρια εγκατάσταση πάνω σε παλιό
+        προφίλ ΔΕΝ έδειχνε ποτέ την ξενάγηση — ακριβώς το πρόβλημα που
+        αναφέρθηκε. Η βάση ταξιδεύει με τον φάκελο, άρα «καινούριος φάκελος»
+        σημαίνει «δείξε ξενάγηση».
+        """
+        seen = repo.get_meta(self.conn, "tour_seen") == "1"
+        seen_version = int(repo.get_meta(self.conn, "tour_version") or 0)
+        # Ήδη ιδωμένη ΚΑΙ ενημερωμένη έκδοση ξενάγησης -> τίποτα. Αν όμως προστέθηκε
+        # νέο περιεχόμενο (TOUR_VERSION μεγαλύτερο), την ξαναδείχνουμε μία φορά —
+        # πάνω στα δεδομένα του χρήστη (demo.should_seed είναι ήδη False όταν
+        # υπάρχουν πραγματικοί πελάτες, οπότε δεν μπαίνουν εικονικά).
+        if seen and seen_version >= TOUR_VERSION:
+            return
+        # Μετάβαση από την παλιά αποθήκευση στο μητρώο: όποιος έχει ήδη δει την
+        # ξενάγηση δεν την ξαναβλέπει — εκτός αν άλλαξε το περιεχόμενο.
+        if not seen and self._prefs.value("tour_seen", False, type=bool):
+            repo.set_meta(self.conn, "tour_seen", "1")
+            repo.set_meta(self.conn, "tour_version", str(TOUR_VERSION))
+            return
+        # Νέα εγκατάσταση με «εκκίνηση στο tray»: στην πρώτη εκκίνηση το παράθυρο
+        # κρύβεται (_setup_tray) πριν προλάβει να τρέξει αυτό. Ξεκινώντας την
+        # ξενάγηση πάνω σε κρυμμένο παράθυρο, η επικάλυψη ζωγραφιζόταν σε αόρατο
+        # γονέα και «καιγόταν» άδεια. Δεν τη σημειώνουμε ως ιδωμένη· μένει
+        # εκκρεμής και ξεκινά την πρώτη φορά που ανοίγει το παράθυρο από το tray
+        # (Tray.show_window -> notify_shown).
+        if not self.isVisible():
+            self._tour_pending = True
+            return
+        self.start_tour()
+
+    def bring_to_front(self) -> None:
+        """Φέρνει το παράθυρο μπροστά: από το tray ή όταν ο χρήστης προσπαθεί να
+        ανοίξει δεύτερο αντίγραφο από τη συντόμευση (single instance).
+
+        Το ``showNormal`` ξεμαζεύει τυχόν minimized/hidden παράθυρο· το
+        ``activateWindow`` του δίνει την εστίαση πάνω από τα υπόλοιπα.
+        """
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.notify_shown()
+
+    def notify_shown(self) -> None:
+        """Το παράθυρο μόλις έγινε ορατό από το tray — δείξε εκκρεμή ξενάγηση.
+
+        Καλείται από το Tray.show_window. Ο φρουρός στο _maybe_first_run_tour
+        (meta + ορατότητα) το κάνει idempotent: αφού ιδωθεί η ξενάγηση, το
+        tour_seen μπαίνει και δεν ξαναεμφανίζεται.
+        """
+        if not getattr(self, "_tour_pending", False):
+            return
+        # Μικρή καθυστέρηση ώστε το παράθυρο να έχει ζωγραφιστεί και τα widgets
+        # να έχουν έγκυρη γεωμετρία για τον φωτισμό των βημάτων.
+        QTimer.singleShot(300, self._maybe_first_run_tour)
+
+    def on_password(self) -> None:
+        was = crypto_mod.is_protected(self.settings.enckey_path)
+        unlock.manage(self.settings.enckey_path, self)
+        now = crypto_mod.is_protected(self.settings.enckey_path)
+        if was != now:
+            self._log(
+                "Ενεργοποιήθηκε κύριος κωδικός" if now else "Αφαιρέθηκε ο κύριος κωδικός"
+            )
+
+    def on_backup(self) -> None:
+        path = create_backup(self.settings.db_path, reason="manual")
+        if path is None:
+            QMessageBox.warning(self, "Αντίγραφο", "Δεν υπάρχει βάση για αντίγραφο.")
+            return
+        self._log(f"Αντίγραφο ασφαλείας: {path.name}")
+        QMessageBox.information(
+            self, "Αντίγραφο ασφαλείας",
+            f"Δημιουργήθηκε:\n{path}\n\nΚρατούνται τα 10 πιο πρόσφατα ανά είδος.",
+        )
+
+    def on_restore(self) -> None:
+        backups = list_backups(self.settings.data_dir)
+        if not backups:
+            # Κανένα αντίγραφο στον φάκελο: αντί για αδιέξοδο μήνυμα, αφήνουμε τον
+            # χρήστη να δείξει ένα αρχείο βάσης που κρατά αλλού (π.χ. σε USB ή
+            # άλλον υπολογιστή) — χρήσιμο σε καθαρή/άδεια εγκατάσταση.
+            answer = QMessageBox.question(
+                self, "Επαναφορά",
+                "Δεν βρέθηκαν αντίγραφα στον φάκελο δεδομένων.\n\n"
+                "Θέλετε να επιλέξετε εσείς ένα αρχείο βάσης (.db) για επαναφορά;",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._restore_from_chosen_file()
+            return
+        newest, when, size = backups[0]
+        answer = QMessageBox.question(
+            self, "Επαναφορά βάσης",
+            f"Επαναφορά από το πιο πρόσφατο αντίγραφο;\n\n"
+            f"{newest.name}\n{when:%d/%m/%Y %H:%M} · {size/1024:.0f} KB\n\n"
+            "Η τρέχουσα βάση θα κρατηθεί ως αντίγραφο «pre-restore», "
+            "οπότε η ενέργεια είναι αναστρέψιμη.\n\n"
+            "«Άλλο αρχείο…» για να επιλέξετε δικό σας αρχείο βάσης.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Open,
+        )
+        if answer == QMessageBox.StandardButton.Open:
+            self._restore_from_chosen_file()
+            return
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._do_restore(newest)
+
+    def _restore_from_chosen_file(self) -> None:
+        """Επαναφορά από αρχείο βάσης που δείχνει ο χρήστης (file picker)."""
+        start_dir = str(backup_dir(self.settings.data_dir))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Επιλέξτε αρχείο βάσης για επαναφορά", start_dir,
+            "Βάση SQLite (*.db);;Όλα τα αρχεία (*.*)",
+        )
+        if not path:
+            return
+        chosen = Path(path)
+        if chosen.resolve() == self.settings.db_path.resolve():
+            QMessageBox.warning(
+                self, "Επαναφορά",
+                "Επιλέξατε την τρέχουσα βάση — δεν έχει νόημα η επαναφορά από τον "
+                "εαυτό της.",
+            )
+            return
+        answer = QMessageBox.question(
+            self, "Επαναφορά βάσης",
+            f"Επαναφορά από:\n{chosen.name}\n\n"
+            "Η τρέχουσα βάση θα κρατηθεί ως αντίγραφο «pre-restore», οπότε η "
+            "ενέργεια είναι αναστρέψιμη. Συνέχεια;",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._do_restore(chosen)
+
+    def _do_restore(self, source: Path) -> None:
+        try:
+            with self._busy("Επαναφορά βάσης…"):
+                self.conn.close()
+                restore(source, self.settings.db_path)
+                self.conn = init_db(self.settings.db_path)
+                self.reload_clients()
+        except Exception as exc:  # noqa: BLE001 — δείξε το σφάλμα, μη σκας
+            # Ξαναανοίγουμε τη βάση ώστε η εφαρμογή να μη μείνει χωρίς σύνδεση.
+            self.conn = init_db(self.settings.db_path)
+            QMessageBox.critical(
+                self, "Απέτυχε η επαναφορά",
+                f"Η επαναφορά δεν ολοκληρώθηκε:\n\n{exc}",
+            )
+            return
+        self._log(f"Έγινε επαναφορά από {source.name}")
+        QMessageBox.information(
+            self, "Επαναφορά", f"Έγινε επαναφορά από:\n{source.name}"
+        )
+
+    def on_export(self) -> None:
+        """Εξαγωγή σε Excel (.xlsx, με ταξινομήσιμο πίνακα) ή CSV.
+
+        Απαιτεί ρητά επιλεγμένο πελάτη: μια σιωπηλή εξαγωγή «όλων» δεν είναι ό,τι
+        περιμένει κανείς όταν κοιτάει έναν συγκεκριμένο πελάτη."""
+        vats = self._selected_vats(only_ready=False)
+        if not vats:
+            QMessageBox.information(
+                self, "Εξαγωγή",
+                "Επιλέξτε πρώτα έναν ή περισσότερους πελάτες από τη λίστα.\n\n"
+                "Κάντε κλικ σε γραμμή (ή Ctrl/Shift+κλικ για πολλούς) και "
+                "ξαναπατήστε «Εξαγωγή».",
+            )
+            self._show_page("clients")
+            return
+
+        who = self._label_for(vats[0]) if len(vats) == 1 else f"{len(vats)} πελάτες"
+        base = (
+            f"παραστατικά {vats[0]} {_safe_name(self._label_for(vats[0]))}".strip()
+            if len(vats) == 1 else "παραστατικά"
+        )
+
+        # 1) Επιλογή μορφής από αναπτυσσόμενο μενού (roller) — Excel ή CSV.
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Εξαγωγή")
+        dialog.setMinimumWidth(420)
+        box_lay = QVBoxLayout(dialog)
+        box_lay.setSpacing(10)
+        box_lay.addWidget(QLabel(f"Μορφή αρχείου για <b>{who}</b>:"))
+        combo = QComboBox()
+        combo.addItem("Excel (.xlsx) — ταξινομήσιμος πίνακας με φίλτρα", "excel")
+        combo.addItem("CSV (.csv) — απλό κείμενο για εισαγωγή αλλού", "csv")
+        box_lay.addWidget(combo)
+        hint = QLabel(
+            "Το αρχείο περιλαμβάνει και τον σύνδεσμο του παρόχου κάθε "
+            "παραστατικού — χρήσιμο για όσα έχουν σφάλμα."
+        )
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        box_lay.addWidget(hint)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Συνέχεια")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Άκυρο")
+        bb.accepted.connect(dialog.accept)
+        bb.rejected.connect(dialog.reject)
+        box_lay.addWidget(bb)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        is_excel = combo.currentData() == "excel"
+        suffix = ".xlsx" if is_excel else ".csv"
+        kind = "Excel" if is_excel else "CSV"
+        writer = export_documents_xlsx if is_excel else export_documents
+
+        # 2) Πού θα αποθηκευτεί — με τον κανονικό browser των Windows.
+        default = self.settings.data_dir / f"{base}{suffix}"
+        filt = "Excel (*.xlsx)" if is_excel else "CSV (*.csv)"
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"Αποθήκευση {kind} — {who}", str(default), filt
+        )
+        if not path:
+            return
+        if not path.lower().endswith(suffix):
+            path += suffix
+
+        total = 0
+        with self._busy(f"Εξαγωγή {kind} — {who}…"):
+            for vat in vats:
+                target = Path(path)
+                if len(vats) > 1:
+                    # Ένα αρχείο ανά πελάτη: το ΑΦΜ ξεχωρίζει, η επωνυμία εξηγεί.
+                    target = target.with_name(
+                        f"{target.stem} {vat} {_safe_name(self._label_for(vat))}"
+                        f"{target.suffix}".replace("  ", " ")
+                    )
+                total += writer(self.conn, target, vat)
+        self._log(f"Εξήχθησαν {total} παραστατικά για {who} ({kind})")
+        QMessageBox.information(
+            self, "Η εξαγωγή ολοκληρώθηκε",
+            f"{total} παραστατικά για {who}\n\n{Path(path).parent}",
+        )
+
+    # --------------------------------------------------------------- slots
+    def _on_client_started(self, vat: str, label: str) -> None:
+        self._log(f"── {vat} {label}")
+        self.progress_label.setText(f"Λήψη: {label or vat}")
+
+    def _on_client_finished(self, vat: str, found: int, pdfs: int, failed: int) -> None:
+        self.progress.setValue(self.progress.value() + 1)
+        note = f", {failed} σφάλματα" if failed else ""
+        self._log(f"   {vat}: {found} παραστατικά, {pdfs} PDF{note}")
+        # Όχι πλήρες reload σε ΚΑΘΕ πελάτη (βαρύ: 2 queries + rebuild πίνακα).
+        # Το «μαζεύουμε» σε ~1.2s ώστε μια παρτίδα πολλών πελατών να μην
+        # ξαναχτίζει τη λίστα δεκάδες φορές. Το τελικό reload γίνεται στο τέλος.
+        self._reload_clients_throttled()
+
+    def _reload_clients_throttled(self) -> None:
+        if self._reload_timer is None:
+            self._reload_timer = QTimer(self)
+            self._reload_timer.setSingleShot(True)
+            self._reload_timer.setInterval(1200)
+            self._reload_timer.timeout.connect(self.reload_clients)
+        if not self._reload_timer.isActive():
+            self._reload_timer.start()
+
+    def _on_totals(
+        self, found: int, pdfs: int, no_url: int, viewer_only: int, failed: int
+    ) -> None:
+        self._last_totals = (found, pdfs, no_url, viewer_only, failed)
+        text = f"{found} παραστατικά · {pdfs} PDF · {no_url} χωρίς PDF"
+        if viewer_only:
+            text += f" · {viewer_only} μόνο online"
+        if failed:
+            text += f" · {failed} σφάλματα"
+        self.progress_stats.setText(text)
+        self.status.showMessage(text)
+
+    def _on_finished(self, completed: bool) -> None:
+        self._log("Ολοκληρώθηκε." if completed else "Ακυρώθηκε από τον χρήστη.")
+        self.progress_label.setText(
+            "Η λήψη ολοκληρώθηκε." if completed else "Η λήψη ακυρώθηκε."
+        )
+        totals = self._last_totals
+        self._teardown()
+        if self._reload_timer is not None:
+            self._reload_timer.stop()
+        self.reload_clients()
+        self._on_selection()
+        # Η λίστα πελατών ενημέρωσε το _last_db_mtime, οπότε το _poll_db δεν θα
+        # ξαναφορτώσει μόνο του τα Παραστατικά. Τα ανανεώνουμε ρητά ώστε οι νέες
+        # καταστάσεις (π.χ. «κατέβηκε» μετά την έξυπνη λήψη) να φανούν αμέσως.
+        self.docs.reload()
+        if completed:
+            found, pdfs, no_url, viewer_only, failed = totals or (0, 0, 0, 0, 0)
+            body = f"{found} παραστατικά · {pdfs} PDF"
+            if failed:
+                body += f" · {failed} σφάλματα"
+            self._notify_done("Η λήψη ολοκληρώθηκε", body)
+            self._show_sync_summary(totals)
+
+    def _show_sync_summary(self, totals: tuple[int, int, int, int, int] | None) -> None:
+        """Popup επιτυχίας στο τέλος της λήψης — αλλιώς ο χρήστης δεν ξέρει αν
+        τελείωσε ή αν απλώς σταμάτησε η μπάρα."""
+        found, pdfs, no_url, viewer_only, failed = totals or (0, 0, 0, 0, 0)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning if failed else QMessageBox.Icon.Information)
+        box.setWindowTitle("Η λήψη ολοκληρώθηκε")
+        lines = [
+            f"<b>{found}</b> παραστατικά",
+            f"<b>{pdfs}</b> PDF κατέβηκαν",
+        ]
+        if no_url:
+            lines.append(f"{no_url} χωρίς PDF παρόχου (αποθηκεύτηκε το XML)")
+        if viewer_only:
+            # Ρητά «δεν είναι σφάλμα»: αλλιώς ο χρήστης το εκλαμβάνει ως αποτυχία.
+            lines.append(
+                f'<span style="color:{CURRENT.accent};">{viewer_only} μόνο online '
+                "προβολή στον πάροχο — δεν υπάρχει PDF για λήψη (δεν είναι σφάλμα)"
+                "</span>"
+            )
+        if failed:
+            lines.append(
+                f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα '
+                "— δοκιμάστε ξανά «Έναρξη λήψης»</span>"
+            )
+        box.setText("Η λήψη ολοκληρώθηκε.<br><br>" + "<br>".join(lines))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+
+    def _on_busy(self, message: str) -> None:
+        self._log("Η λήψη ακυρώθηκε: εκτελείται ήδη από άλλον υπολογιστή.")
+        QMessageBox.information(self, "Εκτελείται ήδη λήψη", message)
+
+    def _on_failed(self, detail: str) -> None:
+        self._log(f"ΣΦΑΛΜΑ: {detail.splitlines()[0]}")
+        QMessageBox.critical(self, "Σφάλμα", detail[:2000])
+        self._teardown()
+
+    def _teardown(self) -> None:
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait(5000)
+        self._thread = None
+        self._worker = None
+        self._set_running(False, 0)
+
+    def _set_running(self, running: bool, total: int) -> None:
+        self.sync_page.set_running(running)
+        self.menu.set_enabled_action("import", not running)
+        self.menu.set_enabled_action("restore", not running)
+        self.menu.set_enabled_action("add_client", not running)
+        self.menu.set_enabled_action("online_pdf", not running)
+        # Κλείδωμα των Παραστατικών όσο τρέχει λήψη: η βάση αλλάζει συνεχώς και
+        # μια ανοιχτή προβολή θα έδειχνε ημιτελή/ασυνεπή δεδομένα.
+        single = len(self._selected_vats(only_ready=False)) == 1
+        self.menu.set_enabled_action("documents", not running and single)
+        self._strip.setVisible(running)
+        if running:
+            self.progress.setRange(0, total)
+            self.progress.setValue(0)
+            self.progress_stats.setText("")
+            self.progress_label.setText("Έναρξη…")
+
+    def _log(self, text: str) -> None:
+        """Το ιστορικό έφυγε από την οθόνη και ζει πλέον στο αρχείο καταγραφής.
+
+        Στην οθόνη μένει μόνο η τελευταία γραμμή, πάνω από την μπάρα προόδου:
+        αυτό που θέλει ο χρήστης εκείνη τη στιγμή είναι «πού είμαστε τώρα», όχι
+        τετρακόσιες γραμμές ιστορικού.
+        """
+        log.info("%s", text)
+        if self._strip.isVisible():
+            self.progress_detail.setText(text.strip().lstrip("─ "))
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        """Η γραμμή τίτλου βάφεται μόλις υπάρξει παράθυρο.
+
+        Το DwmSetWindowAttribute θέλει έγκυρο HWND, που δεν υπάρχει πριν το
+        show() — γι' αυτό δεν γίνεται στον constructor.
+        """
+        super().showEvent(event)
+        if not self._title_bar_done:
+            self._title_bar_done = paint_title_bar(
+                self, not self.menu.chk_light.isChecked()
+            )
+
+    def closeEvent(self, event) -> None:
+        # Με ενεργό το tray, το ✕ μαζεύει αντί να κλείνει: στον server ένα
+        # κατά λάθος κλείσιμο αφήνει τα τερματικά χωρίς φάκελο. Η έξοδος
+        # γίνεται ρητά, από το μενού του εικονιδίου.
+        if getattr(self, "tray", None) and not self._really_quit and load_start_minimized():
+            event.ignore()
+            self.hide()
+            if not self._tray_notified:
+                self.tray.notify_minimized()
+                self._tray_notified = True
+            return
+
+        if self._worker:
+            self._worker.cancel()
+            self._teardown()
+        log.info("── Τερματισμός εφαρμογής")
+        # Σταμάτα τον τοπικό PHP server του e-Τιμολόγιο (αν ξεκίνησε).
+        if getattr(self, "etimologio", None):
+            self.etimologio.shutdown()
+        if getattr(self, "tray", None):
+            self.tray.hide()
+        self.conn.close()
+        super().closeEvent(event)
+        # Το quitOnLastWindowClosed είναι απενεργοποιημένο για χάρη του tray,
+        # οπότε ο τερματισμός πρέπει να ζητηθεί ρητά.
+        QApplication.instance().quit()
+
+
+def _fmt_last_download(iso: str | None) -> tuple[str, float]:
+    """(κείμενο για εμφάνιση, κλειδί ταξινόμησης) από ISO χρόνο σε UTC.
+
+    Το SQLite γράφει datetime('now') σε UTC. Ο λογιστής θέλει τοπική ώρα, οπότε
+    μετατρέπουμε — αλλιώς η «τελευταία λήψη» φαίνεται 2-3 ώρες πίσω.
+    """
+    if not iso:
+        return "—", 0.0
+    from datetime import datetime, timezone
+
+    try:
+        stamp = datetime.strptime(iso[:19], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except (ValueError, TypeError):
+        return "—", 0.0
+    local = stamp.astimezone()
+    return local.strftime("%d/%m/%Y %H:%M"), stamp.timestamp()
+
+
+def _safe_name(label: str) -> str:
+    """Επωνυμία που αντέχει ως όνομα αρχείου."""
+    return "".join(c for c in label if c.isalnum() or c in " -_").strip()[:40]
+
+
+def _reveal(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(path)  # noqa: S606
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
