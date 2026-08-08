@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: d99a09dd-f89c-4baf-bfc0-e7400408007d
-  modified: 2026-08-08T14:49:09.201Z
+  modified: 2026-08-08T17:11:04.427Z
 ---
 
 Merging the PHP e-Τιμολόγιο Pro into the PySide6 **Timologio Downloader**
@@ -56,8 +56,11 @@ tests (325 total pass). **Live-verified** vs real ΑΑΔΕ (VAT 802576637):
 retrieval (27 customers + 15 invoices) + a DRAFT issue whose UI totals matched
 the backend exactly. Two gotchas found live: php.ini needs `curl.cainfo` CA
 bundle ([[local-php-testing]]); line `rate` must be a FRACTION (0.24) on the
-wire, not a percent. **Next: Phase 2** — Είδη, Σειρές, Πρόχειρα,
-Ακύρωση/Πιστωτικά; then
+wire, not a percent. **Phase 2 done too:** native Είδη/Σειρές/Πρόχειρα (shared
+`ListPage` base) + Ακύρωση/Πιστωτικό (credit_note by ΜΑΡΚ); client methods for
+each; 331 tests. Live-verified (10 items/5 series/3 drafts + a draft credit
+note type 61). **Next: Phase 3** — Μαζική έκδοση, Εισαγωγή πληρωμών (bank
+import), Στατιστικά; then
 volume/money, platform (scheduler/notifications/settings/admin), then Docker/
 Coolify VPS + thin-client + web. Bundling php.exe into PyInstaller (`datas`) is
 still pending (packaging phase).

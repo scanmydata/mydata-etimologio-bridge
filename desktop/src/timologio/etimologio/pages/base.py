@@ -6,7 +6,18 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 #: Injected worker: ``run(fn, on_ok, on_err)`` runs ``fn`` off the UI thread and
 #: delivers the result on the main thread. The shell passes its ``QThreadPool``
@@ -59,3 +70,92 @@ class EtimPage(QWidget):
 
     def client(self) -> Any:
         return self._get_client()
+
+
+class ListPage(EtimPage):
+    """A back-bar + toolbar + table + status list page.
+
+    Subclasses set ``columns``/``rows_key``, implement :meth:`fetch`, and add
+    their own buttons to ``self.toolbar`` (a ``QHBoxLayout``). The table, refresh,
+    row access and status line are handled here.
+    """
+
+    go_back = Signal()
+
+    def __init__(
+        self,
+        get_client: ClientFn,
+        run: RunFn,
+        *,
+        title: str,
+        columns: list[tuple[str, str]],
+        rows_key: str,
+        stretch_col: int = -1,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(get_client, run, parent)
+        self._columns = columns
+        self._rows_key = rows_key
+        self._rows: list[dict[str, Any]] = []
+
+        box = QVBoxLayout(self)
+        self.toolbar = QHBoxLayout()
+        back = QPushButton("←")
+        back.setToolTip("Πίσω")
+        back.setFixedWidth(36)
+        back.clicked.connect(self.go_back.emit)
+        self.toolbar.addWidget(back)
+        label = QLabel(title)
+        label.setStyleSheet("font-size:16px;font-weight:600;")
+        self.toolbar.addWidget(label)
+        self.toolbar.addStretch(1)
+        refresh = QPushButton("Ανανέωση")
+        refresh.clicked.connect(self.refresh)
+        self.toolbar.addWidget(refresh)
+        box.addLayout(self.toolbar)
+
+        self.table = QTableWidget(0, len(columns))
+        self.table.setHorizontalHeaderLabels([h for h, _ in columns])
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        if stretch_col >= 0:
+            self.table.horizontalHeader().setSectionResizeMode(
+                stretch_col, QHeaderView.ResizeMode.Stretch
+            )
+        box.addWidget(self.table, 1)
+
+        self.status = QLabel("")
+        self.status.setStyleSheet("color:#93a4bd;")
+        box.addWidget(self.status)
+        self._box = box
+
+    # subclasses override -------------------------------------------------
+    def fetch(self, client: Any) -> dict[str, Any]:
+        raise NotImplementedError
+
+    # shared --------------------------------------------------------------
+    def refresh(self) -> None:
+        client = self.client()
+        if client is None:
+            return
+        self.status.setText("Φόρτωση…")
+        self._run(lambda: self.fetch(client), self._fill, self._failed)
+
+    def _fill(self, data: dict[str, Any]) -> None:
+        self._rows = list(data.get(self._rows_key, []))
+        self.table.setRowCount(len(self._rows))
+        for r, row in enumerate(self._rows):
+            for c, (_, key) in enumerate(self._columns):
+                self.table.setItem(r, c, QTableWidgetItem(str(row.get(key, ""))))
+        self.status.setText(f"{len(self._rows)} εγγραφές")
+
+    def _failed(self, msg: str) -> None:
+        self.status.setText(f"Σφάλμα: {msg}")
+
+    def selected_row(self) -> dict[str, Any] | None:
+        idx = self.table.currentRow()
+        if 0 <= idx < len(self._rows):
+            return self._rows[idx]
+        return None

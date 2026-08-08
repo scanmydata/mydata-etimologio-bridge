@@ -48,7 +48,13 @@ Snapshot of the working task list across the recent sessions. See
   - [x] **"Open client from the Downloader"** — clients-table context action → `open_client_in_etimologio(vat)` → `EtimologioShell.focus_customer`
   - [x] 17 new unit tests; full suite **325 passed**
   - [x] **Live-verified** vs real ΑΑΔΕ (VAT 802576637): retrieval (27 πελάτες + 15 τιμολόγια) **and** a DRAFT issue via the real `IssuePage` — UI totals matched the backend exactly (145,00 / 34,80 / 179,80). Caught+fixed a rate-as-fraction bug (bridge wants 0.24, not 24) during the live test.
-- [ ] **Phase 2 — catalogs & lifecycle:** Είδη, Σειρές, Πρόχειρα, Ακύρωση/Πιστωτικά
+- [x] **Phase 2 — catalogs & lifecycle:** ✅ complete
+  - [x] Native **Είδη** (list + new + delete), **Σειρές** (list + new + delete) — shared `ListPage` base
+  - [x] Native **Πρόχειρα** (list + delete)
+  - [x] Native **Ακύρωση/Πιστωτικό** — correlated credit note by original ΜΑΡΚ (πρόχειρο/preview/issue)
+  - [x] Client API: `products`/`create_product`/`delete_product`, `series`/`create_series`/`delete_series`, `temp_invoices`/`delete_temp`, `credit_note`
+  - [x] 6 more tests; full suite **331 passed**
+  - [x] **Live-verified** vs real ΑΑΔΕ: Είδη 10 · Σειρές 5 · Πρόχειρα 3, and a DRAFT credit note for a real ΜΑΡΚ (→ type 61, saved, nothing submitted). Test drafts cleaned up afterwards.
 - [ ] **Phase 3 — volume & money:** Μαζική έκδοση, Εισαγωγή πληρωμών (bank import), Στατιστικά
 - [ ] **Phase 4 — platform:** Προγραμματισμός, Ειδοποιήσεις (bell + feed), Ρυθμίσεις (password, 2FA QR, per‑admin email prefs), Διαχείριση (roles + invitations)
 - [ ] **Phase 5 — server + web:** Dockerfile + Coolify VPS (Postgres), desktop thin‑client mode, web clients via the public URL, one‑time local→server data migration

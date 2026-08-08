@@ -31,7 +31,15 @@ from PySide6.QtWidgets import (
 )
 
 from .client import EtimologioClient
-from .pages import CustomerCard, CustomersPage, IssuePage
+from .pages import (
+    CreditNotePage,
+    CustomerCard,
+    CustomersPage,
+    DraftsPage,
+    IssuePage,
+    ProductsPage,
+    SeriesPage,
+)
 from .service import EtimologioService
 
 log = logging.getLogger(__name__)
@@ -66,12 +74,15 @@ def _run(fn: Callable[[], Any], on_ok: Callable[[Any], None], on_err: Callable[[
 #: The e-Τιμολόγιο sections, as (key, label). Sections with a native page are
 #: marked and open in-app; the rest still open app.php#<key> in the browser
 #: against the *same* backend until they are ported in a later phase.
-_NATIVE = {"customers", "issue"}
+_NATIVE = {"customers", "issue", "products", "series", "drafts", "credit"}
 _SECTIONS = [
     ("issue", "🧾 Έκδοση"),
+    ("credit", "↩️ Ακύρωση/Πιστωτικό"),
     ("bulk", "📚 Μαζική έκδοση"),
     ("customers", "👥 Πελάτες"),
     ("products", "📦 Είδη"),
+    ("series", "🔢 Σειρές"),
+    ("drafts", "📝 Πρόχειρα"),
     ("schedule", "⏰ Προγραμματισμός"),
     ("settings", "⚙️ Ρυθμίσεις"),
 ]
@@ -102,12 +113,20 @@ class EtimologioShell(QWidget):
         self._customers = CustomersPage(lambda: self._client, _run)
         self._card = CustomerCard(lambda: self._client, _run)
         self._issue = IssuePage(lambda: self._client, _run)
+        self._products = ProductsPage(lambda: self._client, _run)
+        self._series = SeriesPage(lambda: self._client, _run)
+        self._drafts = DraftsPage(lambda: self._client, _run)
+        self._credit = CreditNotePage(lambda: self._client, _run)
         self._customers.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
         self._customers.open_card.connect(self._show_card)
         self._card.go_back.connect(lambda: self._stack.setCurrentWidget(self._customers))
-        self._issue.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
+        for page in (self._issue, self._products, self._series, self._drafts, self._credit):
+            page.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
 
-        for w in (self._status, self._login, self._home, self._customers, self._card, self._issue):
+        for w in (
+            self._status, self._login, self._home, self._customers, self._card,
+            self._issue, self._products, self._series, self._drafts, self._credit,
+        ):
             self._stack.addWidget(w)
         self._stack.setCurrentWidget(self._status)
 
@@ -313,6 +332,12 @@ class EtimologioShell(QWidget):
                 self._show_customers()
             elif key == "issue":
                 self._stack.setCurrentWidget(self._issue)
+            elif key == "credit":
+                self._stack.setCurrentWidget(self._credit)
+            elif key in ("products", "series", "drafts"):
+                page = {"products": self._products, "series": self._series, "drafts": self._drafts}[key]
+                self._stack.setCurrentWidget(page)
+                page.refresh()
             return
         base = self._client.base_url()
         vat = self._accounts.currentData()

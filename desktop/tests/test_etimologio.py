@@ -18,7 +18,15 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import json  # noqa: E402
 
 from timologio.etimologio.client import EtimologioClient  # noqa: E402
-from timologio.etimologio.pages import CustomerCard, CustomersPage, IssuePage  # noqa: E402
+from timologio.etimologio.pages import (  # noqa: E402
+    CreditNotePage,
+    CustomerCard,
+    CustomersPage,
+    DraftsPage,
+    IssuePage,
+    ProductsPage,
+    SeriesPage,
+)
 from timologio.etimologio.pages.base import fmt_money, parse_money  # noqa: E402
 from timologio.etimologio.pages.issue import line_amounts  # noqa: E402
 
@@ -266,3 +274,83 @@ def test_issue_page_skips_empty_lines(app) -> None:
     lines = page.collect_lines()
     assert len(lines) == 1
     assert lines[0]["code"] == "Πραγματική"
+
+
+# --- Phase 2: catalogs, drafts, credit --------------------------------------
+
+class CatalogClient(RecordingClient):
+    """RecordingClient with canned catalog/draft rows."""
+
+    def products(self):
+        return {"success": True, "products": [
+            {"product_code": "P1", "description": "Υπηρεσία", "unit_price": "100,00",
+             "vat": "24%", "delete_code": "id-1"},
+        ]}
+
+    def series(self):
+        return {"success": True, "series": [
+            {"invoice_type": "2.1", "series_code": "A", "start_aa": "5",
+             "description": "Κύρια", "delete_id": "sid-9"},
+        ]}
+
+    def temp_invoices(self, **_):
+        return {"success": True, "temp_invoices": [
+            {"save_date": "08/08/2026", "type": "2.1", "series": "A",
+             "buyer_vat": "094039270", "temp_id": "t-1", "seller_vat": "802576637"},
+        ]}
+
+
+def test_client_catalog_params() -> None:
+    client = RecordingClient()
+    client.create_product(product_code="P1", description="Υπηρεσία", vat_category="1", unit_price="100")
+    assert client.calls[-1][1]["new_product"] == 1
+    assert client.calls[-1][1]["vat_category"] == "1"
+    client.create_series(invoice_type="20", code="B", start_aa="1", description="Δευτ.")
+    assert client.calls[-1][1]["series_invoice_type"] == "20"
+    client.delete_series("sid-9")
+    assert client.calls[-1][1]["delete_series_id"] == "sid-9"
+
+
+def test_client_credit_note_modes() -> None:
+    client = RecordingClient()
+    client.credit_note("400014690544553", reason="λάθος", live=True)
+    data = client.calls[-1][1]
+    assert data["cancel_mark"] == "400014690544553"
+    assert data["reason"] == "λάθος"
+    assert data["live"] == 1
+
+
+def test_products_page_fills_and_delete_key(app) -> None:
+    client = CatalogClient()
+    page = ProductsPage(lambda: client, sync_run)
+    page.refresh()
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 0).text() == "P1"
+    assert page.selected_row() is None  # nothing selected yet
+    page.table.setCurrentCell(0, 0)
+    assert page.selected_row()["delete_code"] == "id-1"
+
+
+def test_series_page_fills(app) -> None:
+    client = CatalogClient()
+    page = SeriesPage(lambda: client, sync_run)
+    page.refresh()
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 1).text() == "A"
+
+
+def test_drafts_page_fills(app) -> None:
+    client = CatalogClient()
+    page = DraftsPage(lambda: client, sync_run)
+    page.refresh()
+    assert page.table.rowCount() == 1
+    page.table.setCurrentCell(0, 0)
+    assert page.selected_row()["temp_id"] == "t-1"
+
+
+def test_credit_page_requires_mark(app) -> None:
+    client = RecordingClient()
+    page = CreditNotePage(lambda: client, sync_run)
+    page._draft()  # no MARK → should not call the backend
+    assert client.calls == []
+    assert "ΜΑΡΚ" in page._status.text()

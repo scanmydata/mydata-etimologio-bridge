@@ -6,9 +6,23 @@ thread through an injected ``run`` callable so the pages stay testable with a
 synchronous fake.
 """
 
-from .base import EtimPage, parse_money
+from .base import EtimPage, ListPage, parse_money
 from .card import CustomerCard
+from .catalog import ProductsPage, SeriesPage
+from .credit import CreditNotePage
 from .customers import CustomersPage
+from .drafts import DraftsPage
 from .issue import IssuePage
 
-__all__ = ["EtimPage", "parse_money", "CustomersPage", "CustomerCard", "IssuePage"]
+__all__ = [
+    "EtimPage",
+    "ListPage",
+    "parse_money",
+    "CustomersPage",
+    "CustomerCard",
+    "IssuePage",
+    "ProductsPage",
+    "SeriesPage",
+    "DraftsPage",
+    "CreditNotePage",
+]

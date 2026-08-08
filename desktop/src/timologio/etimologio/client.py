@@ -236,6 +236,130 @@ class EtimologioClient:
             params["include_cancelled"] = 1
         return self._call(params)
 
+    # --- catalogs: products & series --------------------------------------
+    def products(self) -> dict[str, Any]:
+        """List items → ``{success, products: [...]}``."""
+        return self._call({"list_products": 1})
+
+    def product_categories(self) -> dict[str, Any]:
+        return self._call({"list_product_categories": 1})
+
+    def create_product(
+        self,
+        *,
+        product_code: str,
+        description: str,
+        unit_price: str = "0",
+        vat_category: str = "1",
+        product_type: str = "",
+        category: str = "",
+        unit: str = "",
+        taric_code: str = "",
+    ) -> dict[str, Any]:
+        """Create an item (είδος). ``vat_category``: 1=24% 2=13% 3=6% 7=0%."""
+        return self._call(
+            data={
+                "new_product": 1,
+                "product_code": product_code,
+                "product_description": description,
+                "unit_price": unit_price,
+                "vat_category": vat_category,
+                "product_type": product_type,
+                "product_category": category,
+                "unit": unit,
+                "taric_code": taric_code,
+            },
+            method="POST",
+        )
+
+    def delete_product(self, code: str) -> dict[str, Any]:
+        return self._call(data={"delete_product_code": code}, method="POST")
+
+    def series(self) -> dict[str, Any]:
+        """List numbering series → ``{success, series: [...]}``."""
+        return self._call({"list_series": 1})
+
+    def create_series(
+        self,
+        *,
+        invoice_type: str,
+        code: str,
+        start_aa: str = "1",
+        description: str = "",
+        trans_failure: bool = False,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "new_series": 1,
+            "series_invoice_type": invoice_type,
+            "series_code": code,
+            "series_start_aa": start_aa,
+            "series_description": description,
+        }
+        if trans_failure:
+            data["series_trans_failure"] = 1
+        return self._call(data=data, method="POST")
+
+    def delete_series(self, series_id: str) -> dict[str, Any]:
+        return self._call(data={"delete_series_id": series_id}, method="POST")
+
+    # --- drafts (πρόχειρα) -------------------------------------------------
+    def temp_invoices(
+        self,
+        date_from: str = "",
+        date_to: str = "",
+        temp_type: str = "",
+        buyer_vat: str = "",
+        temp_id: str = "",
+    ) -> dict[str, Any]:
+        """List saved drafts → ``{success, temp_invoices: [...]}``."""
+        params: dict[str, Any] = {"search_temp": 1}
+        if date_from:
+            params["save_date_from"] = date_from
+        if date_to:
+            params["save_date_to"] = date_to
+        if temp_type:
+            params["temp_type"] = temp_type
+        if buyer_vat:
+            params["buyer_vat"] = buyer_vat
+        if temp_id:
+            params["temp_id"] = temp_id
+        return self._call(params)
+
+    def delete_temp(self, temp_id: str, seller_vat: str = "") -> dict[str, Any]:
+        data: dict[str, Any] = {"delete_temp_id": temp_id}
+        if seller_vat:
+            data["seller_vat"] = seller_vat
+        return self._call(data=data, method="POST")
+
+    # --- cancellation / credit note ---------------------------------------
+    def credit_note(
+        self,
+        cancel_mark: str,
+        *,
+        reason: str = "",
+        description: str = "ΥΠ001",
+        amount: float = 0.0,
+        live: bool = False,
+        preview: bool = False,
+        temp_id: str = "",
+    ) -> dict[str, Any]:
+        """Issue a correlated credit note against ``cancel_mark`` (the original
+        MARK). Same three modes as :meth:`issue_invoice`."""
+        data: dict[str, Any] = {
+            "cancel_mark": cancel_mark,
+            "reason": reason,
+            "description": description,
+        }
+        if amount:
+            data["amount"] = amount
+        if temp_id:
+            data["temp_id"] = temp_id
+        if live:
+            data["live"] = 1
+        if preview:
+            data["preview"] = 1
+        return self._call(data=data, method="POST")
+
     # --- local payments (bridge-side ledger) ------------------------------
     def payments(
         self, buyer_vat: str = "", date_from: str = "", date_to: str = ""
