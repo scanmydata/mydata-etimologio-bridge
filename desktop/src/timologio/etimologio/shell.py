@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from .client import EtimologioClient
-from .pages import CustomerCard, CustomersPage
+from .pages import CustomerCard, CustomersPage, IssuePage
 from .service import EtimologioService
 
 log = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def _run(fn: Callable[[], Any], on_ok: Callable[[Any], None], on_err: Callable[[
 #: The e-Τιμολόγιο sections, as (key, label). Sections with a native page are
 #: marked and open in-app; the rest still open app.php#<key> in the browser
 #: against the *same* backend until they are ported in a later phase.
-_NATIVE = {"customers"}
+_NATIVE = {"customers", "issue"}
 _SECTIONS = [
     ("issue", "🧾 Έκδοση"),
     ("bulk", "📚 Μαζική έκδοση"),
@@ -101,11 +101,13 @@ class EtimologioShell(QWidget):
         # accessor, so they can be built before login completes.
         self._customers = CustomersPage(lambda: self._client, _run)
         self._card = CustomerCard(lambda: self._client, _run)
+        self._issue = IssuePage(lambda: self._client, _run)
         self._customers.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
         self._customers.open_card.connect(self._show_card)
         self._card.go_back.connect(lambda: self._stack.setCurrentWidget(self._customers))
+        self._issue.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
 
-        for w in (self._status, self._login, self._home, self._customers, self._card):
+        for w in (self._status, self._login, self._home, self._customers, self._card, self._issue):
             self._stack.addWidget(w)
         self._stack.setCurrentWidget(self._status)
 
@@ -309,6 +311,8 @@ class EtimologioShell(QWidget):
         if key in _NATIVE:
             if key == "customers":
                 self._show_customers()
+            elif key == "issue":
+                self._stack.setCurrentWidget(self._issue)
             return
         base = self._client.base_url()
         vat = self._accounts.currentData()

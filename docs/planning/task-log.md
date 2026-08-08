@@ -40,14 +40,14 @@ Snapshot of the working task list across the recent sessions. See
 
 ### Phase 0 delivered above. Remaining roadmap (from `merge-plan.md`)
 
-- [~] **Phase 1 — core issuance (native Qt):**
-  - [x] Client API: `customers`/`create_customer`/`search_invoices`/`payments` (+ `customers_cached`)
+- [x] **Phase 1 — core issuance (native Qt):** ✅ complete
+  - [x] Client API: `customers`/`create_customer`/`search_invoices`/`payments`/`issue_invoice` (+ `customers_cached`)
   - [x] Native **Πελάτες** page (search by name/ΑΦΜ, list, create customer, open card)
   - [x] Native **Καρτέλα** (issued invoices + local payments + computed balance, default year range)
+  - [x] Native **Έκδοση** (type/series/payment, customer + ΑΦΜ άντληση, multi-line editor with live totals, **πρόχειρο / προεπισκόπηση PDF / έκδοση** modes)
   - [x] **"Open client from the Downloader"** — clients-table context action → `open_client_in_etimologio(vat)` → `EtimologioShell.focus_customer`
-  - [x] 11 new unit tests (fake client + sync worker); full suite **319 passed**
-  - [x] **Live retrieval verified** against real ΑΑΔΕ creds (VAT 802576637): 27 πελάτες + 15 τιμολόγια through the shared `EtimologioClient`→bridge→AADE path
-  - [ ] Έκδοση (customer autocomplete, line editor, series/pay, taxes, draft/preview/issue) — next
+  - [x] 17 new unit tests; full suite **325 passed**
+  - [x] **Live-verified** vs real ΑΑΔΕ (VAT 802576637): retrieval (27 πελάτες + 15 τιμολόγια) **and** a DRAFT issue via the real `IssuePage` — UI totals matched the backend exactly (145,00 / 34,80 / 179,80). Caught+fixed a rate-as-fraction bug (bridge wants 0.24, not 24) during the live test.
 - [ ] **Phase 2 — catalogs & lifecycle:** Είδη, Σειρές, Πρόχειρα, Ακύρωση/Πιστωτικά
 - [ ] **Phase 3 — volume & money:** Μαζική έκδοση, Εισαγωγή πληρωμών (bank import), Στατιστικά
 - [ ] **Phase 4 — platform:** Προγραμματισμός, Ειδοποιήσεις (bell + feed), Ρυθμίσεις (password, 2FA QR, per‑admin email prefs), Διαχείριση (roles + invitations)

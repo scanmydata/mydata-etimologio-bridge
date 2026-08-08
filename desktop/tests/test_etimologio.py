@@ -15,9 +15,12 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+import json  # noqa: E402
+
 from timologio.etimologio.client import EtimologioClient  # noqa: E402
-from timologio.etimologio.pages import CustomerCard, CustomersPage  # noqa: E402
+from timologio.etimologio.pages import CustomerCard, CustomersPage, IssuePage  # noqa: E402
 from timologio.etimologio.pages.base import fmt_money, parse_money  # noqa: E402
+from timologio.etimologio.pages.issue import line_amounts  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -198,3 +201,68 @@ def test_card_without_vat_shows_note(app) -> None:
     card.set_customer({"name": "Ιδιώτης χωρίς ΑΦΜ"})
     assert card._invoices.rowCount() == 0
     assert "ΑΦΜ" in card._status.text()
+
+
+# --- Έκδοση (invoice editor) ------------------------------------------------
+
+def test_line_amounts_no_discount() -> None:
+    net, vat, total = line_amounts(qty=2, price=100, rate=24, disc_pct=0)
+    assert (net, vat, total) == (200.0, 48.0, 248.0)
+
+
+def test_line_amounts_with_discount() -> None:
+    net, vat, total = line_amounts(qty=1, price=100, rate=24, disc_pct=10)
+    assert net == pytest.approx(90.0)
+    assert vat == pytest.approx(21.6)
+    assert total == pytest.approx(111.6)
+
+
+def test_line_amounts_zero_qty_defaults_to_one() -> None:
+    net, _vat, _total = line_amounts(qty=0, price=50, rate=0, disc_pct=0)
+    assert net == 50.0
+
+
+def test_client_issue_modes() -> None:
+    client = RecordingClient()
+    lines = [{"code": "Υπηρεσία", "qty": 1, "price": 100, "rate": 24}]
+
+    client.issue_invoice(lines, "20", series="A", payment=3)
+    _p, data, method = client.calls[-1]
+    assert method == "POST"
+    assert data["type"] == "20"
+    assert json.loads(data["lines"]) == lines
+    assert "live" not in data and "preview" not in data  # draft
+
+    client.issue_invoice(lines, "20", live=True)
+    assert client.calls[-1][1]["live"] == 1
+
+    client.issue_invoice(lines, "20", preview=True)
+    assert client.calls[-1][1]["preview"] == 1
+
+
+def test_issue_page_collect_and_totals(app) -> None:
+    fake = FakeClient()
+    page = IssuePage(lambda: fake, sync_run)
+    page._table.setRowCount(0)
+    page.add_line("Υπηρεσία Α", "2", "100", "24", "0")
+    page.add_line("Υπηρεσία Β", "1", "50", "13", "10")
+    lines = page.collect_lines()
+    assert len(lines) == 2
+    # rate is sent to the bridge as a fraction (0.24), not a percent.
+    assert lines[0] == {"code": "Υπηρεσία Α", "qty": 2.0, "price": 100.0, "rate": 0.24}
+    assert lines[1]["rate"] == 0.13
+    assert lines[1]["disc"] == 10.0
+    # Totals: line1 200/48/248 ; line2 net45 vat5.85 total50.85 → net 245, vat 53.85
+    assert "245,00" in page._totals.text()
+    assert "53,85" in page._totals.text()
+
+
+def test_issue_page_skips_empty_lines(app) -> None:
+    fake = FakeClient()
+    page = IssuePage(lambda: fake, sync_run)
+    page._table.setRowCount(0)
+    page.add_line("", "1", "0", "24", "0")  # empty desc + zero price → skipped
+    page.add_line("Πραγματική", "1", "80", "24", "0")
+    lines = page.collect_lines()
+    assert len(lines) == 1
+    assert lines[0]["code"] == "Πραγματική"

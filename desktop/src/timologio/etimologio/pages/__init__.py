@@ -9,5 +9,6 @@ synchronous fake.
 from .base import EtimPage, parse_money
 from .card import CustomerCard
 from .customers import CustomersPage
+from .issue import IssuePage
 
-__all__ = ["EtimPage", "parse_money", "CustomersPage", "CustomerCard"]
+__all__ = ["EtimPage", "parse_money", "CustomersPage", "CustomerCard", "IssuePage"]

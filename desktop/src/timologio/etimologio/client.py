@@ -7,6 +7,7 @@ every method is a thin call to an endpoint the web UI already uses.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -137,6 +138,69 @@ class EtimologioClient:
                 continue
             param = alias.get(key, f"cust_{key}")
             data[param] = "1" if value is True else value
+        return self._call(data=data, method="POST")
+
+    # --- issuance ----------------------------------------------------------
+    def issue_invoice(
+        self,
+        lines: list[dict[str, Any]],
+        invoice_type: str,
+        *,
+        afm: str = "",
+        name: str = "",
+        address: str = "",
+        city: str = "",
+        zip_code: str = "",
+        country: str = "GR",
+        branch: str = "0",
+        payment: int = 3,
+        series: str = "A",
+        notes: str = "",
+        taxes: list[dict[str, Any]] | None = None,
+        live: bool = False,
+        preview: bool = False,
+        temp_id: str = "",
+        lang: str = "el",
+    ) -> dict[str, Any]:
+        """Build/save/issue an invoice from ``lines`` (each ``{code, qty, price,
+        rate?, cat?, disc?}``).
+
+        Three modes, matching the web UI:
+          * default (``live=False, preview=False``) → save a **draft** (πρόχειρο),
+            no MARK — safe for testing.
+          * ``preview=True`` → save draft **and** return a real AADE PDF
+            (``pdf_b64``).
+          * ``live=True`` → **issue** for real; returns the ``mark``.
+        """
+        data: dict[str, Any] = {
+            "type": invoice_type,
+            "lines": json.dumps(lines, ensure_ascii=False),
+            "payment": payment,
+            "issue_series": series,
+            "country": country,
+            "branch": branch,
+            "issue_lang": lang,
+        }
+        if afm:
+            data["afm"] = afm
+        if name:
+            data["name"] = name
+        if address:
+            data["address"] = address
+        if city:
+            data["city"] = city
+        if zip_code:
+            data["zip"] = zip_code
+        if notes:
+            data["notes"] = notes
+        if taxes:
+            data["taxes"] = json.dumps(taxes, ensure_ascii=False)
+        if temp_id:
+            data["temp_id"] = temp_id
+        if live:
+            data["live"] = 1
+        if preview:
+            data["preview"] = 1
         return self._call(data=data, method="POST")
 
     # --- invoices ----------------------------------------------------------
