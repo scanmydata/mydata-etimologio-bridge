@@ -1091,6 +1091,11 @@ class MainWindow(QMainWindow):
         self.etimologio.start()
         self._show_page("etimologio")
 
+    def open_client_in_etimologio(self, vat: str) -> None:
+        """Jump from a Downloader client straight to their e-Τιμολόγιο card."""
+        self._open_etimologio()
+        self.etimologio.focus_customer(vat)
+
     def _open_documents(self) -> None:
         self._open_documents_filtered("all")
 
@@ -1233,6 +1238,11 @@ class MainWindow(QMainWindow):
         docs.triggered.connect(self._open_documents)
         docs.setEnabled(len(selected) == 1)
         menu.addAction(docs)
+
+        etim = QAction(icon("etimologio", CURRENT.muted), "Άνοιγμα στο e-Τιμολόγιο Pro", self)
+        etim.setEnabled(len(selected) == 1)
+        etim.triggered.connect(lambda: self.open_client_in_etimologio(selected[0]))
+        menu.addAction(etim)
 
         menu.addSeparator()
 

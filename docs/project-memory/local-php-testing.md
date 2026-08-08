@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: d99a09dd-f89c-4baf-bfc0-e7400408007d
-  modified: 2026-08-07T17:50:24.124Z
+  modified: 2026-08-08T14:33:50.941Z
 ---
 
 This machine has **no PHP on PATH** and no XAMPP/laragon. To lint or run the bridge locally:
@@ -18,4 +18,14 @@ This machine has **no PHP on PATH** and no XAMPP/laragon. To lint or run the bri
 6. The in-app Browser pane can't screenshot here ("not compositing"), but `read_page`/`get_page_text`/`javascript_tool` work fine for verifying the DOM.
 7. Greek text sent via `curl --data` from Git-Bash gets mojibake'd (bad codepage); inject UTF-8 test data via `php -r` instead. The app's own encryption round-trips Greek correctly.
 
-See [[etimologio-architecture]] for the app's request flow.
+8. **Outbound TLS to ΑΑΔΕ needs a CA bundle.** The portable PHP ships no CA
+   roots, so `curl` to `https://mydata.aade.gr/timologio` fails with OpenSSL
+   error 60 ("self-signed certificate in certificate chain") and the bridge
+   returns `{"success":false,"error":"Could not reach e-timologio"}`. Fix: add
+   `curl.cainfo="…/certifi/cacert.pem"` + `openssl.cafile=…` to the php.ini
+   (reuse the Downloader venv's `certifi/cacert.pem`). This is also a **packaging
+   requirement** for the bundled PHP. Verified live (VAT 802576637): after the
+   fix, `list_customers`/`search_invoices` return real data.
+
+See [[etimologio-architecture]] for the app's request flow and
+[[etimologio-downloader-merge]] for the merge status.

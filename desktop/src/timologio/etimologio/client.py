@@ -94,6 +94,98 @@ class EtimologioClient:
     def set_account(self, vat: str) -> None:
         self.account = vat
 
+    # --- customers ---------------------------------------------------------
+    def customers(
+        self,
+        name: str = "",
+        code: str = "",
+        vat: str = "",
+        all_pages: bool = False,
+    ) -> dict[str, Any]:
+        """List/search customers → ``{success, count, customers: [...]}``.
+
+        Each row carries ``code/type/vat/name/address/city``. An empty search
+        returns the first page; ``all_pages`` walks the AADE continuation token.
+        """
+        params: dict[str, Any] = {"list_customers": 1}
+        if name:
+            params["customer_name"] = name
+        if code:
+            params["customer_code"] = code
+        if vat:
+            params["cust_vat"] = vat
+        if all_pages:
+            params["all_customers"] = 1
+        return self._call(params)
+
+    def customers_cached(self) -> dict[str, Any]:
+        """Instant local-cache read (no AADE login) → ``{success, rows: [...]}``."""
+        return self._call({"cached": "customers"})
+
+    def create_customer(self, **fields: Any) -> dict[str, Any]:
+        """Create a customer. Accepts ``name, vat, address, city, zip, doy,
+        country, job_description, email, phone1, phone2, is_b2g, code``."""
+        alias = {
+            "vat": "cust_vat",
+            "old_vat": "cust_old_vat",
+            "job_description": "cust_job_description",
+            "is_b2g": "cust_is_b2g",
+        }
+        data: dict[str, Any] = {"create_personal_customer": 1}
+        for key, value in fields.items():
+            if value in (None, ""):
+                continue
+            param = alias.get(key, f"cust_{key}")
+            data[param] = "1" if value is True else value
+        return self._call(data=data, method="POST")
+
+    # --- invoices ----------------------------------------------------------
+    def search_invoices(
+        self,
+        date_from: str = "",
+        date_to: str = "",
+        buyer_vat: str = "",
+        invoice_type: str = "",
+        series: str = "",
+        mark: str = "",
+        include_cancelled: bool = False,
+    ) -> dict[str, Any]:
+        """Search issued invoices → ``{success, invoices: [...]}``.
+
+        Rows carry ``mark/type/issue_date/series/aa/buyer_vat/net_value/
+        vat_value/total``. Filter by ``buyer_vat`` to build a customer card.
+        """
+        params: dict[str, Any] = {"search_invoices": 1}
+        if date_from:
+            params["issue_date_from"] = date_from
+        if date_to:
+            params["issue_date_to"] = date_to
+        if buyer_vat:
+            params["buyer_vat"] = buyer_vat
+        if invoice_type:
+            params["search_invoice_type"] = invoice_type
+        if series:
+            params["series"] = series
+        if mark:
+            params["mark"] = mark
+        if include_cancelled:
+            params["include_cancelled"] = 1
+        return self._call(params)
+
+    # --- local payments (bridge-side ledger) ------------------------------
+    def payments(
+        self, buyer_vat: str = "", date_from: str = "", date_to: str = ""
+    ) -> dict[str, Any]:
+        """Local payments for the active company → ``{success, payments: [...]}``."""
+        params: dict[str, Any] = {"list_payments": 1}
+        if buyer_vat:
+            params["buyer_vat"] = buyer_vat
+        if date_from:
+            params["issue_date_from"] = date_from
+        if date_to:
+            params["issue_date_to"] = date_to
+        return self._call(params)
+
     # --- notifications / scheduler (used by later phases) -----------------
     def notifications(self, unread_only: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {"notifications": 1}

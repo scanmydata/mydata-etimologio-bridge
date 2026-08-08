@@ -40,9 +40,17 @@ Snapshot of the working task list across the recent sessions. See
 
 ### Phase 0 delivered above. Remaining roadmap (from `merge-plan.md`)
 
-- [ ] **Phase 1 — core issuance (native Qt):** Έκδοση (customer autocomplete, line editor, series/pay, taxes, draft/preview/issue), Πελάτες + Καρτέλα; "Open client from the Downloader"
+- [~] **Phase 1 — core issuance (native Qt):**
+  - [x] Client API: `customers`/`create_customer`/`search_invoices`/`payments` (+ `customers_cached`)
+  - [x] Native **Πελάτες** page (search by name/ΑΦΜ, list, create customer, open card)
+  - [x] Native **Καρτέλα** (issued invoices + local payments + computed balance, default year range)
+  - [x] **"Open client from the Downloader"** — clients-table context action → `open_client_in_etimologio(vat)` → `EtimologioShell.focus_customer`
+  - [x] 11 new unit tests (fake client + sync worker); full suite **319 passed**
+  - [x] **Live retrieval verified** against real ΑΑΔΕ creds (VAT 802576637): 27 πελάτες + 15 τιμολόγια through the shared `EtimologioClient`→bridge→AADE path
+  - [ ] Έκδοση (customer autocomplete, line editor, series/pay, taxes, draft/preview/issue) — next
 - [ ] **Phase 2 — catalogs & lifecycle:** Είδη, Σειρές, Πρόχειρα, Ακύρωση/Πιστωτικά
 - [ ] **Phase 3 — volume & money:** Μαζική έκδοση, Εισαγωγή πληρωμών (bank import), Στατιστικά
 - [ ] **Phase 4 — platform:** Προγραμματισμός, Ειδοποιήσεις (bell + feed), Ρυθμίσεις (password, 2FA QR, per‑admin email prefs), Διαχείριση (roles + invitations)
 - [ ] **Phase 5 — server + web:** Dockerfile + Coolify VPS (Postgres), desktop thin‑client mode, web clients via the public URL, one‑time local→server data migration
-- [ ] **Packaging:** bundle a portable `php.exe` into PyInstaller `datas`; scheduler via Task Scheduler (standalone) / container cron (server)
+- [ ] **Packaging:** bundle a portable `php.exe` into PyInstaller `datas`; scheduler via Task Scheduler (standalone) / container cron (server).
+  - ⚠️ **CA bundle required:** the bundled PHP must ship a `cacert.pem` with `curl.cainfo`/`openssl.cafile` set in its `php.ini`, or outbound TLS to `mydata.aade.gr` fails with OpenSSL error 60. Reuse certifi's bundle (same as the Downloader's Python side). Discovered during the Phase‑1 live test.

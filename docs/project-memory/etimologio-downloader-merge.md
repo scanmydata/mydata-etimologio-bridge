@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: d99a09dd-f89c-4baf-bfc0-e7400408007d
-  modified: 2026-08-08T14:07:48.374Z
+  modified: 2026-08-08T14:34:07.344Z
 ---
 
 Merging the PHP e-Τιμολόγιο Pro into the PySide6 **Timologio Downloader**
@@ -47,9 +47,15 @@ timologio.etimologio.service` (backend selftest) or drive `EtimologioShell`.
 No `uv`/`docker` on PATH here — use `.venv/Scripts/python.exe`; Postgres testing
 waits for the VPS. Full pytest: `... -m pytest -q` (308 passed at Phase 0).
 
-**Status: Phase 0 done** (subtree, dual-dialect DB, client+service, launcher +
-native login + offline auto-login → home). **Next:** Phase 1 native pages
-(Έκδοση, Πελάτες/Καρτέλα) + "open client from Downloader"; then catalogs,
+**Status: Phase 0 done; Phase 1 in progress.** Done in Phase 1: native
+**Πελάτες** + **Καρτέλα** pages (`etimologio/pages/`), client API
+(`customers`/`create_customer`/`search_invoices`/`payments`), native nav in
+`shell.py`, **"open client from Downloader"** (clients context menu →
+`MainWindow.open_client_in_etimologio` → `EtimologioShell.focus_customer`), 11
+tests (319 total pass). **Live retrieval verified** vs real ΑΑΔΕ (VAT
+802576637): 27 customers + 15 invoices — needs the php.ini `curl.cainfo` CA
+bundle ([[local-php-testing]]). **Next:** native **Έκδοση** (invoice editor);
+then catalogs,
 volume/money, platform (scheduler/notifications/settings/admin), then Docker/
 Coolify VPS + thin-client + web. Bundling php.exe into PyInstaller (`datas`) is
 still pending (packaging phase).

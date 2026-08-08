@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from .client import EtimologioClient
+from .pages import CustomerCard, CustomersPage
 from .service import EtimologioService
 
 log = logging.getLogger(__name__)
@@ -62,13 +63,14 @@ def _run(fn: Callable[[], Any], on_ok: Callable[[Any], None], on_err: Callable[[
     QThreadPool.globalInstance().start(job)
 
 
-#: The e-Τιμολόγιο sections, as (key, label). Native pages land here per phase;
-#: for now each opens app.php#<key> in the browser against the same backend.
+#: The e-Τιμολόγιο sections, as (key, label). Sections with a native page are
+#: marked and open in-app; the rest still open app.php#<key> in the browser
+#: against the *same* backend until they are ported in a later phase.
+_NATIVE = {"customers"}
 _SECTIONS = [
     ("issue", "🧾 Έκδοση"),
     ("bulk", "📚 Μαζική έκδοση"),
     ("customers", "👥 Πελάτες"),
-    ("card", "📇 Καρτέλα"),
     ("products", "📦 Είδη"),
     ("schedule", "⏰ Προγραμματισμός"),
     ("settings", "⚙️ Ρυθμίσεις"),
@@ -83,6 +85,8 @@ class EtimologioShell(QWidget):
         self._service = EtimologioService(data_dir)
         self._client: EtimologioClient | None = None
         self._started = False
+        #: Set by focus_customer() before login; replayed once home is reached.
+        self._pending_focus_vat = ""
 
         self._stack = QStackedWidget()
         root = QVBoxLayout(self)
@@ -92,7 +96,16 @@ class EtimologioShell(QWidget):
         self._status = self._build_status_page()
         self._login = self._build_login_page()
         self._home = self._build_home_page()
-        for w in (self._status, self._login, self._home):
+
+        # Native pages (Phase 1). They read the live client lazily via the
+        # accessor, so they can be built before login completes.
+        self._customers = CustomersPage(lambda: self._client, _run)
+        self._card = CustomerCard(lambda: self._client, _run)
+        self._customers.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
+        self._customers.open_card.connect(self._show_card)
+        self._card.go_back.connect(lambda: self._stack.setCurrentWidget(self._customers))
+
+        for w in (self._status, self._login, self._home, self._customers, self._card):
             self._stack.addWidget(w)
         self._stack.setCurrentWidget(self._status)
 
@@ -263,6 +276,7 @@ class EtimologioShell(QWidget):
         _run(self._client.me, self._fill_home, lambda m: None)
         _run(self._client.accounts, self._fill_accounts, lambda m: None)
         self._stack.setCurrentWidget(self._home)
+        self._apply_pending_focus()
 
     def _fill_home(self, me: dict) -> None:
         user = me.get("user", {}) if isinstance(me, dict) else {}
@@ -292,6 +306,10 @@ class EtimologioShell(QWidget):
     def _open_section(self, key: str) -> None:
         if self._client is None:
             return
+        if key in _NATIVE:
+            if key == "customers":
+                self._show_customers()
+            return
         base = self._client.base_url()
         vat = self._accounts.currentData()
         url = f"{base}/app.php"
@@ -299,6 +317,35 @@ class EtimologioShell(QWidget):
             url += f"?account={vat}"
         url += f"#{key}"
         QDesktopServices.openUrl(QUrl(url))
+
+    # --- native navigation -------------------------------------------------
+    def _show_customers(self) -> None:
+        self._stack.setCurrentWidget(self._customers)
+        self._customers.refresh()
+
+    def _show_card(self, customer: dict) -> None:
+        self._card.set_customer(customer)
+        self._stack.setCurrentWidget(self._card)
+
+    def focus_customer(self, vat: str) -> None:
+        """Jump straight to a customer (used by "open client from Downloader").
+
+        Ensures the backend is up, opens the native Πελάτες page pre-filtered by
+        the ΑΦΜ so the accountant lands on that client with one action.
+        """
+        self.start()
+        self._pending_focus_vat = vat
+        # If we are already logged in, act now; otherwise _enter_home() replays it.
+        if self._client is not None and self._stack.currentWidget() is self._home:
+            self._apply_pending_focus()
+
+    def _apply_pending_focus(self) -> None:
+        vat = getattr(self, "_pending_focus_vat", "")
+        if not vat:
+            return
+        self._pending_focus_vat = ""
+        self._customers.set_search(vat)
+        self._show_customers()
 
     def _do_logout(self) -> None:
         if self._client is not None:
