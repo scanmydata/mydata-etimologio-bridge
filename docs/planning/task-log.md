@@ -21,7 +21,17 @@ Snapshot of the working task list across the recent sessions. See
 - [x] Move Ξενάγηση/Εγχειρίδιο buttons above the theme toggle; deepen the manual PDF; update the page tour
 - [x] Lint, test, commit + push (`main`)
 
-## Session B — Merge into the Downloader (repo: `MyData-Invoice-Downloader`, branch `merge/etimologio-pro`, not pushed)
+## Session B — Merge into the Downloader (now vendored here under `desktop/`)
+
+> **Single‑branch consolidation.** The whole desktop product (the
+> `MyData-Invoice-Downloader` tree with all Phase‑0 merge work) is vendored into
+> **this** branch under [`desktop/`](../../desktop) via `git subtree`, history
+> preserved. This branch now contains *everything* — the standalone PHP bridge at
+> the repo root **and** the unified desktop app under `desktop/` (which carries its
+> own copy of the bridge at `desktop/backend/etimologio/`). The
+> `MyData-Invoice-Downloader` repo is left **untouched** (its `merge/etimologio-pro`
+> branch stays local and is not pushed). Re‑sync after further desktop work with:
+> `git subtree pull --prefix=desktop <downloader-path> merge/etimologio-pro`.
 
 - [x] Pull downloader to v0.2.25 + subtree‑merge the PHP bridge into `backend/etimologio/`
 - [x] **Backend A** — dual‑dialect DB layer (SQLite + Postgres) via `DB_DSN` (`db_dialect()`/`db_now_sql()`/`db_insert()` + DDL translator); SQLite verified, Postgres to verify on the VPS

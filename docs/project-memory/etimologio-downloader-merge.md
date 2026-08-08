@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: d99a09dd-f89c-4baf-bfc0-e7400408007d
-  modified: 2026-08-07T22:38:09.698Z
+  modified: 2026-08-08T14:07:48.374Z
 ---
 
 Merging the PHP e-Τιμολόγιο Pro into the PySide6 **Timologio Downloader**
@@ -19,6 +19,15 @@ backend (JSON API). Desktop runs **offline** (bundled `php -S` + SQLite under
 (Postgres, Docker via **Coolify**; clients use `app.php` on the web, accountant
 via desktop; shared backend). Roles reused: master/editor = accountant (all
 companies), business = client.
+
+**Single-branch consolidation:** the whole downloader tree (with all Phase-0
+work) is now **vendored into the bridge repo** on branch
+`planning/etimologio-merge` under `desktop/` via `git subtree` (commit 0b946b2,
+history preserved). That branch contains everything: standalone PHP at repo root
++ the unified desktop app at `desktop/` (its own bridge copy at
+`desktop/backend/etimologio/`). The **downloader repo is left untouched** — its
+`merge/etimologio-pro` branch stays local, not pushed. Re-sync desktop work with
+`git subtree pull --prefix=desktop <downloader-path> merge/etimologio-pro`.
 
 **Work is on branch `merge/etimologio-pro`** (NOT pushed; `main` stays stable).
 - PHP vendored via `git subtree` at `backend/etimologio/` (upstream stays
