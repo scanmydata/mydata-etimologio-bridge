@@ -374,6 +374,57 @@ class EtimologioClient:
             params["issue_date_to"] = date_to
         return self._call(params)
 
+    # --- statistics (cached like every dataset) ---------------------------
+    def statistics(self, period: str = "month", cached: bool = False) -> dict[str, Any]:
+        """Turnover statistics for a period (``month|preMonth|year``).
+
+        ``cached=True`` returns the last DB-cached snapshot instantly (no AADE);
+        a live call refreshes that cache (write-through). The cache is DB-backed,
+        so it behaves identically offline, thin-client and on the VPS.
+        """
+        params: dict[str, Any] = {"statistics": 1, "period": period}
+        if cached:
+            params["stats_cached"] = 1
+        return self._call(params)
+
+    def sync(self, kind: str) -> dict[str, Any]:
+        """Force a background refresh of a cached dataset (``statistics`` too)."""
+        return self._call({"sync": kind})
+
+    # --- bulk issuance ----------------------------------------------------
+    def bulk_issue(self, items: list[dict[str, Any]], live: bool = False) -> dict[str, Any]:
+        """Issue a batch. Each item ``{afm, type, series, payment, name, lines,
+        …}``. Default = drafts (temp_id per row); ``live=True`` = real MARKs."""
+        data: dict[str, Any] = {"bulk_issue": 1, "items": json.dumps(items, ensure_ascii=False)}
+        if live:
+            data["live"] = 1
+        return self._call(data=data, method="POST")
+
+    # --- bank import → local payments -------------------------------------
+    def bank_preview(self, file_b64: str, filename: str = "", bank: str = "") -> dict[str, Any]:
+        """Parse an uploaded bank statement into candidate transactions."""
+        return self._call(
+            data={"bank_preview": 1, "file_b64": file_b64, "filename": filename, "bank": bank},
+            method="POST",
+        )
+
+    def bank_import(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Register reviewed rows as local payments (no invoice reconciliation)."""
+        return self._call(
+            data={"bank_import": 1, "items": json.dumps(items, ensure_ascii=False)},
+            method="POST",
+        )
+
+    def add_payment(self, **fields: Any) -> dict[str, Any]:
+        """Record a single local payment (``buyer_vat, customer_name, pay_amount,
+        pay_method, pay_date, mark, pay_notes``)."""
+        data: dict[str, Any] = {"add_payment": 1}
+        data.update({k: v for k, v in fields.items() if v not in (None, "")})
+        return self._call(data=data, method="POST")
+
+    def delete_payment(self, payment_id: int | str) -> dict[str, Any]:
+        return self._call(data={"delete_payment_id": payment_id}, method="POST")
+
     # --- notifications / scheduler (used by later phases) -----------------
     def notifications(self, unread_only: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {"notifications": 1}

@@ -7,12 +7,15 @@ synchronous fake.
 """
 
 from .base import EtimPage, ListPage, parse_money
+from .bulk import BulkPage
 from .card import CustomerCard
 from .catalog import ProductsPage, SeriesPage
 from .credit import CreditNotePage
 from .customers import CustomersPage
 from .drafts import DraftsPage
 from .issue import IssuePage
+from .payments import PaymentsPage
+from .stats import StatsPage
 
 __all__ = [
     "EtimPage",
@@ -25,4 +28,7 @@ __all__ = [
     "SeriesPage",
     "DraftsPage",
     "CreditNotePage",
+    "BulkPage",
+    "PaymentsPage",
+    "StatsPage",
 ]

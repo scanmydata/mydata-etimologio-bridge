@@ -19,13 +19,16 @@ import json  # noqa: E402
 
 from timologio.etimologio.client import EtimologioClient  # noqa: E402
 from timologio.etimologio.pages import (  # noqa: E402
+    BulkPage,
     CreditNotePage,
     CustomerCard,
     CustomersPage,
     DraftsPage,
     IssuePage,
+    PaymentsPage,
     ProductsPage,
     SeriesPage,
+    StatsPage,
 )
 from timologio.etimologio.pages.base import fmt_money, parse_money  # noqa: E402
 from timologio.etimologio.pages.issue import line_amounts  # noqa: E402
@@ -354,3 +357,119 @@ def test_credit_page_requires_mark(app) -> None:
     page._draft()  # no MARK → should not call the backend
     assert client.calls == []
     assert "ΜΑΡΚ" in page._status.text()
+
+
+# --- Phase 3: bulk, payments, statistics (cached) ---------------------------
+
+def test_client_statistics_cached_flag() -> None:
+    client = RecordingClient()
+    client.statistics("year")
+    assert client.calls[-1][0] == {"statistics": 1, "period": "year"}
+    client.statistics("month", cached=True)
+    assert client.calls[-1][0] == {"statistics": 1, "period": "month", "stats_cached": 1}
+    client.sync("statistics")
+    assert client.calls[-1][0] == {"sync": "statistics"}
+
+
+def test_client_bulk_issue_params() -> None:
+    client = RecordingClient()
+    items = [{"afm": "094039270", "type": "20", "series": "A",
+              "lines": [{"code": "Υ", "qty": 1, "price": 10, "rate": 0.24}]}]
+    client.bulk_issue(items)
+    data = client.calls[-1][1]
+    assert data["bulk_issue"] == 1
+    assert json.loads(data["items"]) == items
+    assert "live" not in data
+    client.bulk_issue(items, live=True)
+    assert client.calls[-1][1]["live"] == 1
+
+
+def test_client_bank_import_params() -> None:
+    client = RecordingClient()
+    client.bank_preview("YmFzZTY0", filename="extrait.xlsx")
+    assert client.calls[-1][1]["bank_preview"] == 1
+    rows = [{"customer_vat": "094039270", "amount": 50.0, "method": 1}]
+    client.bank_import(rows)
+    assert json.loads(client.calls[-1][1]["items"]) == rows
+
+
+class StatsClient:
+    """Returns a distinct cached vs live snapshot so we can tell them apart."""
+
+    def __init__(self) -> None:
+        self.calls: list[bool] = []
+
+    def statistics(self, period="month", cached=False):
+        self.calls.append(cached)
+        if cached:
+            return {"success": True, "cached": True, "synced_at": "2026-08-08 10:00:00",
+                    "total_count": 1, "total_value": 100.0,
+                    "breakdown": [{"type": "2.1", "count": 1, "value": 100.0}]}
+        return {"success": True, "cached": False, "synced_at": "2026-08-08 12:00:00",
+                "total_count": 2, "total_value": 250.0,
+                "breakdown": [{"type": "2.1", "count": 1, "value": 100.0},
+                              {"type": "11.2", "count": 1, "value": 150.0}]}
+
+
+def test_stats_page_renders_cache_then_live(app) -> None:
+    client = StatsClient()
+    page = StatsPage(lambda: client, sync_run)
+    page.refresh()
+    # both a cached and a live call were made, cached first
+    assert client.calls == [True, False]
+    # the live snapshot wins in the UI
+    assert page._table.rowCount() == 2
+    assert "250,00" in page._summary.text()
+    assert "ζωντανά" in page._status.text()
+
+
+def test_stats_page_keeps_cache_when_live_fails(app) -> None:
+    class FailingLive(StatsClient):
+        def statistics(self, period="month", cached=False):
+            if not cached:
+                raise RuntimeError("δίκτυο")
+            return super().statistics(period, cached=True)
+
+    page = StatsPage(lambda: FailingLive(), sync_run)
+    page.refresh()
+    # cached rows survive and the status explains the live failure
+    assert page._table.rowCount() == 1
+    assert "cache" in page._status.text()
+
+
+def test_bulk_page_builds_items(app) -> None:
+    client = RecordingClient()
+    page = BulkPage(lambda: client, sync_run)
+    page._table.setRowCount(0)
+    page.add_row("094039270", "ΑΛΦΑ ΑΕ", "Υπηρεσία", "2", "50", "24")
+    page.add_row("", "", "", "1", "0", "24")  # empty → skipped
+    items = page.build_items()
+    assert len(items) == 1
+    item = items[0]
+    assert item["afm"] == "094039270"
+    assert item["lines"][0]["rate"] == 0.24  # fraction on the wire
+    assert item["lines"][0]["qty"] == 2.0
+
+
+def test_bulk_page_writes_results_back(app) -> None:
+    client = RecordingClient()
+    page = BulkPage(lambda: client, sync_run)
+    page._table.setRowCount(0)
+    page.add_row("094039270", "ΑΛΦΑ ΑΕ", "Υπηρεσία", "1", "50", "24")
+    page._after_bulk({"results": [{"index": 0, "success": True, "mark": "400123"}]}, [0])
+    assert "400123" in page._table.item(0, 6).text()
+    assert "1/1" in page._status.text()
+
+
+def test_payments_page_lists(app) -> None:
+    class PayClient:
+        def payments(self, **_):
+            return {"success": True, "payments": [
+                {"pay_date": "08/08/2026", "amount": "124,00", "method": "3",
+                 "customer_name": "ΑΛΦΑ ΑΕ", "customer_vat": "094039270", "notes": ""},
+            ]}
+
+    page = PaymentsPage(lambda: PayClient(), sync_run)
+    page.refresh()
+    assert page._pay_table.rowCount() == 1
+    assert page._pay_table.item(0, 2).text() == "Μετρητά"

@@ -3359,6 +3359,22 @@ if ($listAccountsFlag) {
     jsonResponse(['success' => true, 'active' => COMPANY_VAT, 'active_staff' => user_is_staff($__user), 'accounts' => $out]);
 }
 
+// Instant STATISTICS cache read (no AADE login). Statistics are cached exactly
+// like every other dataset; served here — before the AADE login — so a cached
+// read really is instant. Same code path offline (SQLite), thin-client and VPS
+// (Postgres), because the cache lives in the bridge DB.
+if ($statisticsFlag && !empty($_GET['stats_cached'] ?? $_POST['stats_cached'] ?? '')) {
+    $c = cache_get(COMPANY_VAT, 'statistics:' . $statsPeriod);
+    if ($c && is_array($c['rows'] ?? null) && !empty($c['rows'])) {
+        $out = $c['rows'];
+        $out['cached']    = true;
+        $out['synced_at'] = $c['synced_at'];
+        jsonResponse($out);
+    }
+    jsonResponse(['success' => true, 'cached' => false, 'period' => $statsPeriod,
+        'breakdown' => [], 'total_count' => 0, 'total_value' => 0, 'synced_at' => '']);
+}
+
 // Instant cache read (no AADE login) — UI renders from this immediately
 $cachedKind = trim($_GET['cached'] ?? $_POST['cached'] ?? '');
 if ($cachedKind !== '') {
@@ -3523,8 +3539,20 @@ if ($jsAsset !== '') {
 }
 
 if ($statisticsFlag) {
+    // Statistics are cached like every other dataset. The cache is DB-backed
+    // (app_cache), so the SAME code path caches locally offline (SQLite), for the
+    // thin client and on the VPS (Postgres). A `stats_cached=1` read returns the
+    // last snapshot instantly (no AADE round-trip); a live call refreshes it
+    // (write-through) so the next cached read is current.
+    $statsCacheKind = 'statistics:' . $statsPeriod;
     $result = getStatistics($ch, $statsPeriod);
     curl_close($ch);
+    if (!empty($result['success'])) {
+        cache_set(COMPANY_VAT, $statsCacheKind, $result);
+        $m = cache_get(COMPANY_VAT, $statsCacheKind);
+        $result['synced_at'] = $m['synced_at'] ?? '';
+        $result['cached']    = false;
+    }
     jsonResponse($result);
 }
 
@@ -3569,6 +3597,17 @@ if ($syncKind !== '') {
         $r = listCategoryClassifications($ch); $rows = $r['categories'] ?? [];
     } elseif ($syncKind === 'drafts') {
         $r = searchTempInvoices($ch, $saveDateFrom, $saveDateTo, '', '', ''); $rows = $r['temp_invoices'] ?? [];
+    } elseif ($syncKind === 'statistics') {
+        // Refresh all three period snapshots in one pass so the cached reads
+        // (statistics:month|preMonth|year) are all current.
+        $rows = [];
+        foreach (['month', 'preMonth', 'year'] as $sp) {
+            $s = getStatistics($ch, $sp);
+            if (!empty($s['success'])) {
+                cache_set(COMPANY_VAT, 'statistics:' . $sp, $s);
+                $rows[] = ['period' => $sp, 'total_count' => $s['total_count'], 'total_value' => $s['total_value']];
+            }
+        }
     } elseif ($syncKind === 'invtypes') {
         // invoice types with code/name split out (same shape the UI expects)
         $rows = getClassificationInvoiceTypes($ch);

@@ -55,7 +55,14 @@ Snapshot of the working task list across the recent sessions. See
   - [x] Client API: `products`/`create_product`/`delete_product`, `series`/`create_series`/`delete_series`, `temp_invoices`/`delete_temp`, `credit_note`
   - [x] 6 more tests; full suite **331 passed**
   - [x] **Live-verified** vs real ΑΑΔΕ: Είδη 10 · Σειρές 5 · Πρόχειρα 3, and a DRAFT credit note for a real ΜΑΡΚ (→ type 61, saved, nothing submitted). Test drafts cleaned up afterwards.
-- [ ] **Phase 3 — volume & money:** Μαζική έκδοση, Εισαγωγή πληρωμών (bank import), Στατιστικά
+- [x] **Phase 3 — volume & money:** ✅ complete
+  - [x] Native **Μαζική έκδοση** (shared header + per-row customer/line, batch drafts or live issue, per-row results written back)
+  - [x] Native **Πληρωμές** — local ledger (list + manual add) **and** bank-statement import (parse → review → register)
+  - [x] Native **Στατιστικά** — breakdown per document type + net turnover, period switch
+  - [x] **Statistics caching** (as requested): `cache_set`/`cache_get` write-through on every live call, `?statistics&stats_cached=1` instant read served **before the AADE login**, and a `?sync=statistics` branch that refreshes all three periods at once. The cache is DB-backed (`app_cache`, encrypted, per company+period) so the **same code path** caches for the local offline client (SQLite), the thin client, and the VPS (Postgres).
+  - [x] Client API: `statistics(period, cached=)`, `sync(kind)`, `bulk_issue`, `bank_preview`/`bank_import`, `add_payment`/`delete_payment`
+  - [x] 8 more tests; full suite **339 passed**
+  - [x] **Live-verified** vs real ΑΑΔΕ: statistics cache **2.45s → 0.01s** (~245× faster, identical data, survives restarts — confirmed encrypted rows in `app_cache` for month/preMonth/year); a 2-item bulk **draft** batch (both OK); payment add/list/delete round-trip. All test drafts deleted afterwards.
 - [ ] **Phase 4 — platform:** Προγραμματισμός, Ειδοποιήσεις (bell + feed), Ρυθμίσεις (password, 2FA QR, per‑admin email prefs), Διαχείριση (roles + invitations)
 - [ ] **Phase 5 — server + web:** Dockerfile + Coolify VPS (Postgres), desktop thin‑client mode, web clients via the public URL, one‑time local→server data migration
 - [ ] **Packaging:** bundle a portable `php.exe` into PyInstaller `datas`; scheduler via Task Scheduler (standalone) / container cron (server).
