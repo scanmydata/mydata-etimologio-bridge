@@ -63,7 +63,14 @@ Snapshot of the working task list across the recent sessions. See
   - [x] Client API: `statistics(period, cached=)`, `sync(kind)`, `bulk_issue`, `bank_preview`/`bank_import`, `add_payment`/`delete_payment`
   - [x] 8 more tests; full suite **339 passed**
   - [x] **Live-verified** vs real ΑΑΔΕ: statistics cache **2.45s → 0.01s** (~245× faster, identical data, survives restarts — confirmed encrypted rows in `app_cache` for month/preMonth/year); a 2-item bulk **draft** batch (both OK); payment add/list/delete round-trip. All test drafts deleted afterwards.
-- [ ] **Phase 4 — platform:** Προγραμματισμός, Ειδοποιήσεις (bell + feed), Ρυθμίσεις (password, 2FA QR, per‑admin email prefs), Διαχείριση (roles + invitations)
+- [x] **Phase 4 — platform:** ✅ complete
+  - [x] Native **Προγραμματισμός** (job list + cancel), **Ειδοποιήσεις** (feed, unread in bold, mark‑all‑read), **Ρυθμίσεις** (password, **2FA with a real QR**, per‑admin email prefs), **Διαχείριση** (users, roles, invitations, activate/disable)
+  - [x] **Μαζική εκτύπωση με προεπισκόπηση + εξαγωγή ZIP** — new **Παραστατικά** page (search, checkbox multi‑select) and the same on the **Καρτέλα**; PDFs pulled by ΜΑΡΚ (`bulkpdf.py`), previewed through the *Downloader's own* `print_pdfs` dialog, packed flat with de‑duplicated names
+  - [x] **UI harmonised with the Downloader** — `pages/ui.py` (cards, page headers, tiles, KPI stats, themed buttons/tables); every hardcoded colour replaced by theme object names so light/dark both work; home rebuilt as a header card + KPI tiles + a 3‑column launcher grid; new `stats`/`schedule`/`bell`/`settings` icons
+  - [x] **All 14 sections are native** — nothing falls back to the browser
+  - [x] 🐞 **Bug found & fixed:** `shell._run` dropped results because the `_Job` (and its signal object) could be garbage‑collected before emitting — an intermittently "never loading" page. Jobs are now kept in `_INFLIGHT` until they report; 2 regression tests added
+  - [x] +11 tests; full suite **350 passed**
+  - [x] **Live-verified** vs real ΑΑΔΕ: 4 real PDFs fetched (~99KB each, valid `%PDF`), zipped (374KB, integrity‑checked) and confirmed to render 4 pages through the print engine; notifications/scheduler/admin/prefs endpoints all OK; 2FA setup returns a scannable QR
 - [ ] **Phase 5 — server + web:** Dockerfile + Coolify VPS (Postgres), desktop thin‑client mode, web clients via the public URL, one‑time local→server data migration
 - [ ] **Packaging:** bundle a portable `php.exe` into PyInstaller `datas`; scheduler via Task Scheduler (standalone) / container cron (server).
   - ⚠️ **CA bundle required:** the bundled PHP must ship a `cacert.pem` with `curl.cainfo`/`openssl.cafile` set in its `php.ini`, or outbound TLS to `mydata.aade.gr` fails with OpenSSL error 60. Reuse certifi's bundle (same as the Downloader's Python side). Discovered during the Phase‑1 live test.

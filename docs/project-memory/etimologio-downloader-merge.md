@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: d99a09dd-f89c-4baf-bfc0-e7400408007d
-  modified: 2026-08-10T18:12:00.943Z
+  modified: 2026-08-10T18:46:45.535Z
 ---
 
 Merging the PHP e-Τιμολόγιο Pro into the PySide6 **Timologio Downloader**
@@ -62,9 +62,13 @@ each; live-verified. **Phase 3 done:** Μαζική έκδοση, Πληρωμέ
 bank import), Στατιστικά — **with caching** (user requirement): `app_cache`
 write-through on live calls, `?statistics&stats_cached=1` served BEFORE the AADE
 login (2.45s → 0.01s live-measured), `?sync=statistics` refreshes all three
-periods. DB-backed ⇒ identical for offline/thin-client/VPS. 339 tests.
-**Next: Phase 4** — Προγραμματισμός, Ειδοποιήσεις, Ρυθμίσεις (2FA/prefs),
-Διαχείριση; then
+periods. DB-backed ⇒ identical for offline/thin-client/VPS. **Phase 4 done:**
+Προγραμματισμός, Ειδοποιήσεις, Ρυθμίσεις (2FA QR + email prefs), Διαχείριση
+(ρόλοι/προσκλήσεις), **plus** a Παραστατικά page with **μαζική εκτύπωση +
+εξαγωγή ZIP** (and the same on the Καρτέλα), and a **UI harmonised with the
+Downloader** — see [[etimologio-native-ui]]. All 14 sections are native now;
+nothing falls back to the browser. 350 tests. **Next: Phase 5** — Dockerfile +
+Coolify VPS (Postgres), thin-client mode, web, local→server migration; then
 volume/money, platform (scheduler/notifications/settings/admin), then Docker/
 Coolify VPS + thin-client + web. Bundling php.exe into PyInstaller (`datas`) is
 still pending (packaging phase).

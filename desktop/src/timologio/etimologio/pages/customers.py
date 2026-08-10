@@ -146,7 +146,7 @@ class CustomersPage(EtimPage):
 
         bottom = QHBoxLayout()
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#93a4bd;")
+        self._status.setObjectName("muted")
         bottom.addWidget(self._status)
         bottom.addStretch(1)
         open_btn = QPushButton("Άνοιγμα καρτέλας")

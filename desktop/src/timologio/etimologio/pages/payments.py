@@ -101,7 +101,7 @@ class PaymentsPage(EtimPage):
         box.addWidget(self._tabs, 1)
 
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#93a4bd;")
+        self._status.setObjectName("muted")
         box.addWidget(self._status)
 
     # --- ledger tab --------------------------------------------------------
@@ -176,7 +176,7 @@ class PaymentsPage(EtimPage):
         bar.addStretch(1)
         w.addLayout(bar)
         hint = QLabel("Άνοιξε extrait (.xlsx/.csv). Συμπλήρωσε ΑΦΜ/όνομα πελάτη ανά γραμμή και εισήγαγε.")
-        hint.setStyleSheet("color:#93a4bd;")
+        hint.setObjectName("muted")
         w.addWidget(hint)
         self._prev_table = QTableWidget(0, len(_PREVIEW_COLS))
         self._prev_table.setHorizontalHeaderLabels(_PREVIEW_COLS)

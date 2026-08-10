@@ -9,14 +9,17 @@ from the bridge-side local ledger (``list_payments``). The balance is
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -24,6 +27,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...gui.printing import print_pdfs
+from ..bulkpdf import export_zip, fetch_pdfs
+from . import ui
 from .base import EtimPage, fmt_money, parse_money
 from .customers import _cust_value
 
@@ -78,13 +84,20 @@ class CustomerCard(EtimPage):
         self._title.setStyleSheet("font-size:16px;font-weight:600;")
         top.addWidget(self._title)
         top.addStretch(1)
+        # Same bulk gestures as the Παραστατικά page, scoped to this customer:
+        # print every document on the card, or pack them all into one ZIP.
+        top.addWidget(ui.button("Εκτύπωση καρτέλας", self.print_all, kind="primary",
+                                icon_name="printer",
+                                tip="Προεπισκόπηση & εκτύπωση όλων των παραστατικών του πελάτη"))
+        top.addWidget(ui.button("Εξαγωγή ZIP", self.export_all, icon_name="folder",
+                                tip="Πακετάρει τα PDF της καρτέλας σε ένα ZIP"))
         refresh = QPushButton("Ανανέωση")
         refresh.clicked.connect(self.refresh)
         top.addWidget(refresh)
         box.addLayout(top)
 
         self._summary = QLabel("")
-        self._summary.setStyleSheet("color:#93a4bd;margin:2px 0 6px 0;")
+        self._summary.setObjectName("muted")
         box.addWidget(self._summary)
 
         self._tabs = QTabWidget()
@@ -95,12 +108,14 @@ class CustomerCard(EtimPage):
         box.addWidget(self._tabs, 1)
 
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#93a4bd;")
+        self._status.setObjectName("muted")
         box.addWidget(self._status)
 
         self._inv_total = 0.0
         self._pay_total = 0.0
         self._pending = 0
+        #: The invoice rows currently shown — the source for bulk print/ZIP.
+        self._invoice_rows: list[dict[str, Any]] = []
 
     def _make_table(self, cols: list[tuple[str, str]]) -> QTableWidget:
         table = QTableWidget(0, len(cols))
@@ -150,6 +165,7 @@ class CustomerCard(EtimPage):
 
     def _fill_invoices(self, data: dict[str, Any]) -> None:
         rows = list(data.get("invoices", []))
+        self._invoice_rows = rows
         self._invoices.setRowCount(len(rows))
         total = 0.0
         for r, row in enumerate(rows):
@@ -192,3 +208,51 @@ class CustomerCard(EtimPage):
     def _failed(self, msg: str) -> None:
         self._pending = max(0, self._pending - 1)
         self._status.setText(f"Σφάλμα: {msg}")
+
+    # --- bulk print / ZIP for this customer's documents --------------------
+    def _fetch_card_pdfs(self, mode: str) -> None:
+        client = self.client()
+        if client is None:
+            return
+        if not self._invoice_rows:
+            QMessageBox.information(
+                self, "Καρτέλα", "Η καρτέλα δεν έχει παραστατικά για εκτύπωση."
+            )
+            return
+        rows = list(self._invoice_rows)
+        self._status.setText(f"Λήψη {len(rows)} PDF από την ΑΑΔΕ…")
+        self._run(
+            lambda: fetch_pdfs(client, rows),
+            lambda result: self._after_fetch(result, mode=mode),
+            self._failed,
+        )
+
+    def print_all(self) -> None:
+        self._fetch_card_pdfs("print")
+
+    def export_all(self) -> None:
+        self._fetch_card_pdfs("zip")
+
+    def _after_fetch(self, result, *, mode: str) -> None:
+        paths, errors = result
+        note = f"\n\n{len(errors)} δεν κατέβηκαν." if errors else ""
+        if not paths:
+            self._status.setText("Κανένα PDF δεν κατέβηκε.")
+            return
+        self._status.setText(f"{len(paths)} PDF έτοιμα.")
+        if mode == "print":
+            print_pdfs(paths, self)
+            return
+        name = _cust_value(self._customer, "name") or "ΠΕΛΑΤΗΣ"
+        vat = _cust_value(self._customer, "vat")
+        safe = "".join(c for c in name if c.isalnum() or c in " -_").strip()[:40]
+        default = Path.home() / f"{vat} {safe} ΚΑΡΤΕΛΑ.zip"
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"Εξαγωγή {len(paths)} PDF σε ZIP", str(default), "ZIP (*.zip)"
+        )
+        if not path:
+            return
+        added = export_zip(paths, Path(path))
+        QMessageBox.information(
+            self, "Η εξαγωγή ολοκληρώθηκε", f"{added} αρχεία -> {Path(path).name}{note}"
+        )

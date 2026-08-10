@@ -24,6 +24,9 @@ gui = [
     "websocket-client>=1.8.0",
     # Εξαγωγή σε Excel (.xlsx) με πραγματικό πίνακα (autofilter/ταξινόμηση).
     "openpyxl>=3.1",
+    # QR για την εγγραφή 2FA στο e-Τιμολόγιο Pro. Καθαρά Python (διαβάζουμε το
+    # get_matrix() και ζωγραφίζουμε με Qt) — δεν χρειάζεται Pillow.
+    "qrcode>=8.0",
 ]
 
 [project.scripts]

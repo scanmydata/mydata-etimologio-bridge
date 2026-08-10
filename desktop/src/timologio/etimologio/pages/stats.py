@@ -74,7 +74,7 @@ class StatsPage(EtimPage):
         box.addWidget(self._table, 1)
 
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#93a4bd;")
+        self._status.setObjectName("muted")
         box.addWidget(self._status)
 
     def refresh(self) -> None:

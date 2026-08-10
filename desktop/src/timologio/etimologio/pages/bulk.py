@@ -80,7 +80,7 @@ class BulkPage(EtimPage):
         row_btns.addWidget(rem)
         row_btns.addStretch(1)
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#93a4bd;")
+        self._status.setObjectName("muted")
         row_btns.addWidget(self._status)
         box.addLayout(row_btns)
 

@@ -127,7 +127,7 @@ class ListPage(EtimPage):
         box.addWidget(self.table, 1)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color:#93a4bd;")
+        self.status.setObjectName("muted")
         box.addWidget(self.status)
         self._box = box
 

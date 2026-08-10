@@ -6,18 +6,25 @@ thread through an injected ``run`` callable so the pages stay testable with a
 synchronous fake.
 """
 
+from . import ui
+from .admin import AdminPage
 from .base import EtimPage, ListPage, parse_money
 from .bulk import BulkPage
 from .card import CustomerCard
 from .catalog import ProductsPage, SeriesPage
 from .credit import CreditNotePage
 from .customers import CustomersPage
+from .documents import DocumentsPage
 from .drafts import DraftsPage
 from .issue import IssuePage
+from .notifications import NotificationsPage
 from .payments import PaymentsPage
+from .schedule import SchedulePage
+from .settings import SettingsPage
 from .stats import StatsPage
 
 __all__ = [
+    "ui",
     "EtimPage",
     "ListPage",
     "parse_money",
@@ -31,4 +38,9 @@ __all__ = [
     "BulkPage",
     "PaymentsPage",
     "StatsPage",
+    "DocumentsPage",
+    "SchedulePage",
+    "NotificationsPage",
+    "SettingsPage",
+    "AdminPage",
 ]

@@ -170,7 +170,7 @@ class IssuePage(EtimPage):
 
         actions = QHBoxLayout()
         self._status = QLabel("")
-        self._status.setStyleSheet("color:#93a4bd;")
+        self._status.setObjectName("muted")
         actions.addWidget(self._status)
         actions.addStretch(1)
         draft = QPushButton("Αποθήκευση πρόχειρου")

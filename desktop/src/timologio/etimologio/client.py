@@ -7,6 +7,7 @@ every method is a thin call to an endpoint the web UI already uses.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any
@@ -360,6 +361,15 @@ class EtimologioClient:
             data["preview"] = 1
         return self._call(data=data, method="POST")
 
+    # --- PDFs --------------------------------------------------------------
+    def invoice_pdf(self, mark: str) -> bytes:
+        """Fetch the real AADE PDF for a MARK. Raises on failure."""
+        data = self._call({"mark": mark})
+        b64 = data.get("pdf_base64") or data.get("pdf_b64")
+        if not b64:
+            raise EtimologioError(data.get("error", f"Χωρίς PDF για ΜΑΡΚ {mark}"))
+        return base64.b64decode(b64)
+
     # --- local payments (bridge-side ledger) ------------------------------
     def payments(
         self, buyer_vat: str = "", date_from: str = "", date_to: str = ""
@@ -435,5 +445,89 @@ class EtimologioClient:
     def notif_count(self) -> int:
         return int(self._call({"notif_count": 1}).get("unread", 0))
 
+    def mark_read(self, notification_id: int) -> dict[str, Any]:
+        return self._call(data={"notif_read": 1, "id": notification_id}, method="POST")
+
+    def mark_all_read(self) -> dict[str, Any]:
+        return self._call(data={"notif_read_all": 1}, method="POST")
+
     def scheduled_jobs(self) -> dict[str, Any]:
         return self._call({"sched_list": 1})
+
+    def cancel_job(self, job_id: int) -> dict[str, Any]:
+        return self._call(data={"sched_cancel": 1, "id": job_id}, method="POST")
+
+    def schedule_job(
+        self,
+        payload: dict[str, Any],
+        run_at: str,
+        *,
+        title: str = "",
+        kind: str = "invoice",
+        recurrence: str = "none",
+    ) -> dict[str, Any]:
+        """Queue an issuance for ``run_at`` (``YYYY-MM-DD HH:MM``)."""
+        return self._call(
+            data={
+                "sched_add": 1,
+                "sched_payload": json.dumps(payload, ensure_ascii=False),
+                "run_at": run_at,
+                "title": title,
+                "kind": kind,
+                "recurrence": recurrence,
+            },
+            method="POST",
+        )
+
+    # --- settings & administration ----------------------------------------
+    def change_password(self, current: str, new: str) -> dict[str, Any]:
+        return self._call(
+            {"auth": "change_password"},
+            data={"current_password": current, "password": new},
+            method="POST",
+        )
+
+    def totp_setup(self) -> dict[str, Any]:
+        """Begin 2FA enrolment → ``{secret, uri}`` for the QR code."""
+        return self._call({"auth": "totp_setup"}, method="POST")
+
+    def totp_enable(self, code: str) -> dict[str, Any]:
+        return self._call({"auth": "totp_enable"}, data={"code": code}, method="POST")
+
+    def totp_disable(self, verify: str) -> dict[str, Any]:
+        return self._call({"auth": "totp_disable"}, data={"verify": verify}, method="POST")
+
+    def notif_prefs(self) -> dict[str, Any]:
+        return self._call({"auth": "notif_prefs_get"})
+
+    def set_notif_prefs(
+        self, companies: str = "*", types: str = "*", email_enabled: bool = True
+    ) -> dict[str, Any]:
+        return self._call(
+            {"auth": "notif_prefs_set"},
+            data={
+                "companies": companies,
+                "types": types,
+                "email_enabled": "1" if email_enabled else "0",
+            },
+            method="POST",
+        )
+
+    def admin_users(self) -> dict[str, Any]:
+        return self._call({"auth": "admin_users"})
+
+    def admin_invite(self, email: str, role: str = "editor") -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_invite"}, data={"email": email, "role": role}, method="POST"
+        )
+
+    def admin_set_role(self, user_id: int, role: str) -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_set_role"}, data={"user_id": user_id, "role": role}, method="POST"
+        )
+
+    def admin_set_status(self, user_id: int, status: str) -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_set_status"}, data={"user_id": user_id, "status": status},
+            method="POST",
+        )

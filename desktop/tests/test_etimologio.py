@@ -19,14 +19,18 @@ import json  # noqa: E402
 
 from timologio.etimologio.client import EtimologioClient  # noqa: E402
 from timologio.etimologio.pages import (  # noqa: E402
+    AdminPage,
     BulkPage,
     CreditNotePage,
     CustomerCard,
     CustomersPage,
+    DocumentsPage,
     DraftsPage,
     IssuePage,
+    NotificationsPage,
     PaymentsPage,
     ProductsPage,
+    SchedulePage,
     SeriesPage,
     StatsPage,
 )
@@ -459,6 +463,197 @@ def test_bulk_page_writes_results_back(app) -> None:
     page._after_bulk({"results": [{"index": 0, "success": True, "mark": "400123"}]}, [0])
     assert "400123" in page._table.item(0, 6).text()
     assert "1/1" in page._status.text()
+
+
+# --- background worker ------------------------------------------------------
+
+def test_run_delivers_result_even_after_gc(app) -> None:
+    """Regression: the job used to be collected before it could emit.
+
+    ``QThreadPool.start()`` owns the QRunnable in C++, but nothing referenced the
+    Python object, so its signal companion could vanish mid-flight and the
+    result was dropped — a page that randomly never finished loading.
+    """
+    import gc
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from timologio.etimologio import shell as shellmod
+
+    out: dict[str, object] = {}
+    shellmod._run(lambda: 41 + 1, lambda v: out.update(ok=v), lambda m: out.update(err=m))
+    gc.collect()  # exactly the condition that used to lose the result
+    deadline = time.time() + 5
+    while time.time() < deadline and not out:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert out == {"ok": 42}
+
+
+def test_run_releases_finished_jobs(app) -> None:
+    """The keep-alive set must drain, or every call would leak a job."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from timologio.etimologio import shell as shellmod
+
+    seen: list[int] = []
+    for i in range(10):
+        shellmod._run(lambda i=i: i, seen.append, lambda m: seen.append(-1))
+    deadline = time.time() + 5
+    while time.time() < deadline and (len(seen) < 10 or shellmod._INFLIGHT):
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert sorted(seen) == list(range(10))
+    assert not shellmod._INFLIGHT
+
+
+# --- Phase 4 + bulk print/ZIP ------------------------------------------------
+
+def test_pdf_filename_is_sortable_and_safe() -> None:
+    from timologio.etimologio.bulkpdf import pdf_filename
+
+    name = pdf_filename({"issue_date": "02/08/2026", "series": "ΑΠΥ", "aa": "18",
+                         "mark": "400014690544553"})
+    assert name == "02-08-2026 ΑΠΥ-18 400014690544553.pdf"
+    # Path separators in the data must never escape into the filename.
+    bad = pdf_filename({"issue_date": "a/b", "series": "x\\y", "aa": "", "mark": "1"})
+    assert "\\" not in bad and bad.count("/") == 0
+
+
+def test_fetch_pdfs_collects_errors_without_aborting(tmp_path, monkeypatch) -> None:
+    from timologio.etimologio import bulkpdf
+
+    monkeypatch.setattr(bulkpdf, "_CACHE_DIR", tmp_path)
+
+    class PdfClient:
+        def invoice_pdf(self, mark):
+            if mark == "bad":
+                raise RuntimeError("δεν βρέθηκε")
+            return b"%PDF-1.4 fake"
+
+    rows = [{"mark": "1", "series": "A", "aa": "1", "issue_date": "01/08/2026"},
+            {"mark": "bad", "series": "A", "aa": "2", "issue_date": "02/08/2026"},
+            {"mark": "", "series": "A", "aa": "3", "issue_date": "03/08/2026"}]
+    paths, errors = bulkpdf.fetch_pdfs(PdfClient(), rows)
+    assert len(paths) == 1 and paths[0].read_bytes().startswith(b"%PDF")
+    assert len(errors) == 2  # the failing MARK and the row without one
+
+
+def test_export_zip_dedupes_names(tmp_path) -> None:
+    from timologio.etimologio.bulkpdf import export_zip
+    import zipfile
+
+    a = tmp_path / "a" / "same.pdf"
+    b = tmp_path / "b" / "same.pdf"
+    for p in (a, b):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"%PDF")
+    target = tmp_path / "out.zip"
+    assert export_zip([a, b], target) == 2
+    with zipfile.ZipFile(target) as zf:
+        assert sorted(zf.namelist()) == ["same (2).pdf", "same.pdf"]
+
+
+class DocsClient(RecordingClient):
+    def search_invoices(self, **_):
+        return {"success": True, "invoices": [
+            {"issue_date": "02/08/2026", "type": "11.2", "series": "ΑΠΥ", "aa": "18",
+             "mark": "400014690544553", "buyer_vat": "", "net_value": "64,52", "total": "80,00"},
+            {"issue_date": "01/08/2026", "type": "2.1", "series": "ΤΠΥ", "aa": "3",
+             "mark": "400014690000001", "buyer_vat": "094039270", "net_value": "100,00", "total": "124,00"},
+        ]}
+
+
+def test_documents_page_selection(app) -> None:
+    from PySide6.QtCore import Qt
+
+    page = DocumentsPage(lambda: DocsClient(), sync_run)
+    page.refresh()
+    assert page._table.rowCount() == 2
+    assert "204,00" in page._status.text()  # 80 + 124 total
+    # nothing ticked and nothing highlighted → empty selection
+    assert page.selected_rows() == []
+    page._set_all(True)
+    assert len(page.selected_rows()) == 2
+    page._set_all(False)
+    page._table.setCurrentCell(1, 1)
+    # falls back to the highlighted row
+    assert page.selected_rows()[0]["mark"] == "400014690000001"
+
+
+def test_schedule_page_translates_status(app) -> None:
+    class SchedClient:
+        def scheduled_jobs(self):
+            return {"success": True, "jobs": [
+                {"id": 7, "run_at": "2026-09-01 08:00:00", "title": "Μηνιαίο",
+                 "kind": "invoice", "recurrence": "monthly", "status": "pending",
+                 "last_run_at": ""},
+            ]}
+
+    page = SchedulePage(lambda: SchedClient(), sync_run)
+    page.refresh()
+    assert page.table.item(0, 4).text() == "Σε αναμονή"
+    assert page.table.item(0, 3).text() == "Μηνιαία"
+
+
+def test_notifications_page_counts_unread(app) -> None:
+    class NotifClient:
+        def notifications(self):
+            return {"success": True, "items": [
+                {"created_at": "2026-08-08 10:00", "doc_label": "ΑΠΥ", "series": "ΑΠΥ",
+                 "aa": "18", "mark": "400", "buyer_name": "ΑΛΦΑ", "amount_total": 80.0,
+                 "actor_email": "a@b.gr", "is_read": 0},
+                {"created_at": "2026-08-07 10:00", "doc_label": "ΤΠΥ", "series": "ΤΠΥ",
+                 "aa": "3", "mark": "401", "buyer_name": "ΒΗΤΑ", "amount_total": 124.0,
+                 "actor_email": "a@b.gr", "is_read": 1},
+            ]}
+
+    page = NotificationsPage(lambda: NotifClient(), sync_run)
+    seen: list[int] = []
+    page.unread_changed.connect(seen.append)
+    page.refresh()
+    assert page.table.rowCount() == 2
+    assert "1 μη αναγνωσμένες" in page.status.text()
+    assert seen == [1]
+    assert page.table.item(0, 5).text() == "80,00 €"
+
+
+def test_admin_page_labels_roles(app) -> None:
+    class AdminClient:
+        def admin_users(self):
+            return {"success": True, "users": [
+                {"id": 2, "email": "l@x.gr", "business_name": "Λογιστής",
+                 "role": "editor", "status": "active", "created_at": "2026-01-01"},
+            ]}
+
+    page = AdminPage(lambda: AdminClient(), sync_run)
+    page.refresh()
+    assert page.table.item(0, 2).text() == "Λογιστής (όλες οι εταιρείες)"
+
+
+def test_client_phase4_params() -> None:
+    client = RecordingClient()
+    client.cancel_job(7)
+    assert client.calls[-1][1] == {"sched_cancel": 1, "id": 7}
+    client.mark_all_read()
+    assert client.calls[-1][1] == {"notif_read_all": 1}
+    client.admin_invite("a@b.gr", "editor")
+    assert client.calls[-1][1] == {"email": "a@b.gr", "role": "editor"}
+    client.totp_enable("123456")
+    assert client.calls[-1][1] == {"code": "123456"}
+    client.set_notif_prefs(companies="094039270", types="2.1,11.2", email_enabled=False)
+    assert client.calls[-1][1]["email_enabled"] == "0"
+
+
+def test_client_invoice_pdf_decodes(monkeypatch) -> None:
+    import base64 as b64
+
+    client = RecordingClient()
+    client.reply = {"success": True, "pdf_base64": b64.b64encode(b"%PDF-1.4").decode()}
+    assert client.invoice_pdf("400").startswith(b"%PDF")
 
 
 def test_payments_page_lists(app) -> None:
