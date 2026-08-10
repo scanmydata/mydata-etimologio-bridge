@@ -108,6 +108,7 @@
 
 require __DIR__ . '/auth.php';   // session + config + localdb + account resolution
 require __DIR__ . '/bankimport.php'; // bank statement (extrait) parsing → local payments
+require __DIR__ . '/zipwriter.php';  // ZIP builder (no ZipArchive dependency)
 
 // --- RESPONSE HELPERS --------------------------------------------------------
 
@@ -2656,27 +2657,35 @@ function fetchInvoicePdfBytes(\CurlHandle $ch, string $mark): ?string {
     return $resp;
 }
 
-// Stream a ZIP of multiple invoice PDFs (bulk / per-customer download)
-function streamInvoicesZip(\CurlHandle $ch, array $marks, string $zipName = 'invoices.zip'): void {
-    if (!class_exists('ZipArchive')) jsonError('Το PHP zip extension δεν είναι ενεργό', 500);
-    $tmp = tempnam(sys_get_temp_dir(), 'etz');
-    $zip = new \ZipArchive();
-    $zip->open($tmp, \ZipArchive::OVERWRITE);
-    $ok = 0; $fail = [];
+// Stream a ZIP of multiple invoice PDFs (bulk / per-customer download).
+// Built with zipwriter.php rather than ZipArchive: the zip extension is absent
+// from the portable PHP the desktop bundles and from slim container images, so
+// this path works identically offline, on the thin client and on the VPS.
+// `$meta` maps a MARK to its row (issue_date/series/aa) so entries are named the
+// same way the desktop names them.
+function streamInvoicesZip(\CurlHandle $ch, array $marks, string $zipName = 'invoices.zip', array $meta = []): void {
+    $files = []; $fail = []; $used = [];
     foreach ($marks as $m) {
         $m = trim((string)$m);
         if ($m === '') continue;
         $pdf = fetchInvoicePdfBytes($ch, $m);
-        if ($pdf !== null) { $zip->addFromString("invoice-$m.pdf", $pdf); $ok++; }
-        else { $fail[] = $m; }
+        if ($pdf === null) { $fail[] = $m; continue; }
+        $name = zip_invoice_name($meta[$m] ?? [], $m);
+        // Never let one document silently overwrite another.
+        if (isset($used[$name])) {
+            $n = 2;
+            $base = preg_replace('/\.pdf$/u', '', $name);
+            while (isset($used["$base ($n).pdf"])) $n++;
+            $name = "$base ($n).pdf";
+        }
+        $used[$name] = true;
+        $files[$name] = $pdf;
     }
-    if (!empty($fail)) $zip->addFromString('_missing.txt', "Δεν βρέθηκαν PDF για:\n" . implode("\n", $fail));
-    $zip->close();
-    if ($ok === 0) { @unlink($tmp); jsonError('Κανένα έγκυρο PDF για συμπίεση'); }
-    $data = file_get_contents($tmp);
-    @unlink($tmp);
+    if (!$files) jsonError('Κανένα έγκυρο PDF για συμπίεση');
+    if ($fail) $files['_δεν-βρέθηκαν.txt'] = "Δεν βρέθηκαν PDF για:\n" . implode("\n", $fail);
+    $data = zip_build($files);
     header('Content-Type: application/zip');
-    header('Content-Disposition: attachment; filename="' . $zipName . '"');
+    header('Content-Disposition: attachment; filename="' . preg_replace('/[^\w\-. ]+/u', '', $zipName) . '"');
     header('Content-Length: ' . strlen($data));
     echo $data;
     exit;
@@ -3894,6 +3903,38 @@ if ($linesJson !== '') {
     jsonResponse($result);
 }
 
+// --- Bulk PDF: ZIP download, or a merged stream for print preview -----------
+// Serves the web UI and the thin client (and anything else on the API): the
+// heavy lifting stays server-side, so a browser client gets the same «μαζική
+// εκτύπωση / εξαγωγή ZIP» the desktop has, for exactly the documents it is
+// allowed to see (the account scope is already resolved above).
+if (!empty($_GET['bulk_pdf'] ?? $_POST['bulk_pdf'] ?? '')) {
+    $marksRaw = (string)($_POST['marks'] ?? $_GET['marks'] ?? '');
+    $marks = array_values(array_filter(array_map('trim', preg_split('/[,\s]+/', $marksRaw) ?: [])));
+    if (!$marks) { curl_close($ch); jsonError('Δεν επιλέχθηκαν παραστατικά (marks)'); }
+    if (count($marks) > 200) { curl_close($ch); jsonError('Πολλά παραστατικά σε μία παρτίδα (μέγιστο 200)'); }
+
+    // Optional per-MARK metadata so ZIP entries get the readable names.
+    $metaRaw = (string)($_POST['meta'] ?? $_GET['meta'] ?? '');
+    $meta = $metaRaw !== '' ? json_decode($metaRaw, true) : [];
+    if (!is_array($meta)) $meta = [];
+
+    $mode = strtolower(trim((string)($_POST['mode'] ?? $_GET['mode'] ?? 'zip')));
+    if ($mode === 'zip') {
+        $name = trim((string)($_POST['filename'] ?? $_GET['filename'] ?? '')) ?: ('ΠΑΡΑΣΤΑΤΙΚΑ ' . date('Y-m-d') . '.zip');
+        streamInvoicesZip($ch, $marks, $name, $meta);   // exits
+    }
+    // mode=json → base64 PDFs so the browser can merge them for a print preview
+    $out = []; $fail = [];
+    foreach ($marks as $m) {
+        $pdf = fetchInvoicePdfBytes($ch, $m);
+        if ($pdf === null) { $fail[] = $m; continue; }
+        $out[] = ['mark' => $m, 'name' => zip_invoice_name($meta[$m] ?? [], $m), 'pdf_base64' => base64_encode($pdf)];
+    }
+    curl_close($ch);
+    jsonResponse(['success' => !empty($out), 'count' => count($out), 'failed' => $fail, 'files' => $out]);
+}
+
 // PDF retrieval by MARK — takes priority over all other parameters
 if ($mark !== '') {
     getInvoicePdf($ch, $mark);
@@ -3903,19 +3944,22 @@ if ($mark !== '') {
 if (!empty($_GET['invoices_zip'] ?? $_POST['invoices_zip'] ?? '')) {
     $marksParam = trim($_GET['marks'] ?? $_POST['marks'] ?? '');
     $marks = [];
+    $meta  = [];   // ΜΑΡΚ → row, so entries get readable names
     if ($marksParam !== '') {
         $marks = array_filter(array_map('trim', explode(',', $marksParam)));
-        $zipName = 'invoices.zip';
+        $zipName = 'ΠΑΡΑΣΤΑΤΙΚΑ ' . date('Y-m-d') . '.zip';
     } else {
         $bv = $buyerVatFilter !== '' ? $buyerVatFilter : $afm;
         $r  = searchInvoices($ch, $issueDateFrom, $issueDateTo, $searchInvoiceType, '', $seriesFilter, $bv, '0');
         foreach (($r['invoices'] ?? []) as $iv) {
-            if (!empty($iv['mark'])) $marks[] = $iv['mark'];
+            if (empty($iv['mark'])) continue;
+            $marks[] = $iv['mark'];
+            $meta[(string)$iv['mark']] = $iv;
         }
-        $zipName = $bv !== '' ? ('invoices-' . preg_replace('/\D/', '', $bv) . '.zip') : 'invoices.zip';
+        $zipName = $bv !== '' ? (preg_replace('/\D/', '', $bv) . ' ΠΑΡΑΣΤΑΤΙΚΑ.zip') : ('ΠΑΡΑΣΤΑΤΙΚΑ ' . date('Y-m-d') . '.zip');
     }
     if (empty($marks)) { curl_close($ch); jsonError('Δεν βρέθηκαν παραστατικά για ZIP'); }
-    streamInvoicesZip($ch, $marks, $zipName);
+    streamInvoicesZip($ch, $marks, $zipName, $meta);
 }
 
 if ($deleteCustomerCode !== '' || $deleteCustomerVat !== '') {

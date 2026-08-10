@@ -182,6 +182,7 @@ class EtimologioShell(QWidget):
         self._notifications.unread_changed.connect(
             lambda n: ui.set_tile_value(self._kpi_unread, str(n))
         )
+        self._settings.mode_change_requested.connect(self._switch_backend)
         #: Section key → page, used for both navigation and construction.
         self._pages = {
             "issue": self._issue, "credit": self._credit, "bulk": self._bulk,
@@ -432,6 +433,8 @@ class EtimologioShell(QWidget):
             url = f"{base}/app.php" + (f"?account={vat}" if vat else "") + f"#{key}"
             QDesktopServices.openUrl(QUrl(url))
             return
+        if key == "settings":
+            page.show_mode(self._service.mode(), self._service.server_url())
         self._stack.setCurrentWidget(page)
         if key not in self._NO_AUTOLOAD and hasattr(page, "refresh"):
             page.refresh()
@@ -456,6 +459,22 @@ class EtimologioShell(QWidget):
         # If we are already logged in, act now; otherwise _enter_home() replays it.
         if self._client is not None and self._stack.currentWidget() is self._home:
             self._apply_pending_focus()
+
+    def _switch_backend(self, mode: str, server_url: str) -> None:
+        """Move between the bundled local PHP and the shared server, live.
+
+        Stops whatever is running, rewrites the stored mode and re-enters the
+        normal startup path — so the user lands on the login (server) or is
+        auto-logged in (offline) without restarting the application.
+        """
+        self._service.stop()
+        self._service.set_mode(mode, server_url)
+        self._client = None
+        self._started = False
+        self._set_status(
+            "Σύνδεση στον server…" if mode == "thin" else "Εκκίνηση τοπικού backend…"
+        )
+        self.start()
 
     def _apply_pending_focus(self) -> None:
         vat = getattr(self, "_pending_focus_vat", "")

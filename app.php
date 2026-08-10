@@ -41,13 +41,26 @@ $__business = $__user['business_name'];
     --txt:#e6edf6; --muted:#93a4bd; --accent:#38bdf8; --accent2:#0ea5e9;
     --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --chip:#0b2942; --hover:#1b2c45;
     --radius:14px; --shadow:0 10px 30px rgba(0,0,0,.4); --side:230px;
+    /* Ίδιο με το on_accent της εφαρμογής υπολογιστή: το χρώμα της μπίλιας
+       όταν ο διακόπτης είναι αναμμένος (σκούρο πάνω στο γαλάζιο). */
+    --on-accent:#04222f;
+    /* Η μπάρα κορυφής ήταν καρφωμένη σκούρα: στο φωτεινό θέμα το κείμενό της
+       γινόταν σκούρο πάνω σε σκούρο και δεν διαβαζόταν. */
+    --header-bg:rgba(10,18,32,.85);
+    --menu-bg:#0a111e;   /* menu_bg της εφαρμογής υπολογιστή */
   }
   /* Light theme — activated by data-theme="light" on <html> (toggle bottom-left). */
   :root[data-theme="light"]{
     --bg:#f1f5fb; --panel:#ffffff; --panel2:#eef3fa; --line:#d5deea;
-    --txt:#1a2637; --muted:#5b6b84; --accent:#0284c7; --accent2:#0369a1;
+    /* --muted σκουρότερο από το αρχικό #5b6b84: στα 12px το παλιό έβγαινε 3.46:1
+       πάνω στο λευκό, κάτω από το όριο αναγνωσιμότητας (4.5:1) — οι υπότιτλοι
+       και οι ετικέτες πεδίων ήταν ξεθωριασμένοι στο φωτεινό θέμα. */
+    --txt:#1a2637; --muted:#4a5a72; --accent:#0284c7; --accent2:#0369a1;
     --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --chip:#e5eefb; --hover:#e8eef7;
     --shadow:0 10px 30px rgba(30,50,90,.12);
+    --on-accent:#ffffff;
+    --header-bg:rgba(255,255,255,.88);
+    --menu-bg:#e9eff7;
   }
   :root[data-theme="light"] body{background:var(--bg)}
   /* Colored action buttons need readable (dark-on-tint) text in light mode */
@@ -66,13 +79,22 @@ $__business = $__user['business_name'];
   .side-controls{padding:10px 12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:9px}
   .side-actions{display:flex;flex-direction:column;gap:7px;padding-bottom:9px;margin-bottom:2px;border-bottom:1px solid var(--line)}
   .side-actions .side-act{width:100%;text-align:left;justify-content:flex-start}
-  .side-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
-  .side-toggle:hover{color:var(--txt)}
-  .side-toggle .tt-switch{position:relative;width:40px;height:22px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);flex:0 0 auto}
-  .side-toggle .tt-knob{position:absolute;top:1px;left:1px;width:18px;height:18px;border-radius:50%;background:var(--accent);
-    display:flex;align-items:center;justify-content:center;font-size:11px;transition:transform .2s,background .2s}
-  :root[data-theme="light"] #themeToggle .tt-knob{transform:translateX(18px)}
-  #tipsToggle.on .tt-knob{transform:translateX(18px)}
+  /* Τίτλος ενότητας ρυθμίσεων — ίδιος με τον διαχωριστή «ΡΥΘΜΙΣΕΙΣ» της
+     εφαρμογής υπολογιστή, ώστε τα δύο μισά του προϊόντος να διαβάζονται ίδια. */
+  .side-sec{font-size:10.5px;letter-spacing:.14em;color:var(--muted);font-weight:700;padding:2px 0 1px}
+  /* Διακόπτες: ίδιες διαστάσεις και χρώματα με το ToggleSwitch της εφαρμογής
+     υπολογιστή — κάψουλα 40×22, μπίλια 16 με περιθώριο 3, διαδρομή 18.
+     Κλειστός: κανάλι = --line, μπίλια = --muted. Ανοιχτός: κανάλι =
+     --accent2 (accent_deep), μπίλια = --on-accent. */
+  .side-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--txt);font-size:12px;user-select:none;padding:1px 0}
+  .side-toggle:hover .tt-switch{border-color:var(--accent)}
+  .side-toggle .tt-switch{position:relative;width:40px;height:22px;border-radius:999px;background:var(--line);
+    border:1px solid var(--line);flex:0 0 auto;transition:background .14s ease-out,border-color .14s ease-out}
+  .side-toggle .tt-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--muted);
+    display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1;
+    transition:transform .14s cubic-bezier(.33,1,.68,1),background .14s ease-out}
+  .side-toggle.on .tt-switch{background:var(--accent2);border-color:var(--accent2)}
+  .side-toggle.on .tt-knob{background:var(--on-accent);transform:translateX(18px)}
   /* Lightweight CSS tooltips for elements carrying data-tip (suppressed when tips off) */
   [data-tip]{position:relative}
   :root.tips-off [data-tip]:hover::after,:root.tips-off [data-tip]:hover::before{display:none!important}
@@ -87,14 +109,20 @@ $__business = $__user['business_name'];
   a{color:var(--accent)}
   .app{display:grid;grid-template-columns:var(--side) 1fr;grid-template-rows:auto 1fr;grid-template-areas:"side top" "side main";height:100vh}
   /* Sidebar */
-  aside{grid-area:side;background:linear-gradient(180deg,#0c1626,#0b1220);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  /* Ακολουθεί το θέμα, όπως το πλαϊνό μενού της εφαρμογής υπολογιστή: με
+     καρφωμένο σκούρο φόντο, το κείμενο (var(--txt)) γινόταν σκούρο-σε-σκούρο
+     στο φωτεινό θέμα και η στήλη έμοιαζε άδεια. */
+  aside{grid-area:side;background:var(--menu-bg);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
   .brand{padding:18px 18px 10px;font-size:18px;font-weight:800;letter-spacing:.3px}
   .brand span{color:var(--accent)}
   nav.menu{padding:8px;overflow:auto;flex:1}
   .nav-item{display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:10px;cursor:pointer;color:var(--muted);font-weight:600;margin-bottom:2px}
   .nav-item .ic{width:20px;text-align:center;font-size:16px}
   .nav-item:hover{background:var(--panel2);color:var(--txt)}
-  .nav-item.active{background:var(--accent2);color:#04222f}
+  /* Το χρώμα του ενεργού στοιχείου ακολουθεί το θέμα: στο σκούρο είναι σκούρο
+     πάνω σε γαλάζιο, στο φωτεινό λευκό πάνω σε βαθύ μπλε. Με σταθερό #04222f η
+     ενεργή ενότητα γινόταν δυσανάγνωστη στο φωτεινό θέμα. */
+  .nav-item.active{background:var(--accent2);color:var(--on-accent)}
   .wiz .wiz-q{font-size:17px;font-weight:800;margin-bottom:14px}
   .wiz-opts{display:flex;gap:16px;flex-wrap:wrap}
   .wiz-card{flex:1;min-width:240px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;
@@ -105,7 +133,7 @@ $__business = $__user['business_name'];
   .wiz-card small{color:var(--muted);font-weight:500}
   .side-foot{padding:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
   /* Topbar */
-  header{grid-area:top;display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);background:rgba(10,18,32,.85);backdrop-filter:blur(6px)}
+  header{grid-area:top;display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--header-bg);backdrop-filter:blur(6px)}
   .search-trigger{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;color:var(--muted);cursor:text;min-width:260px}
   .search-trigger kbd{margin-left:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:11px}
   .grow{flex:1}
@@ -115,7 +143,7 @@ $__business = $__user['business_name'];
   select:focus,input:focus,textarea:focus{border-color:var(--accent)}
   button{cursor:pointer;transition:.15s}
   button:hover{border-color:var(--accent)}
-  button.primary{background:var(--accent2);border-color:var(--accent2);color:#04222f;font-weight:700}
+  button.primary{background:var(--accent2);border-color:var(--accent2);color:var(--on-accent);font-weight:700}
   button.primary:hover{background:var(--accent)}
   button.danger{border-color:var(--bad);color:#fecaca}
   button.danger:hover{background:rgba(239,68,68,.15)}
@@ -281,10 +309,11 @@ $__business = $__user['business_name'];
         <button class="ghost sm side-act" id="btnTour" onclick="startTour()" data-tip="Γρήγορη ξενάγηση στην εφαρμογή">🧭 Ξενάγηση</button>
         <button class="ghost sm side-act" id="btnManual" onclick="downloadManual()" data-tip="Κατέβασε το εγχειρίδιο χρήσης (PDF)">📄 Εγχειρίδιο</button>
       </div>
-      <div class="side-toggle" id="themeToggle" onclick="toggleTheme()" data-tip="Εναλλαγή φωτεινού / σκοτεινού θέματος">
-        <span class="tt-switch"><span class="tt-knob" id="themeIco">🌙</span></span><span id="themeLbl">Σκούρο θέμα</span></div>
-      <div class="side-toggle on" id="tipsToggle" onclick="toggleTips()" data-tip="Εμφάνιση/απόκρυψη επεξηγήσεων (tooltips)">
-        <span class="tt-switch"><span class="tt-knob">💡</span></span><span id="tipsLbl">Επεξηγήσεις</span></div>
+      <div class="side-sec">ΡΥΘΜΙΣΕΙΣ</div>
+      <div class="side-toggle" id="themeToggle" onclick="toggleTheme()" data-tip="Εναλλαγή ανάμεσα σε σκούρο και φωτεινό">
+        <span class="tt-switch"><span class="tt-knob"></span></span><span id="themeLbl">Φωτεινό θέμα</span></div>
+      <div class="side-toggle on" id="tipsToggle" onclick="toggleTips()" data-tip="Εμφάνιση επεξηγήσεων όταν αφήνετε τον δείκτη πάνω από ένα κουμπί">
+        <span class="tt-switch"><span class="tt-knob"></span></span><span id="tipsLbl">Βοηθητικά μηνύματα</span></div>
     </div>
     <div class="side-foot">🔒 Τοπικά δεδομένα κρυπτογραφημένα<br>Πάτα <b>Ctrl+K</b> για γρήγορη αναζήτηση</div>
   </aside>
@@ -364,7 +393,8 @@ $__business = $__user['business_name'];
           <button class="primary" onclick="loadCard()">Φόρτωση</button>
           <button class="ghost" onclick="openPaymentModal()">+ Πληρωμή</button>
           <button class="ghost" onclick="ledgerPdf()">📄 PDF καρτέλας</button>
-          <button class="ghost" onclick="zipCustomerInvoices()">🗜️ ZIP παραστατικών</button>
+          <button class="ghost" onclick="printCustomerInvoices()" data-tip="Προεπισκόπηση &amp; εκτύπωση όλων των παραστατικών του πελάτη">🖨️ Μαζική εκτύπωση</button>
+          <button class="ghost" onclick="zipCustomerInvoices()" data-tip="Πακετάρει τα PDF της καρτέλας σε ένα ZIP">🗜️ ZIP παραστατικών</button>
         </div>
         <div id="cardHead" style="margin-top:12px"></div>
         <div class="cards" id="cardCards"></div>
@@ -1066,7 +1096,7 @@ $__business = $__user['business_name'];
     <button title="Καθαρισμός" onclick="cbClear()">🗑</button>
     <button title="Κλείσιμο" onclick="cbTogglePanel()">✕</button></div>
   <div id="cbLog"></div>
-  <div id="cbHint">π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ» · «νέος πελάτης 094xxxxxx» · «νέο είδος Μπογιά 15 ευρώ» · «πήγαινε στην καρτέλα» · «βοήθεια»</div>
+  <div id="cbHint">π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ» · «μαζική εκτύπωση» · «ZIP παραστατικών» · «πόσες αδιάβαστες» · «ενεργοποίηση 2FA» · «βοήθεια»</div>
   <div id="cbBar">
     <input id="cbInput" placeholder="Γράψε ή πάτα το μικρόφωνο…" onkeydown="if(event.key==='Enter')cbSubmitText()">
     <button id="cbMic" title="Ομιλία" onclick="cbToggleMic()">🎙</button>
@@ -1105,14 +1135,19 @@ function payMethod(m){return PAYMETHODS[parseInt(m,10)]||'';}
 function toast(m,t=''){const e=$('#toast');e.className='toast show '+t;e.textContent=m;clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',3400);}
 // --- Theme (light / dark) -----------------------------------------------------
 function applyTheme(t){const light=t==='light';document.documentElement.setAttribute('data-theme',light?'light':'dark');
-  const ico=$('#themeIco'),lbl=$('#themeLbl');if(ico)ico.textContent=light?'☀️':'🌙';if(lbl)lbl.textContent=(light?'Φωτεινό':'Σκούρο')+' θέμα';}
+  // Ο διακόπτης ακολουθεί την κατάσταση μέσω της κλάσης .on (όπως στην εφαρμογή
+  // υπολογιστή): αναμμένος = φωτεινό θέμα. Η ετικέτα μένει σταθερή ώστε να
+  // περιγράφει ΤΙ κάνει ο διακόπτης, όχι πού βρίσκεται τώρα.
+  const tg=$('#themeToggle');if(tg)tg.classList.toggle('on',light);}
 function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='light'?'light':'dark';
   const next=cur==='light'?'dark':'light';localStorage.setItem('etim_theme',next);applyTheme(next);}
 applyTheme(localStorage.getItem('etim_theme')||'dark');
 // --- Tooltips on/off ----------------------------------------------------------
 function applyTips(on){document.documentElement.classList.toggle('tips-off',!on);
   const t=$('#tipsToggle');if(t)t.classList.toggle('on',on);
-  const l=$('#tipsLbl');if(l)l.textContent=on?'Επεξηγήσεις':'Χωρίς επεξηγήσεις';}
+  // Η ετικέτα μένει σταθερή, όπως στην εφαρμογή υπολογιστή: περιγράφει ΤΙ
+  // ελέγχει ο διακόπτης — την κατάσταση τη δείχνει η ίδια η μπίλια.
+}
 function toggleTips(){const on=!document.documentElement.classList.contains('tips-off')?false:true;
   localStorage.setItem('etim_tips',on?'1':'0');applyTips(on);}
 applyTips((localStorage.getItem('etim_tips')||'1')==='1');
@@ -1569,6 +1604,9 @@ let CARD={};
 async function loadCard(){const vat=$('#cardVat').value.trim();if(!vat){toast('Επίλεξε πελάτη','err');return;}defaultRange();
   $('#cardCards').innerHTML='<div class="card"><div class="v"><span class="spin"></span></div></div>';$('#cardTable tbody').innerHTML='';
   try{const d=await api({ledger:1,buyer_vat:vat,issue_date_from:di('cardFrom'),issue_date_to:di('cardTo')});if(!d.success)throw new Error(d.error||'σφάλμα');CARD=d;
+    // Τα παραστατικά της καρτέλας, για μαζική εκτύπωση/ZIP.
+    window.CARD_INVOICES=(d.entries||[]).filter(e=>e.kind==='invoice'&&e.mark)
+      .map(e=>({mark:e.mark,issue_date:e.date,series:e.series||'',aa:e.aa||''}));
     const balCls=d.balance>0.005?'pos':'zero';
     $('#cardHead').innerHTML=`<strong>${esc(d.customer_name||vat)}</strong> <span class="muted">ΑΦΜ ${esc(vat)}</span>`;
     $('#cardCards').innerHTML=`<div class="card"><div class="k">Τζίρος</div><div class="v">${fmt(d.total_invoiced)} €</div></div>`+
@@ -2440,6 +2478,61 @@ async function delDraft(id,seller){if(!confirm('Διαγραφή πρόχειρ�
 function zipUrl(params){const q=new URLSearchParams(params);if(ACCOUNT)q.set('account',ACCOUNT);return API+'?'+q.toString();}
 function zipCustomerInvoices(){const vat=$('#cardVat').value.trim();if(!vat){toast('Φόρτωσε καρτέλα','err');return;}
   toast('Λήψη ZIP παραστατικών…','ok');window.location=zipUrl({invoices_zip:1,buyer_vat:vat,issue_date_from:di('cardFrom'),issue_date_to:di('cardTo')});}
+
+// --- Μαζική εκτύπωση με προεπισκόπηση (web / thin client) --------------------
+// Ό,τι κάνει και η εφαρμογή υπολογιστή, από τον browser: το backend κατεβάζει τα
+// PDF (μία εξουσιοδοτημένη κλήση, μέσα στο scope του λογαριασμού) και εδώ τα
+// ενώνουμε σε ΕΝΑ αρχείο, ώστε ο ενσωματωμένος προβολέας του browser να δώσει
+// προεπισκόπηση + εκτύπωση όλων μαζί. Αν η ένωση δεν είναι διαθέσιμη, ανοίγουμε
+// το καθένα χωριστά — καλύτερα από το να μη γίνει τίποτα.
+let PDFLIB_P=null;
+function ensurePdfLib(){
+  if(window.PDFLib)return Promise.resolve(true);
+  if(!PDFLIB_P)PDFLIB_P=new Promise(res=>{const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+    s.onload=()=>res(true);s.onerror=()=>res(false);document.head.appendChild(s);});
+  return PDFLIB_P;
+}
+const b64ToBytes=b64=>{const bin=atob(b64);const a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return a;};
+
+async function printMarks(marks,meta){
+  marks=(marks||[]).filter(Boolean);
+  if(!marks.length){toast('Δεν επιλέχθηκαν παραστατικά','err');return;}
+  if(marks.length>200){toast('Μέγιστο 200 παραστατικά ανά παρτίδα','err');return;}
+  toast('Λήψη '+marks.length+' PDF…','ok');
+  let d;
+  try{ d=await api({bulk_pdf:1,mode:'json',marks:marks.join(','),meta:JSON.stringify(meta||{})}); }
+  catch(e){ toast('Μαζική εκτύπωση: '+e.message,'err'); return; }
+  const files=d.files||[];
+  if(!files.length){toast('Κανένα PDF δεν κατέβηκε','err');return;}
+  if(d.failed&&d.failed.length)toast(d.failed.length+' δεν κατέβηκαν','warn');
+  const ok=await ensurePdfLib();
+  if(!ok){files.forEach(f=>openPdfBlob(b64ToBytes(f.pdf_base64),f.name));return;}
+  try{
+    const merged=await PDFLib.PDFDocument.create();
+    for(const f of files){
+      const src=await PDFLib.PDFDocument.load(b64ToBytes(f.pdf_base64));
+      const pages=await merged.copyPages(src,src.getPageIndices());
+      pages.forEach(p=>merged.addPage(p));
+    }
+    openPdfBlob(await merged.save(),'ΠΑΡΑΣΤΑΤΙΚΑ.pdf',true);
+    toast(files.length+' παραστατικά στην προεπισκόπηση','ok');
+  }catch(e){ files.forEach(f=>openPdfBlob(b64ToBytes(f.pdf_base64),f.name)); }
+}
+function openPdfBlob(bytes,name,print){
+  const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));
+  const w=window.open(url,'_blank');
+  if(!w){toast('Επίτρεψε τα αναδυόμενα παράθυρα για την εκτύπωση','warn');return;}
+  // Ο προβολέας χρειάζεται λίγο για να φορτώσει πριν δεχτεί εντολή εκτύπωσης.
+  if(print)w.addEventListener('load',()=>{try{w.print();}catch(_){}});
+  setTimeout(()=>URL.revokeObjectURL(url),120000);
+}
+function printCustomerInvoices(){
+  const rows=(window.CARD_INVOICES||[]);
+  if(!rows.length){toast('Φόρτωσε πρώτα καρτέλα','err');return;}
+  const meta={};rows.forEach(r=>{meta[r.mark]={issue_date:r.issue_date,series:r.series,aa:r.aa};});
+  printMarks(rows.map(r=>r.mark),meta);
+}
 function zipAllInvoices(){const y=new Date().getFullYear();toast('Λήψη ZIP (έτος '+y+')…','ok');
   window.location=zipUrl({invoices_zip:1,issue_date_from:y+'-01-01',issue_date_to:y+'-12-31'});}
 
@@ -2555,32 +2648,103 @@ function cbNum(re,t){const m=t.match(re);return m?parseFloat(m[1].replace(',','.
 function cbFindProd(s){for(const c in PRODMAP){const dsc=(PRODMAP[c].desc||'').toLowerCase();if(dsc.length>=4&&s.includes(dsc.slice(0,Math.min(8,dsc.length))))return c;}return '';}
 // Intent router
 let CB_CTX=null; // pending multi-step flow (e.g. resolving an unknown customer)
-async function cbHandle(t){const s=t.toLowerCase();
+// --- Ψηφιακός βοηθός: κανονικοποίηση + δηλωτικός πίνακας προθέσεων ------------
+// Γιατί όχι έτοιμη βιβλιοθήκη NLU (NLP.js, Transformers.js): θα πρόσθεταν
+// megabytes και εξάρτηση από CDN ή κατεβασμένο μοντέλο — ασύμβατο με το offline
+// desktop και με self-hosted εγκατάσταση. Το λεξιλόγιο εδώ είναι μικρό και
+// σταθερό (ρήματα τιμολόγησης), οπότε ένας κανονικοποιημένος πίνακας κανόνων
+// είναι και ακριβέστερος και μηδενικού κόστους.
+
+// Πεζά + αφαίρεση τόνων/διαλυτικών, ώστε «καρτέλα», «ΚΑΡΤΕΛΑ» και «καρτελα» να
+// είναι το ίδιο πράγμα — παλιά κάθε λέξη έμπαινε δύο φορές στους πίνακες.
+function cbNorm(s){return (s||'').toLowerCase()
+  .replace(/[άὰᾶα̈]/g,'α').replace(/[έὲ]/g,'ε').replace(/[ήὴῆ]/g,'η')
+  .replace(/[ίὶῖϊΐ]/g,'ι').replace(/[όὸ]/g,'ο').replace(/[ύὺῦϋΰ]/g,'υ').replace(/[ώὼῶ]/g,'ω')
+  .replace(/ς/g,'σ');}
+
+// Ενότητα → λέξεις-κλειδιά (κανονικοποιημένες, χωρίς τόνους).
+const CB_NAV=[
+  ['issue',        ['εκδοση','εκδοσ','νεο παραστατικο']],
+  // Στο web τα εκδοθέντα παραστατικά ζουν μέσα στην Καρτέλα (με μαζική
+  // εκτύπωση/ZIP)· η εφαρμογή υπολογιστή έχει ξεχωριστή σελίδα «Παραστατικά».
+  ['card',         ['παραστατικα','τιμολογια μου','λιστα παραστατικων','αναζητηση παραστατικ']],
+  ['bulk',         ['μαζικη εκδοση','μαζικ']],
+  ['customers',    ['πελατ']],
+  ['card',         ['καρτελ']],
+  ['bankimp',      ['τραπεζ','extrait','εξτρε','εισαγωγη πληρωμ']],
+  ['products',     ['ειδη','ειδοσ','προιοντ']],
+  ['series',       ['σειρ']],
+  ['drafts',       ['προχειρ']],
+  ['cancel',       ['ακυρωσ','πιστωτικ']],
+  ['schedule',     ['προγραμματισμ','χρονοπρογραμμ']],
+  ['stats',        ['στατιστικ']],
+  ['settings',     ['ρυθμισ','2fa','κωδικο','authenticator']],
+  ['admin',        ['διαχειρισ','χρηστ','ρολο','προσκλησ']],
+];
+
+async function cbHandle(t){const s=cbNorm(t);
+  // Πάντα διαθέσιμη έξοδος: χωρίς αυτό, μια ημιτελής ροή «κρατούσε» τον βοηθό
+  // και κάθε επόμενη εντολή καταναλωνόταν ως απάντηση σε παλιά ερώτηση.
+  if(/^(ακυρο|ακυρωση|σταματα|ξεχνα το|cancel|stop)$/.test(s.trim())){
+    if(CB_CTX){CB_CTX=null;cbBot('Εντάξει, το ακύρωσα.');}else cbBot('Δεν εκκρεμεί κάτι.');return;}
   if(CB_CTX)return cbContinue(t);              // we're mid-conversation
-  const isIssue=/έκδοσ|εκδοσ|τιμολόγ|τιμολογ|απόδειξ|αποδειξ|παραστατ|issue|invoice/.test(s);
-  // Navigation (not when it's an issue command)
-  const nav=[['καρτέλ','card'],['καρτελ','card'],['πελάτ','customers'],['πελατ','customers'],['στατιστ','stats'],['δελτί','delivery'],['δελτι','delivery'],['σειρέ','series'],['σειρε','series'],['σειρά','series'],['σειρων','series'],['σειρών','series'],['είδη','products'],['ειδη','products'],['πρόχειρ','drafts'],['προχειρ','drafts'],['ρυθμίσ','settings'],['ρυθμισ','settings'],['ακύρωσ','cancel'],['ακυρωσ','cancel'],['τραπέζ','bankimp'],['τραπεζ','bankimp'],['extrait','bankimp'],['εξτρέ','bankimp'],['μαζικ','bulk']];
-  if(/πήγαινε|πηγαινε|άνοιξε|ανοιξε|go to|open|δείξε|δειξε|εμφάνισε/.test(s)&&!isIssue){
-    for(const[k,v]of nav){if(s.includes(k)){showView(v);cbBot('Άνοιξα την ενότητα.');return;}}
-    if(/έκδοσ|εκδοσ/.test(s)){showView('issue');cbBot('Άνοιξα την Έκδοση.');return;}}
+
+  // Ρητή πλοήγηση ΠΡΩΤΑ: το «πήγαινε στα παραστατικά» περιέχει «παραστατ» και
+  // αλλιώς θα περνούσε λανθασμένα για εντολή έκδοσης.
+  const isNav=/πηγαινε|ανοιξε|go to|open|δειξε|εμφανισε|παμε/.test(s);
+  if(isNav){
+    for(const[view,keys]of CB_NAV){if(keys.some(k=>s.includes(k))){showView(view);cbBot('Άνοιξα την ενότητα.');return;}}
+  }
+  const isIssue=!isNav&&/εκδοσ|τιμολογ|αποδειξ|παραστατ|issue|invoice/.test(s)&&!/λιστα|αναζητησ|ολα τα/.test(s);
   // Help
-  if(/βοήθεια|βοηθεια|help|τι μπορείς|τι μπορεις|τι κάνεις/.test(s)){
-    cbBot('Μπορώ (πάντα ως ΠΡΟΧΕΙΡΟ — καμία οριστική έκδοση/ΜΑΡΚ χωρίς εσένα):\n• «έκδοση τιμολογίου στην <επωνυμία ή ΑΦΜ> καθαρή αξία <ποσό> με παρακράτηση φόρου <%> είδος <περιγραφή>»\n  → βρίσκω τον πελάτη με το όνομα· αν δεν υπάρχει ρωτάω αν είναι επαγγελματίας/ιδιώτης και ζητάω τα στοιχεία· βρίσκω ή δημιουργώ το είδος· υπολογίζω την παρακράτηση.\n• «νέος πελάτης <ΑΦΜ>»  • «νέο είδος <περιγραφή> <τιμή> ευρώ»  • «νέα σειρά»\n• «πήγαινε στην καρτέλα/πελάτες/είδη/σειρές/…»  • «πόσα τιμολόγια φέτος»\n\nℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
+  if(/βοηθεια|help|τι μπορεισ|τι κανεισ|οδηγιεσ/.test(s)){
+    cbBot('Μπορώ (πάντα ως ΠΡΟΧΕΙΡΟ — καμία οριστική έκδοση/ΜΑΡΚ χωρίς εσένα):\n'+
+      '📄 Έκδοση: «έκδοση τιμολογίου στην <επωνυμία ή ΑΦΜ> καθαρή αξία <ποσό> με παρακράτηση <%> είδος <περιγραφή>»\n'+
+      '👥 Δεδομένα: «νέος πελάτης <ΑΦΜ>» · «νέο είδος <περιγραφή> <τιμή> ευρώ» · «νέα σειρά»\n'+
+      '🖨️ Εκτυπώσεις: «μαζική εκτύπωση παραστατικών» · «ZIP παραστατικών» · «PDF καρτέλας»\n'+
+      '💶 Ταμείο: «εισαγωγή πληρωμών από τράπεζα» · «πληρωμές»\n'+
+      '⏰ Αυτοματισμοί: «προγραμματισμός» · «ειδοποιήσεις» · «πόσες αδιάβαστες»\n'+
+      '⚙️ Λογαριασμός: «ρυθμίσεις» · «ενεργοποίηση 2FA» · «αλλαγή κωδικού» · «διαχείριση χρηστών»\n'+
+      '📊 Ερωτήσεις: «πόσα τιμολόγια φέτος» · «τζίρος μήνα»\n'+
+      '🧭 Πλοήγηση: «πήγαινε στην καρτέλα / πελάτες / είδη / σειρές / πρόχειρα…»\n\n'+
+      'ℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
   // New series
-  if(/νέα? σειρά|νεα? σειρα|new series|δημιούργησε σειρά|φτιάξε σειρά/.test(s)){
+  if(/νεα σειρα|new series|δημιουργησε σειρα|φτιαξε σειρα/.test(s)){
     showView('series');cbBot('Άνοιξα τη διαχείριση Σειρών. Διάλεξε τύπο παραστατικού, δώσε κωδικό σειράς (π.χ. Α, ΤΠΥ, ΔΑ) και πάτα «Δημιουργία σειράς».');return;}
+  // Μαζική εκτύπωση / ZIP — δουλεύουν και στο web και στον thin client.
+  if(/μαζικη εκτυπωσ|εκτυπωσε ολα|τυπωσε τα παραστατικ|print all/.test(s)){
+    if(window.CARD_INVOICES&&window.CARD_INVOICES.length){cbBot('Ετοιμάζω προεπισκόπηση εκτύπωσης…');printCustomerInvoices();}
+    else{showView('card');cbBot('Φόρτωσε πρώτα την καρτέλα ενός πελάτη και μετά πάτα «🖨️ Μαζική εκτύπωση».');}
+    return;}
+  if(/\bzip\b|συμπιεσ|πακετ|κατεβασε ολα/.test(s)){
+    const vat=($('#cardVat')&&$('#cardVat').value||'').trim();
+    if(vat){cbBot('Κατεβάζω ZIP με τα παραστατικά του πελάτη…');zipCustomerInvoices();}
+    else{showView('card');cbBot('Διάλεξε πελάτη στην Καρτέλα και μετά «🗜️ ZIP παραστατικών».');}
+    return;}
+  // Ειδοποιήσεις
+  if(/ειδοποιησ|αδιαβαστ|notification/.test(s)){
+    try{const d=await api({notif_count:1});cbBot('Έχεις '+(d.unread||0)+' αδιάβαστες ειδοποιήσεις.');toggleNotifPanel();}
+    catch(e){cbBot('Δεν μπόρεσα να δω τις ειδοποιήσεις τώρα.');}return;}
+  // 2FA / κωδικός
+  if(/2fa|διπλη πιστοποιησ|authenticator|αλλαγη κωδικ|αλλαξε κωδικ/.test(s)){
+    showView('settings');cbBot('Άνοιξα τις Ρυθμίσεις. Εκεί αλλάζεις κωδικό και ενεργοποιείς το 2FA σαρώνοντας το QR με την εφαρμογή authenticator.');return;}
+  // Προγραμματισμός
+  if(/προγραμματισμ|χρονοπρογραμμ|αυτοματη εκδοσ/.test(s)){
+    showView('schedule');cbBot('Άνοιξα τον Προγραμματισμό. Από εδώ βλέπεις και ακυρώνεις τις προγραμματισμένες εκδόσεις.');return;}
   // Stats Q&A
-  if(/πόσα τιμολ|ποσα τιμολ|τζίρο|τζιρο|στατιστικ|how many invoic|φέτος|εφετος/.test(s)&&!isIssue){
-    cbBot('Φέρνω στατιστικά…');try{const d=await api({statistics:1,period:'year'});const y=(d.stats&&(d.stats.year||d.stats))||d.year||d;
-      const cnt=y.count!==undefined?y.count:(d.count!==undefined?d.count:'—');const net=y.net!==undefined?y.net:(d.net!==undefined?d.net:0);
-      cbBot('Φέτος: '+cnt+' παραστατικά, καθαρή αξία '+fmt(net||0)+' €.');}catch(e){cbBot('Δεν μπόρεσα να φέρω στατιστικά τώρα.');}return;}
+  if(/ποσα τιμολ|τζιρο|στατιστικ|how many invoic|φετοσ/.test(s)&&!isIssue){
+    const period=/μηνα|μηνασ|φετινο μηνα/.test(s)?'month':'year';
+    cbBot('Φέρνω στατιστικά…');
+    try{const d=await api({statistics:1,period:period});
+      cbBot((period==='year'?'Φέτος':'Αυτόν τον μήνα')+': '+(d.total_count??'—')+' παραστατικά, καθαρή αξία '+fmt(d.total_value||0)+' €.');}
+    catch(e){cbBot('Δεν μπόρεσα να φέρω στατιστικά τώρα.');}return;}
   // New customer
-  if(/νέος? πελάτ|νεος? πελατ|new customer|create customer|δημιούργησε πελάτ|φτιάξε πελάτ/.test(s)){
+  if(/νεοσ? πελατ|new customer|create customer|δημιουργησε πελατ|φτιαξε πελατ/.test(s)){
     const afm=(t.match(/\b(\d{9})\b/)||[])[1]||'';
     cbBot('Ανοίγω φόρμα νέου πελάτη'+(afm?(' για ΑΦΜ '+afm):'')+'. Έλεγξε τα στοιχεία και πάτα Αποθήκευση.');
     openCustomerModal(c=>{if(c)cbBot('✔ Ο πελάτης «'+(c.name||c.vat||'')+'» αποθηκεύτηκε.');},afm);return;}
   // New product / item
-  if(/νέο είδ|νεο ειδ|νέο προϊ|νεο προι|new item|new product|create item|δημιούργησε είδ|φτιάξε είδ/.test(s)){
+  if(/νεο ειδ|νεο προι|new item|new product|create item|δημιουργησε ειδ|φτιαξε ειδ/.test(s)){
     const price=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur)/i,t);
     let desc=t.replace(/^.*?(νέο είδ\S*|νεο ειδ\S*|νέο προϊ\S*|νεο προι\S*|new (?:item|product)|δημιούργησε είδ\S*|φτιάξε είδ\S*)/i,'').replace(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur).*/i,'').replace(/\bτιμή\b|\bτιμη\b/gi,'').trim();
     cbBot('Ανοίγω φόρμα νέου είδους'+(desc?(' «'+desc+'»'):'')+(price?(' τιμή '+price+'€'):'')+'. Έλεγξε και πάτα Αποθήκευση.');
@@ -2705,7 +2869,8 @@ const TOUR=[
   {sel:'[data-view="issue"]',view:'issue',title:'🧾 Έκδοση',text:'Ξεκίνα εδώ. Ένας οδηγός σε ρωτά τι θέλεις να εκδώσεις (Τιμολόγιο/Απόδειξη ή Δελτίο) και αν ο πελάτης είναι επαγγελματίας ή ιδιώτης, και προσαρμόζει τη φόρμα.'},
   {sel:'[data-view="bulk"]',title:'📚 Μαζική έκδοση',text:'Έκδοση πολλών παραστατικών μαζί: μία γραμμή ανά παραστατικό με picker πελάτη & είδους — χωρίς πληκτρολόγηση ΑΦΜ/κωδικών.'},
   {sel:'[data-view="customers"]',title:'👥 Πελάτες',text:'Το πελατολόγιό σου με φίλτρα ανά στήλη. Από κάθε γραμμή εκδίδεις κατευθείαν ή ανοίγεις την καρτέλα.'},
-  {sel:'[data-view="card"]',title:'📇 Καρτέλα πελάτη',text:'Τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + τρέχον υπόλοιπο, με εξαγωγή σε PDF.'},
+  {sel:'[data-view="card"]',title:'📇 Καρτέλα πελάτη',text:'Τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + τρέχον υπόλοιπο. Από τα κουμπιά της καρτέλας βγάζεις PDF καρτέλας, κάνεις <b>μαζική εκτύπωση</b> όλων των παραστατικών του πελάτη (με προεπισκόπηση) ή τα κατεβάζεις όλα σε <b>ZIP</b>.'},
+  {sel:'[data-view="cancel"]',title:'↩️ Ακύρωση / Πιστωτικό',text:'Στο myDATA δεν διαγράφεις παραστατικό — το ακυρώνεις με συσχετιζόμενο πιστωτικό. Διάλεξε το αρχικό ΜΑΡΚ· πλήρης αξία = ακύρωση, μικρότερη = μερική πίστωση.'},
   {sel:'[data-view="bankimp"]',title:'🏦 Εισαγωγή πληρωμών',text:'Ανέβασε extrait τράπεζας (CSV/XLSX). Η εφαρμογή αντιστοιχίζει κάθε κατάθεση σε πελάτη και καταχωρεί μαζικά τις εισπράξεις.'},
   {sel:'[data-view="series"]',title:'🔢 Σειρές',text:'Κάθε τύπος παραστατικού χρειάζεται μία σειρά για να εκδοθεί. Δημιούργησέ τες με το πράσινο κουμπί «➕ Νέα σειρά».'},
   {sel:'[data-view="drafts"]',title:'📝 Πρόχειρα',text:'Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ): προεπισκόπηση PDF και μαζική διαγραφή με τα checkboxes.'},
@@ -2714,8 +2879,9 @@ const TOUR=[
   {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.'},
   {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις & προτιμήσεις email',text:'Αλλαγή κωδικού, ενεργοποίηση 2FA με authenticator, και — για λογιστή/διαχειριστή — επιλογή για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις email ειδοποιήσεων.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα Ctrl+K οποιαδήποτε στιγμή για να βρεις πελάτη αστραπιαία.'},
-  {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τον διακόπτη θέματος, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
-  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Ακριβώς από κάτω αλλάζεις φωτεινό/σκοτεινό θέμα και ενεργοποιείς/απενεργοποιείς τις επεξηγήσεις (tooltips).'}
+  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή μίλα και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ», «μαζική εκτύπωση», «ZIP παραστατικών», «πόσες αδιάβαστες», «ενεργοποίηση 2FA», «πήγαινε στην καρτέλα». Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.'},
+  {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τους διακόπτες, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
+  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'}
 ];
 let tourI=0;
 function startTour(){tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
@@ -2761,6 +2927,13 @@ const MANUAL=[
   ['«Πελάτες»: όλο το πελατολόγιο με ταξινόμηση και φίλτρα ανά στήλη (χωνάκι ▾ με λίστα τιμών, τύπου Excel). Από κάθε γραμμή εκδίδεις κατευθείαν ή ανοίγεις την καρτέλα. «+ Νέος πελάτης» με ΑΦΜ (άντληση από Taxisnet) ή ως ιδιώτης χωρίς ΑΦΜ.','p'],
   ['«Καρτέλα»: συνδυάζει τα παραστατικά της ΑΑΔΕ με τις τοπικές πληρωμές σε μια κίνηση χρέωσης/πίστωσης με τρέχον υπόλοιπο. «+ Πληρωμή» για καταχώρηση είσπραξης, «📄 PDF καρτέλας» για εκτύπωση και «🗜️ ZIP παραστατικών» για μαζική λήψη PDF.','p'],
 
+  ['3β. Μαζική εκτύπωση & εξαγωγή ZIP','h2'],
+  ['Από την «Καρτέλα» ενός πελάτη έχεις δύο μαζικές ενέργειες για ΟΛΑ τα παραστατικά του διαστήματος:','p'],
+  ['🖨️ <b>Μαζική εκτύπωση</b> — κατεβάζει τα PDF από την ΑΑΔΕ, τα ενώνει σε ένα αρχείο και ανοίγει προεπισκόπηση. Από εκεί τυπώνεις όλα μαζί με μία εργασία, αντί να ανοίγεις ένα-ένα.','li'],
+  ['🗜️ <b>ZIP παραστατικών</b> — πακετάρει τα ίδια PDF σε ένα αρχείο ZIP για αρχειοθέτηση ή αποστολή στον πελάτη. Κάθε αρχείο ονομάζεται «ημερομηνία σειρά-ΑΑ ΜΑΡΚ.pdf», ώστε να ταξινομούνται σωστά.','li'],
+  ['Οι ίδιες ενέργειες υπάρχουν και στην εφαρμογή υπολογιστή (σελίδα «Παραστατικά», με επιλογή γραμμών μέσω checkbox). Λειτουργούν και όταν συνδέεσαι στον κεντρικό server (thin client) — η λήψη των PDF γίνεται από τον server, μέσα στα δικαιώματα του λογαριασμού σου.','p'],
+  ['Όριο: 200 παραστατικά ανά παρτίδα. Αν κάποιο PDF δεν βρεθεί, τα υπόλοιπα προχωρούν κανονικά και ενημερώνεσαι για όσα έλειψαν.','p'],
+
   ['4. Εισαγωγή πληρωμών (extrait τράπεζας)','h2'],
   ['Ανέβασε αρχείο κινήσεων τράπεζας (CSV Eurobank, XLSX Optima/Εθνικής κ.ά.). Η εφαρμογή αναγνωρίζει αυτόματα ημερομηνία/περιγραφή/ποσό (και ελληνικά νούμερα 1.234,56), αντιστοιχίζει κάθε κατάθεση σε πελάτη (με ΑΦΜ ή ασαφή αντιστοίχιση ονόματος), σου επιτρέπει να διορθώσεις/επιλέξεις πελάτη ανά γραμμή, και καταχωρεί μαζικά τις εισπράξεις. Προσοχή: το ποσό κατάθεσης καταχωρείται όπως είναι — δεν «κλείνει» υποχρεωτικά υπόλοιπο (μερικές/υπερβάλλουσες πληρωμές επιτρέπονται).','p'],
 
@@ -2788,6 +2961,15 @@ const MANUAL=[
 
   ['11. Ασφάλεια — 2FA με authenticator','h2'],
   ['Προαιρετική επαλήθευση δύο παραγόντων. Από «Ρυθμίσεις → 2FA» πάτα «Ενεργοποίηση», σκάναρε τον κωδικό QR με εφαρμογή authenticator (Google Authenticator, Authy, Microsoft Authenticator, 1Password κ.λπ.) ή καταχώρησε το εμφανιζόμενο κλειδί χειροκίνητα, και επιβεβαίωσε με τον 6ψήφιο κωδικό. Στο εξής, σε κάθε σύνδεση θα ζητείται ο τρέχων κωδικός. Απενεργοποίηση με τον κωδικό authenticator ή με τον κωδικό πρόσβασής σου. Το μυστικό 2FA αποθηκεύεται κρυπτογραφημένο.','p'],
+
+  ['11β. Ψηφιακός βοηθός','h2'],
+  ['Το μπλε κουμπί με το μικρόφωνο (κάτω δεξιά) ανοίγει τον βοηθό. Γράφεις ή μιλάς στα ελληνικά και εκτελεί ενέργειες — αναγνωρίζει το κείμενο με ή χωρίς τόνους.','p'],
+  ['Έκδοση: «έκδοση τιμολογίου στην <επωνυμία ή ΑΦΜ> καθαρή αξία <ποσό> με παρακράτηση <%> είδος <περιγραφή>». Βρίσκει τον πελάτη από το όνομα, ρωτά αν είναι επαγγελματίας ή ιδιώτης όταν δεν υπάρχει, και βρίσκει ή δημιουργεί το είδος.','li'],
+  ['Δεδομένα: «νέος πελάτης <ΑΦΜ>», «νέο είδος <περιγραφή> <τιμή> ευρώ», «νέα σειρά».','li'],
+  ['Εκτυπώσεις: «μαζική εκτύπωση», «ZIP παραστατικών», «PDF καρτέλας».','li'],
+  ['Λογαριασμός & αυτοματισμοί: «ειδοποιήσεις», «πόσες αδιάβαστες», «προγραμματισμός», «ενεργοποίηση 2FA», «αλλαγή κωδικού», «διαχείριση χρηστών».','li'],
+  ['Ερωτήσεις: «πόσα τιμολόγια φέτος», «τζίρος μήνα». Πλοήγηση: «πήγαινε στην καρτέλα/πελάτες/είδη/σειρές/πρόχειρα…».','li'],
+  ['<b>Ασφάλεια:</b> ό,τι ετοιμάζει ο βοηθός μένει ΠΡΟΧΕΙΡΟ. Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση». Πες «βοήθεια» για την πλήρη λίστα.','p'],
 
   ['12. Χρήσιμα & συντομεύσεις','h2'],
   ['• Ctrl+K: αστραπιαία αναζήτηση πελάτη από παντού.  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']

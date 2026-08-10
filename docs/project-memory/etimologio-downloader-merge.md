@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: d99a09dd-f89c-4baf-bfc0-e7400408007d
-  modified: 2026-08-10T18:46:45.535Z
+  modified: 2026-08-10T19:46:18.773Z
 ---
 
 Merging the PHP e-Τιμολόγιο Pro into the PySide6 **Timologio Downloader**
@@ -29,10 +29,9 @@ history preserved). That branch contains everything: standalone PHP at repo root
 `merge/etimologio-pro` branch stays local, not pushed. Re-sync desktop work with
 `git subtree pull --prefix=desktop <downloader-path> merge/etimologio-pro`.
 
-**Work is on branch `merge/etimologio-pro`** (NOT pushed; `main` stays stable).
-- PHP vendored via `git subtree` at `backend/etimologio/` (upstream stays
-  `scanmydata/mydata-etimologio-bridge`; pull with `git subtree pull`).
-- `backend/etimologio/localdb.php` is now **dual-dialect** (`db_dialect()`,
+Inside `desktop/`, the PHP lives at `backend/etimologio/` (a second copy of the
+repo-root bridge — **edit the root files and copy them over**, both are shipped).
+- `backend/etimologio/localdb.php` is **dual-dialect** (`db_dialect()`,
   `db_now_sql()`, `db_insert()` + a DDL translator) selected by `DB_DSN`
   (env-overridable). SQLite verified; Postgres to verify on the VPS.
 - Native side: `src/timologio/etimologio/` — `client.py` (requests over
@@ -67,8 +66,13 @@ periods. DB-backed ⇒ identical for offline/thin-client/VPS. **Phase 4 done:**
 (ρόλοι/προσκλήσεις), **plus** a Παραστατικά page with **μαζική εκτύπωση +
 εξαγωγή ZIP** (and the same on the Καρτέλα), and a **UI harmonised with the
 Downloader** — see [[etimologio-native-ui]]. All 14 sections are native now;
-nothing falls back to the browser. 350 tests. **Next: Phase 5** — Dockerfile +
-Coolify VPS (Postgres), thin-client mode, web, local→server migration; then
-volume/money, platform (scheduler/notifications/settings/admin), then Docker/
-Coolify VPS + thin-client + web. Bundling php.exe into PyInstaller (`datas`) is
-still pending (packaging phase).
+nothing falls back to the browser. **Phase 5 done:** `Dockerfile` +
+`deploy/entrypoint.sh` (config.php rendered from env at boot, scheduler tick,
+`healthz.php`), `deploy/README.md` Coolify guide, `tools/migrate_to_server.php`
+(one-off SQLite→Postgres), and a «Σύνδεση σε server» card that flips the desktop
+between offline and thin-client live. **Web parity:** bulk print + ZIP now work
+in the browser/thin client too — see [[etimologio-web-ui]]. 350 tests.
+
+**Remaining:** packaging (bundle `php.exe` + a `cacert.pem` into PyInstaller
+`datas`) and the actual VPS rollout/Postgres verification — everything else in
+the plan is built.

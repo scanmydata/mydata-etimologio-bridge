@@ -52,6 +52,8 @@ def qr_pixmap(data: str, size: int = 190) -> QPixmap | None:
 
 class SettingsPage(EtimPage):
     go_back = Signal()
+    #: Asked the shell to switch backend mode: (mode, server_url).
+    mode_change_requested = Signal(str, str)
 
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(get_client, run, parent)
@@ -125,6 +127,29 @@ class SettingsPage(EtimPage):
         prefs_row.addWidget(ui.button("Αποθήκευση προτιμήσεων", self._save_prefs, kind="primary", icon_name="check"))
         prefs.addLayout(prefs_row)
         box.addWidget(prefs_card)
+
+        # --- backend mode (offline ↔ thin client) --------------------------
+        server_card, server = ui.card()
+        server.addWidget(ui.title("Σύνδεση σε server"))
+        server.addWidget(ui.muted(
+            "Τοπικά (offline): τα δεδομένα μένουν σε αυτόν τον υπολογιστή. "
+            "Σε server: δουλεύεις πάνω στα κοινά δεδομένα του γραφείου, μαζί με "
+            "τους πελάτες που χρησιμοποιούν το e-Τιμολόγιο από browser."
+        ))
+        sform = QFormLayout()
+        self._server_url = QLineEdit()
+        self._server_url.setPlaceholderText("https://timologio.example.gr")
+        sform.addRow("Διεύθυνση server", self._server_url)
+        server.addLayout(sform)
+        self._mode_label = ui.muted("")
+        server.addWidget(self._mode_label)
+        srow = QHBoxLayout()
+        srow.addStretch(1)
+        srow.addWidget(ui.button("Τοπικά (offline)", lambda: self._set_mode("offline"), icon_name="lock"))
+        srow.addWidget(ui.button("Σύνδεση σε server", lambda: self._set_mode("thin"),
+                                 kind="primary", icon_name="network"))
+        server.addLayout(srow)
+        box.addWidget(server_card)
 
         box.addStretch(1)
         self._status = ui.muted("")
@@ -239,6 +264,32 @@ class SettingsPage(EtimPage):
             ),
             self._failed,
         )
+
+    # --- backend mode ------------------------------------------------------
+    def show_mode(self, mode: str, server_url: str) -> None:
+        """Called by the shell so the card reflects the live configuration."""
+        self._mode_label.setText(
+            "Τώρα: τοπικό backend (offline)" if mode == "offline"
+            else f"Τώρα: σύνδεση σε server — {server_url or '(χωρίς διεύθυνση)'}"
+        )
+        if server_url:
+            self._server_url.setText(server_url)
+
+    def _set_mode(self, mode: str) -> None:
+        url = self._server_url.text().strip()
+        if mode == "thin" and not url:
+            self._status.setText("Δώσε τη διεύθυνση του server.")
+            self._server_url.setFocus()
+            return
+        if QMessageBox.question(
+            self, "Αλλαγή σύνδεσης",
+            "Η εφαρμογή θα επανασυνδεθεί"
+            + (" στον server και θα χρειαστεί να συνδεθείς ξανά." if mode == "thin"
+               else " στα τοπικά δεδομένα αυτού του υπολογιστή."),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.mode_change_requested.emit(mode, url)
 
     def _failed(self, msg: str) -> None:
         self._status.setText(f"Σφάλμα: {msg}")

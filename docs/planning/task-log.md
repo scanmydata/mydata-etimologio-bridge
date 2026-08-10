@@ -71,6 +71,22 @@ Snapshot of the working task list across the recent sessions. See
   - [x] 🐞 **Bug found & fixed:** `shell._run` dropped results because the `_Job` (and its signal object) could be garbage‑collected before emitting — an intermittently "never loading" page. Jobs are now kept in `_INFLIGHT` until they report; 2 regression tests added
   - [x] +11 tests; full suite **350 passed**
   - [x] **Live-verified** vs real ΑΑΔΕ: 4 real PDFs fetched (~99KB each, valid `%PDF`), zipped (374KB, integrity‑checked) and confirmed to render 4 pages through the print engine; notifications/scheduler/admin/prefs endpoints all OK; 2FA setup returns a scannable QR
-- [ ] **Phase 5 — server + web:** Dockerfile + Coolify VPS (Postgres), desktop thin‑client mode, web clients via the public URL, one‑time local→server data migration
+- [x] **Phase 5 — server + web:** ✅ complete (deployment ready; VPS rollout is an operations step)
+  - [x] **`Dockerfile`** (php:8.3-apache, `pdo_pgsql`+`pdo_sqlite`, CA certs) + **`deploy/entrypoint.sh`** that renders `config.php` from the environment at boot (no secrets in the image) and ticks `scheduler.php` every minute + **`healthz.php`** probe
+  - [x] **`deploy/README.md`** — Coolify walkthrough: Postgres service, env table, the required `/data` volume (`.enckey`, cookies), pointing the desktop at the server
+  - [x] **`tools/migrate_to_server.php`** — one‑off SQLite→Postgres copy (shared columns only, `ON CONFLICT DO NOTHING`, sequence reset, `--dry-run`)
+  - [x] Desktop **thin‑client UI** — «Σύνδεση σε server» card in Ρυθμίσεις; switches offline ↔ thin live without restarting
+- [x] **Μαζική εκτύπωση & ZIP στο web / thin client**
+  - [x] **`zipwriter.php`** — ZIP built with zlib only. `ZipArchive` is absent from the portable PHP *and* slim images, so the existing `invoices_zip` endpoint was **broken outside a full PHP install**; it now works everywhere (verified against an independent reader: valid, UTF‑8 Greek names, DEFLATE/STORE)
+  - [x] `?bulk_pdf` endpoint — `mode=zip` streams the archive, `mode=json` returns base64 PDFs so the browser can merge them (pdf‑lib) into one document for a **native print preview**. Falls back to one tab per PDF
+  - [x] Καρτέλα gains «🖨️ Μαζική εκτύπωση» + «🗜️ ZIP παραστατικών» — the client can print/export **their own** documents
+- [x] **UI parity with the Downloader (web)**
+  - [x] Toggles rebuilt to the desktop `ToggleSwitch` spec — 40×22 track, 16px knob, 18px travel, `--line`→`--accent2`, knob `--muted`→`--on-accent`, under a «ΡΥΘΜΙΣΕΙΣ» separator, labels «Φωτεινό θέμα»/«Βοηθητικά μηνύματα» (stable, like the desktop)
+  - [x] **Sidebar now follows the theme** (`--menu-bg`, the desktop's `menu_bg` values) instead of a hardcoded dark gradient; header likewise (`--header-bg`)
+- [x] **Digital assistant upgraded** — evaluated NLP.js / Transformers.js and rejected both (megabytes + CDN/model dependency, incompatible with offline desktop and self‑hosting); instead: accent/case‑insensitive normalisation (halved the keyword table), a declarative intent map covering **every** feature (bulk print, ZIP, notifications, scheduler, 2FA, admin, payments, stats), a always‑available «άκυρο» escape, and a fuller help card
+- [x] **Manual PDF + page tour updated** — new «3β. Μαζική εκτύπωση & εξαγωγή ZIP» and «11β. Ψηφιακός βοηθός» sections (15 chapters); tour gains Ακύρωση/Πιστωτικό, the assistant, and the reworded toggles (16 steps)
+- [x] 🐞 **Bugs found & fixed during the accountant‑side review**
+  - Assistant: «πήγαινε στα παραστατικά» matched the issuance keyword `παραστατ` and started an invoice flow, then the stuck context swallowed every later command. Navigation now wins, and «άκυρο» always resets
+  - Light theme contrast: hardcoded `#04222f` on active nav items and primary buttons, a permanently dark sidebar/header under theme‑switching text, and `--muted` at 3.46:1. **Automated contrast audit now reports 0 failures in both themes** (was 7 in light)
 - [ ] **Packaging:** bundle a portable `php.exe` into PyInstaller `datas`; scheduler via Task Scheduler (standalone) / container cron (server).
   - ⚠️ **CA bundle required:** the bundled PHP must ship a `cacert.pem` with `curl.cainfo`/`openssl.cafile` set in its `php.ini`, or outbound TLS to `mydata.aade.gr` fails with OpenSSL error 60. Reuse certifi's bundle (same as the Downloader's Python side). Discovered during the Phase‑1 live test.
