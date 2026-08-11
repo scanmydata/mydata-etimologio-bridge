@@ -82,6 +82,10 @@ class PaymentsPage(EtimPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(get_client, run, parent)
         box = QVBoxLayout(self)
+        # Ίδια περιθώρια με τις υπόλοιπες σελίδες: χωρίς αυτά οι ετικέτες
+        # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
+        box.setContentsMargins(16, 14, 16, 14)
+        box.setSpacing(10)
 
         top = QHBoxLayout()
         back = QPushButton("←")

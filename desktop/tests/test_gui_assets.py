@@ -161,3 +161,56 @@ def test_tour_survives_an_empty_installation(app, tmp_path, monkeypatch) -> None
         window._tour.go(index)
     window._tour.stop()
     window.close()
+
+
+# --- πλαϊνό μενού: δύο εφαρμογές, χωρίς κομμένα γράμματα ---------------------
+
+def test_menu_labels_are_never_clipped(app) -> None:
+    """Καμία ετικέτα δεν κόβεται, σε κανένα από τα δύο μενού.
+
+    Το πλάτος ήταν καρφωμένο στα 226px· σε μηχάνημα με λίγο μεγαλύτερη
+    γραμματοσειρά συστήματος κόβονταν δώδεκα ετικέτες («Αντίγραφο ασφαλείας»
+    ζητούσε 289px). Τώρα υπολογίζεται από τις πραγματικές διαστάσεις.
+    """
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from timologio.gui.side_menu import SideMenu
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    menu = SideMenu()
+    layout.addWidget(menu)
+    host.resize(menu.width(), 900)
+    host.show()
+    app.processEvents()
+
+    clipped = []
+    for mode in ("downloader", "etimologio"):
+        menu.set_mode(mode)
+        app.processEvents()
+        clipped += [
+            f"{mode}:{b.text()}"
+            for b in menu._buttons.values()
+            if b.isVisibleTo(menu) and b.sizeHint().width() > b.width()
+        ]
+    host.hide()
+    assert clipped == [], f"κομμένες ετικέτες μενού: {clipped}"
+
+
+def test_menu_shows_one_application_at_a_time(app) -> None:
+    """Οι ενέργειες των δύο εφαρμογών δεν ανακατεύονται ποτέ."""
+    from timologio.gui.side_menu import SideMenu
+
+    menu = SideMenu()
+    menu.set_mode("downloader")
+    assert menu._dl_panel.isVisibleTo(menu)
+    assert not menu._etim_panel.isVisibleTo(menu)
+    assert menu._title.text() == "myDATA"
+
+    menu.set_mode("etimologio")
+    assert menu._etim_panel.isVisibleTo(menu)
+    assert not menu._dl_panel.isVisibleTo(menu)
+    assert "Τιμολόγιο" in menu._title.text()
+    # Ο «Νέος πελάτης» ανήκει στον Downloader και δεν πρέπει να φαίνεται εδώ.
+    assert not menu._buttons["add_client"].isVisibleTo(menu)

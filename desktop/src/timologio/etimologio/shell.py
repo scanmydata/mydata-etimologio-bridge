@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..gui.icons import logo_pixmap
 from ..gui.theme import CURRENT
 from .client import EtimologioClient
 from .pages import (
@@ -215,17 +216,22 @@ class EtimologioShell(QWidget):
 
     def _on_backend_ready(self, url: str) -> None:
         self._client = EtimologioClient(url)
-        # Offline mode = single local accountant → auto-login with the bootstrap
-        # master. Thin mode (VPS) → show the login form.
+        # Πάντα οθόνη σύνδεσης, όπως στο web. Στην τοπική λειτουργία τα πεδία
+        # έρχονται συμπληρωμένα (ο κωδικός παράγεται από την ίδια την εφαρμογή
+        # και δεν τον ξέρει κανείς), ώστε να αρκεί ένα κλικ — αλλά ο χρήστης
+        # βλέπει ότι μπαίνει σε ξεχωριστή εφαρμογή με δικό της λογαριασμό.
         if self._service.mode() == "offline":
             email, password = self._service.bootstrap_credentials()
-            _run(
-                lambda: self._client.login(email, password),
-                self._after_login,
-                lambda m: self._show_login(),
+            self._email.setText(email)
+            self._password.setText(password)
+            self._login_hint.setText(
+                "Τοπική λειτουργία: τα στοιχεία του διαχειριστή είναι έτοιμα — "
+                "πατήστε «Σύνδεση»."
             )
+            self._login_hint.show()
         else:
-            self._show_login()
+            self._login_hint.hide()
+        self._show_login()
 
     def _on_backend_error(self, msg: str) -> None:
         self._started = False
@@ -252,9 +258,28 @@ class EtimologioShell(QWidget):
         outer = QVBoxLayout(page)
         outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("Σύνδεση — e-Τιμολόγιο Pro")
-        title.setStyleSheet("font-size:18px;font-weight:600;")
+        logo = QLabel()
+        logo.setPixmap(logo_pixmap(56, etimologio=True))
+        logo.setFixedSize(56, 56)
+        logo.setScaledContents(True)
+        outer.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        title = QLabel("e-Τιμολόγιο Pro")
+        title.setStyleSheet("font-size:20px;font-weight:800;")
         outer.addWidget(title, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        subtitle = QLabel("Σύνδεση στον λογαριασμό σας")
+        subtitle.setObjectName("muted")
+        outer.addWidget(subtitle, 0, Qt.AlignmentFlag.AlignHCenter)
+        outer.addSpacing(10)
+
+        self._login_hint = QLabel("")
+        self._login_hint.setObjectName("hint")
+        self._login_hint.setWordWrap(True)
+        self._login_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._login_hint.setMaximumWidth(360)
+        self._login_hint.hide()
+        outer.addWidget(self._login_hint, 0, Qt.AlignmentFlag.AlignHCenter)
 
         form = QFormLayout()
         self._email = QLineEdit()
@@ -419,7 +444,18 @@ class EtimologioShell(QWidget):
             self._client.set_account(str(vat))
 
     #: Sections that arrive already populated; the rest load on demand.
-    _NO_AUTOLOAD = {"issue", "credit", "bulk"}
+    #: Η Έκδοση ΔΕΝ είναι εδώ: χρειάζεται το πελατολόγιο και τις σειρές, τα
+    #: οποία φορτώνει μία φορά η δική της refresh().
+    _NO_AUTOLOAD = {"credit", "bulk"}
+
+    def open_section(self, key: str) -> None:
+        """Navigate from outside (the side menu). Ignored until logged in."""
+        if key == "home":
+            if self._client is not None:
+                self._stack.setCurrentWidget(self._home)
+                self._refresh_home_kpis()
+            return
+        self._open_section(key)
 
     def _open_section(self, key: str) -> None:
         if self._client is None:

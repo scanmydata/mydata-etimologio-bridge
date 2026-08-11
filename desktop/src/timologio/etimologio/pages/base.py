@@ -99,6 +99,10 @@ class ListPage(EtimPage):
         self._rows: list[dict[str, Any]] = []
 
         box = QVBoxLayout(self)
+        # Ίδια περιθώρια με τις υπόλοιπες σελίδες: χωρίς αυτά οι ετικέτες
+        # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
+        box.setContentsMargins(16, 14, 16, 14)
+        box.setSpacing(10)
         self.toolbar = QHBoxLayout()
         back = QPushButton("←")
         back.setToolTip("Πίσω")

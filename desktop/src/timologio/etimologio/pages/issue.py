@@ -84,7 +84,14 @@ class IssuePage(EtimPage):
         super().__init__(get_client, run, parent)
         self._temp_id = ""
         self._guard = False
+        self._loaded = False
+        self._customers: list[dict[str, Any]] = []
+        self._all_series: list[dict[str, Any]] = []
         box = QVBoxLayout(self)
+        # Ίδια περιθώρια με τις υπόλοιπες σελίδες: χωρίς αυτά οι ετικέτες
+        # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
+        box.setContentsMargins(16, 14, 16, 14)
+        box.setSpacing(10)
 
         top = QHBoxLayout()
         back = QPushButton("←")
@@ -109,8 +116,12 @@ class IssuePage(EtimPage):
             self._type.addItem(label, code)
         head.addWidget(QLabel("Τύπος:"))
         head.addWidget(self._type, 2)
-        self._series = QLineEdit("A")
-        self._series.setFixedWidth(56)
+        # Η σειρά είναι λίστα και όχι ελεύθερο κείμενο: το e-timologio δέχεται
+        # μόνο σειρές που έχουν ήδη δημιουργηθεί για ΤΟΝ ΣΥΓΚΕΚΡΙΜΕΝΟ τύπο, και
+        # μια πληκτρολογημένη ανύπαρκτη σειρά απορριπτόταν στο τέλος — αφού ο
+        # χρήστης είχε συμπληρώσει όλο το παραστατικό.
+        self._series = QComboBox()
+        self._series.setMinimumWidth(110)
         head.addWidget(QLabel("Σειρά:"))
         head.addWidget(self._series)
         self._payment = QComboBox()
@@ -119,9 +130,30 @@ class IssuePage(EtimPage):
         head.addWidget(QLabel("Πληρωμή:"))
         head.addWidget(self._payment, 1)
         box.addLayout(head)
+        self._type.currentIndexChanged.connect(self._fill_series)
+
+        self._series_warn = QLabel("")
+        self._series_warn.setObjectName("hint")
+        self._series_warn.setWordWrap(True)
+        self._series_warn.hide()
+        box.addWidget(self._series_warn)
 
         # --- customer ------------------------------------------------------
         cust = QFormLayout()
+        # Επιλογή από το πελατολόγιο με αναζήτηση καθώς πληκτρολογείς — όπως στο
+        # web. Ο χρήστης δεν χρειάζεται να θυμάται ΑΦΜ.
+        self._picker = QComboBox()
+        self._picker.setEditable(True)
+        self._picker.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._picker.setPlaceholderText("Αναζήτηση πελάτη με επωνυμία ή ΑΦΜ…")
+        self._picker.lineEdit().setPlaceholderText("Αναζήτηση πελάτη με επωνυμία ή ΑΦΜ…")
+        completer = self._picker.completer()
+        if completer is not None:
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._picker.activated.connect(self._picked_customer)
+        cust.addRow("Πελάτης", self._picker)
+
         afm_row = QHBoxLayout()
         self._afm = QLineEdit()
         self._afm.setPlaceholderText("ΑΦΜ (κενό = ιδιώτης/λιανική)")
@@ -278,12 +310,72 @@ class IssuePage(EtimPage):
         return {
             "lines": lines,
             "invoice_type": self._type.currentData(),
-            "series": self._series.text().strip() or "A",
+            "series": str(self._series.currentData() or self._series.currentText() or "A"),
             "payment": int(self._payment.currentData()),
             "notes": self._notes.text().strip(),
             "temp_id": self._temp_id,
             **self._customer_fields(),
         }
+
+    # --- φόρτωση πελατολογίου & σειρών --------------------------------------
+    def refresh(self) -> None:
+        """Φέρνει πελάτες και σειρές μία φορά, όταν ανοίγει η σελίδα."""
+        client = self.client()
+        if client is None or self._loaded:
+            return
+        self._loaded = True
+        self._status.setText("Φόρτωση πελατών και σειρών…")
+        self._run(client.customers, self._fill_customers, lambda m: self._status.setText(""))
+        self._run(client.series, self._got_series, lambda m: self._status.setText(""))
+
+    def _fill_customers(self, data: dict[str, Any]) -> None:
+        rows = data.get("customers") or data.get("rows") or []
+        self._customers = list(rows)
+        self._picker.clear()
+        self._picker.addItem("", None)
+        for row in self._customers:
+            vat = str(row.get("vat") or "")
+            name = str(row.get("name") or "")
+            label = f"{name} ({vat})" if vat else name
+            self._picker.addItem(label, row)
+        self._status.setText(f"{len(self._customers)} πελάτες διαθέσιμοι.")
+
+    def _picked_customer(self, index: int) -> None:
+        row = self._picker.itemData(index)
+        if not isinstance(row, dict):
+            return
+        self._afm.setText(str(row.get("vat") or ""))
+        self._name.setText(str(row.get("name") or ""))
+        self._address.setText(str(row.get("address") or ""))
+        self._city.setText(str(row.get("city") or ""))
+
+    def _got_series(self, data: dict[str, Any]) -> None:
+        self._all_series = list(data.get("series", []))
+        self._fill_series()
+
+    def _fill_series(self) -> None:
+        """Δείχνει μόνο τις σειρές που ανήκουν στον επιλεγμένο τύπο."""
+        code = str(self._type.currentData() or "")
+        label = dict(INVOICE_TYPES).get(code, "")
+        # Το backend επιστρέφει τον τύπο ως «2.1 - Τιμολόγιο…»· ταιριάζουμε με
+        # τον αριθμητικό πρόθεμα («2.1») που υπάρχει και στη δική μας ετικέτα.
+        dotted = label.split(" ", 1)[0] if label else ""
+        matching = [
+            s for s in self._all_series
+            if dotted and str(s.get("invoice_type", "")).strip().startswith(dotted)
+        ]
+        self._series.clear()
+        for s in matching:
+            self._series.addItem(str(s.get("series_code", "")), str(s.get("series_code", "")))
+        if matching:
+            self._series_warn.hide()
+        else:
+            self._series.addItem("A", "A")
+            self._series_warn.setText(
+                f"⚠ Δεν υπάρχει σειρά για «{label}». Δημιουργήστε μία από τις "
+                "Σειρές, αλλιώς η ΑΑΔΕ θα απορρίψει την έκδοση."
+            )
+            self._series_warn.show()
 
     def _fetch_customer(self) -> None:
         client = self.client()

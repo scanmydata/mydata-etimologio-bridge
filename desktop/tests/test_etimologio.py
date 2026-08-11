@@ -729,3 +729,50 @@ def test_start_local_passes_cacert_to_php(tmp_path, monkeypatch) -> None:
     for part in cmd:
         if part.startswith(("curl.cainfo=", "openssl.cafile=")):
             assert Path(part.split("=", 1)[1]).is_absolute()
+
+
+# --- Έκδοση: πελατολόγιο και σειρές ------------------------------------------
+
+class IssueClient(RecordingClient):
+    """Επιστρέφει πελάτες και σειρές, όπως το ζωντανό backend."""
+
+    def customers(self, **_):
+        return {"success": True, "customers": [
+            {"code": "C1", "vat": "094039270", "name": "ΞΕΝΤΕ ΑΕ", "city": "Αθήνα", "address": "Οδός 1"},
+            {"code": "C2", "vat": "802012659", "name": "MEGATECH ΙΚΕ", "city": "Πάτρα", "address": "Οδός 2"},
+        ]}
+
+    def series(self):
+        return {"success": True, "series": [
+            {"invoice_type": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών", "series_code": "ΤΠΥ", "series_id": "1"},
+            {"invoice_type": "11.2 - ΑΠΥ (Απόδειξη Παροχής Υπηρεσιών)", "series_code": "ΑΠΥ", "series_id": "2"},
+        ]}
+
+
+def test_issue_page_loads_customer_picker(app) -> None:
+    page = IssuePage(lambda: IssueClient(), sync_run)
+    page.refresh()
+    # κενή πρώτη επιλογή + δύο πελάτες
+    assert page._picker.count() == 3
+    assert "ΞΕΝΤΕ" in page._picker.itemText(1)
+    page._picked_customer(1)
+    assert page._afm.text() == "094039270"
+    assert page._name.text() == "ΞΕΝΤΕ ΑΕ"
+    assert page._city.text() == "Αθήνα"
+
+
+def test_issue_page_series_follow_the_document_type(app) -> None:
+    """Η σειρά προσφέρεται μόνο αν υπάρχει για τον επιλεγμένο τύπο."""
+    page = IssuePage(lambda: IssueClient(), sync_run)
+    page.refresh()
+
+    page._type.setCurrentIndex(page._type.findData("20"))       # 2.1
+    assert page._series.currentData() == "ΤΠΥ"
+    assert page._series_warn.isHidden()
+
+    page._type.setCurrentIndex(page._type.findData("58"))       # 11.2
+    assert page._series.currentData() == "ΑΠΥ"
+
+    page._type.setCurrentIndex(page._type.findData("1"))        # 1.1 — καμία σειρά
+    assert not page._series_warn.isHidden()
+    assert "Δεν υπάρχει σειρά" in page._series_warn.text()

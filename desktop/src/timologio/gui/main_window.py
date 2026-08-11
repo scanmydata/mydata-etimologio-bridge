@@ -113,7 +113,7 @@ _COL_LAST = 9
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
 
 #: Η σειρά τους είναι η σειρά τους στο QStackedWidget.
-_PAGES = ("clients", "sync", "documents", "control", "etimologio")
+_PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher")
 
 #: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
 #: εσόδων/εξόδων κόβεται στα δεξιά.
@@ -431,12 +431,23 @@ class MainWindow(QMainWindow):
 
         self.etimologio = EtimologioShell(self.settings.data_dir)
         self.stack.addWidget(self.etimologio)
+
+        # Η αρχική οθόνη επιλογής εφαρμογής. Μπαίνει τελευταία στο stack ώστε οι
+        # δείκτες των υπόλοιπων σελίδων να μείνουν αμετάβλητοι.
+        from .launcher import Launcher
+
+        self.launcher = Launcher(APP_VERSION)
+        self.launcher.chosen.connect(self._choose_app)
+        self.stack.addWidget(self.launcher)
         root.addWidget(self.stack, 1)
 
         root.addWidget(self._progress_strip())
 
         self.status = self.statusBar()
         self._build_status_bar()
+        # Ανοίγουμε στην επιλογή εφαρμογής και όχι κατευθείαν στη λίστα πελατών:
+        # το πρόγραμμα είναι δύο εφαρμογές και ο χρήστης διαλέγει ποια θέλει.
+        self.stack.setCurrentIndex(_PAGES.index("launcher"))
         self.menu.set_active("clients")
         self.menu.set_enabled_action("documents", False)
 
@@ -1102,9 +1113,29 @@ class MainWindow(QMainWindow):
         return _PAGES[self.stack.currentIndex()]
 
     def _open_etimologio(self) -> None:
-        """Switch to e-Τιμολόγιο Pro, starting its backend on first open."""
+        """Switch to e-Τιμολόγιο Pro, starting its backend on first open.
+
+        Ολόκληρο το κέλυφος αλλάζει — μενού, λογότυπο και τίτλος παραθύρου —
+        ώστε να είναι σαφές ότι δουλεύεις σε άλλη εφαρμογή και να μην
+        ανακατεύονται οι ενέργειες των δύο.
+        """
         self.etimologio.start()
+        self.menu.set_mode("etimologio")
+        self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
         self._show_page("etimologio")
+
+    def _leave_etimologio(self) -> None:
+        """Επιστροφή στη Λήψη Παραστατικών."""
+        self.menu.set_mode("downloader")
+        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self._show_page("clients")
+
+    def _choose_app(self, which: str) -> None:
+        """Επιλογή από την αρχική οθόνη."""
+        if which == "etimologio":
+            self._open_etimologio()
+        else:
+            self._leave_etimologio()
 
     def open_client_in_etimologio(self, vat: str) -> None:
         """Jump from a Downloader client straight to their e-Τιμολόγιο card."""
@@ -1159,10 +1190,16 @@ class MainWindow(QMainWindow):
             "password": self.on_password,
             "control": lambda: self._show_page("control"),
             "etimologio": self._open_etimologio,
+            "downloader": self._leave_etimologio,
             "tour": self.start_tour,
             "manual": self.on_manual,
             "logfile": self.on_open_log,
         }
+        # Οι ενότητες του e-Τιμολόγιο έχουν πρόθεμα και πάνε όλες στο shell του.
+        if action.startswith("etim_"):
+            self._open_etimologio()
+            self.etimologio.open_section(action[len("etim_"):])
+            return
         handler = handlers.get(action)
         if handler:
             handler()

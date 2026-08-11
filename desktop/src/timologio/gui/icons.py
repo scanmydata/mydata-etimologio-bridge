@@ -321,7 +321,7 @@ def arrow_image(color: str, size: int = 12) -> str:
     return result
 
 
-_logo_cache: dict[int, QPixmap] = {}
+_logo_cache: dict[tuple[int, bool], QPixmap] = {}
 
 
 def _logo_path() -> Path | None:
@@ -338,22 +338,41 @@ def _logo_path() -> Path | None:
     return None
 
 
-def logo_pixmap(size: int = 38) -> QPixmap:
+def logo_pixmap(size: int = 38, etimologio: bool = False) -> QPixmap:
     """Το λογότυπο για μέσα στην εφαρμογή.
 
-    Επιστρέφει κενό pixmap αν λείπει το SVG — ένα λογότυπο που λείπει δεν είναι
-    λόγος να μην ανοίξει η εφαρμογή.
+    Με ``etimologio=True`` επιστρέφει το σήμα του e-Τιμολόγιο Pro, ώστε να
+    αλλάζει μαζί με το μενού και ο χρήστης να βλέπει με μια ματιά σε ποια από
+    τις δύο εφαρμογές βρίσκεται.
+
+    Επιστρέφει κενό pixmap αν λείπει το σχέδιο — ένα λογότυπο που λείπει δεν
+    είναι λόγος να μην ανοίξει η εφαρμογή.
     """
-    if size in _logo_cache:
-        return _logo_cache[size]
-    path = _logo_path()
+    key = (size, etimologio)
+    if key in _logo_cache:
+        return _logo_cache[key]
     pixmap = QPixmap(QSize(size, size))
     pixmap.fill(Qt.GlobalColor.transparent)
+
+    if etimologio:
+        # Το ίδιο εικονίδιο που φέρει και η ενότητα στο μενού, στο χρώμα τόνου.
+        painter = QPainter(pixmap)
+        # Τοπικό import, όπως κάνει και το theme.py προς τα εδώ: κρατά τα δύο
+        # modules ανεξάρτητα κατά τη φόρτωση.
+        from .theme import CURRENT
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        icon("etimologio", CURRENT.accent).paint(painter, 0, 0, size, size)
+        painter.end()
+        _logo_cache[key] = pixmap
+        return pixmap
+
+    path = _logo_path()
     if path is not None:
         renderer = QSvgRenderer(str(path))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         renderer.render(painter)
         painter.end()
-    _logo_cache[size] = pixmap
+    _logo_cache[key] = pixmap
     return pixmap
