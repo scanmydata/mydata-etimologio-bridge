@@ -182,19 +182,28 @@ def test_updater_script_waits_installs_relaunches():
     assert "Παραστατικά myDATA" in script
     assert "/SILENT" in script
     # ΚΡΙΣΙΜΟ: ρητό /DIR στον φάκελο που τρέχει η εφαρμογή — αλλιώς η νέα έκδοση
-    # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά.
-    assert r"/DIR=C:\Programs\App" in script
-    # Αναμονή για ξεκλείδωμα αρχείων πριν την εγκατάσταση: πρώτα κάθε instance
-    # με το όνομα, μετά force-kill ό,τι επιμένει, μετά ενεργή αναμονή μέχρι το exe
-    # να ξεκλειδώσει — αλλιώς η αναβάθμιση δεν πιάνει.
+    # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά. ΚΑΙ σε
+    # διπλά εισαγωγικά: κάθε διαδρομή με πιθανό κενό (εδώ «Παραστατικά myDATA»)
+    # πρέπει να περνά μέσα σε "...", αλλιώς το Start-Process την σπάει στο κενό
+    # και ο installer φτιάχνει νέο, άδειο φάκελο δεδομένων.
+    assert r'/DIR="C:\Programs\App"' in script
+    assert '/DATADIR="C:\\Users\\x\\Documents\\Παραστατικά myDATA"' in script
+    assert '/LOG="' in script
+    # Κλείνει κάθε instance πριν την εγκατάσταση· τα κλειδωμένα αρχεία τα
+    # αναλαμβάνει πλέον ο Restart Manager του installer (CloseApplications στο
+    # .iss), όχι εύθραυστη χειροκίνητη αναμονή ξεκλειδώματος.
     assert "Get-Process -Name 'App'" in script
     assert "Stop-Process -Name 'App' -Force" in script
-    assert "[IO.File]::Open($exe" in script  # ενεργή αναμονή ξεκλειδώματος
+    # Η εγκατάσταση σε try/finally: πάντα καταγράφεται και πάντα ξανανοίγει η
+    # εφαρμογή, ακόμη κι αν κάτι στραβώσει.
+    assert "try {" in script and "} finally {" in script
+    assert "ERROR: " in script  # καταγραφή σφάλματος στο catch
     # Μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να μαζευτεί
     # στο tray: η επανεκκίνηση περνά --show.
     assert "-ArgumentList '--show'" in script
     assert script.index("Get-Process -Name 'App'") < script.index("setup.exe")
-    assert script.index("[IO.File]::Open($exe") < script.index("setup.exe")
+    # Η επανεκκίνηση (--show) γίνεται ΜΕΤΑ την εγκατάσταση, στο finally.
+    assert script.index("setup.exe") < script.rindex("--show")
     # Ο installer γράφει log, ΚΑΙ το ίδιο το script καταγράφει κάθε βήμα με ώρα,
     # ώστε μια αποτυχία «η ενημέρωση δεν δουλεύει» να είναι πάντα ορατή.
     assert "/LOG=" in script
@@ -255,6 +264,63 @@ def test_launch_detached_falls_back_to_popen_when_task_fails(monkeypatch):
     )
     assert updates.launch_detached(Path(r"C:\Temp\u.ps1")) is True
     assert used.get("popen") is True
+
+
+def test_launch_detached_falls_back_when_task_queues_but_never_runs(monkeypatch):
+    """ΚΡΙΣΙΜΟ: το schtasks «πετυχαίνει» αλλά το task μένει Queued και δεν τρέχει
+    (δεν εμφανίζεται το start-token). Τότε πρέπει να καθαρίσουμε το task και να
+    πέσουμε στον detached τρόπο — αλλιώς «η ενημέρωση δεν δουλεύει» σιωπηλά."""
+    from timologio import updates
+
+    monkeypatch.setattr(updates, "_schedule_via_task", lambda *a, **k: True)
+    monkeypatch.setattr(updates, "_launch_via_popen", lambda *a, **k: True)
+    deleted: dict[str, bool] = {}
+    monkeypatch.setattr(updates, "_delete_update_task",
+                        lambda: deleted.setdefault("yes", True))
+    # 1η επαλήθευση (task) αποτυγχάνει, 2η (popen) πετυχαίνει — χωρίς πραγματική αναμονή.
+    seen = {"n": 0}
+
+    def fake_wait(*a, **k):
+        seen["n"] += 1
+        return seen["n"] >= 2
+
+    monkeypatch.setattr(updates, "_wait_for_marker", fake_wait)
+    ok = updates.launch_detached(
+        Path(r"C:\Temp\u.ps1"), run_log=Path(r"C:\Temp\run.log"),
+        start_token="start pid=777",
+    )
+    assert ok is True
+    assert deleted.get("yes") is True   # το queued task καθαρίστηκε πριν την εφεδρεία
+
+
+def test_launch_detached_prefers_task_when_it_actually_runs(monkeypatch):
+    """Αν το task όντως τρέξει (εμφανιστεί το token), ΔΕΝ πέφτουμε σε εφεδρεία."""
+    from timologio import updates
+
+    monkeypatch.setattr(updates, "_schedule_via_task", lambda *a, **k: True)
+    monkeypatch.setattr(updates, "_wait_for_marker", lambda *a, **k: True)
+    used: dict[str, bool] = {}
+    monkeypatch.setattr(updates, "_launch_via_popen",
+                        lambda *a, **k: used.setdefault("popen", True))
+    ok = updates.launch_detached(
+        Path(r"C:\Temp\u.ps1"), run_log=Path(r"C:\Temp\run.log"),
+        start_token="start pid=1",
+    )
+    assert ok is True
+    assert "popen" not in used
+
+
+def test_schedule_via_task_skips_when_tr_exceeds_261(monkeypatch):
+    """Το schtasks απορρίπτει /TR > 261 χαρ. — το ανιχνεύουμε και επιστρέφουμε
+    False ΧΩΡΙΣ να καλέσουμε το schtasks, ώστε να πάμε κατευθείαν στην εφεδρεία."""
+    from timologio import updates
+
+    called: dict[str, bool] = {}
+    monkeypatch.setattr(updates.subprocess, "run",
+                        lambda *a, **k: called.setdefault("ran", True))
+    long_path = Path("C:\\" + ("x" * 300) + "\\u.ps1")
+    assert updates._schedule_via_task("powershell.exe", long_path) is False
+    assert "ran" not in called
 
 
 def test_updater_script_omits_dir_when_not_given():

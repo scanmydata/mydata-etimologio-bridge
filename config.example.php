@@ -33,7 +33,28 @@ const BASE_URL   = 'https://mydata.aade.gr/timologio';
 const COOKIE_DIR = __DIR__ . '/.cookies';
 
 // SQLite database for LOCAL data e-timologio does not keep (payments, ledgers).
+// Used by default (local/offline desktop mode). The data layer is dual-dialect.
 const LOCAL_DB   = __DIR__ . '/.localdata.sqlite';
+
+// ----------------------------------------------------------------------------
+// DATABASE ENGINE — SQLite (default, local/offline) or Postgres (central VPS).
+// ----------------------------------------------------------------------------
+// Leave DB_DSN unset to use the local SQLite file above (desktop/offline).
+// On the shared server (Docker/Coolify), point at Postgres via env or constants:
+//   DB_DSN  = 'pgsql:host=db;port=5432;dbname=etimologio'
+//   DB_USER = 'etimologio'
+//   DB_PASS = '…'
+// Env vars win when present, so the Coolify service can inject them without
+// editing this file:
+if (getenv('DB_DSN')) {
+    define('DB_DSN',  getenv('DB_DSN'));
+    define('DB_USER', getenv('DB_USER') ?: '');
+    define('DB_PASS', getenv('DB_PASS') ?: '');
+}
+// (Or hard-code for a fixed server:)
+// const DB_DSN  = 'pgsql:host=127.0.0.1;port=5432;dbname=etimologio';
+// const DB_USER = 'etimologio';
+// const DB_PASS = 'change-me';
 
 // At-rest encryption (crypto.php). Set a base64 32-byte key, or leave it unset
 // and a key file (.enckey) is auto-generated on first use. Keep the key secret

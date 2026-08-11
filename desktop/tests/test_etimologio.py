@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -668,3 +669,63 @@ def test_payments_page_lists(app) -> None:
     page.refresh()
     assert page._pay_table.rowCount() == 1
     assert page._pay_table.item(0, 2).text() == "Μετρητά"
+
+
+# --- packaging: the bundled PHP runtime --------------------------------------
+
+def test_cacert_is_resolved_absolute(tmp_path) -> None:
+    """Regression: the CA bundle must be handed to PHP as an ABSOLUTE path.
+
+    PHP resolves `extension_dir` relative to the ini file but `curl.cainfo`
+    relative to the *working directory*, and the server is started with the cwd
+    set to the backend folder. A relative value produced curl error 77
+    ("error adding trust anchors from file") so every ΑΑΔΕ call failed — and only
+    in the packaged build, where the bundled runtime is used.
+    """
+    from timologio.etimologio.service import resolve_cacert
+
+    php = tmp_path / "php.exe"
+    php.write_bytes(b"")
+    assert resolve_cacert(str(php)) is None          # no bundle → nothing to pass
+
+    (tmp_path / "cacert.pem").write_text("x", encoding="utf-8")
+    got = resolve_cacert(str(php))
+    assert got is not None
+    assert Path(got).is_absolute()
+    assert Path(got).name == "cacert.pem"
+
+
+def test_start_local_passes_cacert_to_php(tmp_path, monkeypatch) -> None:
+    """The absolute CA path reaches the PHP command line as -d overrides."""
+    from timologio.etimologio import service as svc
+
+    php_dir = tmp_path / "php"
+    php_dir.mkdir()
+    (php_dir / "php.exe").write_bytes(b"")
+    (php_dir / "php.ini").write_text("", encoding="utf-8")
+    (php_dir / "cacert.pem").write_text("x", encoding="utf-8")
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "etimologio.php").write_text("<?php", encoding="utf-8")
+
+    captured: dict = {}
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(svc, "resolve_php", lambda: str(php_dir / "php.exe"))
+    monkeypatch.setattr(svc, "resolve_backend_root", lambda: backend)
+    monkeypatch.setattr(svc.subprocess, "Popen", lambda cmd, **kw: captured.setdefault("cmd", cmd) or FakeProc())
+
+    s = svc.EtimologioService(tmp_path / "data")
+    monkeypatch.setattr(s, "_write_config", lambda port: None)
+    monkeypatch.setattr(s, "_wait_healthy", lambda seconds: True)
+    s.start_local()
+
+    cmd = captured["cmd"]
+    joined = " ".join(cmd)
+    assert "curl.cainfo=" in joined and "openssl.cafile=" in joined
+    for part in cmd:
+        if part.startswith(("curl.cainfo=", "openssl.cafile=")):
+            assert Path(part.split("=", 1)[1]).is_absolute()

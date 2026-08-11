@@ -19,3 +19,6 @@ build/
 dist/
 wheels/
 *.spec.bak
+
+# Φορητή PHP για το e-Τιμολόγιο — την κατεβάζει το installer/build.ps1 (~30MB)
+installer/php/

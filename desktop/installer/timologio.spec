@@ -68,6 +68,46 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 ICON = os.path.join(SPECPATH, "icon.ico")
 VERSION_RC = _write_version_resource(ROOT, _app_version(ROOT))
 
+
+#: Ό,τι δεν επιτρέπεται να ταξιδέψει μέσα στο installer. Το `config.php` κρατά
+#: κλειδιά ΑΑΔΕ και κωδικό διαχειριστή: αν έμπαινε στο bundle, θα μοιραζόταν σε
+#: κάθε πελάτη. Είναι gitignored, αλλά υπάρχει στον φάκελο κάθε προγραμματιστή
+#: που έτρεξε τοπικά — γι' αυτό αποκλείεται ρητά και εδώ.
+_NEVER_BUNDLE = {"config.php", ".enckey", ".localdata.sqlite", "config.local.php"}
+
+
+def _tree(src, prefix):
+    """Κάθε αρχείο του `src` ως (αρχείο, φάκελος-προορισμού) για τα datas.
+
+    Το `Tree()` του PyInstaller δεν χρησιμοποιείται επίτηδες: επιστρέφει TOC και
+    μπερδεύεται με τη λίστα των datas όταν θέλουμε να ελέγξουμε ακριβώς πού
+    προσγειώνεται κάθε αρχείο.
+    """
+    out = []
+    if not os.path.isdir(src):
+        return out
+    for folder, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d not in {".cookies", "__pycache__", ".git"}]
+        rel = os.path.relpath(folder, src)
+        dest = prefix if rel == "." else os.path.join(prefix, rel)
+        for name in files:
+            if name in _NEVER_BUNDLE or name.endswith((".sqlite", ".sqlite-wal", ".sqlite-shm")):
+                continue
+            out.append((os.path.join(folder, name), dest))
+    return out
+
+
+# --- Το e-Τιμολόγιο Pro χρειάζεται το PHP backend ΜΕΣΑ στο bundle -------------
+# Το service.py ψάχνει `_MEIPASS/backend/etimologio/etimologio.php` και
+# `_MEIPASS/backend/php/php.exe`. Χωρίς αυτά, η πακεταρισμένη εφαρμογή πέφτει
+# πίσω σε `shutil.which("php")` και η offline λειτουργία πεθαίνει σε κάθε
+# υπολογιστή που δεν έχει PHP εγκατεστημένη — δηλαδή σχεδόν παντού.
+BACKEND = _tree(os.path.join(ROOT, "backend", "etimologio"), os.path.join("backend", "etimologio"))
+# Η φορητή PHP την ετοιμάζει το build.ps1 στο installer/php/ (δεν μπαίνει στο
+# git). Μαζί της ταξιδεύει php.ini + cacert.pem: χωρίς ρητό curl.cainfo το TLS
+# προς την ΑΑΔΕ σκάει με OpenSSL error 60.
+PHPRT = _tree(os.path.join(SPECPATH, "php"), os.path.join("backend", "php"))
+
 a = Analysis(
     [os.path.join(ROOT, "entry.py")],
     pathex=[os.path.join(ROOT, "src")],
@@ -87,16 +127,21 @@ a = Analysis(
             os.path.join(ROOT, "docs", "manual.pdf"),
         )
         if os.path.exists(path)
-    ] + TZDATA,
+    ] + TZDATA + BACKEND + PHPRT,
     # websocket-client (import name «websocket») το φορτώνει το headless module
     # με τοπικό import, οπότε το PyInstaller δεν το βλέπει από το στατικό δέντρο.
     # websocket-client (import name «websocket») και openpyxl φορτώνονται με
     # τοπικά imports (headless render, εξαγωγή Excel), οπότε το PyInstaller δεν
     # τα βλέπει από το στατικό δέντρο.
+    # Το qrcode εισάγεται ΤΟΠΙΚΑ μέσα σε συνάρτηση (etimologio/pages/settings.py,
+    # ώστε η απουσία του να μη ρίχνει την εφαρμογή) — ακριβώς η περίπτωση που το
+    # PyInstaller δεν βλέπει. Χωρίς αυτή τη γραμμή, η εγγραφή 2FA έβγαζε κενό QR
+    # ΜΟΝΟ στο πακεταρισμένο build.
     hiddenimports=(
         collect_submodules("timologio")
         + collect_submodules("websocket")
         + collect_submodules("openpyxl")
+        + collect_submodules("qrcode")
         + ["et_xmlfile", "tzdata"]
     ),
     hookspath=[],

@@ -1,0 +1,35 @@
+# Το image σερβίρει ΜΟΝΟ το PHP backend + το web UI. Χωρίς αυτό το αρχείο, το
+# `COPY . /var/www/html/` έβαζε ολόκληρο το repo μέσα στο web root — τον πηγαίο
+# κώδικα της εφαρμογής υπολογιστή, τα docs και το .git — δηλαδή αρχεία που ούτε
+# χρειάζονται ούτε πρέπει να είναι προσβάσιμα από τον κόσμο.
+
+# Η εφαρμογή υπολογιστή (μαζί με το δικό της αντίγραφο του backend)
+desktop/
+
+# Ιστορικό & τεκμηρίωση
+.git/
+.gitignore
+.github/
+docs/
+README.md
+ENDPOINTS.md
+TODO.md
+manualTIMOLOGIO.txt
+
+# Εργαλεία που δεν τρέχουν μέσα στον container
+tools/make_icon.py
+
+# Τοπικά μυστικά/δεδομένα — δεν πρέπει ΠΟΤΕ να μπουν σε image
+config.php
+.enckey
+.cookies/
+*.sqlite
+*.sqlite-*
+.scheduler.lock
+
+# Σκουπίδια
+.pytest_cache/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

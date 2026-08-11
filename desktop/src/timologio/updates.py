@@ -153,12 +153,21 @@ def build_updater_script(
     # καταγράφεται με ώρα, οπότε το πρόβλημα είναι πάντα ορατό.
     run_log = setup.with_name("timologio_update_run.log")
     proc_name = app_exe.stem
-    dir_arg = f"'/DIR={esc(install_dir)}'," if install_dir is not None else ""
+    # ΚΡΙΣΙΜΟ — διπλά εισαγωγικά γύρω από ΚΑΘΕ διαδρομή: το
+    # `Start-Process -ArgumentList @('a','b c')` του Windows PowerShell 5.1 ΔΕΝ
+    # βάζει εισαγωγικά στα στοιχεία του πίνακα — τα ενώνει με κενά. Έτσι ένα
+    # `/DATADIR=C:\...\Παραστατικά myDATA` έσπαγε στο κενό: ο installer έβλεπε
+    # `/DATADIR=C:\...\Παραστατικά`, έφτιαχνε ΝΕΟ άδειο φάκελο «Παραστατικά» και
+    # έγραφε εκεί το μητρώο — η εφαρμογή άνοιγε σε άδεια βάση («έφτιαξε νέο
+    # φάκελο μόνο του»). Με τα `"..."` μέσα στο ίδιο το όρισμα, το setup.exe
+    # δέχεται τη διαδρομή ΟΛΟΚΛΗΡΗ (ο Inno αφαιρεί τα εισαγωγικά). Ισχύει για
+    # όποια διαδρομή μπορεί να έχει κενό ή ελληνικά: /DIR, /LOG, /DATADIR.
+    dir_arg = f"'/DIR=\"{esc(install_dir)}\"'," if install_dir is not None else ""
     args = (
         f"'/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"
         f"{dir_arg}"
-        f"'/LOG={esc(log_path)}',"
-        f"'/DATADIR={esc(data_dir)}',"
+        f"'/LOG=\"{esc(log_path)}\"',"
+        f"'/DATADIR=\"{esc(data_dir)}\"',"
         f"'/ROLE={role}','{tray_flag}'"
     )
     return (
@@ -167,41 +176,38 @@ def build_updater_script(
         "function L($m){ (\"[{0}] {1}\" -f (Get-Date -Format 'HH:mm:ss'), $m) | "
         "Out-File -FilePath $log -Append -Encoding utf8 }\n"
         f"L ('start pid={int(pid)}')\n"
-        # Αν μας ξεκίνησε το Task Scheduler, σβήσε το task αμέσως: έχει ήδη
-        # πυροδοτηθεί, δεν το χρειαζόμαστε άλλο, και δεν θέλουμε να μείνει
-        # εγγεγραμμένο. Αν μας ξεκίνησε αλλιώς (fallback), το /Delete απλώς
-        # αποτυγχάνει σιωπηλά.
-        f"schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F 2>$null | Out-Null\n"
-        # Περίμενε πρώτα τη συγκεκριμένη διεργασία που ζήτησε την ενημέρωση…
-        f"Wait-Process -Id {int(pid)} -Timeout 60\n"
-        # …και μετά κάθε τυχόν άλλη ανοιχτή instance (π.χ. server + τερματικό στο
-        # ίδιο μηχάνημα), ώστε να μη μείνει κανείς να κλειδώνει τα αρχεία.
-        "$deadline=(Get-Date).AddSeconds(30)\n"
-        f"while ((Get-Process -Name {q(proc_name)} -ErrorAction SilentlyContinue) "
+        # Το ΚΡΙΣΙΜΟ βήμα (η εγκατάσταση) μπαίνει σε try/finally: ό,τι κι αν
+        # στραβώσει, (α) καταγράφεται με λεπτομέρεια και (β) η εφαρμογή ξανανοίγει
+        # πάντα στο finally — ποτέ δεν μένει ο χρήστης χωρίς πρόγραμμα ανοιχτό.
+        "try {\n"
+        # Αν μας ξεκίνησε το Task Scheduler, σβήσε το task — έχει ήδη πυροδοτηθεί.
+        f"  schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F 2>$null | Out-Null\n"
+        # Περίμενε τη διεργασία που ζήτησε την ενημέρωση…
+        f"  Wait-Process -Id {int(pid)} -Timeout 60\n"
+        # …και κάθε άλλη ανοιχτή instance (server + τερματικό στο ίδιο μηχάνημα).
+        "  $deadline=(Get-Date).AddSeconds(30)\n"
+        f"  while ((Get-Process -Name {q(proc_name)} -ErrorAction SilentlyContinue) "
         f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\n"
-        # Δίχτυ ασφαλείας: αν κάποια instance επιμένει (π.χ. μαζεμένη στο tray),
-        # την κλείνουμε με τη βία — αλλιώς τα αρχεία μένουν κλειδωμένα και ο
-        # installer αποτυγχάνει σιωπηλά.
-        f"Stop-Process -Name {q(proc_name)} -Force -ErrorAction SilentlyContinue\n"
-        "L 'instances stopped'\n"
-        # ΚΡΙΣΙΜΟ: ο πυρήνας του Windows απελευθερώνει τα mapped DLL (Qt κ.λπ.) με
-        # καθυστέρηση ΜΕΤΑ τον τερματισμό. Αντί για σταθερό sleep, περιμένουμε
-        # ενεργά μέχρι το exe να ΞΕΚΛΕΙΔΩΣΕΙ (ανοίγει για αποκλειστική εγγραφή),
-        # ώστε ο installer να μη βρει κλειδωμένα αρχεία και αποτύχει σιωπηλά.
-        f"$exe={q(app_exe)}\n"
-        "$d2=(Get-Date).AddSeconds(25)\n"
-        "while ((Get-Date) -lt $d2) { try { "
-        "$fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break "
-        "} catch { Start-Sleep -Milliseconds 400 } }\n"
-        "Start-Sleep -Seconds 1\n"
-        "L 'running installer'\n"
-        f"$p=Start-Process -Wait -PassThru -FilePath {q(setup)} -ArgumentList @({args})\n"
-        "L ('installer exit=' + $(if ($p) { $p.ExitCode } else { 'null' }))\n"
+        f"  Stop-Process -Name {q(proc_name)} -Force -ErrorAction SilentlyContinue\n"
+        "  L 'instances stopped'\n"
+        # ΓΙΑΤΙ ΟΧΙ πια χειροκίνητη αναμονή ξεκλειδώματος αρχείων (ήταν εδώ που
+        # «κόλλαγε» ενίοτε η ενημέρωση): τη δουλειά την κάνει πλέον ο ΙΔΙΟΣ ο
+        # installer μέσω του Restart Manager (CloseApplications=yes στο .iss),
+        # που κλείνει ό,τι κρατά ακόμη κλειδωμένα αρχεία. Ένας μικρός σταθερός
+        # χρόνος αρκεί για να απελευθερώσει ο kernel τα mapped DLL.
+        "  Start-Sleep -Seconds 3\n"
+        "  L 'running installer'\n"
+        f"  $p=Start-Process -Wait -PassThru -FilePath {q(setup)} -ArgumentList @({args})\n"
+        "  L ('installer exit=' + $(if ($p) { $p.ExitCode } else { 'null' }))\n"
+        "} catch {\n"
+        "  L ('ERROR: ' + $_.Exception.Message)\n"
+        "} finally {\n"
         # --show: μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να
-        # «εξαφανιστεί» στο tray (ισχύει ακόμη κι αν έχει επιλεγεί «εκκίνηση στο
-        # tray» — αυτή η εκκίνηση είναι το αποτέλεσμα μιας ρητής ενημέρωσης).
-        f"Start-Process -FilePath {q(app_exe)} -ArgumentList '--show'\n"
-        "L 'relaunched'\n"
+        # «εξαφανιστεί» στο tray. Τρέχει ΠΑΝΤΑ (και σε αποτυχία) ώστε ο χρήστης να
+        # μη μείνει χωρίς ανοιχτό πρόγραμμα.
+        f"  Start-Process -FilePath {q(app_exe)} -ArgumentList '--show'\n"
+        "  L 'relaunched'\n"
+        "}\n"
     )
 
 
@@ -218,7 +224,9 @@ def powershell_exe() -> str:
     return str(full) if full.exists() else "powershell"
 
 
-def launch_detached(script_path: Path) -> bool:
+def launch_detached(
+    script_path: Path, *, run_log: Path | None = None, start_token: str | None = None,
+) -> bool:
     """Ξεκινά το PowerShell script της ενημέρωσης ΑΠΟΣΠΑΣΜΕΝΑ από την εφαρμογή,
     ώστε να επιβιώσει του κλεισίματός της. Επιστρέφει ``True`` αν ξεκίνησε.
 
@@ -231,13 +239,73 @@ def launch_detached(script_path: Path) -> bool:
     scheduled task τρέχει κάτω από την υπηρεσία του χρονοπρογραμματιστή, εντελώς
     έξω από το job της εφαρμογής, οπότε επιβιώνει πάντα. Ο απλός detached τρόπος
     μένει ως εφεδρεία για συστήματα όπου το schtasks είναι απενεργοποιημένο.
+
+    ΕΠΑΛΗΘΕΥΣΗ (κρίσιμο για «universal»): το ``schtasks`` έχει παρατηρηθεί να
+    επιστρέφει **επιτυχία** ενώ το task μένει σε κατάσταση *Queued* και ΔΕΝ
+    εκτελείται ποτέ — τότε ο παλιός κώδικας γύριζε ``True`` και δεν δοκίμαζε ποτέ
+    την εφεδρεία, κι έτσι «η ενημέρωση δεν δούλευε» σιωπηλά. Τώρα, αν δοθεί
+    ``run_log``+``start_token``, περιμένουμε να εμφανιστεί το token (το script το
+    γράφει ως ΠΡΩΤΗ του ενέργεια). Αν δεν εμφανιστεί, θεωρούμε ότι ο τρόπος
+    απέτυχε και δοκιμάζουμε τον επόμενο. Έτσι κερδίζει όποιος τρόπος όντως τρέχει
+    στο συγκεκριμένο μηχάνημα, κι αν κανένας δεν τρέξει επιστρέφουμε ``False`` (ο
+    καλών δείχνει τότε μήνυμα για χειροκίνητη λήψη).
     """
     ps = powershell_exe()
+    since = run_log.stat().st_size if (run_log and run_log.exists()) else 0
+
+    def started() -> bool:
+        if run_log is None or start_token is None:
+            return True  # χωρίς log δεν γίνεται επαλήθευση — δεχόμαστε το «ξεκίνησε»
+        return _wait_for_marker(run_log, start_token, since, timeout=6.0)
+
     if _schedule_via_task(ps, script_path):
-        log.info("Ενημέρωση: ξεκίνησε μέσω Task Scheduler.")
-        return True
-    log.warning("Ενημέρωση: το Task Scheduler απέτυχε — δοκιμή απευθείας.")
-    return _launch_via_popen(ps, script_path)
+        if started():
+            log.info("Ενημέρωση: ξεκίνησε μέσω Task Scheduler.")
+            return True
+        log.warning("Ενημέρωση: το task έμεινε σε αναμονή/δεν έτρεξε — δοκιμή απευθείας.")
+        _delete_update_task()
+
+    if _launch_via_popen(ps, script_path):
+        if started():
+            log.info("Ενημέρωση: ξεκίνησε ως detached process.")
+            return True
+        log.warning("Ενημέρωση: ο detached τρόπος δεν εκτέλεσε το script.")
+
+    log.error("Ενημέρωση: δεν κατάφερε να ξεκινήσει με κανέναν τρόπο.")
+    return False
+
+
+def _wait_for_marker(run_log: Path, token: str, since: int, timeout: float) -> bool:
+    """Περιμένει έως ``timeout`` δευτ. να εμφανιστεί το ``token`` στο ``run_log``,
+    γραμμένο ΜΕΤΑ το ``since`` offset (ώστε να μη μπερδευτεί με προηγούμενη
+    ενημέρωση). Το script το γράφει ως πρώτη ενέργεια — άρα η εμφάνισή του
+    σημαίνει ότι όντως ξεκίνησε."""
+    import time
+
+    needle = token.encode("utf-8")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with open(run_log, "rb") as fh:
+                fh.seek(since)
+                if needle in fh.read():
+                    return True
+        except OSError:
+            pass
+        time.sleep(0.25)
+    return False
+
+
+def _delete_update_task() -> None:
+    """Σβήνει το task ενημέρωσης σιωπηλά (π.χ. έμεινε Queued και πάμε σε εφεδρεία),
+    ώστε να μην τρέξει αργότερα και ξεκινήσει δεύτερη εγκατάσταση."""
+    try:
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", UPDATE_TASK_NAME, "/F"],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _schedule_via_task(powershell: str, script_path: Path) -> bool:
@@ -246,6 +314,12 @@ def _schedule_via_task(powershell: str, script_path: Path) -> bool:
         f'"{powershell}" -NoProfile -ExecutionPolicy Bypass '
         f'-WindowStyle Hidden -NonInteractive -File "{script_path}"'
     )
+    # Το schtasks απορρίπτει /TR πάνω από 261 χαρακτήρες (π.χ. μεγάλο όνομα
+    # χρήστη ή βαθύ %TEMP%). Μη σπαταλάμε χρόνο σε σίγουρη αποτυχία — πάμε
+    # κατευθείαν στον detached τρόπο.
+    if len(tr) > 261:
+        log.warning("Ενημέρωση: /TR %d χαρ. (>261) — παράλειψη Task Scheduler.", len(tr))
+        return False
     # Το /ST είναι υποχρεωτικό αλλά το /Run το πυροδοτεί ούτως ή άλλως αμέσως·
     # βάζουμε ένα έγκυρο μελλοντικό HH:MM για να μη γκρινιάξει το schtasks.
     start_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")

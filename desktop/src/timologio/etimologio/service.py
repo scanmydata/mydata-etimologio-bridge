@@ -75,6 +75,22 @@ def resolve_php_ini(php_path: str) -> str | None:
     return str(cand) if cand.exists() else None
 
 
+def resolve_cacert(php_path: str) -> str | None:
+    """Absolute path to the CA bundle shipped next to the bundled PHP.
+
+    It must be passed absolute on the command line. PHP resolves `extension_dir`
+    relative to the ini file, but `curl.cainfo` relative to the **working
+    directory** — and we start the server with the cwd set to the backend folder.
+    A relative value there produced `error adding trust anchors from file`
+    (curl error 77) and every ΑΑΔΕ call failed, but only in the packaged build.
+    """
+    env = os.environ.get("TIMOLOGIO_ETIM_CACERT")
+    if env and Path(env).exists():
+        return env
+    cand = Path(php_path).with_name("cacert.pem")
+    return str(cand.resolve()) if cand.exists() else None
+
+
 class EtimologioService:
     def __init__(self, data_root: Path) -> None:
         #: Persistent, writable data dir for this backend (own SQLite/.enckey).
@@ -188,6 +204,11 @@ const NOTIFY_ADMIN_EMAIL = '';
         ini = resolve_php_ini(php)
         if ini:
             cmd += ["-c", ini]
+        cacert = resolve_cacert(php)
+        if cacert:
+            # Absolute, and on the command line: see resolve_cacert() for why the
+            # ini's relative value is not enough.
+            cmd += ["-d", f"curl.cainfo={cacert}", "-d", f"openssl.cafile={cacert}"]
         cmd += ["-S", f"127.0.0.1:{self._port}", "-t", str(root)]
         self._proc = subprocess.Popen(
             cmd,

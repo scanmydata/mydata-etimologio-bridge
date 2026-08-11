@@ -32,6 +32,47 @@ if ($uv) {
 
 $env:PYTHONPATH = Join-Path $root "src"
 
+# --- Ψηφιακή υπογραφή (προαιρετική) ------------------------------------------
+# Το exe και το setup.exe φέρουν ήδη πλήρη VersionInfo (εκδότης «scanmydata»),
+# που μειώνει τα ψευδώς-θετικά. Ωστόσο, χωρίς ψηφιακή υπογραφή (Authenticode) το
+# SmartScreen δείχνει πάντα «άγνωστος εκδότης». Η υπογραφή θέλει πιστοποιητικό
+# code-signing. Αν οριστεί (μέσω μεταβλητών περιβάλλοντος), υπογράφουμε ΚΑΙ το
+# exe ΚΑΙ το setup.exe· αλλιώς το βήμα παραλείπεται σιωπηλά. Έτσι το build είναι
+# «universal»: μόλις αποκτηθεί πιστοποιητικό, η υπογραφή γίνεται αυτόματα.
+#   $env:TIMOLOGIO_SIGN_PFX  = 'C:\path\cert.pfx'; $env:TIMOLOGIO_SIGN_PASS='...'
+#   -ή- $env:TIMOLOGIO_SIGN_SHA1 = '<thumbprint πιστοποιητικού στο store>'
+function Find-SignTool {
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10\bin",
+               "$env:ProgramFiles\Windows Kits\10\bin")
+    foreach ($r in $roots) {
+        if (Test-Path $r) {
+            $exe = Get-ChildItem -Path $r -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\x64\\' } |
+                Sort-Object FullName -Descending | Select-Object -First 1
+            if ($exe) { return $exe.FullName }
+        }
+    }
+    return $null
+}
+
+function Invoke-Sign($file) {
+    $pfx  = $env:TIMOLOGIO_SIGN_PFX
+    $sha1 = $env:TIMOLOGIO_SIGN_SHA1
+    if (-not $pfx -and -not $sha1) { return }   # δεν ρυθμίστηκε υπογραφή — σιωπηλή παράλειψη
+    $st = Find-SignTool
+    if (-not $st) { throw "Ζητήθηκε υπογραφή αλλά δεν βρέθηκε το signtool.exe (Windows SDK)." }
+    $ts = 'http://timestamp.digicert.com'
+    if ($pfx) {
+        & $st sign /fd SHA256 /f $pfx /p $env:TIMOLOGIO_SIGN_PASS /tr $ts /td SHA256 $file
+    } else {
+        & $st sign /fd SHA256 /sha1 $sha1 /tr $ts /td SHA256 $file
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Η υπογραφή απέτυχε: $file" }
+    Write-Host "   υπογράφηκε: $file" -ForegroundColor Green
+}
+
 # --- Γραφικά -----------------------------------------------------------------
 # ΠΡΟΣΟΧΗ: χωρίς offscreen. Το offscreen backend δεν στοιχειοθετεί το <text> του
 # SVG και το λογότυπο βγαίνει σιωπηλά χωρίς τη λέξη «DATA».
@@ -51,6 +92,85 @@ build_manual(out)
 print('  ', out, out.stat().st_size, 'bytes')
 "@)
 
+# --- Φορητή PHP για το e-Τιμολόγιο Pro ---------------------------------------
+# Το backend του e-Τιμολόγιο είναι PHP. Για να δουλεύει η offline λειτουργία σε
+# υπολογιστή χωρίς εγκατεστημένη PHP, πακετάρουμε ένα φορητό runtime.
+# Δεν μπαίνει στο git (≈30MB): το κατεβάζουμε εδώ και το ξαναχρησιμοποιούμε.
+Write-Host "== 3.5/5  Φορητή PHP (installer\php) ==" -ForegroundColor Cyan
+$phpDir = Join-Path $PSScriptRoot "php"
+$phpExe = Join-Path $phpDir "php.exe"
+if (-not (Test-Path $phpExe)) {
+    # Η ακριβής έκδοση ΔΕΝ καρφώνεται: το windows.php.net μετακινεί τα παλιά
+    # builds στο /archives/ και ένα σταθερό URL σκάει με 404 μόλις βγει η επόμενη
+    # patch έκδοση. Ρωτάμε το releases.json για το τρέχον 8.3 NTS x64.
+    $branch = "8.3"
+    $rel = (Invoke-WebRequest -Uri "https://windows.php.net/downloads/releases/releases.json" `
+                              -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+    $entry = $rel.$branch.PSObject.Properties | Where-Object { $_.Name -like "nts-*-x64" } | Select-Object -First 1
+    if (-not $entry) { throw "Δεν βρέθηκε build NTS x64 για PHP $branch στο releases.json" }
+    $file = $entry.Value.zip.path
+    $url  = "https://windows.php.net/downloads/releases/$file"
+    Write-Host "   Λήψη PHP: $file"
+    $zip = Join-Path $env:TEMP $file
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 300
+    New-Item -ItemType Directory -Force $phpDir | Out-Null
+    Expand-Archive -Path $zip -DestinationPath $phpDir -Force
+    Remove-Item $zip -Force
+} else {
+    Write-Host "   Υπάρχει ήδη — παραλείπεται η λήψη."
+}
+
+# Το CA bundle: χωρίς ρητό curl.cainfo, το φορητό PHP δεν έχει ρίζες
+# πιστοποίησης και ΚΑΘΕ κλήση προς mydata.aade.gr σκάει με OpenSSL error 60.
+$cacert = Join-Path $phpDir "cacert.pem"
+if (-not (Test-Path $cacert)) {
+    Write-Host "   Λήψη cacert.pem"
+    Invoke-WebRequest -Uri "https://curl.se/ca/cacert.pem" -OutFile $cacert -UseBasicParsing
+}
+
+# php.ini: το φορητό αρχείο έρχεται ΧΩΡΙΣ ini, οπότε καμία επέκταση δεν φορτώνει
+# (`could not find driver`). Οι διαδρομές γράφονται σχετικές — ο φάκελος
+# μετακινείται στο %LOCALAPPDATA% του πελάτη και τα absolute paths θα έσπαγαν.
+@"
+; Δημιουργείται από το installer\build.ps1 — μην το επεξεργάζεστε.
+extension_dir = "ext"
+extension=pdo_sqlite
+extension=sqlite3
+extension=openssl
+extension=mbstring
+extension=curl
+extension=pdo_pgsql
+curl.cainfo = "cacert.pem"
+openssl.cafile = "cacert.pem"
+memory_limit = 256M
+max_execution_time = 300
+date.timezone = "Europe/Athens"
+"@ | Set-Content -Path (Join-Path $phpDir "php.ini") -Encoding utf8
+
+# Κλάδεμα: η διανομή έρχεται με 40 επεκτάσεις και ~30MB δεδομένα ICU. Εμείς
+# φορτώνουμε έξι. Χωρίς αυτό το βήμα ο installer φούσκωνε κατά ~35MB με oci8,
+# firebird, snmp, ldap, imap, intl… που δεν καλούνται ποτέ.
+$keep = @("php_pdo_sqlite.dll","php_sqlite3.dll","php_openssl.dll",
+          "php_mbstring.dll","php_curl.dll","php_pdo_pgsql.dll")
+Get-ChildItem (Join-Path $phpDir "ext") -Filter *.dll |
+    Where-Object { $keep -notcontains $_.Name } | Remove-Item -Force
+# icu*: μόνο για το php_intl που μόλις αφαιρέθηκε. glib/enchant: για το enchant.
+foreach ($p in @("icudt*.dll","icuin*.dll","icuuc*.dll","icuio*.dll","glib-2.dll",
+                 "extras","lib","php.ini-development","php.ini-production")) {
+    Get-ChildItem -Path $phpDir -Filter $p -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Επαλήθευση ότι το κλάδεμα δεν έσπασε καμία από τις έξι: αν λείπει εξάρτηση, το
+# `php -m` δεν θα τη δείξει και η offline λειτουργία θα έσκαγε μόνο στον πελάτη.
+$loaded = & $phpExe -c (Join-Path $phpDir "php.ini") -m
+foreach ($need in @("PDO","pdo_sqlite","sqlite3","openssl","mbstring","curl")) {
+    if ($loaded -notcontains $need) { throw "Η επέκταση '$need' δεν φορτώνει μετά το κλάδεμα της PHP" }
+}
+$phpSize = [math]::Round(((Get-ChildItem $phpDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB),1)
+& $phpExe -n -v | Select-Object -First 1
+Write-Host "   PHP έτοιμη: $phpDir  ($phpSize MB, επεκτάσεις: $($keep.Count))"
+
 # --- PyInstaller -------------------------------------------------------------
 Write-Host "== 4/5  PyInstaller ==" -ForegroundColor Cyan
 # Ένα ανοιχτό αντίγραφο της εφαρμογής κλειδώνει τα αρχεία του dist\ και το build
@@ -65,6 +185,9 @@ Remove-Item "$root\dist\TimologioDownloader" -Recurse -Force -ErrorAction Silent
 if (-not (Test-Path "$root\dist\TimologioDownloader\TimologioDownloader.exe")) {
     throw "Το PyInstaller δεν παρήγαγε το exe."
 }
+# Υπογράφουμε το exe ΠΡΙΝ το πακετάρει ο Inno, ώστε το υπογεγραμμένο αρχείο να
+# μπει μέσα στο setup.
+Invoke-Sign "$root\dist\TimologioDownloader\TimologioDownloader.exe"
 
 # --- Inno Setup --------------------------------------------------------------
 Write-Host "== 5/5  Inno Setup ==" -ForegroundColor Cyan
@@ -87,6 +210,7 @@ if ($LASTEXITCODE -ne 0) { throw "Ο Inno Setup απέτυχε." }
 # και αλφαβητικά προηγούνται, οπότε το μήνυμα ανέφερε το λάθος αρχείο.
 $setup = Get-ChildItem "$root\dist\installer\*.exe" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Invoke-Sign $setup.FullName
 Write-Host ""
 Write-Host "Έτοιμο: $($setup.FullName)" -ForegroundColor Green
 Write-Host "Μέγεθος: $([math]::Round($setup.Length/1MB,1)) MB"
