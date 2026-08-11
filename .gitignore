@@ -27,3 +27,6 @@ Thumbs.db
 
 # Encryption key (NEVER commit)
 .enckey
+
+# Μυστικά deployment — ΠΟΤΕ στο git
+.env

@@ -1,0 +1,65 @@
+# e-Τιμολόγιο Pro — PHP backend + Postgres.
+#
+#   cp .env.example .env   &&   docker compose up -d
+#
+# Δεν εκθέτει τίποτα στο internet: η θύρα 8080 δένεται ΜΟΝΟ στο loopback και η
+# πρόσβαση από έξω γίνεται μέσω cloudflared (δες CLOUDFLARED.md). Αν το
+# cloudflared τρέχει σε container, βάλ' το στο δίκτυο `etimologio_net`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-etimologio}
+      POSTGRES_USER: ${POSTGRES_USER:-etimologio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?ορίστε POSTGRES_PASSWORD στο .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [etimologio_net]
+    healthcheck:
+      # Η εφαρμογή ξεκινά μόνο όταν η βάση δέχεται συνδέσεις· αλλιώς το πρώτο
+      # request θα έσκαγε στη δημιουργία των πινάκων.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-etimologio} -d ${POSTGRES_DB:-etimologio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  etimologio:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_DSN: "pgsql:host=postgres;port=5432;dbname=${POSTGRES_DB:-etimologio}"
+      DB_USER: ${POSTGRES_USER:-etimologio}
+      DB_PASS: ${POSTGRES_PASSWORD}
+      MASTER_ADMIN_EMAIL: ${MASTER_ADMIN_EMAIL:?ορίστε MASTER_ADMIN_EMAIL}
+      MASTER_ADMIN_PASSWORD: ${MASTER_ADMIN_PASSWORD:-}
+      APP_URL: ${APP_URL:-}
+      SCHED_TOKEN: ${SCHED_TOKEN:-}
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-auto}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_EMAIL_SENDER: ${RESEND_EMAIL_SENDER:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      NOTIFY_ADMIN_EMAIL: ${NOTIFY_ADMIN_EMAIL:-}
+    volumes:
+      # ΚΡΙΣΙΜΟ: εδώ ζει το .enckey. Αν χαθεί, τα αποθηκευμένα στοιχεία ΑΑΔΕ
+      # δεν ξανα-αποκρυπτογραφούνται ποτέ.
+      - etimdata:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [etimologio_net]
+
+volumes:
+  pgdata:
+  etimdata:
+
+networks:
+  etimologio_net:
+    name: etimologio_net
