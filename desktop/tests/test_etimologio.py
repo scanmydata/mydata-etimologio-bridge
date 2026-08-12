@@ -1341,3 +1341,14 @@ def test_charts_render_without_data(app) -> None:
         widget.render(QPixmap(320, 200))
         widget.set_data([("2.1", 800.0), ("11.2", 200.0)])
         widget.render(QPixmap(320, 200))
+
+
+def test_combo_popup_has_an_explicit_text_colour() -> None:
+    """Χωρίς `color`, το popup κληρονομεί το σκούρο της πλατφόρμας πάνω σε
+    σκούρο panel — ο χρήστης βλέπει άδειο κουτί. Αφορούσε ΚΑΙ τα δύο προγράμματα."""
+    from timologio.gui import theme
+
+    for palette in (theme.DARK, theme.LIGHT):
+        qss = theme.build(palette)
+        block = qss.split("QComboBox QAbstractItemView {", 1)[1].split("}", 1)[0]
+        assert "color:" in block

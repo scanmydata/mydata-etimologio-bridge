@@ -217,22 +217,34 @@ class EtimologioShell(QWidget):
 
     def _on_backend_ready(self, url: str) -> None:
         self._client = EtimologioClient(url)
-        # Πάντα οθόνη σύνδεσης, όπως στο web. Στην τοπική λειτουργία τα πεδία
-        # έρχονται συμπληρωμένα (ο κωδικός παράγεται από την ίδια την εφαρμογή
-        # και δεν τον ξέρει κανείς), ώστε να αρκεί ένα κλικ — αλλά ο χρήστης
-        # βλέπει ότι μπαίνει σε ξεχωριστή εφαρμογή με δικό της λογαριασμό.
+        # Οθόνη σύνδεσης ΜΟΝΟ όταν υπάρχει πραγματικός server. Στην τοπική
+        # λειτουργία ο κωδικός παράγεται από την ίδια την εφαρμογή και δεν τον
+        # ξέρει κανείς — το να ζητάμε από τον χρήστη να πατήσει «Σύνδεση» σε
+        # προσυμπληρωμένη φόρμα δεν προστατεύει τίποτα, απλώς προσθέτει ένα βήμα
+        # σε κάθε άνοιγμα.
         if self._service.mode() == "offline":
-            email, password = self._service.bootstrap_credentials()
-            self._email.setText(email)
-            self._password.setText(password)
-            self._login_hint.setText(
-                "Τοπική λειτουργία: τα στοιχεία του διαχειριστή είναι έτοιμα — "
-                "πατήστε «Σύνδεση»."
-            )
-            self._login_hint.show()
-        else:
             self._login_hint.hide()
+            email, password = self._service.bootstrap_credentials()
+            self._set_status("Σύνδεση…")
+            _run(
+                lambda: self._client.login(email, password),
+                self._after_login,
+                self._login_failed_offline,
+            )
+            return
+        self._login_hint.hide()
         self._show_login()
+
+    def _login_failed_offline(self, msg: str) -> None:
+        """Η αυτόματη τοπική σύνδεση απέτυχε — δείχνουμε τη φόρμα ως διέξοδο."""
+        self._login_err.setText(
+            f"Η τοπική σύνδεση απέτυχε: {msg}\n"
+            "Δοκιμάστε ξανά ή επανεκκινήστε την εφαρμογή."
+        )
+        email, password = self._service.bootstrap_credentials()
+        self._email.setText(email)
+        self._password.setText(password)
+        self._stack.setCurrentWidget(self._login)
 
     def _on_backend_error(self, msg: str) -> None:
         self._started = False
