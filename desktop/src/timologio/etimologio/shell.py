@@ -446,7 +446,10 @@ class EtimologioShell(QWidget):
     #: Sections that arrive already populated; the rest load on demand.
     #: Η Έκδοση ΔΕΝ είναι εδώ: χρειάζεται το πελατολόγιο και τις σειρές, τα
     #: οποία φορτώνει μία φορά η δική της refresh().
-    _NO_AUTOLOAD = {"credit", "bulk"}
+    # Σελίδες που δεν πρέπει να τραβήξουν δεδομένα μόλις ανοίξουν. Η Μαζική βγήκε
+    # από τη λίστα: το `refresh()` της φέρνει μόνο τις σειρές (cached), και χωρίς
+    # αυτές το dropdown σειράς θα ήταν άδειο.
+    _NO_AUTOLOAD = {"credit"}
 
     def open_section(self, key: str) -> None:
         """Navigate from outside (the side menu). Ignored until logged in."""

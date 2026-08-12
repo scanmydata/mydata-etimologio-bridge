@@ -8,12 +8,15 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFrame,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QScrollArea,
     QVBoxLayout,
+    QWidget,
 )
 
 from . import ui
@@ -58,10 +61,24 @@ class SettingsPage(EtimPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(get_client, run, parent)
         self._totp_secret = ""
-        box = QVBoxLayout(self)
-        box.setContentsMargins(16, 14, 16, 14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(12)
+        outer.addLayout(ui.page_header("Ρυθμίσεις", self.go_back.emit))
+
+        # Οι κάρτες μπαίνουν σε περιοχή κύλισης. Χωρίς αυτό, σε παράθυρο που δεν
+        # τις χωρά όλες, το Qt συμπίεζε τις γραμμές: τα κουμπιά του 2FA και τα
+        # πεδία των ειδοποιήσεων έβγαιναν κομμένα στη μέση.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        box = QVBoxLayout(content)
+        box.setContentsMargins(0, 0, 8, 0)   # χώρος για τη μπάρα κύλισης
         box.setSpacing(12)
-        box.addLayout(ui.page_header("Ρυθμίσεις", self.go_back.emit))
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         # --- password ------------------------------------------------------
         pw_card, pw = ui.card()
@@ -153,7 +170,7 @@ class SettingsPage(EtimPage):
 
         box.addStretch(1)
         self._status = ui.muted("")
-        box.addWidget(self._status)
+        outer.addWidget(self._status)
 
     # --- lifecycle ---------------------------------------------------------
     def refresh(self) -> None:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRegularExpression, Qt, Signal
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -17,7 +19,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from .base import EtimPage
@@ -44,31 +48,64 @@ def _cust_value(row: dict[str, Any], key: str) -> str:
 
 
 class NewCustomerDialog(QDialog):
-    """Minimal create-customer form (ιδιώτης by default)."""
+    """Create a customer — επιχείρηση με ΑΦΜ ή ιδιώτης.
 
-    def __init__(self, parent=None) -> None:
+    The two are genuinely different records at the ΑΑΔΕ, not one form with an
+    optional field: a customer with a VAT number is registered through the
+    Taxisnet lookup, while an ιδιώτης is created locally and needs ονοματεπώνυμο,
+    πόλη and ΤΚ. Filing a taxpayer as an ιδιώτης drops the VAT number, turns
+    their invoices into retail receipts, and nothing says so until the ΑΑΔΕ
+    rejects a Τιμολόγιο — hence the explicit choice.
+    """
+
+    def __init__(self, parent=None, *, vat: str = "") -> None:
         super().__init__(parent)
         self.setWindowTitle("Νέος πελάτης")
-        self.setMinimumWidth(380)
-        form = QFormLayout(self)
+        self.setMinimumWidth(420)
+        box = QVBoxLayout(self)
 
+        self._tabs = QTabWidget()
+        box.addWidget(self._tabs)
+
+        # --- επιχείρηση με ΑΦΜ --------------------------------------------
+        biz = QWidget()
+        biz_form = QFormLayout(biz)
+        self.vat = QLineEdit(vat)
+        self.vat.setPlaceholderText("9 ψηφία")
+        self.vat.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,9}")))
+        biz_form.addRow("ΑΦΜ *", self.vat)
+        note = QLabel(
+            "Τα στοιχεία αντλούνται από το Taxisnet και ο πελάτης καταχωρείται "
+            "στο e-timologio αν δεν υπάρχει ήδη."
+        )
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        biz_form.addRow(note)
+        self._tabs.addTab(biz, "Με ΑΦΜ (Taxisnet)")
+
+        # --- ιδιώτης --------------------------------------------------------
+        person = QWidget()
+        p_form = QFormLayout(person)
         self.name = QLineEdit()
-        self.vat = QLineEdit()
-        self.vat.setPlaceholderText("προαιρετικό για ιδιώτη")
         self.address = QLineEdit()
         self.city = QLineEdit()
         self.zip = QLineEdit()
-        self.doy = QLineEdit("ΚΕΦΟΔΕ ΑΤΤΙΚΗΣ")
+        self.job = QLineEdit("ΙΔΙΩΤΗΣ")
         self.email = QLineEdit()
         self.phone1 = QLineEdit()
-        form.addRow("Επωνυμία *", self.name)
-        form.addRow("ΑΦΜ", self.vat)
-        form.addRow("Διεύθυνση", self.address)
-        form.addRow("Πόλη", self.city)
-        form.addRow("Τ.Κ.", self.zip)
-        form.addRow("ΔΟΥ", self.doy)
-        form.addRow("Email", self.email)
-        form.addRow("Τηλέφωνο", self.phone1)
+        p_form.addRow("Ονοματεπώνυμο *", self.name)
+        p_form.addRow("Διεύθυνση", self.address)
+        p_form.addRow("Πόλη *", self.city)
+        p_form.addRow("Τ.Κ. *", self.zip)
+        p_form.addRow("Επάγγελμα", self.job)
+        p_form.addRow("Email", self.email)
+        p_form.addRow("Τηλέφωνο", self.phone1)
+        self._tabs.addTab(person, "Ιδιώτης (χωρίς ΑΦΜ)")
+
+        self._error = QLabel("")
+        self._error.setObjectName("hint")
+        self._error.setWordWrap(True)
+        box.addWidget(self._error)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -77,25 +114,44 @@ class NewCustomerDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Άκυρο")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        box.addWidget(buttons)
+
+        if vat:
+            self._tabs.setCurrentIndex(0)
+
+    def is_personal(self) -> bool:
+        return self._tabs.currentIndex() == 1
 
     def _accept(self) -> None:
-        if not self.name.text().strip():
-            self.name.setFocus()
+        if self.is_personal():
+            for field, message in (
+                (self.name, "Δώσε ονοματεπώνυμο."),
+                (self.city, "Δώσε πόλη."),
+                (self.zip, "Δώσε Τ.Κ."),
+            ):
+                if not field.text().strip():
+                    self._error.setText(message)
+                    field.setFocus()
+                    return
+        elif not re.fullmatch(r"\d{9}", self.vat.text().strip()):
+            self._error.setText("Το ΑΦΜ πρέπει να έχει 9 ψηφία.")
+            self.vat.setFocus()
             return
         self.accept()
 
     def fields(self) -> dict[str, Any]:
-        return {
-            "name": self.name.text().strip(),
-            "vat": self.vat.text().strip(),
-            "address": self.address.text().strip(),
-            "city": self.city.text().strip(),
-            "zip": self.zip.text().strip(),
-            "doy": self.doy.text().strip(),
-            "email": self.email.text().strip(),
-            "phone1": self.phone1.text().strip(),
-        }
+        """Exactly the keyword arguments the matching client call expects."""
+        if self.is_personal():
+            return {
+                "name": self.name.text().strip(),
+                "address": self.address.text().strip(),
+                "city": self.city.text().strip(),
+                "zip_code": self.zip.text().strip(),
+                "job_description": self.job.text().strip() or "ΙΔΙΩΤΗΣ",
+                "email": self.email.text().strip(),
+                "phone1": self.phone1.text().strip(),
+            }
+        return {"vat": self.vat.text().strip()}
 
 
 class CustomersPage(EtimPage):
@@ -208,15 +264,19 @@ class CustomersPage(EtimPage):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         fields = dialog.fields()
+        personal = dialog.is_personal()
         self._status.setText("Αποθήκευση πελάτη…")
-        self._run(
-            lambda: client.create_customer(**fields),
-            self._created,
-            self._failed,
+        call = (
+            (lambda: client.create_personal_customer(**fields))
+            if personal
+            else (lambda: client.lookup_afm(fields["vat"]))
         )
+        self._run(call, self._created, self._failed)
 
     def _created(self, result: dict[str, Any]) -> None:
-        if result.get("success"):
+        # Το Taxisnet lookup δεν επιστρέφει πάντα `success`· αν γύρισε πελάτη,
+        # η καταχώρηση έγινε.
+        if result.get("success") or result.get("customer") or result.get("info"):
             self._status.setText("Ο πελάτης αποθηκεύτηκε.")
             self.refresh()
         else:

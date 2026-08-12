@@ -2089,7 +2089,7 @@ async function createNewDeduction(){
   const name=prompt('Ονομασία νέας κράτησης:','');
   if(!name){$('#txCat').value='';return;}
   $('#txErr').textContent='';
-  try{const d=await api({new_deduction:1,deduction_desc:name.trim(),deduction_amount_type:'1',deduction_amount:'0'});
+  try{const d=await api({new_deduction:1,deduction_description:name.trim(),deduction_amount_type:'1',deduction_amount:'0'});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
     TAXCATS=null;await loadTaxCats();await txTypeChange();
     const list=(TAXCATS&&TAXCATS.deductions)||[];const made=list.find(c=>(c.label||'').trim()===name.trim());

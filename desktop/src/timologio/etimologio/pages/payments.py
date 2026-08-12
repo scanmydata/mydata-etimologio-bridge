@@ -31,8 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..codes import PAYMENT_LABELS as _METHODS
+from ..codes import PAYMENT_METHODS_CASH
 from .base import EtimPage, fmt_money, parse_money
-from .card import _METHODS
 
 _PAY_COLS = [("Ημ/νία", "pay_date"), ("Ποσό", "amount"), ("Τρόπος", "method"),
              ("Πελάτης", "customer_name"), ("ΑΦΜ", "customer_vat"), ("Σημειώσεις", "notes")]
@@ -49,8 +50,11 @@ class NewPaymentDialog(QDialog):
         self.name = QLineEdit()
         self.amount = QLineEdit("0")
         self.method = QComboBox()
-        for code, label in _METHODS.items():
-            self.method.addItem(label, code)
+        # Εισπράξεις — όχι ο πλήρης κατάλογος: το «επί πιστώσει» είναι τρόπος
+        # πληρωμής παραστατικού, δεν είναι είσπραξη. Η προηγούμενη έκδοση
+        # διάβαζε ένα λεξικό, οπότε η προεπιλογή ήταν ό,τι έτυχε να είναι πρώτο.
+        for code, label in PAYMENT_METHODS_CASH:
+            self.method.addItem(label, str(code))
         self.notes = QLineEdit()
         form.addRow("ΑΦΜ πελάτη", self.vat)
         form.addRow("Επωνυμία", self.name)

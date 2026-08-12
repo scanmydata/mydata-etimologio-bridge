@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -22,8 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..codes import INVOICE_TYPES, PAYMENT_METHODS, series_for_type, type_label
 from .base import EtimPage, parse_money
-from .issue import INVOICE_TYPES, PAYMENT_METHODS
 
 _COLS = ["ΑΦΜ", "Επωνυμία", "Περιγραφή", "Ποσότητα", "Τιμή", "ΦΠΑ %", "Αποτέλεσμα"]
 _AFM, _NAME, _DESC, _QTY, _PRICE, _RATE, _RESULT = range(7)
@@ -34,6 +33,8 @@ class BulkPage(EtimPage):
 
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(get_client, run, parent)
+        self._loaded = False
+        self._all_series: list[dict[str, Any]] = []
         box = QVBoxLayout(self)
         # Ίδια περιθώρια με τις υπόλοιπες σελίδες: χωρίς αυτά οι ετικέτες
         # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
@@ -58,8 +59,11 @@ class BulkPage(EtimPage):
             self._type.addItem(label, code)
         head.addWidget(QLabel("Τύπος:"))
         head.addWidget(self._type, 2)
-        self._series = QLineEdit("A")
-        self._series.setFixedWidth(56)
+        # Η σειρά ήταν ελεύθερο κείμενο με προεπιλογή «A». Μια σειρά που δεν
+        # υπάρχει για τον συγκεκριμένο τύπο δεν απορρίπτει μία γραμμή — απορρίπτει
+        # ΟΛΟΚΛΗΡΗ την παρτίδα, αφού έχει συμπληρωθεί.
+        self._series = QComboBox()
+        self._series.setMinimumWidth(110)
         head.addWidget(QLabel("Σειρά:"))
         head.addWidget(self._series)
         self._payment = QComboBox()
@@ -68,6 +72,13 @@ class BulkPage(EtimPage):
         head.addWidget(QLabel("Πληρωμή:"))
         head.addWidget(self._payment, 1)
         box.addLayout(head)
+        self._type.currentIndexChanged.connect(self._fill_series)
+
+        self._series_warn = QLabel("")
+        self._series_warn.setObjectName("hint")
+        self._series_warn.setWordWrap(True)
+        self._series_warn.hide()
+        box.addWidget(self._series_warn)
 
         self._table = QTableWidget(0, len(_COLS))
         self._table.setHorizontalHeaderLabels(_COLS)
@@ -101,6 +112,35 @@ class BulkPage(EtimPage):
 
         self.add_row()
 
+    # --- σειρές ------------------------------------------------------------
+    def refresh(self) -> None:
+        """Φέρνει τις σειρές μία φορά (cached), για να είναι σωστό το dropdown."""
+        client = self.client()
+        if client is None or self._loaded:
+            return
+        self._loaded = True
+        self._run(client.series, self._got_series, lambda m: self._status.setText(""))
+
+    def _got_series(self, data: dict[str, Any]) -> None:
+        self._all_series = list(data.get("series", []))
+        self._fill_series()
+
+    def _fill_series(self) -> None:
+        code = str(self._type.currentData() or "")
+        matching = series_for_type(self._all_series, code)
+        self._series.clear()
+        for s in matching:
+            self._series.addItem(str(s.get("series_code", "")), str(s.get("series_code", "")))
+        if matching:
+            self._series_warn.hide()
+            return
+        self._series.addItem("A", "A")
+        self._series_warn.setText(
+            f"⚠ Δεν υπάρχει σειρά για «{type_label(code)}». Δημιουργήστε μία από τις "
+            "Σειρές — αλλιώς η ΑΑΔΕ θα απορρίψει ΟΛΗ την παρτίδα."
+        )
+        self._series_warn.show()
+
     def add_row(self, afm="", name="", desc="", qty="1", price="0", rate="24") -> None:
         r = self._table.rowCount()
         self._table.insertRow(r)
@@ -122,7 +162,7 @@ class BulkPage(EtimPage):
     def build_items(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         inv_type = self._type.currentData()
-        series = self._series.text().strip() or "A"
+        series = str(self._series.currentData() or self._series.currentText() or "A")
         payment = int(self._payment.currentData())
         for r in range(self._table.rowCount()):
             desc = self._cell(r, _DESC)

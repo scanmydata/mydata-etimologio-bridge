@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ...gui.printing import print_pdfs
 from ..bulkpdf import export_zip, fetch_pdfs
+from ..codes import PAYMENT_LABELS
 from . import ui
 from .base import EtimPage, fmt_money, parse_money
 from .customers import _cust_value
@@ -52,16 +53,10 @@ _PAY_COLS: list[tuple[str, str]] = [
     ("Σημειώσεις", "notes"),
 ]
 
-#: Payment method codes → labels (subset the bridge uses).
-_METHODS = {
-    "1": "Επαγγ. λογ. τράπεζας",
-    "2": "Επαγγ. λογ. τράπεζας αλλοδαπής",
-    "3": "Μετρητά",
-    "4": "Επιταγή",
-    "5": "Επί πιστώσει",
-    "6": "Web banking",
-    "7": "POS / e-POS",
-}
+#: Payment method codes → labels. Kept as an alias so the pages that already
+#: import ``_METHODS`` from here keep working; the table itself lives in
+#: ``codes.py`` so Έκδοση, Μαζική and Πληρωμές cannot drift apart again.
+_METHODS = PAYMENT_LABELS
 
 
 class CustomerCard(EtimPage):

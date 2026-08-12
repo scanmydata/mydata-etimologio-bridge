@@ -124,9 +124,46 @@ class EtimologioClient:
         """Instant local-cache read (no AADE login) → ``{success, rows: [...]}``."""
         return self._call({"cached": "customers"})
 
-    def create_customer(self, **fields: Any) -> dict[str, Any]:
-        """Create a customer. Accepts ``name, vat, address, city, zip, doy,
-        country, job_description, email, phone1, phone2, is_b2g, code``."""
+    def lookup_afm(self, vat: str) -> dict[str, Any]:
+        """Taxisnet lookup for a 9-digit ΑΦΜ → ``{customer|info: {name, address,
+        city, zip, …}}``.
+
+        This is **also how a customer with a VAT number gets created**: the AADE
+        lookup registers the customer as a side effect, which is exactly what the
+        web UI relies on (``saveCustomer()`` calls nothing else for that tab).
+        Such customers must never go through ``create_personal_customer``.
+        """
+        return self._call({"afm": vat})
+
+    def create_personal_customer(
+        self,
+        *,
+        name: str,
+        address: str = "",
+        city: str = "",
+        zip_code: str = "",
+        job_description: str = "ΙΔΙΩΤΗΣ",
+        email: str = "",
+        phone1: str = "",
+        phone2: str = "",
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """Create a customer **without** a VAT number (ιδιώτης).
+
+        e-timologio requires ονοματεπώνυμο, πόλη and ΤΚ for these; the caller is
+        expected to have validated them.
+        """
+        fields: dict[str, Any] = {
+            "name": name,
+            "address": address,
+            "city": city,
+            "zip": zip_code,
+            "job_description": job_description,
+            "email": email,
+            "phone1": phone1,
+            "phone2": phone2,
+        }
+        fields.update(extra)
         alias = {
             "vat": "cust_vat",
             "old_vat": "cust_old_vat",
@@ -137,8 +174,67 @@ class EtimologioClient:
         for key, value in fields.items():
             if value in (None, ""):
                 continue
-            param = alias.get(key, f"cust_{key}")
-            data[param] = "1" if value is True else value
+            data[alias.get(key, f"cust_{key}")] = "1" if value is True else value
+        return self._call(data=data, method="POST")
+
+    def create_customer(self, **fields: Any) -> dict[str, Any]:
+        """Create a customer, picking the right path from the ΑΦΜ.
+
+        The two paths are not interchangeable. Sending a real ΑΦΜ down the
+        ``create_personal_customer`` route files a taxpayer as an ιδιώτης — the
+        VAT number is dropped, invoices to that customer end up as retail, and
+        nothing surfaces the mistake until the ΑΑΔΕ rejects a Τιμολόγιο.
+        """
+        vat = str(fields.pop("vat", "") or "").strip()
+        if vat:
+            if not (vat.isdigit() and len(vat) == 9):
+                raise EtimologioError(f"Μη έγκυρο ΑΦΜ «{vat}» (χρειάζονται 9 ψηφία).")
+            return self.lookup_afm(vat)
+        name = str(fields.pop("name", "") or "")
+        return self.create_personal_customer(name=name, **fields)
+
+    def update_customer(
+        self,
+        *,
+        vat: str = "",
+        code: str = "",
+        name: str = "",
+        address: str = "",
+        city: str = "",
+        zip_code: str = "",
+        doy: str = "",
+        email: str = "",
+        phone1: str = "",
+        phone2: str = "",
+        job_description: str = "",
+    ) -> dict[str, Any]:
+        """Edit an existing customer, identified by ΑΦΜ **or** customer code."""
+        data: dict[str, Any] = {"update_customer": 1}
+        for key, value in (
+            ("update_customer_vat", vat),
+            ("update_customer_code", code),
+            ("update_name", name),
+            ("update_address", address),
+            ("update_city", city),
+            ("update_zip", zip_code),
+            ("update_doy", doy),
+            ("update_email", email),
+            ("update_phone1", phone1),
+            ("update_phone2", phone2),
+            ("update_job_description", job_description),
+        ):
+            if value:
+                data[key] = value
+        return self._call(data=data, method="POST")
+
+    def delete_customer(self, *, code: str = "", vat: str = "") -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if code:
+            data["delete_customer_code"] = code
+        elif vat:
+            data["delete_customer_vat"] = vat
+        else:
+            raise EtimologioError("Χρειάζεται κωδικός ή ΑΦΜ πελάτη για διαγραφή.")
         return self._call(data=data, method="POST")
 
     # --- issuance ----------------------------------------------------------
@@ -273,8 +369,76 @@ class EtimologioClient:
             method="POST",
         )
 
+    def update_product(
+        self,
+        code: str,
+        *,
+        description: str = "",
+        unit_price: str = "",
+        vat_category: str = "",
+        product_type: str = "",
+        category: str = "",
+        unit: str = "",
+        taric_code: str = "",
+    ) -> dict[str, Any]:
+        """Edit an item. ``code`` is the key and cannot change."""
+        data: dict[str, Any] = {"update_product_code": code}
+        for key, value in (
+            ("product_description", description),
+            ("unit_price", unit_price),
+            ("vat_category", vat_category),
+            ("product_type", product_type),
+            ("product_category", category),
+            ("unit", unit),
+            ("taric_code", taric_code),
+        ):
+            if value != "":
+                data[key] = value
+        return self._call(data=data, method="POST")
+
     def delete_product(self, code: str) -> dict[str, Any]:
         return self._call(data={"delete_product_code": code}, method="POST")
+
+    def create_product_category(self, name: str) -> dict[str, Any]:
+        return self._call(
+            data={"new_product_category": 1, "category_name": name}, method="POST"
+        )
+
+    def category_classifications(self) -> dict[str, Any]:
+        """Product categories with their χαρακτηρισμοί + the invoice-type list."""
+        return self._call({"category_cls": 1})
+
+    def save_category_classifications(
+        self, *, category_id: str = "", name: str, cls: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Create or update a product category together with its classifications.
+
+        ``cls`` entries are ``{type, cc, tc}`` — one per invoice type.
+        """
+        return self._call(
+            data={
+                "save_category_cls": 1,
+                "category_id": category_id,
+                "category_name": name,
+                "cls": json.dumps(cls, ensure_ascii=False),
+            },
+            method="POST",
+        )
+
+    def classification_options(self, invoice_type: str, *, self_pricing: bool = False) -> dict[str, Any]:
+        """Allowed classification categories + E3 codes for an invoice type."""
+        params: dict[str, Any] = {"cls_options": 1, "type": invoice_type}
+        if self_pricing:
+            params["self"] = 1
+        return self._call(params)
+
+    def classifications(self, product: str, invoice_type: str) -> dict[str, Any]:
+        """The χαρακτηρισμοί e-timologio derives for a product within a type."""
+        return self._call({"classifications": 1, "product": product, "type": invoice_type})
+
+    def invoice_types(self) -> dict[str, Any]:
+        """The live invoice-type catalogue (numeric value + dotted code + label)."""
+        return self._call({"invoice_types": 1})
 
     def series(self) -> dict[str, Any]:
         """List numbering series → ``{success, series: [...]}``."""
@@ -300,8 +464,76 @@ class EtimologioClient:
             data["series_trans_failure"] = 1
         return self._call(data=data, method="POST")
 
+    def update_series(
+        self,
+        series_id: str,
+        *,
+        invoice_type: str = "",
+        code: str = "",
+        start_aa: str = "",
+        description: str = "",
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"update_series_id": series_id}
+        for key, value in (
+            ("series_invoice_type", invoice_type),
+            ("series_code", code),
+            ("series_start_aa", start_aa),
+            ("series_description", description),
+        ):
+            if value != "":
+                data[key] = value
+        return self._call(data=data, method="POST")
+
     def delete_series(self, series_id: str) -> dict[str, Any]:
         return self._call(data={"delete_series_id": series_id}, method="POST")
+
+    # --- taxes, withholdings, deductions ----------------------------------
+    def tax_categories(self) -> dict[str, Any]:
+        """The five tax dropdowns of «Νέος Φόρος».
+
+        Returns ``{withheld, fees, other, digital, deductions: [{code, label}]}``.
+        Four of them are fixed by the ΑΑΔΕ; ``deductions`` (Κρατήσεις) are the
+        company's own saved entries, so that is the only list we can extend.
+        """
+        return self._call({"tax_categories": 1})
+
+    def deductions(self) -> dict[str, Any]:
+        return self._call({"list_deductions": 1})
+
+    def create_deduction(
+        self,
+        description: str,
+        *,
+        amount_type: str = "1",
+        amount: str = "0",
+        decrease_total_paid: bool = False,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "new_deduction": 1,
+            # Το web έστελνε `deduction_desc` ενώ το backend διαβάζει
+            # `deduction_description` — η ονομασία δεν έφτανε ποτέ.
+            "deduction_description": description,
+            "deduction_amount_type": amount_type,
+            "deduction_amount": amount,
+        }
+        if decrease_total_paid:
+            data["deduction_decrease_total_paid"] = 1
+        return self._call(data=data, method="POST")
+
+    def update_deduction(self, code: str, **fields: Any) -> dict[str, Any]:
+        data: dict[str, Any] = {"update_deduction_code": code}
+        alias = {
+            "description": "deduction_description",
+            "amount_type": "deduction_amount_type",
+            "amount": "deduction_amount",
+        }
+        for key, value in fields.items():
+            if value not in (None, ""):
+                data[alias.get(key, key)] = value
+        return self._call(data=data, method="POST")
+
+    def delete_deduction(self, code: str) -> dict[str, Any]:
+        return self._call(data={"delete_deduction_code": code}, method="POST")
 
     # --- drafts (πρόχειρα) -------------------------------------------------
     def temp_invoices(
@@ -383,6 +615,31 @@ class EtimologioClient:
         if date_to:
             params["issue_date_to"] = date_to
         return self._call(params)
+
+    def ledger(self, buyer_vat: str, date_from: str = "", date_to: str = "") -> dict[str, Any]:
+        """A customer's card as the backend builds it → ``{customer_vat,
+        customer_name, total_invoiced, total_paid, balance, entries: [...]}``.
+
+        ``entries`` already merges issued documents with local payments in date
+        order, which is what the running balance needs — rebuilding it from two
+        separate calls (as the native page used to) gets the order wrong as soon
+        as a payment and an invoice share a date.
+        """
+        params: dict[str, Any] = {"ledger": 1, "buyer_vat": buyer_vat}
+        if date_from:
+            params["issue_date_from"] = date_from
+        if date_to:
+            params["issue_date_to"] = date_to
+        return self._call(params)
+
+    # --- company / Taxisnet ------------------------------------------------
+    def company_profile(self) -> dict[str, Any]:
+        """The active company's own registry details (έδρα, επωνυμία, ΔΟΥ)."""
+        return self._call({"company_profile": 1})
+
+    def taxis_name(self, vat: str) -> dict[str, Any]:
+        """Registered name for a VAT number, without creating a customer."""
+        return self._call({"taxis_name": 1, "vat": vat})
 
     # --- statistics (cached like every dataset) ---------------------------
     def statistics(self, period: str = "month", cached: bool = False) -> dict[str, Any]:
@@ -530,4 +787,75 @@ class EtimologioClient:
         return self._call(
             {"auth": "admin_set_status"}, data={"user_id": user_id, "status": status},
             method="POST",
+        )
+
+    def admin_approve(self, user_id: int) -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_approve"}, data={"user_id": user_id}, method="POST"
+        )
+
+    def admin_reset_password(self, user_id: int) -> dict[str, Any]:
+        """Issue a 24-hour reset link for a user → ``{token, reset_link}``."""
+        return self._call(
+            {"auth": "admin_reset_pw"}, data={"user_id": user_id}, method="POST"
+        )
+
+    def admin_create_user(self, email: str, password: str, business_name: str = "") -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_create_user"},
+            data={"email": email, "password": password, "business_name": business_name},
+            method="POST",
+        )
+
+    # --- AADE company accounts --------------------------------------------
+    # Without these there is no way to register a company from inside the app: a
+    # fresh offline install signs in as master with zero companies and every page
+    # comes back empty, with nothing in the UI to fix it.
+    def admin_accounts(self) -> dict[str, Any]:
+        """Every AADE account on the installation (master only)."""
+        return self._call({"auth": "admin_accounts"})
+
+    def admin_user_accounts(self, user_id: int) -> dict[str, Any]:
+        return self._call({"auth": "admin_user_accounts", "user_id": user_id})
+
+    def admin_add_account(
+        self, user_id: int, *, vat: str, label: str = "", username: str = "", subkey: str = ""
+    ) -> dict[str, Any]:
+        """Link an AADE company to a user.
+
+        ``subkey`` is the e-timologio subscription key. The parameter really is
+        named ``subkey`` — sending ``subscription_key`` is accepted by the form
+        and silently produces a zero-length key, which surfaces much later as a
+        plain «Login failed».
+        """
+        return self._call(
+            {"auth": "admin_add_account"},
+            data={
+                "user_id": user_id,
+                "vat": vat,
+                "label": label or vat,
+                "username": username,
+                "subkey": subkey,
+            },
+            method="POST",
+        )
+
+    def admin_update_account(
+        self, account_id: int, *, vat: str = "", label: str = "", username: str = "", subkey: str = ""
+    ) -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_update_account"},
+            data={
+                "account_id": account_id,
+                "vat": vat,
+                "label": label,
+                "username": username,
+                "subkey": subkey,
+            },
+            method="POST",
+        )
+
+    def admin_delete_account(self, account_id: int) -> dict[str, Any]:
+        return self._call(
+            {"auth": "admin_delete_account"}, data={"account_id": account_id}, method="POST"
         )

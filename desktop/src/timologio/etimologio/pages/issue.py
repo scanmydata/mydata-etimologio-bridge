@@ -29,33 +29,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..codes import (  # noqa: F401 — re-exported for the pages that already import from here
+    INVOICE_TYPES,
+    PAYMENT_METHODS,
+    VAT_RATES,
+    series_for_type,
+    type_label,
+)
 from .base import EtimPage, fmt_money, parse_money
-
-#: Income document types (code → label), the subset a business issues day to day.
-INVOICE_TYPES: list[tuple[str, str]] = [
-    ("20", "2.1 Παροχή Υπηρεσιών"),
-    ("1", "1.1 Τιμολόγιο Πώλησης"),
-    ("2", "1.2 Πώληση Ενδοκοινοτική"),
-    ("3", "1.3 Πώληση Τρίτες Χώρες"),
-    ("21", "2.2 Ενδοκοινοτική Παροχή"),
-    ("22", "2.3 Παροχή Τρίτων Χωρών"),
-    ("30", "3.1 Τίτλος Κτήσης"),
-    ("55", "8.1 Ενοίκια / Έσοδο"),
-    ("57", "11.1 ΑΛΠ"),
-    ("58", "11.2 ΑΠΥ"),
-    ("59", "11.3 Απλοποιημένο Τιμολόγιο"),
-]
-
-#: Payment methods (code → label).
-PAYMENT_METHODS: list[tuple[int, str]] = [
-    (3, "Μετρητά"),
-    (1, "Επαγγ. λογ. πληρωμών ημεδαπής"),
-    (5, "Επί πιστώσει"),
-    (4, "Επιταγή"),
-    (7, "POS / e-POS"),
-]
-
-VAT_RATES = ["24", "13", "6", "0"]
 
 #: Editor columns.
 _COLS = ["Περιγραφή / Κωδικός", "Ποσότητα", "Τιμή μον.", "ΦΠΑ %", "Έκπτ. %", "Καθαρή", "Σύνολο"]
@@ -356,14 +337,8 @@ class IssuePage(EtimPage):
     def _fill_series(self) -> None:
         """Δείχνει μόνο τις σειρές που ανήκουν στον επιλεγμένο τύπο."""
         code = str(self._type.currentData() or "")
-        label = dict(INVOICE_TYPES).get(code, "")
-        # Το backend επιστρέφει τον τύπο ως «2.1 - Τιμολόγιο…»· ταιριάζουμε με
-        # τον αριθμητικό πρόθεμα («2.1») που υπάρχει και στη δική μας ετικέτα.
-        dotted = label.split(" ", 1)[0] if label else ""
-        matching = [
-            s for s in self._all_series
-            if dotted and str(s.get("invoice_type", "")).strip().startswith(dotted)
-        ]
+        label = type_label(code)
+        matching = series_for_type(self._all_series, code)
         self._series.clear()
         for s in matching:
             self._series.addItem(str(s.get("series_code", "")), str(s.get("series_code", "")))

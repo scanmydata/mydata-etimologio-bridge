@@ -18,7 +18,13 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import json  # noqa: E402
 
-from timologio.etimologio.client import EtimologioClient  # noqa: E402
+from timologio.etimologio.client import EtimologioClient, EtimologioError  # noqa: E402
+from timologio.etimologio.codes import (  # noqa: E402
+    DEFAULT_PAYMENT,
+    PAYMENT_METHODS,
+    PAYMENT_METHODS_CASH,
+    series_for_type,
+)
 from timologio.etimologio.pages import (  # noqa: E402
     AdminPage,
     BulkPage,
@@ -136,16 +142,74 @@ def test_client_customers_params() -> None:
     assert client.calls[-1][0] == {"list_customers": 1, "cust_vat": "094000000"}
 
 
-def test_client_create_customer_aliases() -> None:
+def test_client_create_personal_customer_aliases() -> None:
     client = RecordingClient()
-    client.create_customer(name="Ιδιώτης", vat="123", job_description="ΙΔΙΩΤΗΣ", is_b2g=True)
+    client.create_personal_customer(
+        name="Ιδιώτης", city="Πάτρα", zip_code="26221", job_description="ΙΔΙΩΤΗΣ", is_b2g=True
+    )
     _params, data, method = client.calls[-1]
     assert method == "POST"
     assert data["create_personal_customer"] == 1
     assert data["cust_name"] == "Ιδιώτης"
-    assert data["cust_vat"] == "123"
+    assert data["cust_zip"] == "26221"
     assert data["cust_job_description"] == "ΙΔΙΩΤΗΣ"
     assert data["cust_is_b2g"] == "1"
+
+
+def test_client_customer_with_vat_never_filed_as_personal() -> None:
+    """Ένας πελάτης με ΑΦΜ δεν επιτρέπεται να περάσει από τη διαδρομή του ιδιώτη.
+
+    Αυτό ήταν το πραγματικό bug: το `create_customer` έστελνε ΠΑΝΤΑ
+    `create_personal_customer=1`, οπότε κάθε επιχείρηση καταχωρούνταν ως ιδιώτης
+    και το ΑΦΜ χανόταν.
+    """
+    client = RecordingClient()
+    client.create_customer(name="ΑΛΦΑ ΑΕ", vat="094000000", city="Αθήνα")
+    params, data, _method = client.calls[-1]
+    assert params.get("afm") == "094000000"
+    assert data is None or "create_personal_customer" not in data
+
+
+def test_client_create_customer_rejects_malformed_vat() -> None:
+    client = RecordingClient()
+    with pytest.raises(EtimologioError):
+        client.create_customer(name="ΑΛΦΑ", vat="123")
+
+
+def test_client_update_and_delete_customer() -> None:
+    client = RecordingClient()
+    client.update_customer(vat="094000000", name="ΑΛΦΑ ΑΕ", city="Αθήνα")
+    _params, data, method = client.calls[-1]
+    assert method == "POST"
+    assert data["update_customer"] == 1
+    assert data["update_customer_vat"] == "094000000"
+    assert data["update_city"] == "Αθήνα"
+    # Κενά πεδία δεν στέλνονται — αλλιώς θα έσβηναν ό,τι υπάρχει ήδη.
+    assert "update_zip" not in data
+
+    client.delete_customer(code="C1")
+    assert client.calls[-1][1] == {"delete_customer_code": "C1"}
+    with pytest.raises(EtimologioError):
+        client.delete_customer()
+
+
+def test_client_new_deduction_uses_the_name_the_backend_reads() -> None:
+    client = RecordingClient()
+    client.create_deduction("Κράτηση 3%")
+    _params, data, _method = client.calls[-1]
+    assert data["deduction_description"] == "Κράτηση 3%"
+    assert "deduction_desc" not in data
+
+
+def test_client_admin_add_account_sends_subkey() -> None:
+    """Το endpoint διαβάζει `subkey`· το `subscription_key` περνά αθόρυβα ως κενό."""
+    client = RecordingClient()
+    client.admin_add_account(7, vat="802576637", username="user", subkey="KEY")
+    params, data, method = client.calls[-1]
+    assert method == "POST"
+    assert params["auth"] == "admin_add_account"
+    assert data["subkey"] == "KEY"
+    assert data["label"] == "802576637"  # πέφτει πίσω στο ΑΦΜ
 
 
 def test_client_search_invoices_by_buyer() -> None:
@@ -776,3 +840,90 @@ def test_issue_page_series_follow_the_document_type(app) -> None:
     page._type.setCurrentIndex(page._type.findData("1"))        # 1.1 — καμία σειρά
     assert not page._series_warn.isHidden()
     assert "Δεν υπάρχει σειρά" in page._series_warn.text()
+
+
+# --- κοινά λεξιλόγια (codes.py) ---------------------------------------------
+
+def test_default_payment_is_epi_pistosei_everywhere() -> None:
+    """Η προεπιλογή βγαίνει από τη ΣΕΙΡΑ του πίνακα, όχι από ξεχωριστό βήμα.
+
+    Τα combo γεμίζουν με τη σειρά του `PAYMENT_METHODS`, οπότε αν το πρώτο
+    στοιχείο είναι σωστό δεν υπάρχει `setCurrentIndex` να ξεχαστεί σε μια σελίδα.
+    """
+    assert PAYMENT_METHODS[0][0] == DEFAULT_PAYMENT == 5
+    # Η είσπραξη είναι άλλο πράγμα: «επί πιστώσει» δεν είναι τρόπος είσπραξης.
+    assert PAYMENT_METHODS_CASH[0][0] == 3
+    assert all(code != 5 for code, _label in PAYMENT_METHODS_CASH)
+
+
+def test_series_for_type_matches_on_the_dotted_code() -> None:
+    rows = [
+        {"invoice_type": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών", "series_code": "ΤΠΥ"},
+        {"invoice_type": "11.2 - ΑΠΥ", "series_code": "ΑΠΥ"},
+    ]
+    assert [s["series_code"] for s in series_for_type(rows, "20")] == ["ΤΠΥ"]
+    assert [s["series_code"] for s in series_for_type(rows, "58")] == ["ΑΠΥ"]
+    assert series_for_type(rows, "1") == []
+    assert series_for_type(rows, "άγνωστο") == []
+
+
+def test_bulk_page_series_is_a_filtered_dropdown(app) -> None:
+    """Μια ανύπαρκτη σειρά δεν χαλάει μία γραμμή — απορρίπτει όλη την παρτίδα."""
+    page = BulkPage(lambda: IssueClient(), sync_run)
+    page.refresh()
+
+    page._type.setCurrentIndex(page._type.findData("20"))       # 2.1
+    assert page._series.currentData() == "ΤΠΥ"
+    assert page._series_warn.isHidden()
+
+    page.add_row(afm="094039270", desc="ΥΠ001", qty="1", price="100")
+    assert page.build_items()[0]["series"] == "ΤΠΥ"
+
+    page._type.setCurrentIndex(page._type.findData("1"))        # 1.1 — καμία σειρά
+    assert not page._series_warn.isHidden()
+    assert "παρτίδα" in page._series_warn.text()
+
+
+def test_bulk_page_default_payment(app) -> None:
+    page = BulkPage(lambda: IssueClient(), sync_run)
+    page.add_row(afm="094039270", desc="ΥΠ001", qty="1", price="100")
+    assert page.build_items()[0]["payment"] == DEFAULT_PAYMENT
+
+
+def test_issue_page_default_payment(app) -> None:
+    page = IssuePage(lambda: IssueClient(), sync_run)
+    page.add_line(desc="ΥΠ001", qty="1", price="100")
+    assert page._issue_kwargs()["payment"] == DEFAULT_PAYMENT
+
+
+def test_new_customer_dialog_separates_the_two_kinds(app) -> None:
+    """Ο διάλογος επιστρέφει τα ορίσματα της ΣΩΣΤΗΣ κλήσης για κάθε καρτέλα."""
+    from timologio.etimologio.pages.customers import NewCustomerDialog
+
+    dialog = NewCustomerDialog(vat="094039270")
+    assert not dialog.is_personal()
+    assert dialog.fields() == {"vat": "094039270"}
+
+    dialog._tabs.setCurrentIndex(1)
+    assert dialog.is_personal()
+    dialog.name.setText("Γιώργος Παπαδόπουλος")
+    dialog.city.setText("Πάτρα")
+    dialog.zip.setText("26221")
+    fields = dialog.fields()
+    assert fields["name"] == "Γιώργος Παπαδόπουλος"
+    assert fields["zip_code"] == "26221"
+    assert "vat" not in fields
+
+
+def test_new_customer_dialog_validates_before_accepting(app) -> None:
+    from timologio.etimologio.pages.customers import NewCustomerDialog
+
+    dialog = NewCustomerDialog()
+    dialog.vat.setText("12345")            # λιγότερα από 9 ψηφία
+    dialog._accept()
+    assert "9 ψηφία" in dialog._error.text()
+
+    dialog._tabs.setCurrentIndex(1)        # ιδιώτης χωρίς πόλη/ΤΚ
+    dialog.name.setText("Γιώργος")
+    dialog._accept()
+    assert "πόλη" in dialog._error.text()

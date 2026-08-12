@@ -29,9 +29,15 @@ from ...gui.theme import CURRENT
 
 
 def muted(text: str = "") -> QLabel:
-    """Secondary text (status lines, counts) in the theme's muted colour."""
+    """Secondary text (status lines, counts) in the theme's muted colour.
+
+    Wraps by default: an unwrapped explanatory sentence reports a very wide
+    sizeHint, which pushed the whole card past the right edge of the page
+    instead of flowing onto a second line.
+    """
     label = QLabel(text)
     label.setObjectName("muted")
+    label.setWordWrap(True)
     return label
 
 
