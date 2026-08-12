@@ -146,7 +146,18 @@ class DraftsPage(ListPage):
     def _after_fetch(self, result, *, mode: str) -> None:
         paths, errors = result
         if not paths:
-            self.status.setText("Κανένα PDF δεν κατέβηκε.")
+            # Γνωστό: για κάποιους λογαριασμούς το `preview_temp` της ΑΑΔΕ απαντά
+            # «Αδυναμία προεπισκόπησης» ακόμη και για έγκυρο πρόχειρο (ισχύει και
+            # στο web). Δείχνουμε το πραγματικό μήνυμα και τη διέξοδο, αντί για
+            # ένα σιωπηλό «τίποτα».
+            detail = errors[0] if errors else "άγνωστο σφάλμα"
+            self.status.setText(f"Το PDF δεν κατέβηκε: {detail}")
+            QMessageBox.information(
+                self, "Προεπισκόπηση πρόχειρου",
+                f"Η ΑΑΔΕ δεν επέστρεψε PDF:\n\n{detail}\n\n"
+                "Άνοιξε το πρόχειρο στην Έκδοση και πάτα «Προεπισκόπηση» — "
+                "αυτή η διαδρομή δουλεύει.",
+            )
             return
         note = f" ({len(errors)} απέτυχαν)" if errors else ""
         self.status.setText(f"{len(paths)} PDF έτοιμα{note}.")

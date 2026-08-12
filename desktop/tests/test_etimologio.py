@@ -1352,3 +1352,22 @@ def test_combo_popup_has_an_explicit_text_colour() -> None:
         qss = theme.build(palette)
         block = qss.split("QComboBox QAbstractItemView {", 1)[1].split("}", 1)[0]
         assert "color:" in block
+
+
+def test_afm_lookup_falls_back_to_the_customer_list(app) -> None:
+    """Το `afm` endpoint επιστρέφει μόνο {status, code, vat} — επαληθεύτηκε ζωντανά.
+
+    Χωρίς δεύτερο βήμα προς το πελατολόγιο, επωνυμία και διεύθυνση έμεναν κενές
+    ακόμη κι όταν ο πελάτης υπήρχε.
+    """
+    class ThinAfmClient(IssueFullClient):
+        def lookup_afm(self, vat):
+            return {"success": True, "status": "found", "code": "4", "vat": vat}
+
+    page = IssuePage(lambda: ThinAfmClient(), sync_run)
+    page.refresh()
+    page._afm.setText("094039270")
+    page._fetch_customer()
+
+    assert page._name.text() == "ΞΕΝΤΕ ΑΕ"
+    assert page._city.text() == "Αθήνα"

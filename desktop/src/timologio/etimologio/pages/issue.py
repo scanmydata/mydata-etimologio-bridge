@@ -699,16 +699,36 @@ class IssuePage(EtimPage):
         def fill(data: dict) -> None:
             row = data.get("customer") or data.get("info") or data
             name = str(row.get("name") or row.get("customer_name") or "")
-            if not name:
+            if name:
+                self._apply_customer_details(row)
+                return
+            # Το `afm` endpoint επιβεβαιώνει/καταχωρεί τον πελάτη αλλά επιστρέφει
+            # μόνο `{status, code, vat}` — τα στοιχεία τα δίνει το πελατολόγιο.
+            # Χωρίς αυτό το δεύτερο βήμα, επωνυμία και διεύθυνση έμεναν κενές.
+            if not data.get("success"):
                 self._status.setText("Δεν βρέθηκαν στοιχεία για αυτό το ΑΦΜ.")
                 return
-            self._name.setText(name)
-            self._address.setText(str(row.get("address") or ""))
-            self._city.setText(str(row.get("city") or ""))
-            self._zip.setText(str(row.get("zip") or ""))
-            self._status.setText("Συμπληρώθηκαν τα στοιχεία πελάτη.")
+            self._run(lambda: client.customers(vat=afm), fill_from_list, quiet)
 
-        self._run(lambda: client.lookup_afm(afm), fill, lambda m: self._status.setText(f"Σφάλμα: {m}"))
+        def fill_from_list(data: dict) -> None:
+            rows = data.get("customers") or data.get("rows") or []
+            match = next(
+                (r for r in rows if str(r.get("vat") or r.get("afm") or "") == afm), None
+            )
+            if match is None:
+                self._status.setText("Ο πελάτης καταχωρήθηκε — συμπλήρωσε τα στοιχεία.")
+                return
+            self._apply_customer_details(match)
+
+        quiet = lambda m: self._status.setText(f"Σφάλμα: {m}")  # noqa: E731
+        self._run(lambda: client.lookup_afm(afm), fill, quiet)
+
+    def _apply_customer_details(self, row: dict[str, Any]) -> None:
+        self._name.setText(str(row.get("name") or row.get("customer_name") or ""))
+        self._address.setText(str(row.get("address") or ""))
+        self._city.setText(str(row.get("city") or ""))
+        self._zip.setText(str(row.get("zip") or ""))
+        self._status.setText("Συμπληρώθηκαν τα στοιχεία πελάτη.")
 
     # --- προγραμματισμός ---------------------------------------------------
     def _schedule(self) -> None:
