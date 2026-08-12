@@ -192,7 +192,10 @@ class ProductsPage(ListPage):
         edit.clicked.connect(self._edit)
         delete = QPushButton("Διαγραφή")
         delete.clicked.connect(self._delete)
-        for button in (new, edit, delete):
+        cats = QPushButton("🏷️ Κατηγορίες & χαρακτηρισμοί")
+        cats.setToolTip("Ποιος χαρακτηρισμός εσόδου και κωδικός E3 ανά τύπο παραστατικού")
+        cats.clicked.connect(self._open_categories)
+        for button in (new, edit, delete, cats):
             self.toolbar.insertWidget(self.toolbar.count() - 1, button)
         self.table.doubleClicked.connect(lambda *_: self._edit())
 
@@ -209,6 +212,17 @@ class ProductsPage(ListPage):
         self._categories = list(
             data.get("categories") or data.get("product_categories") or data.get("rows") or []
         )
+
+    def _open_categories(self) -> None:
+        client = self.client()
+        if client is None:
+            return
+        from .categories import CategoriesDialog
+
+        CategoriesDialog(self, client=client, run=self._run).exec()
+        # Οι κατηγορίες μπορεί να άλλαξαν — ο διάλογος ειδών πρέπει να τις δει.
+        self._categories = []
+        self.refresh()
 
     def _new(self) -> None:
         client = self.client()

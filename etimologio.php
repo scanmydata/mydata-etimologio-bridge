@@ -1011,6 +1011,88 @@ function searchTempInvoices(
 // carries extra fields that trigger a stricter validation demanding BtgRequestId /
 // *Countries / … which our clean shape never sends), 3) POST it → real AADE PDF.
 // Verified by capturing the endpoint + replaying the transform against a live draft.
+// --- ΜΟΝΤΕΛΟ ΠΡΟΧΕΙΡΟΥ -> ΣΧΗΜΑ ΦΟΡΜΑΣ ---------------------------------------
+// Το `/Invoice/TempInvoice` επιστρέφει το ΜΟΝΤΕΛΟ (πλούσιο, με nulls, `country`
+// ως αριθμητικό enum, `itemId` = 0), ενώ το `PrintPreviewInvoice2PdfNew`
+// τροφοδοτείται από τη ΦΟΡΜΑ, που στέλνει ένα στενό σύνολο πεδίων με strings και
+// μηδενικά. Δίνοντάς του το μοντέλο αυτούσιο, η ΑΑΔΕ απαντούσε πάντα με το γενικό
+// «Αδυναμία προεπισκόπησης παραστατικού».
+//
+// Οι δύο συναρτήσεις παρακάτω αναπαράγουν ΑΚΡΙΒΩΣ το σχήμα που καταγράφηκε από μια
+// επιτυχημένη προεπισκόπηση της Έκδοσης (ίδιο πρόχειρο, ίδια σειριοποίηση), οπότε
+// η μόνη διαφορά που μένει είναι η προέλευση των δεδομένων.
+function tempCounterpartToForm($cp): array {
+    $s = static fn($v) => $v === null ? '' : (string)$v;
+    if (!is_array($cp)) $cp = [];
+    // Το μοντέλο δίνει country ως enum (0 = Ελλάδα)· η φόρμα θέλει τον κωδικό ISO.
+    $country = $s($cp['country'] ?? '');
+    if ($country === '' || ctype_digit($country)) $country = 'GR';
+    $addr = is_array($cp['address'] ?? null) ? $cp['address'] : [];
+    return [
+        'vatNumber'         => $s($cp['vatNumber'] ?? ''),
+        'branch'            => $s($cp['branch'] ?? '0'),
+        'country'           => $country,
+        'name'              => $s($cp['name'] ?? ''),
+        'documentIdNo'      => $s($cp['documentIdNo'] ?? ''),
+        'countryDocumentId' => $s($cp['countryDocumentId'] ?? ''),
+        'customerCode'      => $s($cp['customerCode'] ?? ''),
+        'emailAddress'      => $s($cp['emailAddress'] ?? ''),
+        'address'           => [
+            'street'     => $s($addr['street'] ?? ''),
+            'postalCode' => $s($addr['postalCode'] ?? ''),
+            'city'       => $s($addr['city'] ?? ''),
+            'number'     => $s($addr['number'] ?? '0'),
+        ],
+    ];
+}
+
+function tempLinesToForm($lines): array {
+    if (!is_array($lines)) return [];
+    $n = static fn($v) => $v === null || $v === '' ? 0 : (float)$v;
+    $s = static fn($v) => $v === null ? '' : (string)$v;
+    $out = [];
+    foreach (array_values($lines) as $i => $l) {
+        if (!is_array($l)) continue;
+        $cls = [];
+        foreach ((is_array($l['classifications'] ?? null) ? $l['classifications'] : []) as $c) {
+            if (!is_array($c)) continue;
+            $cls[] = [
+                'classificationKind'     => $n($c['classificationKind'] ?? 1),
+                'classificationCategory' => $s($c['classificationCategory'] ?? ''),
+                'classificationType'     => $s($c['classificationType'] ?? ''),
+                'amount'                 => $n($c['amount'] ?? 0),
+            ];
+        }
+        $out[] = [
+            'lineNumber'                   => $n($l['lineNumber'] ?? ($i + 1)),
+            // Το μοντέλο επιστρέφει itemId = 0· η φόρμα αριθμεί από το 1.
+            'itemId'                       => $n($l['itemId'] ?? 0) ?: ($i + 1),
+            'itemCode'                     => $s($l['itemCode'] ?? ''),
+            'itemDescr'                    => $s($l['itemDescr'] ?? ''),
+            'unitPrice'                    => $n($l['unitPrice'] ?? 0),
+            'vatCategory'                  => $n($l['vatCategory'] ?? 1),
+            'vatExemptionCategory'         => $s($l['vatExemptionCategory'] ?? ''),
+            'netValueWithoutDiscount'      => $n($l['netValueWithoutDiscount'] ?? 0),
+            'discountValue'                => $n($l['discountValue'] ?? 0),
+            'netValueWithDiscount'         => $n($l['netValueWithDiscount'] ?? 0),
+            'vatAmount'                    => $n($l['vatAmount'] ?? 0),
+            'totalValue'                   => $n($l['totalValue'] ?? 0),
+            'otherMeasurementUnitTitle'    => $s($l['otherMeasurementUnitTitle'] ?? ''),
+            'otherMeasurementUnitQuantity' => $s($l['otherMeasurementUnitQuantity'] ?? ''),
+            'withheldAmount'               => $n($l['withheldAmount'] ?? 0),
+            'stampAmount'                  => $n($l['stampAmount'] ?? 0),
+            'feesAmount'                   => $n($l['feesAmount'] ?? 0),
+            'otherTaxesAmount'             => $n($l['otherTaxesAmount'] ?? 0),
+            'deductionsAmount'             => $n($l['deductionsAmount'] ?? 0),
+            'discountAmount'               => $n($l['discountAmount'] ?? 0),
+            'discountType'                 => $n($l['discountType'] ?? 1),
+            'isGiftVoucher'                => 'false',
+            'classifications'              => $cls,
+        ];
+    }
+    return $out;
+}
+
 function previewTempInvoice(\CurlHandle $ch, string $encId): array {
     if ($encId === '') return ['success' => false, 'error' => 'Λείπει το αναγνωριστικό προχείρου'];
     $resp = curlGet($ch, BASE_URL . '/Invoice/TempInvoice?encTempInvoiceId=' . rawurlencode($encId));
@@ -1053,8 +1135,13 @@ function previewTempInvoice(\CurlHandle $ch, string $encId): array {
             'reverseDeliveryNotePurpose' => $sv($h['reverseDeliveryNotePurpose'] ?? ''),
         ],
         'issuer'       => ['vatNumber' => '', 'branch' => '0', 'country' => 'GR'],
-        'counterpart'  => is_array($raw['counterpart'] ?? null) ? $raw['counterpart'] : [],
-        'invoiceLines' => is_array($raw['invoiceLines'] ?? null) ? array_values($raw['invoiceLines']) : [],
+        'counterpart'  => tempCounterpartToForm($raw['counterpart'] ?? null),
+        'invoiceLines' => tempLinesToForm($raw['invoiceLines'] ?? null),
+        // Τα δύο πεδία που η φόρμα στέλνει πάντα (κενά) και το μοντέλο δεν έχει.
+        'invoiceNotes'        => $sv($raw['invoiceNotes'] ?? ''),
+        'transmissionFailure' => '',
+        // Το PrintPreview ταυτοποιεί το αποθηκευμένο πρόχειρο από εδώ.
+        'tempInvoiceId'       => $sv($raw['tempInvoiceId'] ?? ''),
     ];
     if ($dn && is_array($h['otherDeliveryNoteHeader'] ?? null)) {
         $clean['invoiceHeader']['otherDeliveryNoteHeader'] = $h['otherDeliveryNoteHeader'];

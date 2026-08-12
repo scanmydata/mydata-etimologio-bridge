@@ -1371,3 +1371,76 @@ def test_afm_lookup_falls_back_to_the_customer_list(app) -> None:
 
     assert page._name.text() == "ΞΕΝΤΕ ΑΕ"
     assert page._city.text() == "Αθήνα"
+
+
+# --- ονόματα παραμέτρων που το backend αγνοεί σιωπηλά αν είναι λάθος ----------
+
+def test_new_deduction_always_sends_decrease_total_paid() -> None:
+    """Το endpoint απαιτεί ΚΑΙ ΤΑ ΤΕΣΣΕΡΑ πεδία — αλλιώς «… are required».
+
+    Επαληθεύτηκε ζωντανά: χωρίς αυτό, καμία κράτηση δεν δημιουργείτο, ούτε από
+    το native ούτε από το web.
+    """
+    client = RecordingClient()
+    client.create_deduction("Κράτηση 3%", amount="3")
+    _params, data, _method = client.calls[-1]
+    assert data["deduction_decrease_total_paid"] == "0"
+    client.create_deduction("Κράτηση", decrease_total_paid=True)
+    assert client.calls[-1][1]["deduction_decrease_total_paid"] == "1"
+
+
+def test_category_classifications_use_the_keys_the_backend_reads(app) -> None:
+    """`invoice_type/category/code` — όχι `type/cc/tc`.
+
+    Το backend κάνει `continue` σε όποια εγγραφή δεν έχει τα σωστά κλειδιά και
+    μετά απαντά `success: true` με `count: 0`: η κατηγορία δημιουργείται ΧΩΡΙΣ
+    χαρακτηρισμούς και τίποτα δεν το φανερώνει.
+    """
+    from timologio.etimologio.pages.categories import CategoryEditDialog
+
+    options = {
+        "categories": [
+            {"category": "category1_3", "title": "Έσοδα από Παροχή Υπηρεσιών (1.3)",
+             "codes": [{"code": "E3_561_001", "title": "Χονδρικές"},
+                       {"code": "E3_561_003", "title": "Λιανικές"}]},
+        ]
+    }
+    dialog = CategoryEditDialog(
+        invoice_types=[{"value": "20", "label": "2.1 - ΤΠΥ"},
+                       {"value": "58", "label": "11.2 - ΑΠΥ"}],
+        options_for=lambda _t: options,
+        row={"category_id": "1", "name": "ΥΠΗΡΕΣΙΕΣ", "classifications": [
+            {"invoice_type": "20", "category": "category1_3", "code": "E3_561_001"},
+        ]},
+    )
+    cls = dialog.classifications()
+    assert cls == [{"invoice_type": "20", "category": "category1_3", "code": "E3_561_001"}]
+    assert dialog.fields()["category_id"] == "1"
+
+
+def test_category_dialog_rejects_two_classifications_for_one_type(app) -> None:
+    """Η ΑΑΔΕ δέχεται έναν χαρακτηρισμό ανά τύπο· ο δεύτερος θα έσβηνε τον πρώτο."""
+    from timologio.etimologio.pages.categories import CategoryEditDialog
+
+    options = {"categories": [
+        {"category": "category1_3", "title": "1.3",
+         "codes": [{"code": "E3_561_001", "title": "Χονδρικές"}]},
+    ]}
+    dialog = CategoryEditDialog(
+        invoice_types=[{"value": "20", "label": "2.1 - ΤΠΥ"}],
+        options_for=lambda _t: options,
+    )
+    dialog.name.setText("ΔΟΚΙΜΗ")
+    dialog.add_row("20", "category1_3", "E3_561_001")   # δεύτερη για τον ίδιο τύπο
+    dialog._accept()
+    assert "ένας ανά τύπο" in dialog._error.text()
+
+
+def test_category_summary_reads_like_the_web_pills(app) -> None:
+    from timologio.etimologio.pages.categories import classification_summary
+
+    assert classification_summary({"classifications": [
+        {"invoice_type_label": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών", "code": "E3_561_001"},
+        {"invoice_type_label": "11.2 - ΑΠΥ", "code": "E3_561_003"},
+    ]}) == "2.1 → E3_561_001  ·  11.2 → E3_561_003"
+    assert "χωρίς" in classification_summary({"classifications": []})

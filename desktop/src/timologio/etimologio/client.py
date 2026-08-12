@@ -404,6 +404,11 @@ class EtimologioClient:
             data={"new_product_category": 1, "category_name": name}, method="POST"
         )
 
+    def delete_product_category(self, category_id: str) -> dict[str, Any]:
+        return self._call(
+            data={"delete_product_category_id": category_id}, method="POST"
+        )
+
     def category_classifications(self) -> dict[str, Any]:
         """Product categories with their χαρακτηρισμοί + the invoice-type list."""
         return self._call({"category_cls": 1})
@@ -413,7 +418,10 @@ class EtimologioClient:
     ) -> dict[str, Any]:
         """Create or update a product category together with its classifications.
 
-        ``cls`` entries are ``{type, cc, tc}`` — one per invoice type.
+        ``cls`` entries are ``{invoice_type, category, code}`` — one per invoice
+        type. The key names matter: the backend skips (silently) any entry whose
+        ``invoice_type`` or ``category`` is missing, so a wrong name produces a
+        category with **zero** classifications and a cheerful ``success: true``.
         """
         return self._call(
             data={
@@ -508,17 +516,21 @@ class EtimologioClient:
         amount: str = "0",
         decrease_total_paid: bool = False,
     ) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "new_deduction": 1,
-            # Το web έστελνε `deduction_desc` ενώ το backend διαβάζει
-            # `deduction_description` — η ονομασία δεν έφτανε ποτέ.
-            "deduction_description": description,
-            "deduction_amount_type": amount_type,
-            "deduction_amount": amount,
-        }
-        if decrease_total_paid:
-            data["deduction_decrease_total_paid"] = 1
-        return self._call(data=data, method="POST")
+        return self._call(
+            data={
+                "new_deduction": 1,
+                # Το web έστελνε `deduction_desc` ενώ το backend διαβάζει
+                # `deduction_description` — η ονομασία δεν έφτανε ποτέ.
+                "deduction_description": description,
+                "deduction_amount_type": amount_type,
+                "deduction_amount": amount,
+                # Πρέπει να στέλνεται ΠΑΝΤΑ, ακόμη και ως «0»: το endpoint απαιτεί
+                # και τα τέσσερα πεδία και αλλιώς απαντά «Description, amount type,
+                # amount, and decrease_total_paid are required».
+                "deduction_decrease_total_paid": "1" if decrease_total_paid else "0",
+            },
+            method="POST",
+        )
 
     def update_deduction(self, code: str, **fields: Any) -> dict[str, Any]:
         data: dict[str, Any] = {"update_deduction_code": code}
