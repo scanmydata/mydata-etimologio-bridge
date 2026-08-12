@@ -16,13 +16,24 @@ metadata:
   ζητηθούν σε **δεύτερο βήμα** με `list_customers&cust_vat=<ΑΦΜ>`. Το web το αγνοεί
   (κρατά ό,τι υπάρχει στη φόρμα), οπότε εκεί τα πεδία μένουν κενά.
 
-- **`?preview_temp=<enc_id|guid>` αποτυγχάνει.** Η ΑΑΔΕ απαντά «Τimologio - Αδυναμία
-  προεπισκόπησης παραστατικού» και για τα δύο είδη token. Δοκιμάστηκαν χωρίς επιτυχία:
-  κανονικοποίηση του `counterpart` (το μοντέλο δίνει `country: 0` αντί για `"GR"`) και
-  προσθήκη `tempInvoiceId` στο payload του `PrintPreviewInvoice2PdfNew`. Ισχύει και για
-  το web (ίδιο endpoint). **Η διαδρομή που δουλεύει** είναι `?preview=1&temp_id=<guid>`
-  με πλήρεις γραμμές — επιστρέφει ~130KB PDF. Για να λυθεί χρειάζεται capture ενός
-  πραγματικού request του browser, όπως έγινε για τα άλλα quirks του `etimologio.php`.
+- **`?preview_temp=` ΛΥΘΗΚΕ** (2026-08-12). Αιτία: το `/Invoice/TempInvoice` επιστρέφει
+  το ΜΟΝΤΕΛΟ (nulls, `country` ως αριθμητικό enum, `itemId` = 0) ενώ το
+  `PrintPreviewInvoice2PdfNew` τροφοδοτείται από τη ΦΟΡΜΑ (στενό σύνολο πεδίων,
+  strings, μηδενικά, `itemId` από το 1, `isGiftVoucher`/`stampAmount`/`invoiceNotes`/
+  `transmissionFailure`/`tempInvoiceId` παρόντα). Οι `tempCounterpartToForm()` και
+  `tempLinesToForm()` κάνουν τη μετάφραση.
+  **Η τεχνική που το έλυσε** — χρήσιμη για κάθε επόμενο quirk: προσωρινό dump μέσα στη
+  `curlPostInvoice()` (env-gated), εκτέλεση της διαδρομής που ΔΟΥΛΕΥΕΙ και αυτής που
+  ΣΚΑΕΙ για το ίδιο πρόχειρο, και flatten-diff των δύο JSON. Δεν χρειάζεται browser.
+
+- **`new_deduction` θέλει ΚΑΙ ΤΑ ΤΕΣΣΕΡΑ πεδία**, μαζί με
+  `deduction_decrease_total_paid` (ακόμη και «0»). Χωρίς αυτό: «Description, amount
+  type, amount, and decrease_total_paid are required».
+
+- **`save_category_cls` διαβάζει `{invoice_type, category, code}`**, όχι
+  `{type, cc, tc}`. Κάνει `continue` στις άγνωστες εγγραφές και απαντά
+  `success: true` με `count: 0` — η κατηγορία δημιουργείται ΧΩΡΙΣ χαρακτηρισμούς.
+  Πάντα να ελέγχεται το `count`, όχι μόνο το `success`.
 
 - **`tax_categories`** γυρίζει `withheld:18, fees:22, other:28, digital:4, deductions:0`.
   Το `deductions` είναι το μόνο δικό μας — άδειο όσο δεν έχουν οριστεί κρατήσεις.
