@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -20,12 +20,17 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from ...gui.documents_view import SortableItem
 from ...gui.icons import icon
+from ...gui.table_filter import TableColumnFilter
 from ...gui.theme import CURRENT
+from ...gui.widgets import persist_header
+from .base import parse_money
 
 
 def muted(text: str = "") -> QLabel:
@@ -102,14 +107,9 @@ def page_header(text: str, on_back: Callable[[], None] | None = None) -> QHBoxLa
     stretch, so use ``insertWidget(layout.count() - 1, w)`` or just ``addWidget``
     for right-aligned tools).
     """
+    # Το ← ζει στη μόνιμη μπάρα του κελύφους, μία φορά για όλη την εφαρμογή.
+    # Υπήρχαν τρία διαφορετικά στυλ βέλους σε τρεις σελίδες.
     bar = QHBoxLayout()
-    if on_back is not None:
-        back = QPushButton()
-        back.setIcon(icon("back", CURRENT.muted))
-        back.setToolTip("Πίσω")
-        back.setFixedWidth(38)
-        back.clicked.connect(lambda *_: on_back())
-        bar.addWidget(back)
     bar.addWidget(title(text))
     bar.addStretch(1)
     return bar
@@ -173,6 +173,51 @@ def table(headers: list[str], *, stretch: int = -1, checkable: bool = False) -> 
 
         widget.horizontalHeader().setSectionResizeMode(stretch, QHeaderView.ResizeMode.Stretch)
     return widget
+
+
+def cell(text: str, sort_key: object | None = None) -> QTableWidgetItem:
+    """Κελί που ταξινομείται σωστά.
+
+    Χωρίς αυτό, ένα ποσό «1.234,56» ταξινομείται λεξικογραφικά (το «9,00»
+    βγαίνει μετά το «1.234,56») και μια ημερομηνία «01/12/2025» πριν από την
+    «05/01/2026». Δίνουμε ρητό κλειδί και κρατάμε το κείμενο ανέπαφο.
+    """
+    if sort_key is None:
+        return QTableWidgetItem(text)
+    return SortableItem(text, sort_key)
+
+
+def money_cell(text: str) -> QTableWidgetItem:
+    return cell(text, parse_money(text))
+
+
+def date_cell(text: str) -> QTableWidgetItem:
+    """Ταξινόμηση κατά (έτος, μήνας, ημέρα) από μορφή dd/mm/yyyy."""
+    parts = str(text or "").split("/")
+    if len(parts) == 3 and all(p.strip().isdigit() for p in parts):
+        return cell(text, (int(parts[2]), int(parts[1]), int(parts[0])))
+    return cell(text, text)
+
+
+def make_sortable(
+    table: QTableWidget,
+    key: str,
+    *,
+    default_column: int | None = None,
+    filter_columns: list[int] | None = None,
+) -> TableColumnFilter | None:
+    """Ταξινόμηση, μετακινούμενες στήλες που θυμούνται πλάτη, και φίλτρα.
+
+    Η ίδια υποδομή που χρησιμοποιεί ο Downloader — δεν χρησιμοποιούνταν πουθενά
+    στο e-Τιμολόγιο, οπότε κανένας πίνακας δεν ταξινομούνταν.
+    """
+    table.setSortingEnabled(True)
+    persist_header(table, QSettings(), f"etimologio/{key}")
+    if default_column is not None:
+        table.sortItems(default_column, Qt.SortOrder.DescendingOrder)
+    if filter_columns:
+        return TableColumnFilter(table, filter_columns)
+    return None
 
 
 def page(*, margins: tuple[int, int, int, int] = (16, 14, 16, 14), spacing: int = 12):

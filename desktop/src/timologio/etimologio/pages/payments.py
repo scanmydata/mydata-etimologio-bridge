@@ -115,11 +115,6 @@ class PaymentsPage(EtimPage):
         box.setSpacing(10)
 
         top = QHBoxLayout()
-        back = QPushButton("←")
-        back.setFixedWidth(36)
-        back.setToolTip("Πίσω")
-        back.clicked.connect(self.go_back.emit)
-        top.addWidget(back)
         title = QLabel("Πληρωμές")
         title.setStyleSheet("font-size:16px;font-weight:600;")
         top.addWidget(title)

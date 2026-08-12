@@ -6,7 +6,9 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+
+from ...gui.widgets import resort as _resort
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -28,6 +30,12 @@ RunFn = Callable[[Callable[[], Any], Callable[[Any], None], Callable[[str], None
 ClientFn = Callable[[], Any]
 
 _MONEY_RE = re.compile(r"[^0-9,.\-]")
+
+#: Ο ρόλος όπου κάθε γραμμή κρατά τη θέση της στα δεδομένα. Μόλις ο πίνακας
+#: ταξινομηθεί, η οπτική σειρά παύει να συμπίπτει με τη σειρά φόρτωσης — χωρίς
+#: αυτόν τον δείκτη, το «επιλεγμένο» θα ήταν άλλη εγγραφή από αυτή που βλέπει
+#: ο χρήστης, και οι διαγραφές θα έσβηναν λάθος πράγματα.
+ROW_ROLE = int(Qt.ItemDataRole.UserRole) + 7
 
 
 def parse_money(value: Any) -> float:
@@ -103,12 +111,8 @@ class ListPage(EtimPage):
         # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
         box.setContentsMargins(16, 14, 16, 14)
         box.setSpacing(10)
+        # Το ← ζει στη μόνιμη μπάρα του κελύφους — ένα για όλη την εφαρμογή.
         self.toolbar = QHBoxLayout()
-        back = QPushButton("←")
-        back.setToolTip("Πίσω")
-        back.setFixedWidth(36)
-        back.clicked.connect(self.go_back.emit)
-        self.toolbar.addWidget(back)
         label = QLabel(title)
         label.setStyleSheet("font-size:16px;font-weight:600;")
         self.toolbar.addWidget(label)
@@ -129,6 +133,13 @@ class ListPage(EtimPage):
                 stretch_col, QHeaderView.ResizeMode.Stretch
             )
         box.addWidget(self.table, 1)
+        # Ταξινόμηση + φίλτρα στήλης, όπως στους πίνακες του Downloader.
+        from . import ui as _ui
+
+        self._filter = _ui.make_sortable(
+            self.table, f"list/{rows_key}",
+            filter_columns=[c for c in range(len(columns)) if columns[c][1] != "_check"],
+        )
 
         self.status = QLabel("")
         self.status.setObjectName("muted")
@@ -148,18 +159,40 @@ class ListPage(EtimPage):
         self._run(lambda: self.fetch(client), self._fill, self._failed)
 
     def _fill(self, data: dict[str, Any]) -> None:
+        from . import ui as _ui
+
         self._rows = list(data.get(self._rows_key, []))
+        # Η ταξινόμηση κλείνει όσο γεμίζει ο πίνακας: αλλιώς κάθε setItem
+        # ξαναταξινομεί και οι γραμμές μπερδεύονται με τα _rows.
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self._rows))
         for r, row in enumerate(self._rows):
-            for c, (_, key) in enumerate(self._columns):
-                self.table.setItem(r, c, QTableWidgetItem(str(row.get(key, ""))))
+            for c, (header, key) in enumerate(self._columns):
+                text = str(row.get(key, ""))
+                if "Ημ/νία" in header:
+                    item = _ui.date_cell(text)
+                elif any(word in header for word in ("Τιμή", "Ποσό", "Αξία", "Α/Α")):
+                    item = _ui.money_cell(text)
+                else:
+                    item = QTableWidgetItem(text)
+                if c == 0:
+                    item.setData(ROW_ROLE, r)
+                self.table.setItem(r, c, item)
+        self.table.setSortingEnabled(True)
+        _resort(self.table)
         self.status.setText(f"{len(self._rows)} εγγραφές")
 
     def _failed(self, msg: str) -> None:
         self.status.setText(f"Σφάλμα: {msg}")
 
+    def row_at(self, table_row: int) -> dict[str, Any] | None:
+        """Η εγγραφή που αντιστοιχεί σε μια ΟΠΤΙΚΗ γραμμή του πίνακα."""
+        item = self.table.item(table_row, 0)
+        index = item.data(ROW_ROLE) if item is not None else None
+        if index is None:
+            index = table_row          # πίνακας χωρίς δείκτη (π.χ. άδειος)
+        index = int(index)
+        return self._rows[index] if 0 <= index < len(self._rows) else None
+
     def selected_row(self) -> dict[str, Any] | None:
-        idx = self.table.currentRow()
-        if 0 <= idx < len(self._rows):
-            return self._rows[idx]
-        return None
+        return self.row_at(self.table.currentRow())

@@ -1198,7 +1198,15 @@ class MainWindow(QMainWindow):
         # Οι ενότητες του e-Τιμολόγιο έχουν πρόθεμα και πάνε όλες στο shell του.
         if action.startswith("etim_"):
             self._open_etimologio()
-            self.etimologio.open_section(action[len("etim_"):])
+            key = action[len("etim_"):]
+            # Η ΒΟΗΘΕΙΑ δεν είναι σελίδα: ξενάγηση και εγχειρίδιο του
+            # e-Τιμολόγιο, ξεχωριστά από αυτά του Downloader.
+            if key == "tour":
+                self.etimologio.start_tour()
+            elif key == "manual":
+                self.etimologio.open_manual()
+            else:
+                self.etimologio.open_section(key)
             return
         handler = handlers.get(action)
         if handler:

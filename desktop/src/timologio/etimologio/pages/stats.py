@@ -47,11 +47,6 @@ class StatsPage(EtimPage):
         box.setSpacing(10)
 
         top = QHBoxLayout()
-        back = QPushButton("←")
-        back.setToolTip("Πίσω")
-        back.setFixedWidth(36)
-        back.clicked.connect(self.go_back.emit)
-        top.addWidget(back)
         title = QLabel("Στατιστικά")
         title.setStyleSheet("font-size:16px;font-weight:600;")
         top.addWidget(title)

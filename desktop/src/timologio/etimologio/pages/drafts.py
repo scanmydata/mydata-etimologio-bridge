@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from ...gui.printing import print_pdfs
 from ..bulkpdf import export_zip, fetch_draft_pdfs
-from .base import ListPage
+from .base import ROW_ROLE, ListPage
 
 
 class DraftsPage(ListPage):
@@ -68,13 +68,20 @@ class DraftsPage(ListPage):
     # --- επιλογή -----------------------------------------------------------
     def _fill(self, data: dict[str, Any]) -> None:
         super()._fill(data)
+        # Η στήλη επιλογής ξαναγράφεται ΜΕΤΑ το γέμισμα, οπότε πρέπει να
+        # κουβαλήσει και τον δείκτη γραμμής που έβαλε η ListPage.
+        self.table.setSortingEnabled(False)
         for r in range(self.table.rowCount()):
+            previous = self.table.item(r, 0)
+            index = previous.data(ROW_ROLE) if previous is not None else r
             item = QTableWidgetItem()
             item.setFlags(
                 Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             )
             item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(ROW_ROLE, index)
             self.table.setItem(r, 0, item)
+        self.table.setSortingEnabled(True)
 
     def _toggle_all(self) -> None:
         # Αν έστω μία είναι ασημείωτη → σημειώνονται όλες· αλλιώς καθαρίζουν.
@@ -92,12 +99,15 @@ class DraftsPage(ListPage):
 
     def checked_rows(self) -> list[dict[str, Any]]:
         """Τα σημειωμένα πρόχειρα — αν κανένα, το επιλεγμένο της λίστας."""
-        picked = [
-            row
-            for r, row in enumerate(self._rows)
-            if self.table.item(r, 0) is not None
-            and self.table.item(r, 0).checkState() == Qt.CheckState.Checked
-        ]
+        # Μέσω row_at(): μετά από ταξινόμηση η οπτική σειρά δεν είναι η σειρά
+        # φόρτωσης, και μια μαζική διαγραφή θα έσβηνε άλλα πρόχειρα.
+        picked = []
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                row = self.row_at(r)
+                if row is not None:
+                    picked.append(row)
         if picked:
             return picked
         row = self.selected_row()

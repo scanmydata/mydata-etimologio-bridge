@@ -1444,3 +1444,103 @@ def test_category_summary_reads_like_the_web_pills(app) -> None:
         {"invoice_type_label": "11.2 - ΑΠΥ", "code": "E3_561_003"},
     ]}) == "2.1 → E3_561_001  ·  11.2 → E3_561_003"
     assert "χωρίς" in classification_summary({"classifications": []})
+
+
+# --- Φάση Δ: κέλυφος, πλοήγηση, ταξινόμηση -----------------------------------
+
+def test_list_page_sorts_amounts_numerically(app) -> None:
+    """Λεξικογραφικά, το «9,00» έβγαινε μετά το «1.234,56»."""
+    class MoneyPage(SeriesPage):
+        pass
+
+    class Client(RecordingClient):
+        def series(self):
+            return {"success": True, "series": [
+                {"invoice_type": "2.1", "series_code": "A", "start_aa": "9", "description": ""},
+                {"invoice_type": "2.1", "series_code": "B", "start_aa": "1234", "description": ""},
+                {"invoice_type": "2.1", "series_code": "C", "start_aa": "45", "description": ""},
+            ]}
+
+    page = MoneyPage(lambda: Client(), sync_run)
+    page.refresh()
+    assert page.table.isSortingEnabled()
+
+    page.table.sortItems(2, Qt.SortOrder.AscendingOrder)     # «Επόμ. Α/Α»
+    order = [page.table.item(r, 1).text() for r in range(page.table.rowCount())]
+    assert order == ["A", "C", "B"]                          # 9 < 45 < 1234
+
+
+def test_selected_row_follows_the_sorted_view(app) -> None:
+    """Μετά την ταξινόμηση, η επιλογή πρέπει να δείχνει ό,τι βλέπει ο χρήστης.
+
+    Χωρίς τον δείκτη γραμμής, μια διαγραφή θα έσβηνε άλλη εγγραφή από την
+    επιλεγμένη.
+    """
+    class Client(RecordingClient):
+        def series(self):
+            return {"success": True, "series": [
+                {"invoice_type": "2.1", "series_code": "ΠΡΩΤΗ", "start_aa": "9"},
+                {"invoice_type": "2.1", "series_code": "ΔΕΥΤΕΡΗ", "start_aa": "1"},
+            ]}
+
+    page = SeriesPage(lambda: Client(), sync_run)
+    page.refresh()
+    page.table.sortItems(2, Qt.SortOrder.AscendingOrder)     # ΔΕΥΤΕΡΗ πρώτη
+    page.table.setCurrentCell(0, 0)
+    assert page.selected_row()["series_code"] == "ΔΕΥΤΕΡΗ"
+    page.table.setCurrentCell(1, 0)
+    assert page.selected_row()["series_code"] == "ΠΡΩΤΗ"
+
+
+def test_drafts_checked_rows_survive_sorting(app) -> None:
+    page = DraftsPage(lambda: DraftClient(), sync_run)
+    page.refresh()
+    page.table.sortItems(1, Qt.SortOrder.DescendingOrder)     # νεότερα πρώτα
+    page.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    checked = page.checked_rows()
+    assert len(checked) == 1
+    # Η σημειωμένη είναι αυτή της ΟΠΤΙΚΗΣ πρώτης γραμμής (02/08 = T2).
+    assert checked[0]["temp_id"] == "T2"
+
+
+def test_date_cells_sort_chronologically(app) -> None:
+    from timologio.etimologio.pages import ui as etim_ui
+
+    early = etim_ui.date_cell("31/12/2025")
+    late = etim_ui.date_cell("01/01/2026")
+    assert early < late                     # λεξικογραφικά θα ήταν ανάποδα
+    assert etim_ui.money_cell("9,00") < etim_ui.money_cell("1.234,56")
+
+
+def test_side_menu_has_a_help_section_in_etimologio(app) -> None:
+    """Η βοήθεια εξαφανιζόταν μόλις έμπαινες στο e-Τιμολόγιο."""
+    from timologio.gui.side_menu import SideMenu
+
+    menu = SideMenu()
+    menu.set_mode("etimologio")
+    assert "etim_tour" in menu._buttons
+    assert "etim_manual" in menu._buttons
+    assert not menu._buttons["etim_tour"].icon().isNull()
+
+
+def test_page_headers_no_longer_draw_their_own_back_arrow(app) -> None:
+    """Ένα ← για όλη την εφαρμογή — υπήρχαν τρία διαφορετικά στυλ."""
+    from PySide6.QtWidgets import QPushButton
+
+    for page in (SeriesPage(lambda: RecordingClient(), sync_run),
+                 ProductsPage(lambda: RecordingClient(), sync_run),
+                 StatsPage(lambda: RecordingClient(), sync_run)):
+        arrows = [b for b in page.findChildren(QPushButton) if b.text().strip() == "←"]
+        assert arrows == []
+
+
+def test_manual_is_built_once_and_reused(app, tmp_path) -> None:
+    from timologio.etimologio.help import ensure_manual, manual_signature
+
+    first = ensure_manual(tmp_path)
+    assert first.exists() and first.read_bytes().startswith(b"%PDF")
+    stamp = (tmp_path / ".etim-manual.hash").read_text(encoding="utf-8").strip()
+    assert stamp == manual_signature()
+
+    mtime = first.stat().st_mtime_ns
+    assert ensure_manual(tmp_path).stat().st_mtime_ns == mtime   # δεν ξαναχτίζεται

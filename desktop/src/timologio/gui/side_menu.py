@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -57,6 +58,9 @@ _ICONS = {
     "etim_notifications": "bell",
     "etim_settings": "settings",
     "etim_admin": "key",
+    # Ίδια εικονίδια με τη ΒΟΗΘΕΙΑ του Downloader — είναι η ίδια ενέργεια.
+    "etim_tour": "tour",
+    "etim_manual": "manual",
     "downloader": "download",
 }
 
@@ -134,8 +138,22 @@ class SideMenu(QWidget):
         # έβλεπε «Νέος πελάτης» του Downloader ενώ δούλευε στο e-Τιμολόγιο.
         self._dl_panel = self._build_downloader_menu()
         self._etim_panel = self._build_etimologio_menu()
-        layout.addWidget(self._dl_panel)
-        layout.addWidget(self._etim_panel)
+        # Σε χαμηλή οθόνη (ή με ανοιγμένη τη ΒΟΗΘΕΙΑ) το μενού δεν χωρά και το Qt
+        # έκοβε τα τελευταία στοιχεία χωρίς κανένα σημάδι. Με κύλιση, ό,τι
+        # περισσεύει παραμένει προσβάσιμο.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        holder = QWidget()
+        holder_box = QVBoxLayout(holder)
+        holder_box.setContentsMargins(0, 0, 0, 0)
+        holder_box.setSpacing(0)
+        holder_box.addWidget(self._dl_panel)
+        holder_box.addWidget(self._etim_panel)
+        holder_box.addStretch(1)
+        scroll.setWidget(holder)
+        layout.addWidget(scroll, 1)
         self._etim_panel.hide()
         self._mode = "downloader"
 
@@ -298,6 +316,16 @@ class SideMenu(QWidget):
         for name, text, tip in [
             ("etim_settings", "Ρυθμίσεις", "Κωδικός, 2FA και ειδοποιήσεις email"),
             ("etim_admin", "Διαχείριση", "Χρήστες, ρόλοι και προσκλήσεις"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        # Η βοήθεια εξαφανιζόταν μόλις έμπαινες στο e-Τιμολόγιο: η ξενάγηση και
+        # το εγχειρίδιο υπήρχαν μόνο στο μενού του Downloader.
+        box.addWidget(self._separator("ΒΟΗΘΕΙΑ"))
+        for name, text, tip in [
+            ("etim_tour", "Ξενάγηση", "Γρήγορη περιήγηση στις λειτουργίες"),
+            ("etim_manual", "Εγχειρίδιο", "Οδηγίες σε PDF"),
         ]:
             self._add(box, name, text, tip)
 

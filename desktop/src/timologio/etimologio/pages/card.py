@@ -78,11 +78,6 @@ class CustomerCard(EtimPage):
         box.setSpacing(10)
 
         top = QHBoxLayout()
-        back = QPushButton("←")
-        back.setToolTip("Πίσω στους πελάτες")
-        back.setFixedWidth(36)
-        back.clicked.connect(self.go_back.emit)
-        top.addWidget(back)
         self._title = QLabel("Καρτέλα πελάτη")
         self._title.setStyleSheet("font-size:16px;font-weight:600;")
         top.addWidget(self._title)

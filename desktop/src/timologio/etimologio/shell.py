@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
@@ -137,6 +138,8 @@ _SECTIONS = [
     ("admin", "Διαχείριση", "Χρήστες & ρόλοι", "key"),
 ]
 _NATIVE = {key for key, _label, _desc, _icon in _SECTIONS}
+#: Κλειδί → ετικέτα, για τη γραμμή θέσης της μόνιμης μπάρας.
+_SECTION_LABELS = {key: label for key, label, _desc, _icon in _SECTIONS}
 
 
 class EtimologioShell(QWidget):
@@ -150,9 +153,18 @@ class EtimologioShell(QWidget):
         #: Set by focus_customer() before login; replayed once home is reached.
         self._pending_focus_vat = ""
 
+        #: Ιστορικό πλοήγησης — το ← γύριζε πάντα στην αρχική, ό,τι κι αν είχε
+        #: προηγηθεί, οπότε από μια Καρτέλα έχανες τη λίστα πελατών.
+        self._history: list[str] = []
+
         self._stack = QStackedWidget()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        # Μόνιμη μπάρα εταιρείας πάνω από ΟΛΕΣ τις σελίδες — όπως ο ενεργός
+        # πελάτης στον Downloader. Ήταν κρυμμένη μέσα στην αρχική, οπότε από
+        # οποιαδήποτε σελίδα δεν φαινόταν σε ποια εταιρεία δουλεύεις.
+        self._topbar = self._build_company_bar()
+        root.addWidget(self._topbar)
         root.addWidget(self._stack)
 
         self._status = self._build_status_page()
@@ -177,9 +189,9 @@ class EtimologioShell(QWidget):
         self._settings = SettingsPage(lambda: self._client, _run)
         self._admin = AdminPage(lambda: self._client, _run)
 
-        self._customers.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
+        # Κάθε ← περνά από το ιστορικό, ώστε να γυρίζει εκεί από όπου ήρθε ο
+        # χρήστης — όχι πάντα στην αρχική.
         self._customers.open_card.connect(self._show_card)
-        self._card.go_back.connect(lambda: self._stack.setCurrentWidget(self._customers))
         self._notifications.unread_changed.connect(
             lambda n: ui.set_tile_value(self._kpi_unread, str(n))
         )
@@ -195,9 +207,14 @@ class EtimologioShell(QWidget):
             "notifications": self._notifications, "settings": self._settings,
             "admin": self._admin,
         }
-        for page in self._pages.values():
-            if page is not self._customers:
-                page.go_back.connect(lambda: self._stack.setCurrentWidget(self._home))
+        for page in (*self._pages.values(), self._card):
+            page.go_back.connect(self.go_back)
+
+        # Alt+← και Esc: η ίδια πλοήγηση με το κουμπί, χωρίς ποντίκι.
+        for sequence in (QKeySequence("Alt+Left"), QKeySequence(Qt.Key.Key_Escape)):
+            shortcut = QShortcut(sequence, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.go_back)
 
         for w in (self._status, self._login, self._home, self._card, *self._pages.values()):
             self._stack.addWidget(w)
@@ -357,26 +374,77 @@ class EtimologioShell(QWidget):
         self._login_err.setText(result.get("error", "Αποτυχία σύνδεσης"))
         self._show_login()
 
+    # --- μόνιμη μπάρα εταιρείας --------------------------------------------
+    def _build_company_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("card")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(14, 6, 14, 6)
+        row.setSpacing(8)
+
+        self._back_btn = ui.button("←", self.go_back, tip="Πίσω (Alt+←)")
+        self._back_btn.setFixedWidth(38)
+        row.addWidget(self._back_btn)
+        self._crumb = QLabel("")
+        self._crumb.setStyleSheet("font-weight:600;")
+        row.addWidget(self._crumb)
+        row.addStretch(1)
+
+        row.addWidget(ui.muted("Εταιρία:"))
+        self._accounts = QComboBox()
+        self._accounts.setMinimumWidth(260)
+        self._accounts.currentIndexChanged.connect(self._account_changed)
+        row.addWidget(self._accounts)
+        row.addWidget(ui.button("＋", self._add_company, tip="Προσθήκη εταιρείας ΑΑΔΕ"))
+        self._mode_label = ui.muted("")
+        row.addWidget(self._mode_label)
+        row.addWidget(ui.button("Έξοδος", self._do_logout, icon_name="lock"))
+        bar.hide()          # φαίνεται μόλις γίνει η σύνδεση
+        return bar
+
+    def _add_company(self) -> None:
+        """Καταχώρηση λογαριασμού ΑΑΔΕ χωρίς να φύγει ο χρήστης από την εφαρμογή.
+
+        Χωρίς αυτό μια καθαρή εγκατάσταση συνδεόταν ως master με μηδέν εταιρείες
+        και κάθε σελίδα γύριζε άδεια, χωρίς καμία διέξοδο μέσα από το UI.
+        """
+        if self._client is None:
+            return
+        from .pages.company import AddCompanyDialog
+
+        dialog = AddCompanyDialog(self, client=self._client, run=_run)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._load_accounts()
+
+    # --- πλοήγηση με ιστορικό ----------------------------------------------
+    def go_back(self) -> None:
+        """Επιστροφή εκεί από όπου ήρθε ο χρήστης, όχι πάντα στην αρχική."""
+        if self._history:
+            self.open_section(self._history.pop(), remember=False)
+            return
+        self._show_home()
+
+    def _show_home(self) -> None:
+        self._stack.setCurrentWidget(self._home)
+        self._crumb.setText("Αρχική")
+        self._back_btn.setEnabled(False)
+        self._refresh_home_kpis()
+
     # --- home page ---------------------------------------------------------
     def _build_home_page(self) -> QWidget:
         """The e-Τιμολόγιο home, laid out like the Downloader's control panel:
         a header card (who/company/mode), KPI tiles, then a grid of launchers."""
         page, box = ui.page()
 
+        # Ο επιλογέας εταιρείας ζει πλέον στη μόνιμη μπάρα· εδώ μένει μόνο ο
+        # χαιρετισμός.
         header_card, header = ui.card()
         topbar = QHBoxLayout()
         self._who = QLabel("")
         self._who.setStyleSheet("font-size:16px;font-weight:700;")
         topbar.addWidget(self._who)
         topbar.addStretch(1)
-        topbar.addWidget(ui.muted("Εταιρία:"))
-        self._accounts = QComboBox()
-        self._accounts.setMinimumWidth(260)
-        self._accounts.currentIndexChanged.connect(self._account_changed)
-        topbar.addWidget(self._accounts)
-        self._mode_label = ui.muted("")
-        topbar.addWidget(self._mode_label)
-        topbar.addWidget(ui.button("Έξοδος", self._do_logout, icon_name="lock"))
         header.addLayout(topbar)
         box.addWidget(header_card)
 
@@ -426,10 +494,15 @@ class EtimologioShell(QWidget):
             "backend: τοπικό (offline)" if self._service.mode() == "offline" else "backend: server"
         )
         _run(self._client.me, self._fill_home, lambda m: None)
-        _run(self._client.accounts, self._fill_accounts, lambda m: None)
-        self._stack.setCurrentWidget(self._home)
-        self._refresh_home_kpis()
+        self._load_accounts()
+        self._topbar.show()
+        self._history.clear()
+        self._show_home()
         self._apply_pending_focus()
+
+    def _load_accounts(self) -> None:
+        if self._client is not None:
+            _run(self._client.accounts, self._fill_accounts, lambda m: None)
 
     def _fill_home(self, me: dict) -> None:
         user = me.get("user", {}) if isinstance(me, dict) else {}
@@ -453,8 +526,21 @@ class EtimologioShell(QWidget):
         if self._client is None:
             return
         vat = self._accounts.currentData()
-        if vat:
-            self._client.set_account(str(vat))
+        if not vat:
+            return
+        self._client.set_account(str(vat))
+        # Οι σελίδες κρατούν φορτωμένα δεδομένα της ΠΡΟΗΓΟΥΜΕΝΗΣ εταιρείας — το
+        # πελατολόγιο της Έκδοσης, οι σειρές της Μαζικής, οι πελάτες του
+        # Πιστωτικού. Χωρίς ακύρωση, ο χρήστης τιμολογούσε σε πελάτη που δεν
+        # ανήκει στην επιλεγμένη εταιρεία.
+        for page in self._pages.values():
+            invalidate = getattr(page, "invalidate", None)
+            if callable(invalidate):
+                invalidate()
+        current = self._stack.currentWidget()
+        if current is not self._home and hasattr(current, "refresh"):
+            current.refresh()
+        self._refresh_home_kpis()
 
     #: Sections that arrive already populated; the rest load on demand.
     #: Η Έκδοση ΔΕΝ είναι εδώ: χρειάζεται το πελατολόγιο και τις σειρές, τα
@@ -465,18 +551,24 @@ class EtimologioShell(QWidget):
     # αναζήτηση παραστατικών στο Πιστωτικό μένει πίσω από κουμπί.
     _NO_AUTOLOAD: set[str] = set()
 
-    def open_section(self, key: str) -> None:
+    def open_section(self, key: str, *, remember: bool = True) -> None:
         """Navigate from outside (the side menu). Ignored until logged in."""
         if key == "home":
             if self._client is not None:
-                self._stack.setCurrentWidget(self._home)
-                self._refresh_home_kpis()
+                self._history.clear()
+                self._show_home()
             return
-        self._open_section(key)
+        self._open_section(key, remember=remember)
 
-    def _open_section(self, key: str) -> None:
+    def _open_section(self, key: str, *, remember: bool = True) -> None:
         if self._client is None:
             return
+        if remember:
+            current = self._current_key()
+            if current and current != key:
+                self._history.append(current)
+        self._crumb.setText(_SECTION_LABELS.get(key, ""))
+        self._back_btn.setEnabled(True)
         page = self._pages.get(key)
         if page is None:
             # Not ported (should not happen — every section is native now); fall
@@ -492,12 +584,46 @@ class EtimologioShell(QWidget):
         if key not in self._NO_AUTOLOAD and hasattr(page, "refresh"):
             page.refresh()
 
+    # --- βοήθεια ------------------------------------------------------------
+    def page(self, key: str):
+        """Η σελίδα ενός κλειδιού — το χρησιμοποιεί η ξενάγηση για στόχους."""
+        return self._pages.get(key)
+
+    def start_tour(self) -> None:
+        from ..gui.tour import Tour
+        from .help import tour_steps
+
+        if self._client is None:
+            return
+        Tour(self, tour_steps(self)).start()
+
+    def open_manual(self) -> None:
+        from .help import ensure_manual
+
+        # Στον φάκελο δεδομένων, όχι δίπλα στο εκτελέσιμο: το Program Files δεν
+        # είναι εγγράψιμο για απλό χρήστη.
+        path = ensure_manual(self._service.data_dir)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _current_key(self) -> str:
+        """Το κλειδί της σελίδας που φαίνεται τώρα ('' για αρχική/καρτέλα)."""
+        current = self._stack.currentWidget()
+        for key, page in self._pages.items():
+            if page is current:
+                return key
+        return ""
+
     # --- native navigation -------------------------------------------------
     def _show_customers(self) -> None:
         self._stack.setCurrentWidget(self._customers)
         self._customers.refresh()
 
     def _show_card(self, customer: dict) -> None:
+        current = self._current_key()
+        if current:
+            self._history.append(current)
+        self._crumb.setText("Καρτέλα πελάτη")
+        self._back_btn.setEnabled(True)
         self._card.set_customer(customer)
         self._stack.setCurrentWidget(self._card)
 
