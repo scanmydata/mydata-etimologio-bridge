@@ -558,6 +558,18 @@ class EtimologioClient:
             params["temp_id"] = temp_id
         return self._call(params)
 
+    def preview_temp(self, temp_id: str) -> bytes:
+        """The AADE PDF of a saved draft. ``temp_id`` is the (encrypted) token.
+
+        Drafts have no ΜΑΡΚ, so :meth:`invoice_pdf` cannot fetch them — this is
+        the only way to see a πρόχειρο as a document.
+        """
+        data = self._call({"preview_temp": temp_id})
+        b64 = data.get("pdf_b64") or data.get("pdf_base64")
+        if not b64:
+            raise EtimologioError(data.get("error", "Χωρίς PDF για το πρόχειρο"))
+        return base64.b64decode(b64)
+
     def delete_temp(self, temp_id: str, seller_vat: str = "") -> dict[str, Any]:
         data: dict[str, Any] = {"delete_temp_id": temp_id}
         if seller_vat:

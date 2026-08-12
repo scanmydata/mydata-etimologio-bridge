@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from PySide6.QtWidgets import (
@@ -253,19 +254,33 @@ class ProductsPage(ListPage):
 
 
 class NewSeriesDialog(_Dialog):
-    def __init__(self, parent=None) -> None:
-        super().__init__("Νέα σειρά", parent)
+    def __init__(self, parent=None, *, row: dict[str, Any] | None = None) -> None:
+        editing = row is not None
+        super().__init__("Επεξεργασία σειράς" if editing else "Νέα σειρά", parent)
+        row = row or {}
         self.type = QComboBox()
         for code, label in INVOICE_TYPES:
             self.type.addItem(label, code)
-        self.code = QLineEdit()
-        self.start_aa = QLineEdit("1")
-        self.description = QLineEdit()
+        self.code = QLineEdit(str(row.get("series_code") or ""))
+        self.code.setMaxLength(10)
+        self.code.setPlaceholderText("π.χ. Α, ΤΠΥ, ΔΑ")
+        self.start_aa = QLineEdit(str(row.get("start_aa") or "1"))
+        self.description = QLineEdit(str(row.get("description") or ""))
         self.form.addRow("Τύπος", self.type)
         self.form.addRow("Σειρά *", self.code)
         self.form.addRow("Επόμ. Α/Α", self.start_aa)
         self.form.addRow("Περιγραφή", self.description)
         self.add_buttons(self.code)
+
+        # Στο edit προεπιλέγουμε τον τύπο της σειράς — το backend επιστρέφει
+        # «2.1 - Τιμολόγιο…», η δική μας ετικέτα ξεκινά με τον ίδιο κωδικό.
+        current = str(row.get("invoice_type") or "")
+        if current:
+            dotted = current.split(" ", 1)[0]
+            for index in range(self.type.count()):
+                if self.type.itemText(index).startswith(dotted):
+                    self.type.setCurrentIndex(index)
+                    break
 
     def fields(self) -> dict[str, Any]:
         return {
@@ -293,10 +308,13 @@ class SeriesPage(ListPage):
         )
         new = QPushButton("Νέα σειρά")
         new.clicked.connect(self._new)
+        edit = QPushButton("Επεξεργασία")
+        edit.clicked.connect(self._edit)
         delete = QPushButton("Διαγραφή")
         delete.clicked.connect(self._delete)
-        self.toolbar.insertWidget(self.toolbar.count() - 1, new)
-        self.toolbar.insertWidget(self.toolbar.count() - 1, delete)
+        for button in (new, edit, delete):
+            self.toolbar.insertWidget(self.toolbar.count() - 1, button)
+        self.table.doubleClicked.connect(lambda *_: self._edit())
 
     def fetch(self, client: Any) -> dict[str, Any]:
         return client.series()
@@ -312,15 +330,75 @@ class SeriesPage(ListPage):
         self.status.setText("Αποθήκευση σειράς…")
         self._run(lambda: client.create_series(**fields), self._after_write, self._failed)
 
-    def _delete(self) -> None:
+    def _edit(self) -> None:
         client = self.client()
         row = self.selected_row()
         if client is None or row is None:
             return
         series_id = str(row.get("delete_id") or row.get("series_id") or "")
         if not series_id:
+            self.status.setText("Η σειρά δεν έχει id — δεν μπορεί να ενημερωθεί.")
             return
-        if QMessageBox.question(self, "Διαγραφή", "Διαγραφή της σειράς;") != QMessageBox.StandardButton.Yes:
+        dialog = NewSeriesDialog(self, row=row)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        self.status.setText("Ενημέρωση σειράς…")
+        self._run(
+            lambda: client.update_series(series_id, **fields), self._after_write, self._failed
+        )
+
+    def _delete(self) -> None:
+        """Διαγραφή — αλλά πρώτα ελέγχουμε ότι δεν έχει εκδοθεί τίποτα σε αυτήν.
+
+        Χωρίς τον έλεγχο, μια σειρά με ιστορικό εξαφανίζεται από τη λίστα και η
+        αρίθμηση σπάει· τα ήδη εκδοθέντα παραστατικά μένουν στην ΑΑΔΕ αλλά η
+        επόμενη σειρά με το ίδιο όνομα ξεκινά από την αρχή.
+        """
+        client = self.client()
+        row = self.selected_row()
+        if client is None or row is None:
+            return
+        series_id = str(row.get("delete_id") or row.get("series_id") or "")
+        code = str(row.get("series_code") or "")
+        if not series_id:
+            return
+        self.status.setText("Έλεγχος αν η σειρά χρησιμοποιείται…")
+        year = date.today().year
+        self._run(
+            lambda: client.search_invoices(
+                series=code,
+                date_from=f"01/01/{year - 5}",
+                date_to=date.today().strftime("%d/%m/%Y"),
+            ),
+            lambda data: self._confirm_delete(series_id, code, data),
+            # Αν ο έλεγχος αποτύχει δεν διαγράφουμε στα τυφλά.
+            lambda msg: self.status.setText(
+                f"Δεν έγινε ο έλεγχος χρήσης ({msg}) — η διαγραφή ακυρώθηκε."
+            ),
+        )
+
+    def _confirm_delete(self, series_id: str, code: str, data: dict[str, Any]) -> None:
+        client = self.client()
+        if client is None:
+            return
+        used = [i for i in data.get("invoices", []) if str(i.get("series", "")) == code]
+        if used:
+            self.status.setText(
+                f"Η σειρά «{code}» χρησιμοποιείται σε {len(used)} παραστατικά "
+                "και δεν διαγράφεται."
+            )
+            QMessageBox.warning(
+                self, "Η σειρά χρησιμοποιείται",
+                f"Η σειρά «{code}» έχει {len(used)} εκδοθέντα παραστατικά.\n\n"
+                "Η διαγραφή θα έσπαγε την αρίθμηση. Αν δεν τη χρειάζεσαι πια, "
+                "άφησέ την και δημιούργησε νέα.",
+            )
+            return
+        self.status.setText("")
+        if QMessageBox.question(
+            self, "Διαγραφή", f"Διαγραφή της σειράς «{code}»; Δεν έχει παραστατικά."
+        ) != QMessageBox.StandardButton.Yes:
             return
         self._run(lambda: client.delete_series(series_id), self._after_write, self._failed)
 

@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import json  # noqa: E402
@@ -425,7 +426,7 @@ def test_credit_page_requires_mark(app) -> None:
     page = CreditNotePage(lambda: client, sync_run)
     page._draft()  # no MARK → should not call the backend
     assert client.calls == []
-    assert "ΜΑΡΚ" in page._status.text()
+    assert "Διάλεξε παραστατικό" in page._status.text()
 
 
 # --- Phase 3: bulk, payments, statistics (cached) ---------------------------
@@ -725,14 +726,38 @@ def test_payments_page_lists(app) -> None:
     class PayClient:
         def payments(self, **_):
             return {"success": True, "payments": [
-                {"pay_date": "08/08/2026", "amount": "124,00", "method": "3",
+                {"id": 7, "pay_date": "08/08/2026", "amount": "124,00", "method": "3",
                  "customer_name": "ΑΛΦΑ ΑΕ", "customer_vat": "094039270", "notes": ""},
+            ]}
+
+        def customers(self, **_):
+            return {"success": True, "customers": [
+                {"code": "C1", "vat": "094039270", "name": "ΑΛΦΑ ΑΕ", "city": "Αθήνα"},
             ]}
 
     page = PaymentsPage(lambda: PayClient(), sync_run)
     page.refresh()
     assert page._pay_table.rowCount() == 1
     assert page._pay_table.item(0, 2).text() == "Μετρητά"
+    # Ο επιλογέας πελάτη του διαλόγου τροφοδοτείται από την ίδια φόρτωση.
+    assert len(page._customers) == 1
+
+
+def test_new_payment_dialog_has_a_date_and_a_picker(app) -> None:
+    """Η ημερομηνία έλειπε τελείως: κάθε είσπραξη έπαιρνε τη σημερινή."""
+    from timologio.etimologio.pages.payments import NewPaymentDialog
+
+    dialog = NewPaymentDialog()
+    dialog.set_customers([{"vat": "094039270", "name": "ΑΛΦΑ ΑΕ", "city": "Αθήνα"}])
+    dialog.customer.show_popup()
+    dialog.customer._chose(dialog.customer._popup.item(1))
+    assert dialog.vat.text() == "094039270"
+    assert dialog.name.text() == "ΑΛΦΑ ΑΕ"
+
+    dialog.amount.setText("50")
+    fields = dialog.fields()
+    assert fields["pay_date"]
+    assert fields["pay_method"] == "3"          # Μετρητά, όχι «επί πιστώσει»
 
 
 # --- packaging: the bundled PHP runtime --------------------------------------
@@ -1123,3 +1148,196 @@ def test_issue_wizard_picks_a_type_that_actually_has_a_series(app) -> None:
     page._wizard_pick("idiot")                   # απόδειξη → 11.2 (έχει σειρά ΑΠΥ)
     assert page._type.currentData() == "58"
     assert page._series.currentData() == "ΑΠΥ"
+
+
+# --- Φάση Γ: πιστωτικό, καρτέλα, σειρές, πρόχειρα, γραφήματα -----------------
+
+class CreditClient(RecordingClient):
+    def customers(self, **_):
+        return {"success": True, "customers": [
+            {"code": "C1", "vat": "094039270", "name": "ΞΕΝΤΕ ΑΕ", "city": "Αθήνα"},
+        ]}
+
+    def search_invoices(self, **_):
+        return {"success": True, "invoices": [
+            {"issue_date": "01/08/2026", "type": "2.1", "series": "ΤΠΥ", "aa": "1",
+             "mark": "400001234567890", "buyer_vat": "094039270", "buyer_name": "ΞΕΝΤΕ ΑΕ",
+             "net_value": "1.000,00", "total": "1.240,00"},
+            {"issue_date": "02/08/2026", "type": "2.1", "series": "ΤΠΥ", "aa": "2",
+             "mark": "", "buyer_vat": "094039270", "net_value": "50,00", "total": "62,00"},
+        ]}
+
+
+def test_credit_page_picks_the_mark_from_a_list(app) -> None:
+    """Το ΜΑΡΚ δεν πληκτρολογείται πια — 15 ψηφία για μη αναστρέψιμη ενέργεια."""
+    page = CreditNotePage(lambda: CreditClient(), sync_run)
+    page.load_invoices()
+
+    # Μόνο τα παραστατικά ΜΕ ΜΑΡΚ μπορούν να πιστωθούν.
+    assert page._table.rowCount() == 1
+    assert page._mark.isReadOnly()
+
+    page._table.setCurrentCell(0, 0)
+    page._pick_selected()
+    assert page._mark.text() == "400001234567890"
+    # Η καθαρή αξία προσυμπληρώνεται για πλήρη ακύρωση.
+    assert parse_money(page._amount.text()) == pytest.approx(1000.0)
+    assert page._kwargs()["cancel_mark"] == "400001234567890"
+
+
+def test_series_delete_refuses_when_documents_exist(app, monkeypatch) -> None:
+    """Η διαγραφή σειράς με ιστορικό θα έσπαγε την αρίθμηση."""
+    from PySide6.QtWidgets import QMessageBox
+
+    warned: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **k: warned.append(a[2] if len(a) > 2 else "")
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    class SeriesClient(RecordingClient):
+        def series(self):
+            return {"success": True, "series": [
+                {"invoice_type": "2.1 - ΤΠΥ", "series_code": "ΤΠΥ", "series_id": "1",
+                 "start_aa": "5", "description": ""},
+            ]}
+
+        def search_invoices(self, **_):
+            return {"success": True, "invoices": [
+                {"series": "ΤΠΥ", "mark": "4001", "issue_date": "01/08/2026"},
+            ]}
+
+    client = SeriesClient()
+    page = SeriesPage(lambda: client, sync_run)
+    page.refresh()
+    page.table.setCurrentCell(0, 0)
+    page._confirm_delete("1", "ΤΠΥ", client.search_invoices())
+
+    assert "χρησιμοποιείται" in page.status.text()
+    assert warned and "αρίθμηση" in warned[0]
+    # Καμία κλήση delete_series δεν έφυγε — ούτε καν με «Ναι» στο question.
+    assert not any("delete_series_id" in (d or {}) for _p, d, _m in client.calls)
+
+
+def test_series_delete_proceeds_when_unused(app, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    client = RecordingClient()
+    page = SeriesPage(lambda: client, sync_run)
+    page._confirm_delete("1", "ΑΧΡΗΣΤΗ", {"invoices": []})
+    assert any("delete_series_id" in (d or {}) for _p, d, _m in client.calls)
+
+
+def test_series_dialog_preselects_the_type_when_editing(app) -> None:
+    from timologio.etimologio.pages.catalog import NewSeriesDialog
+
+    dialog = NewSeriesDialog(row={
+        "invoice_type": "11.2 - ΑΠΥ", "series_code": "ΑΠΥ", "start_aa": "9",
+        "description": "αποδείξεις",
+    })
+    assert dialog.type.currentData() == "58"
+    assert dialog.fields()["code"] == "ΑΠΥ"
+    assert dialog.fields()["start_aa"] == "9"
+
+
+class DraftClient(RecordingClient):
+    def temp_invoices(self, **_):
+        return {"success": True, "temp_invoices": [
+            {"save_date": "01/08/2026", "type": "2.1", "series": "ΤΠΥ",
+             "buyer_vat": "094039270", "temp_id": "T1", "enc_id": "ENC1"},
+            {"save_date": "02/08/2026", "type": "2.1", "series": "ΤΠΥ",
+             "buyer_vat": "802012659", "temp_id": "T2", "enc_id": "ENC2"},
+        ]}
+
+
+def test_drafts_checkbox_selection(app) -> None:
+    page = DraftsPage(lambda: DraftClient(), sync_run)
+    page.refresh()
+    assert page.table.rowCount() == 2
+
+    assert page.checked_rows() == []            # τίποτα σημειωμένο, τίποτα επιλεγμένο
+    page._toggle_all()
+    assert len(page.checked_rows()) == 2
+    page._toggle_all()
+    assert page.checked_rows() == []
+
+    page.table.item(1, 0).setCheckState(Qt.CheckState.Checked)
+    assert [r["temp_id"] for r in page.checked_rows()] == ["T2"]
+
+
+def test_drafts_open_in_issue_carries_the_temp_id(app) -> None:
+    """Χωρίς το temp_id, κάθε άνοιγμα πρόχειρου άφηνε πίσω του διπλότυπο."""
+    page = IssuePage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+    page.load_draft({"temp_id": "T1", "buyer_vat": "094039270", "series": "ΤΠΥ"})
+    assert page._temp_id == "T1"
+    assert page._afm.text() == "094039270"
+
+    page.add_line(desc="ΥΠ001", qty="1", price="100")
+    assert page._issue_kwargs()["temp_id"] == "T1"
+    # Και το reset το καθαρίζει, ώστε το επόμενο παραστατικό να είναι νέο.
+    page.reset()
+    assert page._temp_id == ""
+
+
+def test_ledger_entries_merge_and_sort_by_date(app) -> None:
+    from timologio.etimologio.ledgerpdf import entries_from
+
+    invoices = [
+        {"issue_date": "05/08/2026", "type": "2.1", "series": "ΤΠΥ", "aa": "2",
+         "mark": "4002", "total": "248,00"},
+        {"issue_date": "01/08/2026", "type": "2.1", "series": "ΤΠΥ", "aa": "1",
+         "mark": "4001", "total": "124,00"},
+    ]
+    payments = [{"pay_date": "03/08/2026", "amount": "124,00", "method": "3", "notes": ""}]
+    rows = entries_from(invoices, payments)
+
+    assert [r["date"] for r in rows] == ["01/08/2026", "03/08/2026", "05/08/2026"]
+    # Τα παραστατικά χρεώνουν, οι πληρωμές πιστώνουν.
+    assert rows[0]["debit"] == pytest.approx(124.0) and rows[0]["credit"] == 0
+    assert rows[1]["credit"] == pytest.approx(124.0) and rows[1]["debit"] == 0
+
+
+def test_ledger_pdf_is_written(app, tmp_path) -> None:
+    from timologio.etimologio.ledgerpdf import build_ledger_pdf
+
+    target = build_ledger_pdf(
+        tmp_path / "kartela.pdf",
+        customer={"name": "ΞΕΝΤΕ ΑΕ", "vat": "094039270", "city": "Αθήνα"},
+        entries=[
+            {"date": "01/08/2026", "label": "ΤΠΥ 1", "debit": 124.0, "credit": 0.0},
+            {"date": "03/08/2026", "label": "Πληρωμή", "debit": 0.0, "credit": 100.0},
+        ],
+        period=("01/01/2026", "31/12/2026"),
+    )
+    assert target.exists() and target.stat().st_size > 1000
+    assert target.read_bytes().startswith(b"%PDF")
+
+
+def test_chart_series_rolls_up_the_tail(app) -> None:
+    from timologio.etimologio.pages.charts import breakdown_series
+
+    rows = [{"type": f"Τ{i}", "value": str(100 - i)} for i in range(12)]
+    series = breakdown_series(rows, top=3)
+    assert [label for label, _ in series] == ["Τ0", "Τ1", "Τ2", "Λοιπά"]
+    # Τίποτα δεν χάνεται — αλλιώς τα ποσοστά δεν θα άθροιζαν στο 100%.
+    assert sum(v for _l, v in series) == pytest.approx(sum(100 - i for i in range(12)))
+
+
+def test_charts_render_without_data(app) -> None:
+    """Ένα άδειο γράφημα δεν πρέπει να σκάει ούτε να ζωγραφίζει σκουπίδια."""
+    from PySide6.QtGui import QPixmap
+    from timologio.etimologio.pages.charts import BarChart, PieChart
+
+    for widget in (PieChart(), BarChart()):
+        widget.resize(320, 200)
+        widget.set_data([])
+        widget.render(QPixmap(320, 200))
+        widget.set_data([("2.1", 800.0), ("11.2", 200.0)])
+        widget.render(QPixmap(320, 200))

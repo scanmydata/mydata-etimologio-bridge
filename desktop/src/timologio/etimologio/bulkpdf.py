@@ -79,6 +79,41 @@ def fetch_pdfs(
     return paths, errors
 
 
+def fetch_draft_pdfs(
+    client,
+    rows: Iterable[dict],
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[list[Path], list[str]]:
+    """Ίδιο με το :func:`fetch_pdfs`, αλλά για πρόχειρα.
+
+    Τα πρόχειρα δεν έχουν ΜΑΡΚ — ζητούνται με το (κρυπτογραφημένο) ``temp_id``,
+    και δεν αποθηκεύονται στην cache επειδή αλλάζουν όσο τα επεξεργάζεσαι.
+    """
+    rows = list(rows)
+    target = cache_dir()
+    paths: list[Path] = []
+    errors: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        token = str(row.get("enc_id") or row.get("temp_id") or "").strip()
+        if not token:
+            errors.append("Πρόχειρο χωρίς κωδικό")
+            continue
+        name = _safe(
+            f"{row.get('save_date', '')} {row.get('series', '')} {row.get('buyer_vat', '')}"
+        ) or "ΠΡΟΧΕΙΡΟ"
+        path = target / f"ΠΡΟΧΕΙΡΟ {name} {str(token)[:8]}.pdf"
+        try:
+            path.write_bytes(client.preview_temp(token))
+            paths.append(path)
+        except Exception as exc:  # noqa: BLE001 — reported per row
+            log.warning("PDF πρόχειρου απέτυχε (%s): %s", token[:8], exc)
+            errors.append(f"Πρόχειρο {str(token)[:8]}: {exc}")
+        if progress is not None:
+            progress(index, len(rows))
+    return paths, errors
+
+
 def export_zip(paths: Iterable[Path], target: Path) -> int:
     """Pack the PDFs into ``target`` (flat, deduplicated names). Returns count."""
     target.parent.mkdir(parents=True, exist_ok=True)

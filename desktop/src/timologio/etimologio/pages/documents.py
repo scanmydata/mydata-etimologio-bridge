@@ -11,7 +11,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -71,6 +72,8 @@ class DocumentsPage(EtimPage):
         # --- table ---------------------------------------------------------
         self._table = ui.table(_COLS, stretch=_TYPE, checkable=True)
         self._table.setColumnWidth(_CHECK, 34)
+        self._table.doubleClicked.connect(lambda *_: self.open_selected_pdf())
+        self._table.setToolTip("Διπλό κλικ σε παραστατικό για άνοιγμα του PDF")
         box.addWidget(self._table, 1)
 
         # --- action bar ----------------------------------------------------
@@ -154,6 +157,28 @@ class DocumentsPage(EtimPage):
             return [self._rows[current]]
         return []
 
+    # --- single document ---------------------------------------------------
+    def open_selected_pdf(self) -> None:
+        """Ανοίγει το PDF ενός παραστατικού — αυτό που περιμένει το διπλό κλικ.
+
+        Μέχρι τώρα υπήρχε μόνο μαζική εκτύπωση: για να δεις ΕΝΑ παραστατικό
+        έπρεπε να το «εκτυπώσεις».
+        """
+        client = self.client()
+        current = self._table.currentRow()
+        if client is None or not (0 <= current < len(self._rows)):
+            return
+        row = self._rows[current]
+        if not row.get("mark"):
+            self._status.setText("Το παραστατικό δεν έχει ΜΑΡΚ — δεν υπάρχει PDF.")
+            return
+        self._status.setText("Λήψη PDF…")
+        self._run(
+            lambda: fetch_pdfs(client, [row]),
+            lambda result: self._after_fetch(result, mode="open"),
+            self._failed,
+        )
+
     # --- bulk actions ------------------------------------------------------
     def _gather(self, action: str):
         """Common preamble: check a selection exists, then fetch its PDFs."""
@@ -201,6 +226,9 @@ class DocumentsPage(EtimPage):
             QMessageBox.warning(self, "Χωρίς PDF", "Δεν κατέβηκε κανένα PDF." + note)
             return
         self._status.setText(f"{len(paths)} PDF έτοιμα.")
+        if mode == "open":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths[0])))
+            return
         if mode == "print":
             print_pdfs(paths, self)
             if errors:

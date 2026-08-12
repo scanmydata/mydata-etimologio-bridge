@@ -12,9 +12,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QDate, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDateEdit,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -30,6 +33,7 @@ from PySide6.QtWidgets import (
 from ...gui.printing import print_pdfs
 from ..bulkpdf import export_zip, fetch_pdfs
 from ..codes import PAYMENT_LABELS
+from ..ledgerpdf import build_ledger_pdf, entries_from
 from . import ui
 from .base import EtimPage, fmt_money, parse_money
 from .customers import _cust_value
@@ -95,6 +99,27 @@ class CustomerCard(EtimPage):
         top.addWidget(refresh)
         box.addLayout(top)
 
+        # Διάστημα: μέχρι τώρα η καρτέλα έδειχνε πάντα το τρέχον έτος χωρίς
+        # τρόπο να το αλλάξεις.
+        period = QHBoxLayout()
+        year = date.today().year
+        self._from = QDateEdit(QDate(year, 1, 1))
+        self._to = QDateEdit(QDate.currentDate())
+        for field in (self._from, self._to):
+            field.setCalendarPopup(True)
+            field.setDisplayFormat("dd/MM/yyyy")
+        period.addWidget(QLabel("Από:"))
+        period.addWidget(self._from)
+        period.addWidget(QLabel("Έως:"))
+        period.addWidget(self._to)
+        period.addWidget(ui.button("Φόρτωση", self.refresh))
+        period.addWidget(ui.button("+ Πληρωμή", self._new_payment, icon_name="income",
+                                   tip="Καταχώρηση είσπραξης για αυτόν τον πελάτη"))
+        period.addWidget(ui.button("PDF καρτέλας", self.export_ledger_pdf, icon_name="pdf",
+                                   tip="Κίνηση χρέωσης/πίστωσης με τρέχον υπόλοιπο"))
+        period.addStretch(1)
+        box.addLayout(period)
+
         self._summary = QLabel("")
         self._summary.setObjectName("muted")
         box.addWidget(self._summary)
@@ -115,6 +140,9 @@ class CustomerCard(EtimPage):
         self._pending = 0
         #: The invoice rows currently shown — the source for bulk print/ZIP.
         self._invoice_rows: list[dict[str, Any]] = []
+        self._payment_rows: list[dict[str, Any]] = []
+        self._payments.doubleClicked.connect(lambda *_: self._delete_payment())
+        self._payments.setToolTip("Διπλό κλικ σε πληρωμή για διαγραφή")
 
     def _make_table(self, cols: list[tuple[str, str]]) -> QTableWidget:
         table = QTableWidget(0, len(cols))
@@ -148,11 +176,8 @@ class CustomerCard(EtimPage):
         self._pay_total = 0.0
         self._pending = 2
         self._status.setText("Φόρτωση…")
-        # e-timologio search needs a date range; default to the current year so
-        # the card shows this year's history without the user picking dates.
-        year = date.today().year
-        date_from = f"01/01/{year}"
-        date_to = date.today().strftime("%d/%m/%Y")
+        date_from = self._from.date().toString("dd/MM/yyyy")
+        date_to = self._to.date().toString("dd/MM/yyyy")
         self._run(
             lambda: client.search_invoices(
                 buyer_vat=vat, date_from=date_from, date_to=date_to
@@ -160,7 +185,11 @@ class CustomerCard(EtimPage):
             self._fill_invoices,
             self._failed,
         )
-        self._run(lambda: client.payments(buyer_vat=vat), self._fill_payments, self._failed)
+        self._run(
+            lambda: client.payments(buyer_vat=vat, date_from=date_from, date_to=date_to),
+            self._fill_payments,
+            self._failed,
+        )
 
     def _fill_invoices(self, data: dict[str, Any]) -> None:
         rows = list(data.get("invoices", []))
@@ -176,6 +205,7 @@ class CustomerCard(EtimPage):
 
     def _fill_payments(self, data: dict[str, Any]) -> None:
         rows = list(data.get("payments", []))
+        self._payment_rows = rows
         self._payments.setRowCount(len(rows))
         total = 0.0
         for r, row in enumerate(rows):
@@ -207,6 +237,87 @@ class CustomerCard(EtimPage):
     def _failed(self, msg: str) -> None:
         self._pending = max(0, self._pending - 1)
         self._status.setText(f"Σφάλμα: {msg}")
+
+    # --- payments ----------------------------------------------------------
+    def _new_payment(self) -> None:
+        client = self.client()
+        if client is None:
+            return
+        vat = _cust_value(self._customer, "vat")
+        if not vat:
+            return
+        from .payments import NewPaymentDialog
+
+        dialog = NewPaymentDialog(self)
+        dialog.vat.setText(vat)
+        dialog.name.setText(_cust_value(self._customer, "name"))
+        # Προτείνουμε το ανοιχτό υπόλοιπο — ο συνηθέστερος σκοπός της είσπραξης.
+        balance = self._inv_total - self._pay_total
+        if balance > 0:
+            dialog.amount.setText(f"{balance:.2f}")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        self._status.setText("Καταχώρηση πληρωμής…")
+        self._run(lambda: client.add_payment(**fields), lambda _r: self.refresh(), self._failed)
+
+    def _delete_payment(self) -> None:
+        client = self.client()
+        index = self._payments.currentRow()
+        if client is None or not (0 <= index < len(self._payment_rows)):
+            return
+        row = self._payment_rows[index]
+        payment_id = row.get("id") or row.get("payment_id")
+        if not payment_id:
+            return
+        if QMessageBox.question(
+            self, "Διαγραφή πληρωμής",
+            f"Διαγραφή της πληρωμής {fmt_money(parse_money(row.get('amount')))} € "
+            f"({row.get('pay_date', '')});",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._run(lambda: client.delete_payment(payment_id), lambda _r: self.refresh(), self._failed)
+
+    # --- ledger PDF --------------------------------------------------------
+    def ledger_entries(self) -> list[dict[str, Any]]:
+        return entries_from(
+            self._invoice_rows,
+            self._payment_rows,
+            type_label=lambda code: f"Τύπος {code}" if code else "Παραστατικό",
+            method_label=lambda code: _METHODS.get(code, ""),
+        )
+
+    def export_ledger_pdf(self) -> None:
+        """Η καρτέλα ως PDF — η κίνηση, όχι τα PDF των παραστατικών."""
+        entries = self.ledger_entries()
+        if not entries:
+            QMessageBox.information(self, "Καρτέλα", "Η καρτέλα δεν έχει κινήσεις.")
+            return
+        name = _cust_value(self._customer, "name") or "ΠΕΛΑΤΗΣ"
+        vat = _cust_value(self._customer, "vat")
+        safe = "".join(c for c in name if c.isalnum() or c in " -_").strip()[:40]
+        default = Path.home() / f"ΚΑΡΤΕΛΑ {vat} {safe}.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Αποθήκευση καρτέλας", str(default), "PDF (*.pdf)"
+        )
+        if not path:
+            return
+        build_ledger_pdf(
+            Path(path),
+            customer={
+                "name": name,
+                "vat": vat,
+                "address": _cust_value(self._customer, "address"),
+                "city": _cust_value(self._customer, "city"),
+            },
+            entries=entries,
+            period=(
+                self._from.date().toString("dd/MM/yyyy"),
+                self._to.date().toString("dd/MM/yyyy"),
+            ),
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        self._status.setText(f"Η καρτέλα αποθηκεύτηκε: {Path(path).name}")
 
     # --- bulk print / ZIP for this customer's documents --------------------
     def _fetch_card_pdfs(self, mode: str) -> None:

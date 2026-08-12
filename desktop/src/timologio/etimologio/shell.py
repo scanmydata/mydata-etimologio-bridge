@@ -184,6 +184,7 @@ class EtimologioShell(QWidget):
             lambda n: ui.set_tile_value(self._kpi_unread, str(n))
         )
         self._settings.mode_change_requested.connect(self._switch_backend)
+        self._drafts.open_in_issue.connect(self._edit_draft)
         #: Section key → page, used for both navigation and construction.
         self._pages = {
             "issue": self._issue, "credit": self._credit, "bulk": self._bulk,
@@ -446,10 +447,11 @@ class EtimologioShell(QWidget):
     #: Sections that arrive already populated; the rest load on demand.
     #: Η Έκδοση ΔΕΝ είναι εδώ: χρειάζεται το πελατολόγιο και τις σειρές, τα
     #: οποία φορτώνει μία φορά η δική της refresh().
-    # Σελίδες που δεν πρέπει να τραβήξουν δεδομένα μόλις ανοίξουν. Η Μαζική βγήκε
-    # από τη λίστα: το `refresh()` της φέρνει μόνο τις σειρές (cached), και χωρίς
-    # αυτές το dropdown σειράς θα ήταν άδειο.
-    _NO_AUTOLOAD = {"credit"}
+    # Σελίδες που δεν πρέπει να τραβήξουν δεδομένα μόλις ανοίξουν. Άδειασε: το
+    # `refresh()` της Μαζικής φέρνει μόνο τις σειρές και του Πιστωτικού μόνο το
+    # πελατολόγιο — και χωρίς αυτά οι επιλογείς τους θα ήταν άδειοι. Η ακριβή
+    # αναζήτηση παραστατικών στο Πιστωτικό μένει πίσω από κουμπί.
+    _NO_AUTOLOAD: set[str] = set()
 
     def open_section(self, key: str) -> None:
         """Navigate from outside (the side menu). Ignored until logged in."""
@@ -486,6 +488,15 @@ class EtimologioShell(QWidget):
     def _show_card(self, customer: dict) -> None:
         self._card.set_customer(customer)
         self._stack.setCurrentWidget(self._card)
+
+    def _edit_draft(self, draft: dict) -> None:
+        """Ανοίγει ένα πρόχειρο στην Έκδοση για συνέχεια.
+
+        Το ``temp_id`` περνά στη φόρμα, ώστε η αποθήκευση να ΕΝΗΜΕΡΩΣΕΙ το ίδιο
+        πρόχειρο αντί να φτιάξει δεύτερο.
+        """
+        self.open_section("issue")
+        self._issue.load_draft(draft)
 
     def focus_customer(self, vat: str) -> None:
         """Jump straight to a customer (used by "open client from Downloader").

@@ -822,6 +822,32 @@ class IssuePage(EtimPage):
     def _failed(self, msg: str) -> None:
         self._status.setText(f"Σφάλμα: {msg}")
 
+    def load_draft(self, draft: dict[str, Any]) -> None:
+        """Φορτώνει ένα αποθηκευμένο πρόχειρο για συνέχεια.
+
+        Κρατάμε το ``temp_id`` ώστε η επόμενη αποθήκευση να ενημερώσει το ίδιο
+        πρόχειρο — αλλιώς κάθε άνοιγμα άφηνε πίσω του ένα ακόμη διπλότυπο.
+        """
+        self.reset()
+        self._temp_id = str(draft.get("temp_id") or "")
+        vat = str(draft.get("buyer_vat") or "")
+        if vat:
+            self._afm.setText(vat)
+            match = next(
+                (c for c in self._customers if str(c.get("vat") or "") == vat), None
+            )
+            if match is not None:
+                self._picked_customer(match)
+                self._picker.setText(str(match.get("name") or ""))
+        series = str(draft.get("series") or "")
+        if series:
+            index = self._series.findData(series)
+            if index >= 0:
+                self._series.setCurrentIndex(index)
+        self._status.setText(
+            f"Άνοιξε το πρόχειρο {self._temp_id[:8]}… — συμπλήρωσε τις γραμμές και αποθήκευσε."
+        )
+
     def reset(self) -> None:
         self._temp_id = ""
         self._picker.clear()

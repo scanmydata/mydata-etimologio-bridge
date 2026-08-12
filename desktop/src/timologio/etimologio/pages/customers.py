@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -154,6 +155,60 @@ class NewCustomerDialog(QDialog):
         return {"vat": self.vat.text().strip()}
 
 
+class EditCustomerDialog(QDialog):
+    """Επεξεργασία υπάρχοντος πελάτη.
+
+    Το ΑΦΜ/κωδικός είναι το κλειδί και δεν αλλάζει — αλλιώς θα δημιουργούσε
+    δεύτερη εγγραφή αντί να ενημερώσει την υπάρχουσα.
+    """
+
+    def __init__(self, parent=None, *, row: dict[str, Any]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Επεξεργασία πελάτη")
+        self.setMinimumWidth(400)
+        self._vat = _cust_value(row, "vat")
+        self._code = _cust_value(row, "code")
+
+        form = QFormLayout(self)
+        key = QLineEdit(self._vat or self._code)
+        key.setReadOnly(True)
+        form.addRow("ΑΦΜ / Κωδικός", key)
+
+        self.name = QLineEdit(_cust_value(row, "name"))
+        self.address = QLineEdit(_cust_value(row, "address"))
+        self.city = QLineEdit(_cust_value(row, "city"))
+        self.zip = QLineEdit(_cust_value(row, "zip"))
+        self.email = QLineEdit(_cust_value(row, "email"))
+        self.phone1 = QLineEdit(_cust_value(row, "phone1"))
+        form.addRow("Επωνυμία", self.name)
+        form.addRow("Διεύθυνση", self.address)
+        form.addRow("Πόλη", self.city)
+        form.addRow("Τ.Κ.", self.zip)
+        form.addRow("Email", self.email)
+        form.addRow("Τηλέφωνο", self.phone1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Αποθήκευση")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Άκυρο")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def fields(self) -> dict[str, Any]:
+        return {
+            "vat": self._vat,
+            "code": "" if self._vat else self._code,
+            "name": self.name.text().strip(),
+            "address": self.address.text().strip(),
+            "city": self.city.text().strip(),
+            "zip_code": self.zip.text().strip(),
+            "email": self.email.text().strip(),
+            "phone1": self.phone1.text().strip(),
+        }
+
+
 class CustomersPage(EtimPage):
     """Search + list customers; open a customer's card; create a customer."""
 
@@ -191,6 +246,13 @@ class CustomersPage(EtimPage):
         new_btn = QPushButton("Νέος πελάτης")
         new_btn.clicked.connect(self._new_customer)
         top.addWidget(new_btn)
+        edit_btn = QPushButton("Επεξεργασία")
+        edit_btn.clicked.connect(self._edit_customer)
+        top.addWidget(edit_btn)
+        del_btn = QPushButton("Διαγραφή")
+        del_btn.setObjectName("danger")
+        del_btn.clicked.connect(self._delete_customer)
+        top.addWidget(del_btn)
         box.addLayout(top)
 
         self._table = QTableWidget(0, len(_COLS))
@@ -272,6 +334,40 @@ class CustomersPage(EtimPage):
             else (lambda: client.lookup_afm(fields["vat"]))
         )
         self._run(call, self._created, self._failed)
+
+    def _edit_customer(self) -> None:
+        client = self.client()
+        row = self._selected_row()
+        if client is None or row is None:
+            return
+        dialog = EditCustomerDialog(self, row=row)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        self._status.setText("Ενημέρωση πελάτη…")
+        self._run(lambda: client.update_customer(**fields), self._created, self._failed)
+
+    def _delete_customer(self) -> None:
+        client = self.client()
+        row = self._selected_row()
+        if client is None or row is None:
+            return
+        name = _cust_value(row, "name")
+        code = _cust_value(row, "code")
+        vat = _cust_value(row, "vat")
+        if not (code or vat):
+            self._status.setText("Ο πελάτης δεν έχει κωδικό ούτε ΑΦΜ — δεν διαγράφεται.")
+            return
+        if QMessageBox.question(
+            self, "Διαγραφή πελάτη",
+            f"Διαγραφή του πελάτη «{name}»;\n\nΤα ήδη εκδοθέντα παραστατικά του "
+            "δεν επηρεάζονται — παραμένουν στην ΑΑΔΕ.",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._status.setText("Διαγραφή πελάτη…")
+        self._run(
+            lambda: client.delete_customer(code=code, vat=vat), self._created, self._failed
+        )
 
     def _created(self, result: dict[str, Any]) -> None:
         # Το Taxisnet lookup δεν επιστρέφει πάντα `success`· αν γύρισε πελάτη,
