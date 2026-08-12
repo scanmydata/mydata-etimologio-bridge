@@ -108,6 +108,13 @@ BACKEND = _tree(os.path.join(ROOT, "backend", "etimologio"), os.path.join("backe
 # προς την ΑΑΔΕ σκάει με OpenSSL error 60.
 PHPRT = _tree(os.path.join(SPECPATH, "php"), os.path.join("backend", "php"))
 
+# --- Το ελληνικό μοντέλο φωνής (προαιρετικό) ---------------------------------
+# Ο ψηφιακός βοηθός ακούει με Vosk, εκτός δικτύου. Το μοναδικό ελληνικό μοντέλο
+# είναι ~1.1 GB — δεκαπλάσιο από ολόκληρο τον installer — οπότε ΔΕΝ μπαίνει από
+# προεπιλογή: το κατεβάζει το `build.ps1 -WithVoice` και τότε μόνο ταξιδεύει.
+# Το voice.py το ψάχνει ως `_MEIPASS/vosk-model-el`.
+VOICE = _tree(os.path.join(SPECPATH, "vosk-model-el"), "vosk-model-el")
+
 a = Analysis(
     [os.path.join(ROOT, "entry.py")],
     pathex=[os.path.join(ROOT, "src")],
@@ -127,7 +134,7 @@ a = Analysis(
             os.path.join(ROOT, "docs", "manual.pdf"),
         )
         if os.path.exists(path)
-    ] + TZDATA + BACKEND + PHPRT,
+    ] + TZDATA + BACKEND + PHPRT + VOICE,
     # websocket-client (import name «websocket») το φορτώνει το headless module
     # με τοπικό import, οπότε το PyInstaller δεν το βλέπει από το στατικό δέντρο.
     # websocket-client (import name «websocket») και openpyxl φορτώνονται με

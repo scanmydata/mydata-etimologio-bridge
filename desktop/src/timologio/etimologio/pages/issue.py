@@ -50,6 +50,7 @@ from .dialogs import (
     TAX_TYPES,
     ScheduleDialog,
     TaxDialog,
+    rate_from_label,
     tax_signed_total,
 )
 from .pickers import customer_picker, product_picker
@@ -98,6 +99,8 @@ class IssuePage(EtimPage):
     """Compose and issue an invoice natively."""
 
     go_back = Signal()
+    #: Τι να πει ο βοηθός όταν τελειώσει η ετοιμασία πρόχειρου.
+    assistant_said = Signal(str)
 
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(get_client, run, parent)
@@ -329,11 +332,17 @@ class IssuePage(EtimPage):
                 item.setText(rate)
         self._recompute()
 
-    def _new_product(self, row: int, typed: str) -> None:
+    def _new_product(self, row: int, typed: str, defaults: dict[str, Any] | None = None) -> None:
         client = self.client()
         if client is None:
             return
         dialog = NewProductDialog(self, categories=self._categories, code=typed)
+        # Ο βοηθός ξέρει περιγραφή και τιμή από την πρόταση του χρήστη· τα
+        # συμπληρώνει ώστε να μένουν μόνο κατηγορία και ΦΠΑ.
+        for field, widget in (("description", dialog.description), ("price", dialog.unit_price)):
+            value = str((defaults or {}).get(field) or "")
+            if value:
+                widget.setText(value)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         fields = dialog.fields()
@@ -861,6 +870,169 @@ class IssuePage(EtimPage):
                 self._series.setCurrentIndex(index)
         self._status.setText(
             f"Άνοιξε το πρόχειρο {self._temp_id[:8]}… — συμπλήρωσε τις γραμμές και αποθήκευσε."
+        )
+
+    # --- ο ψηφιακός βοηθός ---------------------------------------------------
+    # Ο βοηθός δεν μιλά στο backend μόνος του: ζητά από ΑΥΤΗ τη σελίδα να
+    # ετοιμάσει πρόχειρο. Έτσι υπάρχει ένα μόνο σημείο που στέλνει παραστατικά —
+    # και είναι φανερό ότι η διαδρομή του βοηθού τελειώνει σε `issue_invoice`
+    # χωρίς `live`, δηλαδή χωρίς ΜΑΡΚ.
+
+    def known_customers(self) -> list[dict[str, Any]]:
+        return list(self._customers)
+
+    def known_products(self) -> list[dict[str, Any]]:
+        return list(self._products)
+
+    def open_new_customer(self, prefill: dict[str, Any] | None = None) -> None:
+        data = prefill or {}
+        self._new_customer(str(data.get("vat") or data.get("name") or ""))
+
+    def open_new_product(self, prefill: dict[str, Any] | None = None) -> None:
+        data = prefill or {}
+        if self._table.rowCount() == 0:
+            self.add_line()
+        self._new_product(0, "", defaults=data)
+
+    def prepare_draft(self, spec: Any) -> None:
+        """Γεμίζει τη φόρμα από εντολή του βοηθού και αποθηκεύει **πρόχειρο**.
+
+        Ποτέ οριστική έκδοση: δεν υπάρχει διαδρομή από εδώ προς ``live=True``.
+        """
+        client = self.client()
+        if client is None:
+            self.assistant_said.emit("Δεν υπάρχει σύνδεση με το backend.")
+            return
+        self.reset()
+        # Αν ο τύπος που είναι επιλεγμένος δεν έχει σειρά, τον διαλέγουμε όπως ο
+        # οδηγός: ο πρώτος «τιμολόγιο» (ή «απόδειξη» για ιδιώτη) που ΕΧΕΙ σειρά.
+        # Αλλιώς το πρόχειρο θα έφευγε με σειρά «A», που δεν υπάρχει.
+        if not series_for_type(self._all_series, str(self._type.currentData() or "")):
+            self._wizard_pick("idiot" if getattr(spec, "retail", False) else "pro")
+        vat = str(getattr(spec, "vat", "") or "")
+        name = str(getattr(spec, "name", "") or "")
+        self._afm.setText(vat)
+        self._name.setText(name)
+        self._picker.setText(name or vat)
+
+        code = str(getattr(spec, "code", "") or "")
+        price = getattr(spec, "price", None)
+        qty = getattr(spec, "qty", 1) or 1
+        self._table.setRowCount(0)
+        self.add_line(desc=code, qty=f"{float(qty):g}", price=f"{float(price or 0):g}")
+        product = next(
+            (p for p in self._products if str(p.get("code") or p.get("product_code") or "") == code),
+            None,
+        )
+        if product is not None:
+            self._picked_product(0, product)
+            # Η τιμή της εντολής υπερισχύει του καταλόγου: ο χρήστης την είπε ρητά.
+            if price:
+                item = self._table.item(0, _PRICE)
+                if item is not None:
+                    item.setText(f"{float(price):g}")
+                self._recompute()
+
+        match = next(
+            (c for c in self._customers if str(c.get("vat") or c.get("afm") or "") == vat), None
+        )
+        if match is not None:
+            self._picked_customer(match)
+            self._picker.setText(str(match.get("name") or vat))
+            self._assistant_taxes(spec)
+            return
+        if vat.isdigit() and len(vat) == 9:
+            # Άγνωστο ΑΦΜ: το αντλούμε από το Taxisnet ΠΡΙΝ αποθηκεύσουμε, αλλιώς
+            # το πρόχειρο θα έφευγε χωρίς επωνυμία και διεύθυνση.
+            self.assistant_said.emit("Αντλώ τα στοιχεία του πελάτη…")
+            self._run(
+                lambda: client.customers(vat=vat),
+                lambda data: self._assistant_customer(data, vat, spec),
+                lambda msg: self._assistant_taxes(spec),
+            )
+            return
+        self._assistant_taxes(spec)
+
+    def _assistant_customer(self, data: dict[str, Any], vat: str, spec: Any) -> None:
+        rows = data.get("customers") or data.get("rows") or []
+        match = next((r for r in rows if str(r.get("vat") or r.get("afm") or "") == vat), None)
+        if match is not None:
+            self._picked_customer(match)
+            self._picker.setText(str(match.get("name") or vat))
+        self._assistant_taxes(spec)
+
+    def _assistant_taxes(self, spec: Any) -> None:
+        """Προσθέτει την παρακράτηση, αν ζητήθηκε — και μετά αποθηκεύει."""
+        pct = getattr(spec, "withholding_pct", None)
+        client = self.client()
+        if not pct or client is None:
+            self._assistant_save()
+            return
+        if self._tax_categories is None:
+
+            def got(data: dict[str, Any]) -> None:
+                self._tax_categories = {k: v for k, v in data.items() if isinstance(v, list)}
+                self._assistant_taxes(spec)
+
+            self._run(
+                client.tax_categories,
+                got,
+                lambda msg: self._assistant_save(f"⚠ Οι κατηγορίες φόρου δεν ήρθαν: {msg}."),
+            )
+            return
+        rows = (self._tax_categories or {}).get("withheld", []) or []
+        target = next(
+            (r for r in rows if abs(rate_from_label(str(r.get("label", ""))) * 100 - float(pct)) < 0.01),
+            None,
+        )
+        if target is None:
+            self._assistant_save(
+                f"⚠ Δεν βρήκα κατηγορία παρακράτησης {float(pct):g}% — πρόσθεσέ τη "
+                "από το «💶 Φόρος / Κράτηση»."
+            )
+            return
+        amount = round(self.net_total() * float(pct) / 100.0, 2)
+        self._taxes.append(
+            {
+                "type": 1,
+                "category": str(target.get("code", "")),
+                "amount": amount,
+                "notes": "",
+                "label": str(target.get("label", "")),
+            }
+        )
+        self._render_taxes()
+        self._assistant_save()
+
+    def _assistant_save(self, warning: str = "") -> None:
+        client = self.client()
+        kwargs = self._issue_kwargs()
+        if client is None or kwargs is None:
+            self.assistant_said.emit(
+                "Χρειάζεται είδος και τιμή — συμπλήρωσέ τα στη φόρμα και πάτα «Πρόχειρο»."
+            )
+            return
+
+        def done(result: dict) -> None:
+            self._after_draft(result)
+            if result.get("success"):
+                self.assistant_said.emit(
+                    (warning + "\n" if warning else "")
+                    + f"✔ Το πρόχειρο ετοιμάστηκε ({self._temp_id[:8]}…). Έλεγξέ το εδώ ή "
+                    "στα «Πρόχειρα» και έκδωσέ το χειροκίνητα."
+                )
+            else:
+                self.assistant_said.emit(
+                    "Το πρόχειρο δεν αποθηκεύτηκε: "
+                    + str(result.get("error", "άγνωστο σφάλμα"))
+                )
+
+        self._status.setText("Αποθήκευση πρόχειρου…")
+        # Χωρίς `live`: ο βοηθός δεν εκδίδει ποτέ οριστικά.
+        self._run(
+            lambda: client.issue_invoice(**kwargs),
+            done,
+            lambda msg: self.assistant_said.emit(f"Σφάλμα: {msg}"),
         )
 
     def reset(self) -> None:

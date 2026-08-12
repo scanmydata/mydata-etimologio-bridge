@@ -7,6 +7,11 @@
 # Δουλεύει είτε με uv είτε με σκέτο .venv: σε μηχάνημα χωρίς uv (π.χ. καθαρός
 # υπολογιστής γραφείου) το build δεν πρέπει να κολλάει σε εργαλείο ανάπτυξης.
 
+#   -WithVoice   κατεβάζει και πακετάρει το ελληνικό μοντέλο φωνής (~1.1 GB
+#                αποσυμπιεσμένο) για τον ψηφιακό βοηθό. Χωρίς αυτό, ο βοηθός
+#                δουλεύει κανονικά με κείμενο και το μικρόφωνο εξηγεί τι λείπει.
+param([switch]$WithVoice)
+
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -170,6 +175,37 @@ foreach ($need in @("PDO","pdo_sqlite","sqlite3","openssl","mbstring","curl")) {
 $phpSize = [math]::Round(((Get-ChildItem $phpDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB),1)
 & $phpExe -n -v | Select-Object -First 1
 Write-Host "   PHP έτοιμη: $phpDir  ($phpSize MB, επεκτάσεις: $($keep.Count))"
+
+# --- Ελληνικό μοντέλο φωνής (προαιρετικό) ------------------------------------
+# Ίδια λογική με τη φορητή PHP: κατεβαίνει εδώ, δεν μπαίνει στο git. Η διαφορά
+# είναι το μέγεθος (~1.1 GB), γι' αυτό μπαίνει μόνο όταν ζητηθεί ρητά.
+$voiceDir = Join-Path $PSScriptRoot "vosk-model-el"
+if ($WithVoice) {
+    Write-Host "== 3.6/5  Ελληνικό μοντέλο φωνής (Vosk) ==" -ForegroundColor Cyan
+    if (-not (Test-Path (Join-Path $voiceDir "conf"))) {
+        $url = "https://alphacephei.com/vosk/models/vosk-model-el-gr-0.7.zip"
+        $zip = Join-Path $env:TEMP "vosk-model-el-gr-0.7.zip"
+        Write-Host "   Λήψη ~1.1 GB — θα πάρει ώρα…"
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 3600
+        $tmp = Join-Path $env:TEMP "vosk-extract"
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        # Το zip περιέχει έναν φάκελο με το όνομα της έκδοσης· εμείς θέλουμε το
+        # περιεχόμενό του σε σταθερή διαδρομή, αλλιώς το voice.py δεν το βρίσκει.
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        New-Item -ItemType Directory -Force $voiceDir | Out-Null
+        Copy-Item (Join-Path $inner.FullName "*") $voiceDir -Recurse -Force
+        Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "   Υπάρχει ήδη — παραλείπεται η λήψη."
+    }
+    $voiceSize = [math]::Round(((Get-ChildItem $voiceDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB),0)
+    Write-Host "   Μοντέλο έτοιμο: $voiceDir ($voiceSize MB)"
+} elseif (Test-Path $voiceDir) {
+    # Υπάρχει από προηγούμενο -WithVoice build: το spec θα το πακετάρει έτσι κι
+    # αλλιώς, οπότε το λέμε αντί να φουσκώσει σιωπηλά ο installer κατά 1 GB.
+    Write-Host "   ΣΗΜ.: υπάρχει installer\vosk-model-el — θα μπει στο bundle." -ForegroundColor Yellow
+}
 
 # --- PyInstaller -------------------------------------------------------------
 Write-Host "== 4/5  PyInstaller ==" -ForegroundColor Cyan

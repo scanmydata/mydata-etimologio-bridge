@@ -61,6 +61,7 @@ _ICONS = {
     # Ίδια εικονίδια με τη ΒΟΗΘΕΙΑ του Downloader — είναι η ίδια ενέργεια.
     "etim_tour": "tour",
     "etim_manual": "manual",
+    "etim_assistant": "info",
     "downloader": "download",
 }
 
@@ -324,6 +325,7 @@ class SideMenu(QWidget):
         # το εγχειρίδιο υπήρχαν μόνο στο μενού του Downloader.
         box.addWidget(self._separator("ΒΟΗΘΕΙΑ"))
         for name, text, tip in [
+            ("etim_assistant", "Βοηθός", "Εντολές με κείμενο ή φωνή (Ctrl+B)"),
             ("etim_tour", "Ξενάγηση", "Γρήγορη περιήγηση στις λειτουργίες"),
             ("etim_manual", "Εγχειρίδιο", "Οδηγίες σε PDF"),
         ]:

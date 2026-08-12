@@ -53,6 +53,7 @@ from .pages import (
     StatsPage,
     ui,
 )
+from .pages.assistant_panel import AssistantPanel
 from .pages.base import fmt_money, parse_money
 from .service import EtimologioService
 
@@ -210,11 +211,35 @@ class EtimologioShell(QWidget):
         for page in (*self._pages.values(), self._card):
             page.go_back.connect(self.go_back)
 
-        # Alt+← και Esc: η ίδια πλοήγηση με το κουμπί, χωρίς ποντίκι.
-        for sequence in (QKeySequence("Alt+Left"), QKeySequence(Qt.Key.Key_Escape)):
+        # --- ο ψηφιακός βοηθός ---------------------------------------------
+        # Ζει πάνω από όλες τις σελίδες, σαν το πλωτό panel του web. Διαβάζει
+        # πελάτες και είδη από την Έκδοση (που τα φορτώνει ούτως ή άλλως), ώστε
+        # να μην υπάρχει δεύτερο αντίγραφο του πελατολογίου.
+        self._assistant = AssistantPanel(
+            self,
+            data_dir=self._service.data_dir,
+            customers=self._issue.known_customers,
+            products=self._issue.known_products,
+        )
+        self._assistant.navigate.connect(self.open_section)
+        self._assistant.open_dialog.connect(self._assistant_dialog)
+        self._assistant.prepare_draft.connect(self._assistant_draft)
+        self._assistant.fetch_requested.connect(self._assistant_fetch)
+        self._issue.assistant_said.connect(self._assistant.say)
+        shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
+        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(self.toggle_assistant)
+
+        # Alt+← και Esc: η ίδια πλοήγηση με το κουμπί, χωρίς ποντίκι. Το Esc
+        # κλείνει πρώτα τον βοηθό — αλλιώς το panel θα έμενε ανοιχτό ενώ η
+        # σελίδα από κάτω άλλαζε.
+        for sequence, slot in (
+            (QKeySequence("Alt+Left"), self.go_back),
+            (QKeySequence(Qt.Key.Key_Escape), self._escape),
+        ):
             shortcut = QShortcut(sequence, self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(self.go_back)
+            shortcut.activated.connect(slot)
 
         for w in (self._status, self._login, self._home, self._card, *self._pages.values()):
             self._stack.addWidget(w)
@@ -230,6 +255,9 @@ class EtimologioShell(QWidget):
         _run(self._service.start_local, self._on_backend_ready, self._on_backend_error)
 
     def shutdown(self) -> None:
+        # Πρώτα το μικρόφωνο: το νήμα της αναγνώρισης πρέπει να σταματήσει πριν
+        # καταστραφούν τα widget του, αλλιώς κρέμεται το κλείσιμο.
+        self._assistant.shutdown()
         self._service.stop()
 
     def _on_backend_ready(self, url: str) -> None:
@@ -398,6 +426,7 @@ class EtimologioShell(QWidget):
         row.addWidget(ui.button("＋", self._add_company, tip="Προσθήκη εταιρείας ΑΑΔΕ"))
         self._mode_label = ui.muted("")
         row.addWidget(self._mode_label)
+        row.addWidget(ui.button("🤖 Βοηθός", self.toggle_assistant, tip="Ψηφιακός βοηθός (Ctrl+B)"))
         row.addWidget(ui.button("Έξοδος", self._do_logout, icon_name="lock"))
         bar.hide()          # φαίνεται μόλις γίνει η σύνδεση
         return bar
@@ -583,6 +612,53 @@ class EtimologioShell(QWidget):
         self._stack.setCurrentWidget(page)
         if key not in self._NO_AUTOLOAD and hasattr(page, "refresh"):
             page.refresh()
+
+    # --- ψηφιακός βοηθός ----------------------------------------------------
+    def toggle_assistant(self) -> None:
+        """Ανοίγει/κλείνει τον βοηθό. Χωρίς σύνδεση δεν έχει τι να κάνει."""
+        if self._client is None:
+            return
+        # Ο βοηθός διαβάζει το πελατολόγιο και τον κατάλογο ειδών της Έκδοσης —
+        # αν ο χρήστης δεν άνοιξε ποτέ την Έκδοση, δεν έχουν φορτωθεί ακόμη.
+        self._issue.refresh()
+        self._assistant.toggle()
+
+    def _escape(self) -> None:
+        if self._assistant.isVisible():
+            self._assistant.hide()
+            return
+        self.go_back()
+
+    def _assistant_dialog(self, kind: str, prefill: dict) -> None:
+        self.open_section("issue")
+        if kind == "customer":
+            self._issue.open_new_customer(prefill)
+        elif kind == "product":
+            self._issue.open_new_product(prefill)
+
+    def _assistant_draft(self, spec) -> None:
+        self.open_section("issue")
+        self._issue.prepare_draft(spec)
+
+    def _assistant_fetch(self, kind: str) -> None:
+        """Τα δύο ερωτήματα που κάνει ο βοηθός στο backend."""
+        if self._client is None:
+            return
+        client = self._client
+        if kind == "notifications":
+            _run(
+                client.notif_count,
+                lambda n: self._assistant.report(kind, n),
+                lambda msg: self._assistant.say(f"Δεν μπόρεσα να δω τις ειδοποιήσεις: {msg}"),
+            )
+            return
+        if kind.startswith("stats"):
+            period = kind.partition(":")[2] or "year"
+            _run(
+                lambda: client.statistics(period),
+                lambda data: self._assistant.report(kind, data),
+                lambda msg: self._assistant.say(f"Δεν μπόρεσα να φέρω στατιστικά: {msg}"),
+            )
 
     # --- βοήθεια ------------------------------------------------------------
     def page(self, key: str):

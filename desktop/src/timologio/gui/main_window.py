@@ -1205,6 +1205,8 @@ class MainWindow(QMainWindow):
                 self.etimologio.start_tour()
             elif key == "manual":
                 self.etimologio.open_manual()
+            elif key == "assistant":
+                self.etimologio.toggle_assistant()
             else:
                 self.etimologio.open_section(key)
             return
