@@ -816,13 +816,29 @@ class IssueClient(RecordingClient):
 def test_issue_page_loads_customer_picker(app) -> None:
     page = IssuePage(lambda: IssueClient(), sync_run)
     page.refresh()
-    # κενή πρώτη επιλογή + δύο πελάτες
-    assert page._picker.count() == 3
-    assert "ΞΕΝΤΕ" in page._picker.itemText(1)
-    page._picked_customer(1)
+    assert len(page._picker.rows()) == 2
+
+    # Η λίστα ανοίγει χωρίς πληκτρολόγηση, με «➕ Νέος πελάτης…» πρώτη γραμμή.
+    page._picker.show_popup()
+    assert page._picker._popup.item(0).text().startswith("➕")
+    assert "ΞΕΝΤΕ" in page._picker._popup.item(1).text()
+
+    page._picker._chose(page._picker._popup.item(1))
     assert page._afm.text() == "094039270"
     assert page._name.text() == "ΞΕΝΤΕ ΑΕ"
     assert page._city.text() == "Αθήνα"
+
+
+def test_issue_page_customer_picker_filters(app) -> None:
+    page = IssuePage(lambda: IssueClient(), sync_run)
+    page.refresh()
+    page._picker.line_edit().setText("μεγα")     # πεζά, μέρος της επωνυμίας
+    page._picker.show_popup()
+    labels = [page._picker._popup.item(i).text() for i in range(page._picker._popup.count())]
+    assert any("MEGATECH" in text for text in labels[1:]) or len(labels) == 1
+    page._picker.line_edit().setText("802012659")   # με ΑΦΜ
+    page._picker.show_popup()
+    assert "MEGATECH" in page._picker._popup.item(1).text()
 
 
 def test_issue_page_series_follow_the_document_type(app) -> None:
@@ -927,3 +943,183 @@ def test_new_customer_dialog_validates_before_accepting(app) -> None:
     dialog.name.setText("Γιώργος")
     dialog._accept()
     assert "πόλη" in dialog._error.text()
+
+
+# --- Φάση Β: φόροι, είδη, προγραμματισμός ------------------------------------
+
+class IssueFullClient(IssueClient):
+    """Πελάτες, σειρές, είδη, κατηγορίες και κατηγορίες φόρου."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scheduled: dict[str, Any] | None = None
+
+    def products(self):
+        return {"success": True, "products": [
+            {"product_code": "ΥΠ001", "code": "ΥΠ001", "description": "Συντήρηση",
+             "unit_price": "150", "vat_category": "1", "category": "ΥΠΗΡΕΣΙΕΣ"},
+            {"product_code": "ΑΓ001", "code": "ΑΓ001", "description": "Ανταλλακτικό",
+             "unit_price": "40", "vat_category": "2", "category": "ΑΓΑΘΑ"},
+        ]}
+
+    def product_categories(self):
+        return {"success": True, "categories": [{"name": "ΥΠΗΡΕΣΙΕΣ"}, {"name": "ΑΓΑΘΑ"}]}
+
+    def tax_categories(self):
+        return {
+            "success": True,
+            "withheld": [{"code": "2", "label": "Αμοιβές Ελ. Επαγγελματιών 20%"}],
+            "fees": [{"code": "9", "label": "Λοιπά τέλη"}],
+            "other": [], "digital": [],
+            "deductions": [{"code": "D1", "label": "Κράτηση υπέρ ΕΑΑΔΗΣΥ 0,1%"}],
+        }
+
+    def schedule_job(self, payload, run_at, *, title="", kind="invoice", recurrence="none"):
+        self.scheduled = {"payload": payload, "run_at": run_at, "title": title,
+                          "kind": kind, "recurrence": recurrence}
+        return {"success": True, "id": 1}
+
+
+def test_issue_line_picker_fills_price_and_vat_from_the_catalogue(app) -> None:
+    client = IssueFullClient()
+    page = IssuePage(lambda: client, sync_run)
+    page.refresh()
+
+    picker = page._line_picker(0)
+    assert picker is not None
+    picker.show_popup()
+    assert picker._popup.item(0).text().startswith("➕")       # «Νέο είδος…»
+    picker._chose(picker._popup.item(1))                       # ΥΠ001
+
+    assert page._cell(0, 0) == "ΥΠ001"
+    assert parse_money(page._cell(0, 2)) == pytest.approx(150.0)
+    assert page._cell(0, 3) == "24"                            # vat_category 1 → 24%
+
+    line = page.collect_lines()[0]
+    assert line["code"] == "ΥΠ001"
+    assert line["rate"] == pytest.approx(0.24)
+
+
+def test_issue_line_picker_keeps_a_hand_typed_price(app) -> None:
+    """Η τιμή καταλόγου δεν πατάει τιμή που έβαλε ο χρήστης."""
+    client = IssueFullClient()
+    page = IssuePage(lambda: client, sync_run)
+    page.refresh()
+    page._table.item(0, 2).setText("99")
+
+    picker = page._line_picker(0)
+    picker.show_popup()
+    picker._chose(picker._popup.item(1))
+    assert parse_money(page._cell(0, 2)) == pytest.approx(99.0)
+
+
+def test_issue_taxes_signs_and_payable(app) -> None:
+    """Παρακρατήσεις/κρατήσεις αφαιρούνται, τέλη προστίθενται."""
+    from timologio.etimologio.pages.dialogs import tax_signed_total
+
+    client = IssueFullClient()
+    page = IssuePage(lambda: client, sync_run)
+    page.refresh()
+    page._table.setRowCount(0)
+    page.add_line(desc="ΥΠ001", qty="1", price="1000", rate="24", disc="0")
+
+    page._taxes = [
+        {"type": 1, "category": "2", "amount": 200.0, "notes": "", "label": "… 20%"},
+        {"type": 2, "category": "9", "amount": 10.0, "notes": "", "label": "τέλος"},
+        {"type": 5, "category": "D1", "amount": 1.0, "notes": "", "label": "… 0,1%"},
+    ]
+    page._render_taxes()
+
+    plus, minus = tax_signed_total(page._taxes)
+    assert plus == pytest.approx(10.0)
+    assert minus == pytest.approx(201.0)
+    # 1000 καθαρή + 240 ΦΠΑ + 10 τέλη − 201 κρατήσεις = 1.049,00
+    assert "1.049,00" in page._totals.text()
+
+    assert len(page._issue_kwargs()["taxes"]) == 3
+    assert "label" not in page._issue_kwargs()["taxes"][0]   # δεν φεύγει στο backend
+
+
+def test_tax_dialog_auto_amount_from_the_label_percentage(app) -> None:
+    from timologio.etimologio.pages.dialogs import TaxDialog, rate_from_label
+
+    assert rate_from_label("Αμοιβές Ελ. Επαγγελματιών 20%") == pytest.approx(0.20)
+    assert rate_from_label("Κράτηση 0,1%") == pytest.approx(0.001)
+    assert rate_from_label("χωρίς ποσοστό") == 0.0
+
+    dialog = TaxDialog(IssueFullClient().tax_categories(), net_total=1000.0, invoice_type="20")
+    dialog.category.setCurrentIndex(1)          # «… 20%»
+    assert parse_money(dialog.amount.text()) == pytest.approx(200.0)
+
+
+def test_tax_dialog_blocks_withholding_on_goods(app) -> None:
+    from timologio.etimologio.pages.dialogs import TaxDialog, is_service_type
+
+    assert is_service_type("20") and is_service_type("58")
+    assert not is_service_type("1")
+
+    dialog = TaxDialog(IssueFullClient().tax_categories(), net_total=100.0, invoice_type="1")
+    dialog.category.setCurrentIndex(1)
+    dialog.amount.setText("20")
+    dialog._accept()
+    assert "παροχή υπηρεσιών" in dialog._error.text()
+
+
+def test_issue_schedule_queues_a_live_job(app) -> None:
+    """Ο προγραμματισμός στέλνει live payload — αλλά ΔΕΝ εκδίδει τώρα."""
+    from timologio.etimologio.pages.dialogs import ScheduleDialog
+
+    client = IssueFullClient()
+    page = IssuePage(lambda: client, sync_run)
+    page.refresh()
+    page._table.setRowCount(0)
+    page.add_line(desc="ΥΠ001", qty="1", price="100")
+    page._afm.setText("094039270")
+
+    dialog = ScheduleDialog("δοκιμή")
+    dialog.recurrence.setCurrentIndex(3)        # monthly
+    assert dialog.run_at().endswith("09:00")
+
+    # Παρακάμπτουμε το modal και καλούμε ό,τι θα καλούσε το «Προγραμματισμός».
+    kwargs = page._issue_kwargs()
+    payload = {k: v for k, v in kwargs.items() if k != "temp_id"}
+    payload["live"] = 1
+    client.schedule_job(payload, dialog.run_at(), title="δοκιμή", recurrence="monthly")
+
+    assert client.scheduled["recurrence"] == "monthly"
+    assert client.scheduled["payload"]["live"] == 1
+    assert client.scheduled["payload"]["lines"][0]["code"] == "ΥΠ001"
+
+
+def test_product_dialog_requires_a_category(app) -> None:
+    """Κενή κατηγορία → η ΑΑΔΕ απαντά «The value '' is invalid»· το πιάνουμε εδώ."""
+    from timologio.etimologio.pages.catalog import NewProductDialog
+
+    dialog = NewProductDialog(categories=[{"name": "ΥΠΗΡΕΣΙΕΣ"}])
+    dialog.code.setText("ΥΠ002")
+    dialog.description.setText("Νέα υπηρεσία")
+    dialog._accept()
+    assert "κατηγορία" in dialog._error.text()
+
+    dialog.category.setCurrentIndex(1)
+    dialog._accept()
+    fields = dialog.fields()
+    assert fields["category"] == "ΥΠΗΡΕΣΙΕΣ"
+    assert fields["unit"] == ""                 # υπηρεσία → χωρίς μονάδα μέτρησης
+
+
+def test_issue_wizard_picks_a_type_that_actually_has_a_series(app) -> None:
+    """Ο οδηγός δεν προτείνει τύπο χωρίς σειρά — θα τον απέρριπτε η ΑΑΔΕ."""
+    page = IssuePage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+
+    page._wizard.setVisible(True)
+    page._wizard_pick("pro")                     # τιμολόγιο → 2.1 (έχει σειρά ΤΠΥ)
+    assert page._type.currentData() == "20"
+    assert page._series.currentData() == "ΤΠΥ"
+    assert page._wizard.isHidden()
+
+    page._wizard.setVisible(True)
+    page._wizard_pick("idiot")                   # απόδειξη → 11.2 (έχει σειρά ΑΠΥ)
+    assert page._type.currentData() == "58"
+    assert page._series.currentData() == "ΑΠΥ"

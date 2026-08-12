@@ -9,20 +9,39 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
 )
 
+from ..codes import INVOICE_TYPES
 from .base import ListPage
-from .issue import INVOICE_TYPES
 
 #: Product VAT category codes (label → code) — myDATA vatCategory ids.
 VAT_CATEGORIES: list[tuple[str, str]] = [
     ("24%", "1"),
     ("13%", "2"),
     ("6%", "3"),
+    ("9%", "5"),
     ("0%", "7"),
+    ("Απαλλασσόμενο", "8"),
+]
+
+#: Είδος γραμμής. Το e-timologio ξεχωρίζει αγαθά από υπηρεσίες — τα δελτία
+#: αποστολής δέχονται μόνο αγαθά, και οι παρακρατήσεις μόνο υπηρεσίες.
+PRODUCT_TYPES: list[tuple[str, str]] = [
+    ("2", "Υπηρεσία"),
+    ("1", "Αγαθό"),
+]
+
+#: Μονάδες μέτρησης (κωδικός → ετικέτα).
+UNITS: list[tuple[str, str]] = [
+    ("1", "Τεμάχιο"),
+    ("2", "Κιλό"),
+    ("3", "Λίτρο"),
+    ("4", "Μέτρο"),
+    ("7", "Άλλο"),
 ]
 
 
@@ -47,21 +66,93 @@ class _Dialog(QDialog):
 
 
 class NewProductDialog(_Dialog):
-    def __init__(self, parent=None) -> None:
-        super().__init__("Νέο είδος", parent)
-        self.code = QLineEdit()
-        self.description = QLineEdit()
-        self.unit_price = QLineEdit("0")
+    """Δημιουργία/επεξεργασία είδους.
+
+    Η **κατηγορία είναι υποχρεωτική**: χωρίς αυτήν το e-timologio απαντά
+    «The value '' is invalid» — μήνυμα που δεν λέει τίποτα στον χρήστη, οπότε το
+    πιάνουμε εδώ.
+    """
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        categories: list[dict[str, Any]] | None = None,
+        code: str = "",
+        row: dict[str, Any] | None = None,
+    ) -> None:
+        editing = row is not None
+        super().__init__("Επεξεργασία είδους" if editing else "Νέο είδος", parent)
+        row = row or {}
+
+        self.code = QLineEdit(str(row.get("product_code") or code))
+        # Ο κωδικός είναι το κλειδί — αν αλλάξει στο edit, φτιάχνεται δεύτερο είδος.
+        self.code.setReadOnly(editing)
+        self.type = QComboBox()
+        for value, label in PRODUCT_TYPES:
+            self.type.addItem(label, value)
+        self.description = QLineEdit(str(row.get("description") or ""))
+        self.category = QComboBox()
+        self.category.addItem("— επιλέξτε —", "")
+        for cat in categories or []:
+            name = str(cat.get("name") or cat.get("category_name") or "")
+            self.category.addItem(name, name)
+        self.unit_price = QLineEdit(str(row.get("unit_price") or "0"))
         self.vat = QComboBox()
-        for label, code in VAT_CATEGORIES:
-            self.vat.addItem(label, code)
-        self.unit = QLineEdit()
+        for label, value in VAT_CATEGORIES:
+            self.vat.addItem(label, value)
+        self.unit = QComboBox()
+        for value, label in UNITS:
+            self.unit.addItem(label, value)
+
         self.form.addRow("Κωδικός *", self.code)
-        self.form.addRow("Περιγραφή", self.description)
+        self.form.addRow("Είδος", self.type)
+        self.form.addRow("Περιγραφή *", self.description)
+        self.form.addRow("Κατηγορία *", self.category)
         self.form.addRow("Τιμή μον.", self.unit_price)
         self.form.addRow("ΦΠΑ", self.vat)
         self.form.addRow("Μον. μέτρησης", self.unit)
-        self.add_buttons(self.code)
+
+        self._error = QLabel("")
+        self._error.setObjectName("hint")
+        self._error.setWordWrap(True)
+        self.form.addRow(self._error)
+
+        current = str(row.get("category") or "")
+        if current:
+            index = self.category.findData(current)
+            if index >= 0:
+                self.category.setCurrentIndex(index)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Αποθήκευση")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Άκυρο")
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        self.form.addRow(buttons)
+        self._editing = editing
+
+    def is_editing(self) -> bool:
+        return self._editing
+
+    def _accept(self) -> None:
+        for field, message in (
+            (self.code, "Δώσε κωδικό είδους."),
+            (self.description, "Δώσε περιγραφή."),
+        ):
+            if not field.text().strip():
+                self._error.setText(message)
+                field.setFocus()
+                return
+        if not self.category.currentData():
+            self._error.setText(
+                "Το e-timologio απαιτεί κατηγορία — χωρίς αυτήν η καταχώρηση απορρίπτεται."
+            )
+            self.category.setFocus()
+            return
+        self.accept()
 
     def fields(self) -> dict[str, Any]:
         return {
@@ -69,7 +160,10 @@ class NewProductDialog(_Dialog):
             "description": self.description.text().strip(),
             "unit_price": self.unit_price.text().strip() or "0",
             "vat_category": self.vat.currentData(),
-            "unit": self.unit.text().strip(),
+            "product_type": self.type.currentData(),
+            "category": self.category.currentData(),
+            # Οι υπηρεσίες δεν έχουν μονάδα μέτρησης.
+            "unit": "" if self.type.currentData() == "2" else self.unit.currentData(),
         }
 
 
@@ -90,26 +184,54 @@ class ProductsPage(ListPage):
             get_client, run, title="Είδη", columns=self._COLS,
             rows_key="products", stretch_col=1, parent=parent,
         )
+        self._categories: list[dict[str, Any]] = []
         new = QPushButton("Νέο είδος")
         new.clicked.connect(self._new)
+        edit = QPushButton("Επεξεργασία")
+        edit.clicked.connect(self._edit)
         delete = QPushButton("Διαγραφή")
         delete.clicked.connect(self._delete)
-        self.toolbar.insertWidget(self.toolbar.count() - 1, new)
-        self.toolbar.insertWidget(self.toolbar.count() - 1, delete)
+        for button in (new, edit, delete):
+            self.toolbar.insertWidget(self.toolbar.count() - 1, button)
+        self.table.doubleClicked.connect(lambda *_: self._edit())
 
     def fetch(self, client: Any) -> dict[str, Any]:
         return client.products()
+
+    def refresh(self) -> None:
+        super().refresh()
+        client = self.client()
+        if client is not None and not self._categories:
+            self._run(client.product_categories, self._got_categories, lambda _m: None)
+
+    def _got_categories(self, data: dict[str, Any]) -> None:
+        self._categories = list(
+            data.get("categories") or data.get("product_categories") or data.get("rows") or []
+        )
 
     def _new(self) -> None:
         client = self.client()
         if client is None:
             return
-        dialog = NewProductDialog(self)
+        dialog = NewProductDialog(self, categories=self._categories)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         fields = dialog.fields()
         self.status.setText("Αποθήκευση είδους…")
         self._run(lambda: client.create_product(**fields), self._after_write, self._failed)
+
+    def _edit(self) -> None:
+        client = self.client()
+        row = self.selected_row()
+        if client is None or row is None:
+            return
+        dialog = NewProductDialog(self, categories=self._categories, row=row)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        code = fields.pop("product_code")
+        self.status.setText("Ενημέρωση είδους…")
+        self._run(lambda: client.update_product(code, **fields), self._after_write, self._failed)
 
     def _delete(self) -> None:
         client = self.client()
