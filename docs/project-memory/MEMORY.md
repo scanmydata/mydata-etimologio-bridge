@@ -6,4 +6,5 @@
 - [Web UI (app.php)](etimologio-web-ui.md) — theme vars, desktop-matching toggles, bulk print/ZIP, assistant router
 - [Native e-Τιμολόγιο UI](etimologio-native-ui.md) — ui helpers, ListPage, the worker keep-alive rule, bulk print/ZIP, 2FA QR
 - [Packaging & installer](etimologio-packaging.md) — vendored sync, bundled PHP, the frozen-build traps
+- [Ψηφιακός βοηθός](etimologio-assistant.md) — καθαρός router, «μόνο πρόχειρο», γιατί η φωνή δεν πακετάρεται
 - [ΑΑΔΕ endpoint quirks](aade-endpoint-quirks.md) — τι επιστρέφει (και τι δεν επιστρέφει) το afm/preview_temp, ζωντανά επαληθευμένο
