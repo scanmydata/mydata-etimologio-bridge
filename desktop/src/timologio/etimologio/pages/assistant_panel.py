@@ -16,6 +16,7 @@ from typing import Any
 
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -35,8 +36,13 @@ _HEIGHT = 460
 _MARGIN = 18
 
 
-class AssistantPanel(QWidget):
-    """Η επιφάνεια συνομιλίας. Οι ενέργειες βγαίνουν ως σήματα."""
+class AssistantPanel(QFrame):
+    """Η επιφάνεια συνομιλίας. Οι ενέργειες βγαίνουν ως σήματα.
+
+    QFrame και όχι QWidget επίτηδες: ο κανόνας του θέματος είναι ``QFrame#card``,
+    οπότε ένα σκέτο QWidget με το ίδιο όνομα δεν έπαιρνε φόντο — και η σελίδα
+    από κάτω φαινόταν μέσα από το panel (φάνηκε στο offscreen render).
+    """
 
     #: Άνοιγμα ενότητας («issue», «drafts», …).
     navigate = Signal(str)
@@ -62,7 +68,6 @@ class AssistantPanel(QWidget):
         self._voice = None          # φτιάχνεται με το πρώτο πάτημα του μικροφώνου
 
         self.setObjectName("card")
-        self.setAutoFillBackground(True)
         box = QVBoxLayout(self)
         box.setContentsMargins(12, 10, 12, 10)
         box.setSpacing(8)
@@ -146,7 +151,11 @@ class AssistantPanel(QWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setObjectName("hint" if mine else "muted")
+        # Τα λόγια του βοηθού είναι το κύριο περιεχόμενο του panel — όχι
+        # δευτερεύον κείμενο· «muted» τα έκανε δυσανάγνωστα. Η ηχώ του χρήστη
+        # παίρνει το χρώμα τονισμού και στοιχίζεται δεξιά, ώστε να ξεχωρίζει
+        # ποιος είπε τι χωρίς εικονίδια.
+        label.setObjectName("hint" if mine else "")
         label.setAlignment(
             Qt.AlignmentFlag.AlignRight if mine else Qt.AlignmentFlag.AlignLeft
         )

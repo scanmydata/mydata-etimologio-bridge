@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QPushButton, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QPushButton, QWidget  # noqa: E402
 
 from timologio.etimologio.assistant import (  # noqa: E402
     Assistant,
@@ -325,6 +325,18 @@ def test_panel_routes_navigation_and_confirms_before_a_draft(app, tmp_path) -> N
     panel.ask("ναι")
     assert len(drafts) == 1 and drafts[0].vat == "094039270"
     assert _buttons(panel._choices) == []            # τα κουμπιά καθαρίζουν
+
+
+def test_panel_is_an_opaque_themed_card(app, tmp_path) -> None:
+    """Ο κανόνας του θέματος είναι `QFrame#card`: σκέτο QWidget έμενε άφοντο και
+    η σελίδα από κάτω φαινόταν μέσα από το panel."""
+    from timologio.etimologio.pages.assistant_panel import AssistantPanel
+    from timologio.gui import theme
+
+    panel = AssistantPanel(QWidget(), data_dir=tmp_path, customers=list, products=list)
+    assert isinstance(panel, QFrame)
+    assert panel.objectName() == "card"
+    assert "QFrame#card" in theme.build(theme.DARK)
 
 
 def test_panel_stays_inside_the_window(app, tmp_path) -> None:

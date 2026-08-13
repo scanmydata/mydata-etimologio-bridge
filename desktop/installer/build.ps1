@@ -215,6 +215,15 @@ Get-Process TimologioDownloader -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "   τερματίζω ανοιχτή εφαρμογή (PID $($_.Id))" -ForegroundColor Yellow
     Stop-Process -Id $_.Id -Force
 }
+# Και η φορητή PHP του dist\: ο server του e-Τιμολόγιο επιβιώνει αν η εφαρμογή
+# (ή ένα τεστ) τερματίσει απότομα, και κρατά κλειδωμένο το php_curl.dll — το
+# build έσκαγε με «Access is denied» χωρίς να λέει ποιος το κρατά.
+Get-Process php -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith((Join-Path $root "dist")) } |
+    ForEach-Object {
+        Write-Host "   τερματίζω ορφανή PHP του dist\ (PID $($_.Id))" -ForegroundColor Yellow
+        Stop-Process -Id $_.Id -Force
+    }
 Start-Sleep -Seconds 1
 Remove-Item "$root\dist\TimologioDownloader" -Recurse -Force -ErrorAction SilentlyContinue
 & $pyi @("installer\timologio.spec", "--noconfirm", "--distpath", "dist", "--workpath", "build")
