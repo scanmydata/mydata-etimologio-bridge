@@ -12,6 +12,7 @@ from typing import Any
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -23,9 +24,15 @@ from PySide6.QtWidgets import (
 
 from ..codes import INVOICE_TYPES, PAYMENT_METHODS, series_for_type, type_label
 from .base import EtimPage, parse_money
+from .pickers import customer_picker, customer_vat_picker, product_picker
 
 _COLS = ["ΑΦΜ", "Επωνυμία", "Περιγραφή", "Ποσότητα", "Τιμή", "ΦΠΑ %", "Αποτέλεσμα"]
 _AFM, _NAME, _DESC, _QTY, _PRICE, _RATE, _RESULT = range(7)
+
+#: myDATA vatCategory id → ποσοστό, ώστε η επιλογή είδους να συμπληρώνει ΦΠΑ.
+_VAT_PERCENT: dict[str, str] = {
+    "1": "24", "2": "13", "3": "6", "4": "17", "5": "9", "6": "4", "7": "0", "8": "0",
+}
 
 
 class BulkPage(EtimPage):
@@ -35,6 +42,9 @@ class BulkPage(EtimPage):
         super().__init__(get_client, run, parent)
         self._loaded = False
         self._all_series: list[dict[str, Any]] = []
+        self._customers: list[dict[str, Any]] = []
+        self._products: list[dict[str, Any]] = []
+        self._categories: list[dict[str, Any]] = []
         box = QVBoxLayout(self)
         # Ίδια περιθώρια με τις υπόλοιπες σελίδες: χωρίς αυτά οι ετικέτες
         # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
@@ -107,18 +117,55 @@ class BulkPage(EtimPage):
 
         self.add_row()
 
-    # --- σειρές ------------------------------------------------------------
+    # --- σειρές, πελάτες, είδη ---------------------------------------------
     def refresh(self) -> None:
-        """Φέρνει τις σειρές μία φορά (cached), για να είναι σωστό το dropdown."""
+        """Φέρνει σειρές, πελάτες και είδη μία φορά — τα θέλουν οι επιλογείς."""
         client = self.client()
         if client is None or self._loaded:
             return
         self._loaded = True
-        self._run(client.series, self._got_series, lambda m: self._status.setText(""))
+        quiet = lambda _m: self._status.setText("")  # noqa: E731
+        self._run(client.series, self._got_series, quiet)
+        self._run(client.customers, self._got_customers, quiet)
+        self._run(client.products, self._got_products, quiet)
+        self._run(client.product_categories, self._got_categories, quiet)
+
+    def invalidate(self) -> None:
+        """Ξεχνά τα φορτωμένα δεδομένα — καλείται όταν αλλάζει εταιρεία."""
+        self._loaded = False
+        self._all_series = []
+        self._customers = []
+        self._products = []
+        self._categories = []
+        self._spread_rows()
+        self.refresh()
 
     def _got_series(self, data: dict[str, Any]) -> None:
         self._all_series = list(data.get("series", []))
         self._fill_series()
+
+    def _got_customers(self, data: dict[str, Any]) -> None:
+        self._customers = list(data.get("customers") or data.get("rows") or [])
+        self._spread_rows()
+
+    def _got_products(self, data: dict[str, Any]) -> None:
+        self._products = list(data.get("products") or data.get("rows") or [])
+        self._spread_rows()
+
+    def _got_categories(self, data: dict[str, Any]) -> None:
+        self._categories = list(
+            data.get("categories") or data.get("product_categories") or data.get("rows") or []
+        )
+
+    def _spread_rows(self) -> None:
+        """Δίνει τα φορτωμένα δεδομένα σε κάθε επιλογέα που υπάρχει ήδη."""
+        for r in range(self._table.rowCount()):
+            for column, rows in (
+                (_AFM, self._customers), (_NAME, self._customers), (_DESC, self._products)
+            ):
+                picker = self._table.cellWidget(r, column)
+                if picker is not None:
+                    picker.set_rows(rows)
 
     def _fill_series(self) -> None:
         code = str(self._type.currentData() or "")
@@ -139,9 +186,113 @@ class BulkPage(EtimPage):
     def add_row(self, afm="", name="", desc="", qty="1", price="0", rate="24") -> None:
         r = self._table.rowCount()
         self._table.insertRow(r)
-        for col, val in ((_AFM, afm), (_NAME, name), (_DESC, desc), (_QTY, qty), (_PRICE, price), (_RATE, rate)):
+        # ΑΦΜ, Επωνυμία και Περιγραφή είναι επιλογείς, όχι ελεύθερο κείμενο: σε
+        # μια παρτίδα 200 γραμμών, ένα πληκτρολογημένο ΑΦΜ ή ένας κωδικός είδους
+        # που δεν υπάρχει απορρίπτεται από την ΑΑΔΕ αφού συμπληρωθούν όλα.
+        vat_picker = customer_vat_picker()
+        name_picker = customer_picker(placeholder="Επωνυμία…")
+        item_picker = product_picker(placeholder="Είδος…")
+        vat_picker.setText(afm)
+        name_picker.setText(name)
+        item_picker.setText(desc)
+        for picker, column in (
+            (vat_picker, _AFM), (name_picker, _NAME), (item_picker, _DESC)
+        ):
+            picker.set_rows(self._products if column == _DESC else self._customers)
+            self._table.setCellWidget(r, column, picker)
+        for picker in (vat_picker, name_picker):
+            picker.picked.connect(lambda row, i=r: self._picked_customer(i, row))
+            picker.create_requested.connect(lambda text, i=r: self._new_customer(i, text))
+        item_picker.picked.connect(lambda row, i=r: self._picked_product(i, row))
+        item_picker.create_requested.connect(lambda text, i=r: self._new_product(i, text))
+        for col, val in ((_QTY, qty), (_PRICE, price), (_RATE, rate)):
             self._table.setItem(r, col, QTableWidgetItem(val))
         self._table.setItem(r, _RESULT, QTableWidgetItem(""))
+
+    # --- επιλογή πελάτη / είδους -------------------------------------------
+    def _picker_at(self, row: int, column: int):
+        return self._table.cellWidget(row, column)
+
+    def _picked_customer(self, row: int, customer: dict[str, Any]) -> None:
+        """Μία επιλογή συμπληρώνει **και** το ΑΦΜ **και** την επωνυμία."""
+        vat = str(customer.get("vat") or customer.get("afm") or "")
+        name = str(customer.get("name") or customer.get("customer_name") or "")
+        for column, value in ((_AFM, vat), (_NAME, name)):
+            picker = self._picker_at(row, column)
+            if picker is not None:
+                picker.setText(value)
+
+    def _picked_product(self, row: int, product: dict[str, Any]) -> None:
+        """Ο κωδικός στη στήλη, και τιμή/ΦΠΑ από τον κατάλογο αν λείπουν."""
+        price = str(product.get("unit_price") or product.get("price") or "").strip()
+        if price and parse_money(self._cell(row, _PRICE)) == 0:
+            item = self._table.item(row, _PRICE)
+            if item is not None:
+                item.setText(price)
+        rate = _VAT_PERCENT.get(str(product.get("vat_category") or product.get("vat") or ""))
+        if rate is not None:
+            item = self._table.item(row, _RATE)
+            if item is not None:
+                item.setText(rate)
+
+    def _new_customer(self, row: int, typed: str) -> None:
+        client = self.client()
+        if client is None:
+            return
+        from .customers import NewCustomerDialog
+
+        prefill = typed if typed.isdigit() and len(typed) == 9 else ""
+        dialog = NewCustomerDialog(self, vat=prefill)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        personal = dialog.is_personal()
+
+        def created(result: dict[str, Any]) -> None:
+            created_row = result.get("customer") or result.get("info") or {}
+            if not (result.get("success") or created_row):
+                self._failed(result.get("error", "Αποτυχία δημιουργίας πελάτη."))
+                return
+            if personal:
+                created_row = {**fields, "vat": ""}
+            else:
+                created_row = {**created_row, "vat": created_row.get("vat") or fields.get("vat", "")}
+            self._picked_customer(row, created_row)
+            self._status.setText("Ο πελάτης δημιουργήθηκε και μπήκε στη γραμμή.")
+            self._run(client.customers, self._got_customers, lambda _m: None)
+
+        self._status.setText("Δημιουργία πελάτη…")
+        call = (
+            (lambda: client.create_personal_customer(**fields))
+            if personal
+            else (lambda: client.lookup_afm(fields["vat"]))
+        )
+        self._run(call, created, self._failed)
+
+    def _new_product(self, row: int, typed: str) -> None:
+        client = self.client()
+        if client is None:
+            return
+        from .catalog import NewProductDialog
+
+        dialog = NewProductDialog(self, categories=self._categories, code=typed)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        code = fields["product_code"]
+
+        def created(result: dict[str, Any]) -> None:
+            if not result.get("success"):
+                self._failed(result.get("error", "Αποτυχία δημιουργίας είδους."))
+                return
+            picker = self._picker_at(row, _DESC)
+            if picker is not None:
+                picker.setText(code)
+            self._status.setText(f"Το είδος {code} δημιουργήθηκε.")
+            self._run(client.products, self._got_products, lambda _m: None)
+
+        self._status.setText("Δημιουργία είδους…")
+        self._run(lambda: client.create_product(**fields), created, self._failed)
 
     def _remove_row(self) -> None:
         r = self._table.currentRow()
@@ -151,6 +302,10 @@ class BulkPage(EtimPage):
             self._table.removeRow(r)
 
     def _cell(self, r: int, c: int) -> str:
+        # Οι τρεις πρώτες στήλες είναι widget (επιλογείς), όχι κελιά κειμένου.
+        picker = self._table.cellWidget(r, c)
+        if picker is not None:
+            return picker.text().strip()
         item = self._table.item(r, c)
         return item.text().strip() if item else ""
 

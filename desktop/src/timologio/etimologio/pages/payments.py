@@ -35,7 +35,8 @@ from PySide6.QtWidgets import (
 
 from ..codes import PAYMENT_LABELS as _METHODS
 from ..codes import PAYMENT_METHODS_CASH
-from .base import EtimPage, fmt_money, parse_money
+from . import ui
+from .base import ROW_ROLE, EtimPage, fmt_money, parse_money
 from .pickers import customer_picker
 
 _PAY_COLS = [("Ημ/νία", "pay_date"), ("Ποσό", "amount"), ("Τρόπος", "method"),
@@ -153,6 +154,12 @@ class PaymentsPage(EtimPage):
         self._pay_table.verticalHeader().setVisible(False)
         self._pay_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         w.addWidget(self._pay_table, 1)
+        # Ταξινόμηση, φίλτρα και «νεότερες πρώτα» — όπως κάθε λίστα του
+        # Downloader. Οι πληρωμές ήταν ο μόνος πίνακας χωρίς τίποτα από αυτά.
+        self._pay_filter = ui.make_sortable(
+            self._pay_table, "payments/ledger", default_column=0,
+            filter_columns=list(range(len(_PAY_COLS))),
+        )
         container = _wrap(w)
         return container
 
@@ -171,19 +178,32 @@ class PaymentsPage(EtimPage):
                 lambda _m: None,
             )
 
+    def invalidate(self) -> None:
+        """Αλλαγή εταιρείας: το πελατολόγιο της προηγούμενης δεν ισχύει."""
+        self._customers = []
+        self._payment_rows = []
+        self._pay_table.setRowCount(0)
+
     def _fill_payments(self, data: dict) -> None:
         rows = data.get("payments", [])
         self._payment_rows = list(rows)
+        self._pay_table.setSortingEnabled(False)
         self._pay_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, (_, key) in enumerate(_PAY_COLS):
                 if key == "method":
-                    text = _METHODS.get(str(row.get("method", "")), str(row.get("method", "")))
+                    item = ui.cell(_METHODS.get(str(row.get("method", "")), str(row.get("method", ""))))
                 elif key == "amount":
-                    text = fmt_money(parse_money(row.get("amount")))
+                    item = ui.money_cell(fmt_money(parse_money(row.get("amount"))))
+                elif key == "pay_date":
+                    # Η βάση κρατά ISO· ο χρήστης θέλει dd/MM/yyyy.
+                    item = ui.date_cell(str(row.get(key, "")))
                 else:
-                    text = str(row.get(key, ""))
-                self._pay_table.setItem(r, c, QTableWidgetItem(text))
+                    item = ui.cell(str(row.get(key, "")))
+                if c == 0:
+                    item.setData(ROW_ROLE, r)
+                self._pay_table.setItem(r, c, item)
+        self._pay_table.setSortingEnabled(True)
         self._status.setText(f"{len(rows)} πληρωμές")
 
     def _new_payment(self) -> None:
@@ -199,7 +219,11 @@ class PaymentsPage(EtimPage):
 
     def _delete_payment(self) -> None:
         client = self.client()
-        index = self._pay_table.currentRow()
+        # Μέσω του δείκτη γραμμής: μετά από ταξινόμηση η οπτική σειρά δεν είναι
+        # η σειρά φόρτωσης, και η διαγραφή θα έσβηνε άλλη πληρωμή.
+        item = self._pay_table.item(self._pay_table.currentRow(), 0)
+        index = item.data(ROW_ROLE) if item is not None else None
+        index = self._pay_table.currentRow() if index is None else int(index)
         if client is None or not (0 <= index < len(self._payment_rows)):
             self._status.setText("Διάλεξε πρώτα μια πληρωμή.")
             return

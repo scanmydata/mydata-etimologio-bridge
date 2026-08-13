@@ -39,7 +39,7 @@ class SchedulePage(ListPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(
             get_client, run, title="Προγραμματισμός", columns=self._COLS,
-            rows_key="jobs", stretch_col=1, parent=parent,
+            rows_key="jobs", stretch_col=1, newest_first=0, parent=parent,
         )
         self.toolbar.insertWidget(
             self.toolbar.count() - 1,

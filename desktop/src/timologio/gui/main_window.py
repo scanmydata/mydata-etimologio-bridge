@@ -22,7 +22,7 @@ from PySide6.QtCore import (
     QThread,
     QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -1122,13 +1122,32 @@ class MainWindow(QMainWindow):
         self.etimologio.start()
         self.menu.set_mode("etimologio")
         self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
+        self._set_mode_icon(etimologio=True)
         self._show_page("etimologio")
 
     def _leave_etimologio(self) -> None:
         """Επιστροφή στη Λήψη Παραστατικών."""
         self.menu.set_mode("downloader")
         self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self._set_mode_icon(etimologio=False)
         self._show_page("clients")
+
+    def _set_mode_icon(self, *, etimologio: bool) -> None:
+        """Το εικονίδιο του παραθύρου ακολουθεί την ενεργή εφαρμογή.
+
+        Ο τίτλος και το μενού άλλαζαν ήδη· το εικονίδιο έμενε του Downloader,
+        οπότε στη γραμμή εργασιών και στο alt-tab οι δύο εφαρμογές ήταν
+        δυσδιάκριτες.
+        """
+        from .icons import logo_pixmap
+
+        icon = QIcon()
+        for size in (16, 24, 32, 48, 64, 128):
+            pixmap = logo_pixmap(size, etimologio=etimologio)
+            if not pixmap.isNull():
+                icon.addPixmap(pixmap)
+        if not icon.isNull():
+            self.setWindowIcon(icon)
 
     def _choose_app(self, which: str) -> None:
         """Επιλογή από την αρχική οθόνη."""

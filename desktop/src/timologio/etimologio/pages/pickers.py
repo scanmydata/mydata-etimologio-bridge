@@ -221,6 +221,23 @@ def customer_picker(*, placeholder: str = "Αναζήτηση με επωνυμ�
     )
 
 
+def customer_vat_picker(*, placeholder: str = "ΑΦΜ…") -> SearchPicker:
+    """Ο ίδιος επιλογέας πελάτη, αλλά στο πεδίο μένει το **ΑΦΜ**.
+
+    Χρειάζεται στη Μαζική, όπου η στήλη είναι το ΑΦΜ: με τον κανονικό επιλογέα
+    θα έγραφε την επωνυμία στη στήλη του ΑΦΜ.
+    """
+    return SearchPicker(
+        placeholder=placeholder,
+        create_label="➕  Νέος πελάτης…",
+        label=lambda row: str(row.get("vat") or row.get("afm") or ""),
+        detail=lambda row: str(row.get("name") or row.get("customer_name") or ""),
+        haystack=lambda row: " ".join(
+            str(row.get(k) or "") for k in ("vat", "afm", "name", "customer_name", "code", "city")
+        ),
+    )
+
+
 def product_picker(*, placeholder: str = "Είδος ή κωδικός…") -> SearchPicker:
     """Ο επιλογέας είδους. Στο πεδίο μπαίνει ο ΚΩΔΙΚΟΣ — αυτό στέλνεται στην
     ΑΑΔΕ — ενώ η περιγραφή φαίνεται δίπλα του στη λίστα."""

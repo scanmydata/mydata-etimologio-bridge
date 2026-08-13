@@ -193,9 +193,7 @@ class EtimologioShell(QWidget):
         # Κάθε ← περνά από το ιστορικό, ώστε να γυρίζει εκεί από όπου ήρθε ο
         # χρήστης — όχι πάντα στην αρχική.
         self._customers.open_card.connect(self._show_card)
-        self._notifications.unread_changed.connect(
-            lambda n: ui.set_tile_value(self._kpi_unread, str(n))
-        )
+        self._notifications.unread_changed.connect(self.set_unread)
         self._settings.mode_change_requested.connect(self._switch_backend)
         self._drafts.open_in_issue.connect(self._edit_draft)
         #: Section key → page, used for both navigation and construction.
@@ -236,6 +234,7 @@ class EtimologioShell(QWidget):
         for sequence, slot in (
             (QKeySequence("Alt+Left"), self.go_back),
             (QKeySequence(Qt.Key.Key_Escape), self._escape),
+            (QKeySequence("Ctrl+K"), self.open_palette),
         ):
             shortcut = QShortcut(sequence, self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -426,6 +425,13 @@ class EtimologioShell(QWidget):
         row.addWidget(ui.button("＋", self._add_company, tip="Προσθήκη εταιρείας ΑΑΔΕ"))
         self._mode_label = ui.muted("")
         row.addWidget(self._mode_label)
+        # Καμπανάκι: ο αριθμός των αδιάβαστων ήταν ορατός μόνο στην αρχική, οπότε
+        # μια έκδοση που έγινε ενώ δούλευες αλλού περνούσε απαρατήρητη.
+        self._bell = ui.button("🔔", lambda: self.open_section("notifications"),
+                               tip="Ειδοποιήσεις")
+        self._bell.setFixedWidth(52)
+        row.addWidget(self._bell)
+        row.addWidget(ui.button("🔍", self.open_palette, tip="Αναζήτηση (Ctrl+K)"))
         row.addWidget(ui.button("🤖 Βοηθός", self.toggle_assistant, tip="Ψηφιακός βοηθός (Ctrl+B)"))
         row.addWidget(ui.button("Έξοδος", self._do_logout, icon_name="lock"))
         bar.hide()          # φαίνεται μόλις γίνει η σύνδεση
@@ -512,11 +518,7 @@ class EtimologioShell(QWidget):
             )
 
         _run(lambda: self._client.statistics("month", cached=True), stats_ok, lambda m: None)
-        _run(
-            self._client.notif_count,
-            lambda n: ui.set_tile_value(self._kpi_unread, str(n)),
-            lambda m: None,
-        )
+        _run(self._client.notif_count, self.set_unread, lambda m: None)
 
     def _enter_home(self) -> None:
         self._mode_label.setText(
@@ -613,6 +615,30 @@ class EtimologioShell(QWidget):
         if key not in self._NO_AUTOLOAD and hasattr(page, "refresh"):
             page.refresh()
 
+    # --- καμπανάκι & παλέτα -------------------------------------------------
+    def set_unread(self, count: int) -> None:
+        """Ο αριθμός των αδιάβαστων, πάνω στο καμπανάκι."""
+        number = int(count or 0)
+        self._bell.setText(f"🔔 {number}" if number else "🔔")
+        self._bell.setToolTip(
+            f"{number} νέες ειδοποιήσεις" if number else "Ειδοποιήσεις"
+        )
+        ui.set_tile_value(self._kpi_unread, str(number))
+
+    def open_palette(self) -> None:
+        """Ctrl+K: μία γραμμή για πελάτη ή ενότητα."""
+        if self._client is None:
+            return
+        from .pages.palette import CommandPalette
+
+        palette = CommandPalette(
+            self, sections=[(k, label) for k, label, _d, _i in _SECTIONS],
+            get_client=lambda: self._client, run=_run,
+        )
+        palette.open_section.connect(self.open_section)
+        palette.open_customer.connect(self._show_card)
+        palette.exec()
+
     # --- ψηφιακός βοηθός ----------------------------------------------------
     def toggle_assistant(self) -> None:
         """Ανοίγει/κλείνει τον βοηθό. Χωρίς σύνδεση δεν έχει τι να κάνει."""
@@ -700,6 +726,9 @@ class EtimologioShell(QWidget):
             self._history.append(current)
         self._crumb.setText("Καρτέλα πελάτη")
         self._back_btn.setEnabled(True)
+        # Το πελατολόγιο ταξιδεύει μαζί: ο διάλογος «+ Πληρωμή» της καρτέλας
+        # άνοιγε με άδειο επιλογέα πελάτη.
+        self._card.set_customers(self._customers.rows())
         self._card.set_customer(customer)
         self._stack.setCurrentWidget(self._card)
 

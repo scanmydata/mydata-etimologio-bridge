@@ -117,6 +117,16 @@ function localdb(): \PDO {
     // Upgrade path for DBs created before deliv_meta existed.
     try { $tr("ALTER TABLE customer_meta ADD COLUMN deliv_meta TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
 
+    // Θεραπεία παλιών πληρωμών: γράφονταν «dd/MM/yyyy» ενώ κάθε φίλτρο συγκρίνει
+    // ISO, οπότε δεν εμφανίζονταν ποτέ σε καρτέλα με διάστημα. Μετατρέπονται μία
+    // φορά· οι ήδη σωστές δεν ταιριάζουν στο LIKE και μένουν άθικτες.
+    try {
+        $tr("UPDATE payments
+                SET pay_date = substr(pay_date, 7, 4) || '-' || substr(pay_date, 4, 2)
+                               || '-' || substr(pay_date, 1, 2)
+              WHERE pay_date LIKE '__/__/____'");
+    } catch (\Throwable $e) {}
+
     // --- Auth: application users (master admin + business accounts) ----------
     // email is the login identifier (kept plaintext so it can be queried).
     // role: 'master' | 'business'.  status: 'pending' | 'active' | 'disabled'.
@@ -387,6 +397,21 @@ function payments_list(string $accountVat, string $customerVat = '', string $fro
     return array_map('payment_row', $st->fetchAll());
 }
 
+/**
+ * Ημερομηνία πληρωμής σε ISO (yyyy-mm-dd) — ό,τι κι αν έστειλε ο πελάτης.
+ *
+ * Η στήλη `pay_date` συγκρίνεται ως ΚΕΙΜΕΝΟ σε κάθε φίλτρο διαστήματος, οπότε
+ * μια αποθηκευμένη «13/08/2026» δεν είναι απλώς άσχημη: είναι αόρατη
+ * («13/08/2026» >= «2026-01-01» είναι ψευδές). Ζει εδώ, στο μοναδικό σημείο
+ * εισαγωγής, ώστε να μην μπορεί να την προσπεράσει κανένας καλών.
+ */
+function payment_date_iso(string $value): string {
+    $value = trim($value);
+    if (preg_match('#^(\d{2})/(\d{2})/(\d{4})#', $value, $m)) return "$m[3]-$m[2]-$m[1]";
+    if (preg_match('#^(\d{4})-(\d{2})-(\d{2})#', $value, $m)) return "$m[1]-$m[2]-$m[3]";
+    return $value !== '' ? $value : date('Y-m-d');
+}
+
 function payment_add(string $accountVat, array $d): int {
     return db_insert("
         INSERT INTO payments (account_vat, customer_vat, customer_code, customer_name, amount, method, pay_date, mark, notes)
@@ -398,7 +423,7 @@ function payment_add(string $accountVat, array $d): int {
         ':cn'  => enc(trim($d['customer_name'] ?? '')),
         ':amt' => enc_num(round((float)($d['amount'] ?? 0), 2)),
         ':m'   => (int)($d['method'] ?? 3),
-        ':dt'  => trim($d['pay_date'] ?? date('Y-m-d')),
+        ':dt'  => payment_date_iso((string)($d['pay_date'] ?? '')),
         ':mk'  => trim($d['mark'] ?? ''),
         ':nt'  => enc(trim($d['notes'] ?? '')),
     ]);

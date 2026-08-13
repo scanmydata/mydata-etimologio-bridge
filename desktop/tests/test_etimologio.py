@@ -113,7 +113,31 @@ class FakeClient:
         return {
             "success": True,
             "payments": [
-                {"pay_date": "10/08/2026", "amount": "124,00", "method": "3", "mark": "", "notes": "μετρητά"},
+                {"pay_date": "2026-08-10", "amount": "124,00", "method": "3", "mark": "", "notes": "μετρητά"},
+            ],
+        }
+
+    def ledger(self, buyer_vat, **_):
+        """Ό,τι επιστρέφει το `buildLedger`: μία ενιαία κίνηση με υπόλοιπο.
+
+        Σημείωση: οι πληρωμές έρχονται σε ISO (έτσι τις κρατά η τοπική βάση) και
+        τα παραστατικά σε ελληνική μορφή — η καρτέλα πρέπει να τα δείξει ενιαία.
+        """
+        self.ledger_vat = buyer_vat
+        return {
+            "success": True,
+            "customer_vat": buyer_vat,
+            "total_invoiced": 372.0,
+            "total_paid": 124.0,
+            "balance": 248.0,
+            "opening_balance": 0.0,
+            "entries": [
+                {"kind": "invoice", "date": "01/08/2026", "mark": "400001", "type": "2.1",
+                 "series": "A", "aa": "1", "debit": 124.0, "credit": 0.0, "balance": 124.0},
+                {"kind": "invoice", "date": "05/08/2026", "mark": "400002", "type": "2.1",
+                 "series": "A", "aa": "2", "debit": 248.0, "credit": 0.0, "balance": 372.0},
+                {"kind": "payment", "date": "2026-08-10", "payment_id": 7, "method": 3,
+                 "notes": "μετρητά", "debit": 0.0, "credit": 124.0, "balance": 248.0},
             ],
         }
 
@@ -241,15 +265,20 @@ def test_customers_search_routes_vat_vs_name(app) -> None:
     assert fake.customer_kwargs == {"name": "ΑΛΦΑ"}
 
 
-def test_customers_open_card_emits_row(app) -> None:
+def test_customers_open_card_emits_the_row_the_user_sees(app) -> None:
+    """Ο πίνακας ταξινομείται — η επιλογή πρέπει να ακολουθεί την ΟΠΤΙΚΗ γραμμή."""
     fake = FakeClient()
     page = CustomersPage(lambda: fake, sync_run)
     page.refresh()
     captured: list[dict] = []
     page.open_card.connect(captured.append)
-    page._table.setCurrentCell(0, 0)
-    page._open_selected()
-    assert captured and captured[0]["vat"] == "094000000"
+
+    for visual in range(page._table.rowCount()):
+        captured.clear()
+        page._table.setCurrentCell(visual, 0)
+        page._open_selected()
+        shown_name = page._table.item(visual, 2).text()
+        assert captured and captured[0]["name"] == shown_name
 
 
 def test_customers_created_triggers_refresh(app) -> None:
@@ -262,25 +291,50 @@ def test_customers_created_triggers_refresh(app) -> None:
 
 # --- Καρτέλα (customer card) -------------------------------------------------
 
-def test_card_fills_and_computes_balance(app) -> None:
+def test_card_shows_one_ledger_with_a_running_balance(app) -> None:
+    """Χρεώσεις και πιστώσεις σε έναν πίνακα — δύο καρτέλες δεν είναι καρτέλα."""
     fake = FakeClient()
     card = CustomerCard(lambda: fake, sync_run)
     card.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
-    assert fake.invoice_vat == "094000000"
-    assert fake.payment_vat == "094000000"
-    assert card._invoices.rowCount() == 2
-    assert card._payments.rowCount() == 1
+
+    assert fake.ledger_vat == "094000000"
+    assert card._table.rowCount() == 3                    # 2 παραστατικά + 1 πληρωμή
     # Τιμολόγια 124+248 = 372· Πληρωμές 124· Υπόλοιπο 248.
-    assert card._inv_total == pytest.approx(372.0)
-    assert card._pay_total == pytest.approx(124.0)
     assert "248,00" in card._summary.text()
+    # Τελευταία γραμμή: η πληρωμή, με πίστωση και τρέχον υπόλοιπο.
+    assert card._table.item(2, 3).text() == "124,00"
+    assert card._table.item(2, 4).text() == "248,00"
+    assert "Πληρωμή" in card._table.item(2, 1).text()
+
+
+def test_card_normalises_both_date_formats(app) -> None:
+    """Η ΑΑΔΕ δίνει dd/MM/yyyy, η τοπική βάση ISO — η στήλη δείχνει ένα πράγμα."""
+    card = CustomerCard(lambda: FakeClient(), sync_run)
+    card.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
+    shown = [card._table.item(r, 0).text() for r in range(card._table.rowCount())]
+    assert shown == ["01/08/2026", "05/08/2026", "10/08/2026"]
+
+
+def test_card_defaults_to_the_whole_history(app) -> None:
+    """Με προεπιλογή «φέτος», 11 στους 12 πελάτες έβγαζαν άδεια καρτέλα."""
+    card = CustomerCard(lambda: FakeClient(), sync_run)
+    assert card._period.currentText() == "Όλα"
+    assert card._from.date().year() <= 2019
+
+
+def test_card_invoice_rows_carry_what_the_pdf_fetch_needs(app) -> None:
+    card = CustomerCard(lambda: FakeClient(), sync_run)
+    card.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
+    rows = card.invoice_rows()
+    assert [r["mark"] for r in rows] == ["400001", "400002"]   # η πληρωμή δεν είναι PDF
+    assert rows[0]["issue_date"] == "01/08/2026" and rows[0]["series"] == "A"
 
 
 def test_card_without_vat_shows_note(app) -> None:
     fake = FakeClient()
     card = CustomerCard(lambda: fake, sync_run)
     card.set_customer({"name": "Ιδιώτης χωρίς ΑΦΜ"})
-    assert card._invoices.rowCount() == 0
+    assert card._table.rowCount() == 0
     assert "ΑΦΜ" in card._status.text()
 
 
@@ -519,6 +573,34 @@ def test_bulk_page_builds_items(app) -> None:
     assert item["afm"] == "094039270"
     assert item["lines"][0]["rate"] == 0.24  # fraction on the wire
     assert item["lines"][0]["qty"] == 2.0
+
+
+def test_bulk_row_pickers_fill_both_customer_columns(app) -> None:
+    """Ένα κλικ στον πελάτη γεμίζει ΑΦΜ **και** επωνυμία — δύο στήλες, μία επιλογή."""
+    page = BulkPage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+    vat_picker = page._table.cellWidget(0, 0)
+    name_picker = page._table.cellWidget(0, 1)
+    item_picker = page._table.cellWidget(0, 2)
+    assert vat_picker is not None and name_picker is not None and item_picker is not None
+    assert len(vat_picker.rows()) == 2                  # το πελατολόγιο έφτασε
+    assert len(item_picker.rows()) == 2                 # και ο κατάλογος ειδών
+
+    # Πρώτη γραμμή της λίστας: δημιουργία νέου.
+    vat_picker.show_popup()
+    assert vat_picker._popup.item(0).text().startswith("➕")
+    vat_picker._chose(vat_picker._popup.item(1))
+    assert vat_picker.text() == "094039270"
+    assert name_picker.text() == "ΞΕΝΤΕ ΑΕ"
+
+    item_picker.show_popup()
+    item_picker._chose(item_picker._popup.item(1))      # ΥΠ001, τιμή 150, ΦΠΑ 24
+    assert item_picker.text() == "ΥΠ001"
+    assert parse_money(page._table.item(0, 4).text()) == pytest.approx(150.0)
+    assert page._table.item(0, 5).text() == "24"
+
+    item = page.build_items()[0]
+    assert item["afm"] == "094039270" and item["lines"][0]["code"] == "ΥΠ001"
 
 
 def test_bulk_page_writes_results_back(app) -> None:
@@ -1267,8 +1349,11 @@ def test_drafts_checkbox_selection(app) -> None:
     page._toggle_all()
     assert page.checked_rows() == []
 
+    # Τα πρόχειρα ανοίγουν με τα νεότερα πρώτα, οπότε η δεύτερη ΟΠΤΙΚΗ γραμμή
+    # είναι το παλαιότερο (01/08 = T1).
+    assert page.row_at(0)["temp_id"] == "T2"
     page.table.item(1, 0).setCheckState(Qt.CheckState.Checked)
-    assert [r["temp_id"] for r in page.checked_rows()] == ["T2"]
+    assert [r["temp_id"] for r in page.checked_rows()] == ["T1"]
 
 
 def test_drafts_open_in_issue_carries_the_temp_id(app) -> None:
@@ -1544,3 +1629,47 @@ def test_manual_is_built_once_and_reused(app, tmp_path) -> None:
 
     mtime = first.stat().st_mtime_ns
     assert ensure_manual(tmp_path).stat().st_mtime_ns == mtime   # δεν ξαναχτίζεται
+
+
+# --- Παλέτα εντολών (Ctrl+K) -------------------------------------------------
+
+def test_palette_finds_sections_locally(app) -> None:
+    """Δεν φεύγει ερώτημα δικτύου για δεκατέσσερις σταθερές λέξεις."""
+    from timologio.etimologio.pages.palette import CommandPalette
+
+    sections = [("issue", "Έκδοση"), ("series", "Σειρές"), ("drafts", "Πρόχειρα")]
+    palette = CommandPalette(None, sections=sections, get_client=lambda: None, run=sync_run)
+    assert palette.results.count() == 3
+
+    palette.input.setText("σειρ")
+    palette._typed("σειρ")                       # χωρίς τόνους, όπως ο βοηθός
+    labels = [palette.results.item(i).text().splitlines()[0]
+              for i in range(palette.results.count())]
+    assert labels == ["→  Σειρές"]
+
+    chosen: list[str] = []
+    palette.open_section.connect(chosen.append)
+    palette._accept_current()
+    assert chosen == ["series"]
+
+
+def test_palette_lists_customers_from_the_backend(app) -> None:
+    from timologio.etimologio.pages.palette import CommandPalette
+
+    fake = FakeClient()
+    palette = CommandPalette(None, sections=[], get_client=lambda: fake, run=sync_run)
+    palette.input.setText("ΑΛΦΑ")
+    palette._search_customers()
+    assert fake.customer_kwargs == {"name": "ΑΛΦΑ"}
+    assert palette.results.count() == 2
+    assert "ΑΛΦΑ ΑΕ" in palette.results.item(0).text()
+
+    opened: list[dict] = []
+    palette.open_customer.connect(opened.append)
+    palette._accept_current()
+    assert opened[0]["vat"] == "094000000"
+
+    # 9ψήφιο → αναζήτηση με ΑΦΜ, όχι με επωνυμία.
+    palette.input.setText("094000000")
+    palette._search_customers()
+    assert fake.customer_kwargs == {"vat": "094000000"}

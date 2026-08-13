@@ -42,7 +42,7 @@ class DraftsPage(ListPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(
             get_client, run, title="Πρόχειρα", columns=self._COLS,
-            rows_key="temp_invoices", stretch_col=2, parent=parent,
+            rows_key="temp_invoices", stretch_col=2, newest_first=1, parent=parent,
         )
         self.table.setColumnWidth(0, 34)
         self.table.doubleClicked.connect(lambda *_: self._preview_selected())

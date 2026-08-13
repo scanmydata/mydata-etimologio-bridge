@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .base import EtimPage
+from . import ui
+from .base import ROW_ROLE, EtimPage
 
 #: Column order for the customers table: (header, source key).
 _COLS: list[tuple[str, str]] = [
@@ -260,6 +261,11 @@ class CustomersPage(EtimPage):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._table.doubleClicked.connect(lambda *_: self._open_selected())
         box.addWidget(self._table, 1)
+        # Ταξινόμηση, μετακινούμενες στήλες που θυμούνται πλάτη, και φίλτρα ανά
+        # στήλη — η ίδια υποδομή με τους πίνακες του Downloader.
+        self._filter = ui.make_sortable(
+            self._table, "customers", filter_columns=list(range(len(_COLS)))
+        )
 
         bottom = QHBoxLayout()
         self._status = QLabel("")
@@ -287,15 +293,26 @@ class CustomersPage(EtimPage):
         kwargs = {"vat": term} if term.isdigit() and len(term) >= 8 else {"name": term}
         self._run(lambda: client.customers(**kwargs), self._fill, self._failed)
 
+    def rows(self) -> list[dict[str, Any]]:
+        """Το φορτωμένο πελατολόγιο — το δανείζεται η Καρτέλα για τον επιλογέα."""
+        return list(self._rows)
+
     def _fill(self, data: dict[str, Any]) -> None:
         rows = data.get("customers")
         if rows is None:
             rows = data.get("rows", [])
         self._rows = list(rows)
+        # Η ταξινόμηση κλείνει όσο γεμίζει ο πίνακας: αλλιώς κάθε setItem
+        # ξαναταξινομεί και οι γραμμές μπερδεύονται με τα _rows.
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(len(self._rows))
         for r, row in enumerate(self._rows):
             for c, (_, key) in enumerate(_COLS):
-                self._table.setItem(r, c, QTableWidgetItem(_cust_value(row, key)))
+                item = QTableWidgetItem(_cust_value(row, key))
+                if c == 0:
+                    item.setData(ROW_ROLE, r)
+                self._table.setItem(r, c, item)
+        self._table.setSortingEnabled(True)
         self._status.setText(f"{len(self._rows)} πελάτες")
 
     def _failed(self, msg: str) -> None:
@@ -303,10 +320,14 @@ class CustomersPage(EtimPage):
 
     # --- actions -----------------------------------------------------------
     def _selected_row(self) -> dict[str, Any] | None:
-        idx = self._table.currentRow()
-        if 0 <= idx < len(self._rows):
-            return self._rows[idx]
-        return None
+        # Μέσω του δείκτη γραμμής: μετά από ταξινόμηση η οπτική σειρά δεν είναι
+        # η σειρά φόρτωσης, και η «Διαγραφή» θα έσβηνε άλλον πελάτη.
+        item = self._table.item(self._table.currentRow(), 0)
+        if item is None:
+            return None
+        index = item.data(ROW_ROLE)
+        index = self._table.currentRow() if index is None else int(index)
+        return self._rows[index] if 0 <= index < len(self._rows) else None
 
     def _open_selected(self) -> None:
         row = self._selected_row()

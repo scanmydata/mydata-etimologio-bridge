@@ -30,7 +30,7 @@ from ...gui.icons import icon
 from ...gui.table_filter import TableColumnFilter
 from ...gui.theme import CURRENT
 from ...gui.widgets import persist_header
-from .base import parse_money
+from .base import date_key, fmt_date, parse_money
 
 
 def muted(text: str = "") -> QLabel:
@@ -192,11 +192,16 @@ def money_cell(text: str) -> QTableWidgetItem:
 
 
 def date_cell(text: str) -> QTableWidgetItem:
-    """Ταξινόμηση κατά (έτος, μήνας, ημέρα) από μορφή dd/mm/yyyy."""
-    parts = str(text or "").split("/")
-    if len(parts) == 3 and all(p.strip().isdigit() for p in parts):
-        return cell(text, (int(parts[2]), int(parts[1]), int(parts[0])))
-    return cell(text, text)
+    """Ταξινόμηση κατά (έτος, μήνας, ημέρα) — δέχεται dd/MM/yyyy και ISO.
+
+    Το κείμενο εμφανίζεται πάντα σε ελληνική μορφή: η καρτέλα ανακατεύει
+    ημερομηνίες της ΑΑΔΕ με ημερομηνίες της τοπικής βάσης, και δύο μορφές στην
+    ίδια στήλη είναι απλώς λάθος.
+    """
+    key = date_key(text)
+    if key == (0, 0, 0):
+        return cell(str(text or ""), str(text or ""))
+    return cell(fmt_date(text), key)
 
 
 def make_sortable(
@@ -204,20 +209,45 @@ def make_sortable(
     key: str,
     *,
     default_column: int | None = None,
+    default_order: Qt.SortOrder = Qt.SortOrder.DescendingOrder,
     filter_columns: list[int] | None = None,
 ) -> TableColumnFilter | None:
     """Ταξινόμηση, μετακινούμενες στήλες που θυμούνται πλάτη, και φίλτρα.
 
     Η ίδια υποδομή που χρησιμοποιεί ο Downloader — δεν χρησιμοποιούνταν πουθενά
     στο e-Τιμολόγιο, οπότε κανένας πίνακας δεν ταξινομούνταν.
+
+    Ο δείκτης ταξινόμησης ορίζεται **ρητά**: με ενεργή ταξινόμηση το Qt ξεκινά
+    από φθίνουσα στην πρώτη στήλη, οπότε το πελατολόγιο άνοιγε ανάποδα χωρίς να
+    το έχει ζητήσει κανείς. Όποιος θέλει «τα νεότερα πρώτα» το λέει με
+    ``default_column`` + φθίνουσα σειρά.
+
+    Το «ταξινόμησε ο χρήστης» κρατιέται σε **δική μας** σημαία. Το
+    ``restoreState`` επαναφέρει και τον δείκτη ταξινόμησης, οπότε το να το
+    θεωρήσεις επιλογή του χρήστη σημαίνει ότι ένα απλό σύρσιμο στήλης κλείδωνε
+    για πάντα τη φθίνουσα προεπιλογή του Qt.
+
+    **Η σειρά των βημάτων μετράει.** Το φίλτρο στήλης ΑΝΤΙΚΑΘΙΣΤΑ την κεφαλίδα
+    (``setHorizontalHeader``), οπότε ό,τι έχει επαναφέρει πριν το
+    ``persist_header`` — πλάτη, σειρά στηλών, δείκτης ταξινόμησης — πετιέται
+    μαζί με την παλιά κεφαλίδα. Οι πίνακες του Downloader φτιάχνουν το φίλτρο
+    πρώτα, για ακριβώς αυτόν τον λόγο.
     """
+    prefs = QSettings()
+    sorted_key = f"etimologio/{key}/sorted"
     table.setSortingEnabled(True)
-    persist_header(table, QSettings(), f"etimologio/{key}")
-    if default_column is not None:
-        table.sortItems(default_column, Qt.SortOrder.DescendingOrder)
-    if filter_columns:
-        return TableColumnFilter(table, filter_columns)
-    return None
+    column_filter = TableColumnFilter(table, filter_columns) if filter_columns else None
+    persist_header(table, prefs, f"etimologio/{key}")
+    header = table.horizontalHeader()
+    if not bool(prefs.value(sorted_key, False, type=bool)):
+        column = default_column if default_column is not None else 0
+        order = default_order if default_column is not None else Qt.SortOrder.AscendingOrder
+        header.setSortIndicator(column, order)
+        table.sortItems(column, order)
+    # Σύνδεση ΜΕΤΑ την προεπιλογή: αλλιώς η ίδια μας η κλήση θα καταγραφόταν ως
+    # επιλογή του χρήστη.
+    header.sortIndicatorChanged.connect(lambda *_: prefs.setValue(sorted_key, True))
+    return column_filter
 
 
 def page(*, margins: tuple[int, int, int, int] = (16, 14, 16, 14), spacing: int = 12):

@@ -30,7 +30,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .base import EtimPage, fmt_money, parse_money
+from . import ui
+from .base import ROW_ROLE, EtimPage, fmt_money, parse_money
 from .pickers import customer_picker
 
 #: Στήλες του πίνακα παραστατικών προς πίστωση.
@@ -108,6 +109,12 @@ class CreditNotePage(EtimPage):
         )
         self._table.doubleClicked.connect(lambda *_: self._pick_selected())
         box.addWidget(self._table, 1)
+        # Ταξινόμηση και φίλτρα, με τα νεότερα πρώτα: το παραστατικό που θέλει
+        # κανείς να ακυρώσει είναι σχεδόν πάντα πρόσφατο.
+        self._filter = ui.make_sortable(
+            self._table, "credit/invoices", default_column=0,
+            filter_columns=list(range(len(_INV_COLS))),
+        )
 
         pick_row = QHBoxLayout()
         pick_row.addStretch(1)
@@ -189,6 +196,10 @@ class CreditNotePage(EtimPage):
         # Χωρίς ΜΑΡΚ δεν υπάρχει τι να πιστωθεί — τα πρόχειρα δεν ανήκουν εδώ.
         rows = [r for r in data.get("invoices", []) if r.get("mark")]
         self._invoices = rows
+        # Η ταξινόμηση κλείνει όσο γεμίζει ο πίνακας, και κάθε γραμμή κουβαλά τη
+        # θέση της στα δεδομένα: αλλιώς μετά από ταξινόμηση θα πιστωνόταν άλλο
+        # παραστατικό από αυτό που βλέπει ο χρήστης.
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             values = {
@@ -196,14 +207,28 @@ class CreditNotePage(EtimPage):
                 "_series_aa": f"{row.get('series', '')} / {row.get('aa', '')}",
                 "_buyer": f"{row.get('buyer_name', '')} ({row.get('buyer_vat', '')})".strip(),
             }
-            for c, (_, key) in enumerate(_INV_COLS):
-                self._table.setItem(r, c, QTableWidgetItem(str(values.get(key, ""))))
+            for c, (header, key) in enumerate(_INV_COLS):
+                text = str(values.get(key, ""))
+                if header == "Ημ/νία":
+                    item = ui.date_cell(text)
+                elif header in ("Καθαρή", "Σύνολο"):
+                    item = ui.money_cell(text)
+                else:
+                    item = QTableWidgetItem(text)
+                if c == 0:
+                    item.setData(ROW_ROLE, r)
+                self._table.setItem(r, c, item)
+        self._table.setSortingEnabled(True)
         self._status.setText(
             f"{len(rows)} παραστατικά." if rows else "Δεν βρέθηκαν παραστατικά στο διάστημα."
         )
 
     def _pick_selected(self) -> None:
-        index = self._table.currentRow()
+        item = self._table.item(self._table.currentRow(), 0)
+        index = item.data(ROW_ROLE) if item is not None else None
+        if index is None:
+            index = self._table.currentRow()
+        index = int(index)
         if not (0 <= index < len(self._invoices)):
             self._status.setText("Διάλεξε πρώτα ένα παραστατικό.")
             return

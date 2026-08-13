@@ -2880,8 +2880,16 @@ function parseMoney(string $s): float {
 }
 
 function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to): array {
-    $inv = searchInvoices($ch, $from, $to, '', '', '', $buyerVat, '0');
-    $invoices = $inv['invoices'] ?? [];
+    // ΠΡΟΣΟΧΗ: το φίλτρο BuyerVatNumber της ΑΑΔΕ **αγνοείται σιωπηλά για τις
+    // ΑΠΥ (11.2)** — η αναζήτηση γυρίζει άδεια παρότι τα παραστατικά υπάρχουν
+    // με ακριβώς αυτό το ΑΦΜ αγοραστή (επαληθεύτηκε ζωντανά σε 4 περιπτώσεις).
+    // Γι' αυτό ζητάμε ΟΛΑ τα παραστατικά του διαστήματος και φιλτράρουμε εδώ:
+    // ίδιο κόστος (μία κλήση), σωστό αποτέλεσμα για κάθε τύπο.
+    $inv = searchInvoices($ch, $from, $to, '', '', '', '', '0');
+    $invoices = [];
+    foreach (($inv['invoices'] ?? []) as $iv) {
+        if (trim((string)($iv['buyer_vat'] ?? '')) === $buyerVat) $invoices[] = $iv;
+    }
 
     $entries = [];
     $totalDebit = 0.0; // invoiced (customer owes)
@@ -3489,7 +3497,9 @@ if ($addPaymentFlag) {
         'customer_name' => trim($_GET['customer_name'] ?? $_POST['customer_name'] ?? $name),
         'amount'        => (float)($_GET['pay_amount'] ?? $_POST['pay_amount'] ?? $amount),
         'method'        => (int)($_GET['pay_method'] ?? $_POST['pay_method'] ?? $payment),
-        'pay_date'      => trim($_GET['pay_date'] ?? $_POST['pay_date'] ?? date('Y-m-d')),
+        // Η μορφή της ημερομηνίας κανονικοποιείται μέσα στο payment_add — ένα
+        // σημείο για κάθε καλούντα (χειροκίνητη καταχώρηση, extrait τράπεζας).
+        'pay_date'      => trim($_GET['pay_date'] ?? $_POST['pay_date'] ?? ''),
         'mark'          => $mark,
         'notes'         => trim($_GET['pay_notes'] ?? $_POST['pay_notes'] ?? ''),
     ]);

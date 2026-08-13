@@ -29,7 +29,7 @@ class NotificationsPage(ListPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(
             get_client, run, title="Ειδοποιήσεις", columns=self._COLS,
-            rows_key="items", stretch_col=4, parent=parent,
+            rows_key="items", stretch_col=4, newest_first=0, parent=parent,
         )
         self.toolbar.insertWidget(
             self.toolbar.count() - 1,

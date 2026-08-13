@@ -58,6 +58,33 @@ def parse_money(value: Any) -> float:
         return 0.0
 
 
+def date_key(value: Any) -> tuple[int, int, int]:
+    """(έτος, μήνας, ημέρα) από «dd/MM/yyyy» **ή** «yyyy-mm-dd».
+
+    Οι δύο μορφές συνυπάρχουν επίτηδες: η ΑΑΔΕ δίνει ελληνική μορφή, η τοπική
+    βάση κρατά ISO (γιατί εκεί η ημερομηνία συγκρίνεται ως κείμενο). Ό,τι τις
+    ανακατεύει — η ενιαία κίνηση της καρτέλας — περνά από εδώ.
+    """
+    text = str(value or "").strip()[:10]
+    if "/" in text:
+        parts = text.split("/")
+        if len(parts) == 3 and all(p.isdigit() for p in parts):
+            return (int(parts[2]), int(parts[1]), int(parts[0]))
+    if "-" in text:
+        parts = text.split("-")
+        if len(parts) == 3 and all(p.isdigit() for p in parts):
+            return (int(parts[0]), int(parts[1]), int(parts[2]))
+    return (0, 0, 0)
+
+
+def fmt_date(value: Any) -> str:
+    """Ημερομηνία για ανθρώπους: «dd/MM/yyyy», από οποιαδήποτε από τις δύο μορφές."""
+    year, month, day = date_key(value)
+    if not year:
+        return str(value or "")
+    return f"{day:02d}/{month:02d}/{year}"
+
+
 def fmt_money(value: float) -> str:
     """Format a float as ``1.234,56`` (Greek grouping) for display."""
     return f"{value:,.2f}".replace(",", "\x00").replace(".", ",").replace("\x00", ".")
@@ -99,6 +126,7 @@ class ListPage(EtimPage):
         columns: list[tuple[str, str]],
         rows_key: str,
         stretch_col: int = -1,
+        newest_first: int | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(get_client, run, parent)
@@ -136,8 +164,12 @@ class ListPage(EtimPage):
         # Ταξινόμηση + φίλτρα στήλης, όπως στους πίνακες του Downloader.
         from . import ui as _ui
 
+        # `newest_first`: η στήλη ημερομηνίας μιας ροής (ειδοποιήσεις,
+        # παραστατικά, πρόχειρα). Χωρίς αυτό η λίστα ανοίγει αύξουσα και το πιο
+        # πρόσφατο — αυτό που ψάχνει κανείς — κρύβεται στο τέλος.
         self._filter = _ui.make_sortable(
             self.table, f"list/{rows_key}",
+            default_column=newest_first,
             filter_columns=[c for c in range(len(columns)) if columns[c][1] != "_check"],
         )
 
