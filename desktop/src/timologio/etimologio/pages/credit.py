@@ -13,8 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDate, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QDate, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDateEdit,
@@ -291,7 +290,7 @@ class CreditNotePage(EtimPage):
         if b64:
             path = Path(tempfile.gettempdir()) / f"etim_credit_{self._temp_id or 'draft'}.pdf"
             path.write_bytes(base64.b64decode(b64))
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            ui.open_file(path, self)
             self._status.setText("Άνοιξε η προεπισκόπηση (PDF).")
         else:
             self._status.setText(result.get("preview_error", "Η προεπισκόπηση απέτυχε."))

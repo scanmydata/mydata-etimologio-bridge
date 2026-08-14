@@ -11,8 +11,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -227,7 +226,7 @@ class DocumentsPage(EtimPage):
             return
         self._status.setText(f"{len(paths)} PDF έτοιμα.")
         if mode == "open":
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths[0])))
+            ui.open_file(paths[0], self)
             return
         if mode == "print":
             print_pdfs(paths, self)

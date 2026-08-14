@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -726,12 +727,28 @@ class EtimologioShell(QWidget):
         Tour(self, tour_steps(self)).start()
 
     def open_manual(self) -> None:
+        """Ανοίγει το εγχειρίδιο, και **λέει** αν δεν τα κατάφερε.
+
+        Το «δεν λειτουργεί το εγχειρίδιο» ήταν σιωπηλή αποτυχία: το PDF
+        χτιζόταν κανονικά, αλλά το άνοιγμα γινόταν με `QDesktopServices` και,
+        αν αυτό δεν έπιανε, δεν εμφανιζόταν τίποτα — ούτε μήνυμα, ούτε
+        καταγραφή. Ο Downloader ανοίγει τα δικά του αρχεία με `os.startfile`
+        και δουλεύει· ίδιος δρόμος τώρα (`ui.open_file`).
+        """
         from .help import ensure_manual
 
         # Στον φάκελο δεδομένων, όχι δίπλα στο εκτελέσιμο: το Program Files δεν
         # είναι εγγράψιμο για απλό χρήστη.
-        path = ensure_manual(self._service.data_dir)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        try:
+            path = ensure_manual(self._service.data_dir)
+        except Exception as exc:  # noqa: BLE001 — κάθε αποτυχία πρέπει να φαίνεται
+            log.exception("Το εγχειρίδιο δεν δημιουργήθηκε")
+            QMessageBox.warning(
+                self, "Εγχειρίδιο",
+                f"Το εγχειρίδιο δεν μπόρεσε να ανοίξει.\n\n{exc}",
+            )
+            return
+        ui.open_file(path, self)
 
     def _current_key(self) -> str:
         """Το κλειδί της σελίδας που φαίνεται τώρα ('' για αρχική/καρτέλα)."""

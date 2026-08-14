@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QTableWidgetItem  # noqa: E402
 
 import json  # noqa: E402
 
@@ -2212,3 +2212,60 @@ def test_card_reopens_on_the_last_customer(app) -> None:
     other.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
     other.invalidate()
     assert other._customer == {} and other._table.rowCount() == 0
+
+
+# --- Τέταρτος γύρος: άνοιγμα αρχείων, γλώσσα παραστατικού -------------------
+
+def test_open_file_reports_instead_of_doing_nothing(app, tmp_path: Path, monkeypatch) -> None:
+    """Το «δεν λειτουργεί το εγχειρίδιο» ήταν σιωπηλή αποτυχία ανοίγματος."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from timologio.etimologio.pages import ui
+
+    warned: list[str] = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a[2] if len(a) > 2 else "")))
+
+    # Αρχείο που δεν υπάρχει: μήνυμα, όχι σιωπή.
+    assert ui.open_file(tmp_path / "λείπει.pdf") is False
+    assert warned and "δεν βρέθηκε" in warned[0]
+
+    # Υπαρκτό αρχείο: περνά από τον δρόμο του συστήματος (os.startfile/xdg-open).
+    target = tmp_path / "δοκιμή.pdf"
+    target.write_bytes(b"%PDF-1.4\n")
+    opened: list[str] = []
+    import os as _os
+
+    if hasattr(_os, "startfile"):
+        monkeypatch.setattr(_os, "startfile", lambda p: opened.append(str(p)))
+    else:                                             # pragma: no cover — μη Windows
+        import subprocess
+
+        monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: opened.append(argv[-1]))
+    warned.clear()
+    assert ui.open_file(target) is True
+    assert opened and str(target) in opened[0]
+    assert warned == []
+
+
+def test_issue_and_bulk_offer_the_document_language(app) -> None:
+    """Το web εκδίδει και αγγλικά· το desktop δεν ρωτούσε καν."""
+    page = IssuePage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+    langs = [page._lang.itemData(i) for i in range(page._lang.count())]
+    assert langs == ["el", "en"]
+    page.add_line("ΥΠ001", "1", "100", "24", "0")
+    assert page._issue_kwargs()["lang"] == "el"
+    page._lang.setCurrentIndex(1)
+    assert page._issue_kwargs()["lang"] == "en"
+
+    bulk = BulkPage(lambda: IssueFullClient(), sync_run)
+    bulk.refresh()
+    bulk._lang.setCurrentIndex(1)
+    bulk.add_row()
+    row = bulk._table.rowCount() - 1
+    bulk._table.cellWidget(row, 0).line_edit().setText("094039270")
+    bulk._table.cellWidget(row, 2).line_edit().setText("ΥΠ001")
+    bulk._table.setItem(row, 4, QTableWidgetItem("100"))
+    items = bulk.build_items()
+    assert items and items[0]["issue_lang"] == "en"

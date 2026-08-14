@@ -10,8 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from ...gui.printing import print_pdfs
 from ..bulkpdf import export_zip, fetch_draft_pdfs
+from . import ui
 from .base import ROW_ROLE, ListPage
 
 
@@ -174,7 +174,7 @@ class DraftsPage(ListPage):
         note = f" ({len(errors)} απέτυχαν)" if errors else ""
         self.status.setText(f"{len(paths)} PDF έτοιμα{note}.")
         if mode == "open":
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths[0])))
+            ui.open_file(paths[0], self)
             return
         if mode == "print":
             print_pdfs(paths, self)

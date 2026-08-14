@@ -272,3 +272,56 @@ def page(*, margins: tuple[int, int, int, int] = (16, 14, 16, 14), spacing: int 
     box.setContentsMargins(*margins)
     box.setSpacing(spacing)
     return widget, box
+
+
+def open_file(path, parent=None) -> bool:
+    """Ανοίγει ένα ΤΟΠΙΚΟ αρχείο με την εφαρμογή του συστήματος.
+
+    Γιατί όχι ``QDesktopServices.openUrl``: όλο το e-Τιμολόγιο το χρησιμοποιούσε
+    για τοπικά αρχεία (εγχειρίδιο, PDF παραστατικών, PDF καρτέλας) και **αν
+    αποτύγχανε δεν συνέβαινε τίποτα** — ούτε μήνυμα, ούτε καταγραφή. Ο χρήστης
+    πατούσε «Εγχειρίδιο» ή «Άνοιγμα PDF» και η οθόνη έμενε ίδια, που διαβάζεται
+    ως «η σελίδα δεν λειτουργεί».
+
+    Ο Downloader — το κομμάτι που δουλεύει αποδεδειγμένα — ανοίγει αρχεία με
+    ``os.startfile``. Ίδιος δρόμος εδώ, με το ``QDesktopServices`` ως εφεδρεία
+    και **ρητό μήνυμα** όταν αποτύχουν και τα δύο.
+    """
+    import logging
+    import os
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    log = logging.getLogger(__name__)
+    target = _Path(path)
+    if not target.exists():
+        _open_failed(target, "Το αρχείο δεν βρέθηκε.", parent)
+        return False
+    try:
+        if os.name == "nt":
+            os.startfile(str(target))  # noqa: S606
+        elif _sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+        return True
+    except OSError as exc:
+        log.warning("Το άνοιγμα του %s απέτυχε: %s", target, exc)
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    if QDesktopServices.openUrl(QUrl.fromLocalFile(str(target))):
+        return True
+    _open_failed(target, "Δεν υπάρχει εφαρμογή συσχετισμένη με αυτόν τον τύπο αρχείου.", parent)
+    return False
+
+
+def _open_failed(target, reason: str, parent) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    QMessageBox.warning(
+        parent, "Άνοιγμα αρχείου",
+        f"{reason}\n\nΔιαδρομή:\n{target}",
+    )

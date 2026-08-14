@@ -14,8 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -129,7 +128,7 @@ class IssuePage(EtimPage):
         title.setStyleSheet("font-size:16px;font-weight:600;")
         top.addWidget(title)
         top.addStretch(1)
-        new = QPushButton("Νέο")
+        new = QPushButton("🆕 Νέο")
         new.setToolTip("Καθαρισμός φόρμας")
         new.clicked.connect(self.reset)
         top.addWidget(new)
@@ -156,6 +155,14 @@ class IssuePage(EtimPage):
             self._payment.addItem(label, code)
         head.addWidget(QLabel("Πληρωμή:"))
         head.addWidget(self._payment, 1)
+        # Γλώσσα παραστατικού: υπήρχε μόνο στο web, οπότε από την εφαρμογή
+        # υπολογιστή δεν γινόταν να εκδοθεί αγγλικό τιμολόγιο — ο client δεχόταν
+        # ήδη `lang`, απλώς δεν το ρωτούσε κανείς.
+        self._lang = QComboBox()
+        for code, label in (("el", "Ελληνικά"), ("en", "English")):
+            self._lang.addItem(label, code)
+        head.addWidget(QLabel("Γλώσσα:"))
+        head.addWidget(self._lang)
         box.addLayout(head)
         self._type.currentIndexChanged.connect(self._fill_series)
         self._series.currentIndexChanged.connect(self._series_changed)
@@ -232,13 +239,13 @@ class IssuePage(EtimPage):
         box.addWidget(self._table, 1)
 
         line_btns = QHBoxLayout()
-        add = QPushButton("+ Γραμμή")
+        add = QPushButton("➕ Γραμμή")
         add.clicked.connect(lambda: self.add_line())
-        rem = QPushButton("− Γραμμή")
+        rem = QPushButton("➖ Γραμμή")
         rem.clicked.connect(self._remove_line)
         line_btns.addWidget(add)
         line_btns.addWidget(rem)
-        tax_btn = QPushButton("💶 Φόρος / Κράτηση")
+        tax_btn = QPushButton("💶 Φόρος/Κράτηση")
         tax_btn.setToolTip("Παρακρατούμενοι φόροι, τέλη και κρατήσεις")
         tax_btn.clicked.connect(self._add_tax)
         line_btns.addWidget(tax_btn)
@@ -271,7 +278,7 @@ class IssuePage(EtimPage):
 
         # --- notes + actions ----------------------------------------------
         self._notes = QLineEdit()
-        self._notes.setPlaceholderText("Σημειώσεις (προαιρετικό)")
+        self._notes.setPlaceholderText("Σχόλια / Παρατηρήσεις (προαιρετικό)")
         box.addWidget(self._notes)
 
         actions = QHBoxLayout()
@@ -279,14 +286,14 @@ class IssuePage(EtimPage):
         self._status.setObjectName("muted")
         actions.addWidget(self._status)
         actions.addStretch(1)
-        draft = QPushButton("Αποθήκευση πρόχειρου")
+        draft = QPushButton("💾 Αποθήκευση πρόχειρου")
         draft.clicked.connect(self._save_draft)
-        preview = QPushButton("Προεπισκόπηση")
+        preview = QPushButton("💾👁 Αποθήκευση & Προεπισκόπηση")
         preview.clicked.connect(self._preview)
         schedule = QPushButton("⏰ Προγραμματισμός")
         schedule.setToolTip("Έκδοση αργότερα, αυτόματα")
         schedule.clicked.connect(self._schedule)
-        issue = QPushButton("Έκδοση")
+        issue = QPushButton("📤 Οριστική Έκδοση στην ΑΑΔΕ (ΜΑΡΚ)")
         issue.setObjectName("danger")
         issue.clicked.connect(self._issue)
         for b in (draft, preview, schedule, issue):
@@ -550,6 +557,7 @@ class IssuePage(EtimPage):
             "invoice_type": self._type.currentData(),
             "series": str(self._series.currentData() or self._series.currentText() or "A"),
             "payment": int(self._payment.currentData()),
+            "lang": str(self._lang.currentData() or "el"),
             "notes": self._notes.text().strip(),
             "temp_id": self._temp_id,
             "taxes": [
@@ -952,7 +960,7 @@ class IssuePage(EtimPage):
         if b64:
             path = Path(tempfile.gettempdir()) / f"etim_preview_{self._temp_id or 'draft'}.pdf"
             path.write_bytes(base64.b64decode(b64))
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            ui.open_file(path, self)
             self._status.setText("Άνοιξε η προεπισκόπηση (PDF).")
         else:
             self._status.setText(result.get("preview_error", "Η προεπισκόπηση απέτυχε."))

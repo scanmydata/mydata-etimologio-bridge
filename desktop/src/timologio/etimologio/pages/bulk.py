@@ -65,7 +65,7 @@ class BulkPage(EtimPage):
         self._type = QComboBox()
         for code, label in INVOICE_TYPES:
             self._type.addItem(label, code)
-        head.addWidget(QLabel("Τύπος:"))
+        head.addWidget(QLabel("Τύπος παραστατικού:"))
         head.addWidget(self._type, 2)
         # Η σειρά ήταν ελεύθερο κείμενο με προεπιλογή «A». Μια σειρά που δεν
         # υπάρχει για τον συγκεκριμένο τύπο δεν απορρίπτει μία γραμμή — απορρίπτει
@@ -77,8 +77,13 @@ class BulkPage(EtimPage):
         self._payment = QComboBox()
         for code, label in PAYMENT_METHODS:
             self._payment.addItem(label, code)
-        head.addWidget(QLabel("Πληρωμή:"))
+        head.addWidget(QLabel("Τρόπος πληρωμής:"))
         head.addWidget(self._payment, 1)
+        self._lang = QComboBox()
+        for code, label in (("el", "Ελληνικά"), ("en", "English")):
+            self._lang.addItem(label, code)
+        head.addWidget(QLabel("Γλώσσα:"))
+        head.addWidget(self._lang)
         box.addLayout(head)
         self._type.currentIndexChanged.connect(self._fill_series)
 
@@ -95,9 +100,9 @@ class BulkPage(EtimPage):
         box.addWidget(self._table, 1)
 
         row_btns = QHBoxLayout()
-        add = QPushButton("+ Γραμμή")
+        add = QPushButton("➕ Γραμμή")
         add.clicked.connect(lambda: self.add_row())
-        rem = QPushButton("− Γραμμή")
+        rem = QPushButton("➖ Γραμμή")
         rem.clicked.connect(self._remove_row)
         row_btns.addWidget(add)
         row_btns.addWidget(rem)
@@ -109,9 +114,9 @@ class BulkPage(EtimPage):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
-        draft = QPushButton("Αποθήκευση πρόχειρων")
+        draft = QPushButton("💾 Δημιουργία προχείρων (όλα)")
         draft.clicked.connect(lambda: self._run_bulk(live=False))
-        issue = QPushButton("Μαζική έκδοση")
+        issue = QPushButton("📤 Οριστική έκδοση όλων (ΜΑΡΚ)")
         issue.setObjectName("danger")
         issue.clicked.connect(lambda: self._run_bulk(live=True))
         actions.addWidget(draft)
@@ -356,6 +361,7 @@ class BulkPage(EtimPage):
                 "type": inv_type,
                 "series": series,
                 "payment": payment,
+                "issue_lang": str(self._lang.currentData() or "el"),
                 "lines": [{
                     "code": desc or "Είδος",
                     "qty": parse_money(self._cell(r, _QTY)) or 1,

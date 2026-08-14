@@ -20,8 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDate, QSettings, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QDate, QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -591,7 +590,7 @@ class CustomerCard(EtimPage):
         if not path:
             return
         self._ledger_pdf(Path(path))
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        ui.open_file(path, self)
         self._status.setText(f"Η καρτέλα αποθηκεύτηκε: {Path(path).name}")
 
     def print_ledger(self) -> None:
@@ -637,7 +636,7 @@ class CustomerCard(EtimPage):
             return
         self._status.setText(f"{len(paths)} PDF έτοιμα.")
         if mode == "open":
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths[0])))
+            ui.open_file(paths[0], self)
             return
         if mode == "print":
             print_pdfs(paths, self)
