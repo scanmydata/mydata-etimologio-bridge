@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..codes import INVOICE_TYPES
-from .base import fmt_money
+from .base import fmt_money, parse_money
 
 #: Είδη φόρου (κωδικός → ετικέτα), σταθερά όπως στο e-timologio.
 TAX_TYPES: list[tuple[int, str]] = [
@@ -174,7 +174,11 @@ class TaxDialog(QDialog):
         rate = rate_from_label(self.category.currentText())
         if rate > 0 and self._net_total > 0:
             amount = round(self._net_total * rate, 2)
-            self.amount.setText(f"{amount:.2f}")
+            # ΕΛΛΗΝΙΚΗ μορφή — την ίδια που διαβάζει το parse_money. Γραμμένο ως
+            # «20.00», η τελεία διαβαζόταν ως διαχωριστικό χιλιάδων και το 20 €
+            # γινόταν **2.000 €**: μια παρακράτηση 20% σε καθαρή 100 € έβγαζε
+            # πληρωτέο −1.876 €.
+            self.amount.setText(fmt_money(amount))
             self._hint.setText(
                 f"Αυτόματο ποσό: {rate * 100:g}% × καθαρή {fmt_money(self._net_total)} € "
                 f"= {fmt_money(amount)} € (μπορείς να το αλλάξεις)."
@@ -183,10 +187,7 @@ class TaxDialog(QDialog):
     def _accept(self) -> None:
         kind = self._current_type()
         code = str(self.category.currentData() or "")
-        try:
-            amount = float(self.amount.text().replace(".", "").replace(",", "."))
-        except ValueError:
-            amount = 0.0
+        amount = parse_money(self.amount.text())
         if kind == 1 and not is_service_type(self._invoice_type):
             self._error.setText("Παρακράτηση φόρου μόνο σε παροχή υπηρεσιών.")
             return
@@ -204,7 +205,7 @@ class TaxDialog(QDialog):
         return {
             "type": self._current_type(),
             "category": str(self.category.currentData() or ""),
-            "amount": float(self.amount.text().replace(".", "").replace(",", ".") or 0),
+            "amount": parse_money(self.amount.text()),
             "notes": self.notes.text().strip(),
             "label": self.category.currentText(),
         }

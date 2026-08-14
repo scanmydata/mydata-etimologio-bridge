@@ -10,12 +10,21 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import shutil
+import sys
 from pathlib import Path
 
 from ..gui.tour import Step
 
+log = logging.getLogger(__name__)
+
 #: Το όνομα του PDF. Διαφορετικό από του Downloader, επίτηδες.
 MANUAL_FILENAME = "Εγχειρίδιο χρήσης — e-Τιμολόγιο Pro.pdf"
+
+#: Το ίδιο αρχείο **μέσα** στο bundle, χτισμένο από το build.ps1. Ξεχωριστό
+#: όνομα από το ``manual.pdf`` του Downloader — μοιράζονται τον ίδιο φάκελο.
+BUNDLED_NAME = "etim-manual.pdf"
 
 #: (κείμενο, είδος) — ``h1``/``h2``/``p``/``li``, όπως ο πίνακας του web.
 MANUAL: list[tuple[str, str]] = [
@@ -116,14 +125,63 @@ def manual_html() -> str:
     return "".join(parts)
 
 
-def ensure_manual(data_dir: Path) -> Path:
-    """Η διαδρομή του PDF, χτίζοντάς το αν λείπει ή αν άλλαξε το κείμενο."""
-    from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
+def build_manual(target: Path) -> Path:
+    """Γράφει το PDF. Απαιτεί ενεργό QGuiApplication (offscreen αρκεί)."""
+    from PySide6.QtCore import QMarginsF, QSizeF
+    from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter, QTextDocument
 
+    target.parent.mkdir(parents=True, exist_ok=True)
+    writer = QPdfWriter(str(target))
+    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    writer.setPageMargins(QMarginsF(16, 14, 16, 14), QPageLayout.Unit.Millimeter)
+    writer.setTitle("e-Τιμολόγιο Pro — Εγχειρίδιο χρήσης")
+    writer.setCreator("e-Τιμολόγιο Pro")
+    # Η ανάλυση και το μέγεθος σελίδας ΔΕΝ είναι λεπτομέρειες: χωρίς αυτά ο
+    # QPdfWriter δουλεύει στα 1200dpi ενώ το QTextDocument στοιχειοθετεί σε
+    # πλάτος οθόνης, και το κείμενο πέφτει έξω από το χαρτί. Το εγκατεστημένο
+    # εγχειρίδιο ήταν έτσι **3 KB χωρίς ούτε ένα γράμμα** — δύο κενές σελίδες.
+    # Το gui/manual.py το είχε ήδη μάθει· εδώ είχε ξαναγραφτεί από την αρχή.
+    writer.setResolution(96)
+    document = QTextDocument()
+    document.setHtml(manual_html())
+    rect = writer.pageLayout().paintRectPixels(writer.resolution())
+    document.setPageSize(QSizeF(rect.size()))
+    document.print_(writer)
+    return target
+
+
+#: Το πραγματικό εγχειρίδιο είναι ~39 KB· ένα κενό PDF είναι λίγα KB. Το παλιό
+#: κατώφλι ήταν 1.000 bytes, οπότε το κενό των 3 KB περνούσε για έγκυρο και δεν
+#: ξαναχτιζόταν ποτέ — ούτε καν μετά τη διόρθωση.
+_MIN_PDF_BYTES = 20_000
+
+
+def _looks_built(path: Path) -> bool:
+    try:
+        if path.stat().st_size < _MIN_PDF_BYTES:
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def _bundled_manual() -> Path | None:
+    """Το έτοιμο PDF μέσα στο bundle (μόνο σε πακεταρισμένη εκτέλεση)."""
+    base = getattr(sys, "_MEIPASS", "")
+    if base:
+        candidate = Path(base) / BUNDLED_NAME
+        if _looks_built(candidate):
+            return candidate
+    return None
+
+
+def ensure_manual(data_dir: Path) -> Path:
+    """Η διαδρομή του PDF, χτίζοντάς το αν λείπει, αν χάλασε ή αν άλλαξε το κείμενο."""
     target = data_dir / MANUAL_FILENAME
     stamp = data_dir / ".etim-manual.hash"
     signature = manual_signature()
-    if target.exists() and target.stat().st_size > 1000 and stamp.exists():
+    if _looks_built(target) and stamp.exists():
         try:
             if stamp.read_text(encoding="utf-8").strip() == signature:
                 return target
@@ -131,12 +189,19 @@ def ensure_manual(data_dir: Path) -> Path:
             pass
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    writer = QPdfWriter(str(target))
-    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-    writer.setTitle("e-Τιμολόγιο Pro — Εγχειρίδιο χρήσης")
-    document = QTextDocument()
-    document.setHtml(manual_html())
-    document.print_(writer)
+    bundled = _bundled_manual()
+    if bundled is not None:
+        try:
+            shutil.copyfile(bundled, target)
+        except OSError as exc:
+            log.warning("Δεν αντιγράφηκε το έτοιμο εγχειρίδιο: %s", exc)
+    if not _looks_built(target):
+        build_manual(target)
+    if not _looks_built(target):
+        # Χωρίς σφραγίδα, ώστε να ξαναδοκιμαστεί την επόμενη φορά αντί να
+        # κλειδώσει ένα κενό PDF για πάντα.
+        log.warning("Το εγχειρίδιο του e-Τιμολόγιο δεν στοιχειοθετήθηκε σωστά.")
+        return target
     try:
         stamp.write_text(signature, encoding="utf-8")
     except OSError:

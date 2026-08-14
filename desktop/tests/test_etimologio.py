@@ -1843,3 +1843,175 @@ def test_payment_dialog_loads_an_existing_payment(app) -> None:
     assert dialog.amount.text() == "124.00"
     assert dialog.date.date().toString("dd/MM/yyyy") == "10/08/2026"
     assert dialog.notes.text() == "μετρητά"
+
+
+# --- Δεύτερος γύρος αντιπαραβολής: φόροι, κατάλογος τύπων, καρτέλα, εγχειρίδιο --
+
+def test_tax_amount_is_read_in_the_same_format_it_is_written(app) -> None:
+    """20% × καθαρή 100 € = 20 €, όχι 2.000 €.
+
+    Το αυτόματο ποσό γραφόταν «20.00» και διαβαζόταν με την τελεία ως
+    διαχωριστικό χιλιάδων: το παραστατικό έβγαζε πληρωτέο −1.876 €.
+    """
+    from timologio.etimologio.pages.dialogs import TaxDialog
+
+    dialog = TaxDialog(
+        {"withheld": [{"code": "2", "label": "Αμοιβές Συμβουλών Διοίκησης - 20%"}]},
+        net_total=100.0, invoice_type="20",
+    )
+    dialog.category.setCurrentIndex(1)               # ενεργοποιεί το αυτόματο ποσό
+    assert dialog.amount.text() == "20,00"
+    assert dialog.tax()["amount"] == pytest.approx(20.0)
+
+    # Και το χειρόγραφο ελληνικό ποσό διαβάζεται σωστά.
+    dialog.amount.setText("1.234,50")
+    assert dialog.tax()["amount"] == pytest.approx(1234.50)
+
+
+def test_issue_totals_name_the_withholding_correctly(app) -> None:
+    """Μια παρακράτηση δεν είναι «κράτηση» — το web τις γράφει και τις δύο."""
+    page = IssuePage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+    page._taxes.append({"type": 1, "category": "2", "amount": 20.0, "label": "20%"})
+    page._render_taxes()
+    assert "Παρακρατήσεις / Κρατήσεις: −20,00" in page._totals.text()
+    assert "Πληρωτέο" in page._totals.text()
+
+
+def test_live_invoice_types_replace_the_builtin_table(app) -> None:
+    """Ο χειρόγραφος πίνακας είχε 11 τύπους· η ΑΑΔΕ δίνει 24.
+
+    Ο λογαριασμός δοκιμών έχει ενεργή σειρά για «9.3 Δελτίο Αποστολής», τύπο
+    που έλειπε εντελώς — δηλαδή σειρά που δεν επιλεγόταν με κανέναν τρόπο.
+    """
+    from timologio.etimologio import codes
+
+    original = list(codes.INVOICE_TYPES)
+    try:
+        assert not any(code == "503" for code, _ in codes.INVOICE_TYPES)
+        changed = codes.set_live_types([
+            {"value": 20, "code": "2.1", "label": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών"},
+            {"value": 503, "code": "9.3", "label": "9.3 - Δελτίο Αποστολής"},
+        ])
+        assert changed
+        assert dict(codes.INVOICE_TYPES)["503"] == "9.3 Δελτίο Αποστολής"
+        assert codes.type_label("503") == "9.3 Δελτίο Αποστολής"
+        # Ίδια δεδομένα ξανά: καμία αλλαγή, άρα κανένα άσκοπο ξαναχτίσιμο.
+        assert not codes.set_live_types([
+            {"value": 20, "code": "2.1", "label": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών"},
+            {"value": 503, "code": "9.3", "label": "9.3 - Δελτίο Αποστολής"},
+        ])
+        assert not codes.set_live_types([])          # άδεια απάντηση δεν σβήνει
+    finally:
+        codes.INVOICE_TYPES[:] = original
+
+
+def test_issue_rebuilds_the_type_dropdown_from_the_live_catalogue(app) -> None:
+    from timologio.etimologio import codes
+
+    original = list(codes.INVOICE_TYPES)
+    try:
+        page = IssuePage(lambda: IssueFullClient(), sync_run)
+        page.refresh()
+        page._type.setCurrentIndex(page._type.findData("58"))
+        page._got_types([
+            {"value": 58, "code": "11.2", "label": "11.2 - ΑΠΥ (Απόδειξη Παροχής Υπηρεσιών)"},
+            {"value": 503, "code": "9.3", "label": "9.3 - Δελτίο Αποστολής"},
+        ])
+        codes_in_combo = [page._type.itemData(i) for i in range(page._type.count())]
+        assert "503" in codes_in_combo
+        # Η επιλογή του χρήστη επιβιώνει το ξαναχτίσιμο.
+        assert page._type.currentData() == "58"
+    finally:
+        codes.INVOICE_TYPES[:] = original
+
+
+def test_issue_opens_on_a_type_that_has_a_series(app) -> None:
+    """Χωρίς αυτό η φόρμα άνοιγε στο «2.1 — χωρίς σειρά» με άδειο δεύτερο combo."""
+    class OnlyReceipts(IssueFullClient):
+        def series(self):
+            return {"success": True, "series": [
+                {"invoice_type": "11.2 - ΑΠΥ", "invoice_type_code": "58",
+                 "series_code": "ΑΠΥ", "series_id": "2"},
+            ]}
+
+    page = IssuePage(lambda: OnlyReceipts(), sync_run)
+    page.refresh()
+    assert page._type.currentData() == "58"
+    assert page._series.currentData() == "ΑΠΥ"
+
+
+def test_issue_never_invents_a_series(app) -> None:
+    """Η επινοημένη «A» οδηγούσε σε σίγουρη απόρριψη από την ΑΑΔΕ."""
+    class NoSeries(IssueFullClient):
+        def series(self):
+            return {"success": True, "series": []}
+
+    page = IssuePage(lambda: NoSeries(), sync_run)
+    page.refresh()
+    entries = [page._series.itemData(i) for i in range(page._series.count())]
+    assert entries == ["__new_series"]
+    assert page._series_warn.isVisibleTo(page)
+
+
+def test_card_loads_its_own_customers(app) -> None:
+    """Από το μενού η καρτέλα ανοίγει χωρίς πελάτη — και πρέπει να είναι χρήσιμη."""
+    card = CustomerCard(lambda: IssueClient(), sync_run)
+    card.refresh()
+    assert len(card._picker.rows()) == 2
+    assert "Διάλεξε πελάτη" in card._status.text()
+
+
+def test_password_fields_offer_a_reveal_eye(app) -> None:
+    from PySide6.QtWidgets import QLineEdit
+
+    from timologio.gui.widgets import add_reveal
+
+    field = add_reveal(QLineEdit())
+    assert field.echoMode() == QLineEdit.EchoMode.Password
+    field.reveal_action.trigger()
+    assert field.echoMode() == QLineEdit.EchoMode.Normal
+    field.reveal_action.trigger()
+    assert field.echoMode() == QLineEdit.EchoMode.Password
+
+
+def test_etimologio_manual_is_a_real_pdf(app, tmp_path: Path) -> None:
+    """Το εγκατεστημένο εγχειρίδιο ήταν 3 KB χωρίς ούτε ένα γράμμα."""
+    import re
+    import zlib
+
+    from timologio.etimologio.help import _MIN_PDF_BYTES, ensure_manual
+
+    path = ensure_manual(tmp_path)
+    body = path.read_bytes()
+    assert body[:5] == b"%PDF-"
+    assert len(body) >= _MIN_PDF_BYTES
+    # Το κείμενο μπαίνει ως διαδρομές γραμματοσειράς, όχι ως «Tj» — το μέτρο
+    # είναι το μέγεθος των ροών. Το χαλασμένο εγχειρίδιο του πακεταρισμένου
+    # build είχε **76 bytes** ζωγραφισμένου περιεχομένου· ένα κανονικό έχει
+    # πάνω από 200.000.
+    drawn = sum(
+        len(zlib.decompress(m.group(1)))
+        for m in re.finditer(rb"stream\r?\n(.*?)endstream", body, re.S)
+        if _inflatable(m.group(1))
+    )
+    assert drawn > 50_000, f"το PDF έχει μόλις {drawn} bytes περιεχομένου"
+
+    # Δεύτερη κλήση: το ίδιο αρχείο, χωρίς ξαναχτίσιμο.
+    stamp = (tmp_path / ".etim-manual.hash").read_text(encoding="utf-8")
+    assert ensure_manual(tmp_path) == path
+    assert (tmp_path / ".etim-manual.hash").read_text(encoding="utf-8") == stamp
+
+    # Ένα κενό/χαλασμένο PDF ΔΕΝ θεωρείται έγκυρο — ξαναχτίζεται.
+    path.write_bytes(b"%PDF-1.4\n" + b"0" * 500)
+    assert ensure_manual(tmp_path).stat().st_size >= _MIN_PDF_BYTES
+
+
+def _inflatable(blob: bytes) -> bool:
+    import zlib
+
+    try:
+        zlib.decompress(blob)
+    except zlib.error:
+        return False
+    return True

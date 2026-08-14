@@ -86,16 +86,27 @@ Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
 & $py @("installer\make_icon.py")
 
 # --- Εγχειρίδιο --------------------------------------------------------------
-Write-Host "== 3/5  Εγχειρίδιο PDF (docs\manual.pdf) ==" -ForegroundColor Cyan
+Write-Host "== 3/5  Εγχειρίδια PDF (docs\manual.pdf, docs\etim-manual.pdf) ==" -ForegroundColor Cyan
 & $py @("-c", @"
 from pathlib import Path
 from PySide6.QtGui import QGuiApplication
 app = QGuiApplication([])
 from timologio.gui.manual import build_manual
-out = Path('docs/manual.pdf'); out.parent.mkdir(exist_ok=True)
-build_manual(out)
-print('  ', out, out.stat().st_size, 'bytes')
+from timologio.etimologio.help import build_manual as build_etim_manual
+docs = Path('docs'); docs.mkdir(exist_ok=True)
+# Δύο εγχειρίδια, ένα ανά εφαρμογή. Και τα δύο χτίζονται ΕΔΩ και μπαίνουν έτοιμα
+# στο bundle: το runtime rendering στο πακεταρισμένο exe έβγαζε κενό PDF.
+for label, build, out in (
+    ('Downloader', build_manual, docs / 'manual.pdf'),
+    ('e-Τιμολόγιο', build_etim_manual, docs / 'etim-manual.pdf'),
+):
+    build(out)
+    size = out.stat().st_size
+    print('  ', label, out, size, 'bytes')
+    if size < 20000:
+        raise SystemExit(f'Το εγχειρίδιο {out} βγήκε κενό ({size} bytes)')
 "@)
+if ($LASTEXITCODE -ne 0) { throw "Η δημιουργία των εγχειριδίων απέτυχε" }
 
 # --- Φορητή PHP για το e-Τιμολόγιο Pro ---------------------------------------
 # Το backend του e-Τιμολόγιο είναι PHP. Για να δουλεύει η offline λειτουργία σε

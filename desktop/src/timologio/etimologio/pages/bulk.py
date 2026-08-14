@@ -143,8 +143,25 @@ class BulkPage(EtimPage):
         self._spread_rows()
         self.refresh()
 
+    def _fill_types(self) -> None:
+        """Ξαναγεμίζει το «Τύπος» από τον ενεργό κατάλογο, κρατώντας την επιλογή.
+
+        Ο κατάλογος αντικαθίσταται από τον ζωντανό της ΑΑΔΕ όταν τον φέρει η
+        Έκδοση· η Μαζική χτίζεται μια φορά, οπότε πρέπει να ξαναδιαβάσει.
+        """
+        current = str(self._type.currentData() or "")
+        self._type.blockSignals(True)
+        self._type.clear()
+        for code, label in INVOICE_TYPES:
+            self._type.addItem(label, code)
+        index = self._type.findData(current) if current else -1
+        if index >= 0:
+            self._type.setCurrentIndex(index)
+        self._type.blockSignals(False)
+
     def _got_series(self, data: dict[str, Any]) -> None:
         self._all_series = list(data.get("series", []))
+        self._fill_types()
         self._fill_series()
 
     def _got_customers(self, data: dict[str, Any]) -> None:

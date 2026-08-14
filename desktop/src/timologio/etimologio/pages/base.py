@@ -112,19 +112,26 @@ def cached_then_live(
     snapshot στη βάση (``cache_set``). Καλώντας το απλό ``list_*`` η cache δεν
     γεμίζει ποτέ και η επόμενη φόρτωση ξαναπερίμενε την ΑΑΔΕ.
     """
+    #: Έδειξε η cache κάτι; Μόνο τότε αξίζει να προστατευτεί από ένα άδειο sync.
+    showed_cache = False
+
     def live_ok(data: dict[str, Any]) -> None:
         rows = rows_of(data)
-        # Ένα άδειο sync δεν σβήνει ό,τι έδειξε η cache: μπορεί απλώς να μη
-        # γνωρίζει αυτό το είδος δεδομένων.
-        if rows or not data.get("kind"):
+        # Ένα άδειο sync δεν σβήνει ό,τι έδειξε η cache. Αν όμως η cache δεν
+        # έδειξε τίποτα, το «άδειο» ΕΙΝΑΙ η απάντηση και πρέπει να φτάσει: μια
+        # καινούργια εταιρεία χωρίς σειρές έμενε με τελείως άδειο dropdown —
+        # ούτε «➕ Νέα σειρά…», ούτε προειδοποίηση.
+        if rows or not showed_cache:
             on_rows(rows, False)
 
     def start_live(*_args: Any) -> None:
         run(live, live_ok, on_error or (lambda _m: None))
 
     def cache_ok(data: dict[str, Any]) -> None:
+        nonlocal showed_cache
         rows = data.get("rows") or []
         if rows:
+            showed_cache = True
             on_rows(list(rows), True)
         # Το ζωντανό ξεκινά ΜΕΤΑ την ανάγνωση της cache, όχι παράλληλα: ο
         # ενσωματωμένος server της PHP εξυπηρετεί **σειριακά**, οπότε μια

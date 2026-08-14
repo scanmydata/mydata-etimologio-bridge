@@ -39,6 +39,7 @@ from ..codes import (  # noqa: F401 — re-exported for the pages that already i
     PAYMENT_METHODS,
     VAT_RATES,
     series_for_type,
+    set_live_types,
     type_label,
 )
 from . import ui
@@ -139,8 +140,7 @@ class IssuePage(EtimPage):
         # --- header: type / series / payment -------------------------------
         head = QHBoxLayout()
         self._type = QComboBox()
-        for code, label in INVOICE_TYPES:
-            self._type.addItem(label, code)
+        self._fill_types()
         head.addWidget(QLabel("Τύπος:"))
         head.addWidget(self._type, 2)
         # Η σειρά είναι λίστα και όχι ελεύθερο κείμενο: το e-timologio δέχεται
@@ -403,8 +403,11 @@ class IssuePage(EtimPage):
         if plus or minus:
             # Τα τέλη προστίθενται, οι παρακρατήσεις/κρατήσεις αφαιρούνται — και
             # το πληρωτέο είναι αυτό που τελικά ζητά ο επιτηδευματίας.
+            # «Κρατήσεις» σκέτο ήταν λάθος όνομα: στο ίδιο ποσό μπαίνουν και οι
+            # παρακρατήσεις φόρου. Ίδια διατύπωση με το web.
             text += (
-                f"   Τέλη: +{fmt_money(plus)} €   Κρατήσεις: −{fmt_money(minus)} €"
+                f"   Τέλη: +{fmt_money(plus)} €   "
+                f"Παρακρατήσεις / Κρατήσεις: −{fmt_money(minus)} €"
                 f"   Πληρωτέο: {fmt_money(total_sum + plus - minus)} €"
             )
         self._totals.setText(text)
@@ -575,6 +578,10 @@ class IssuePage(EtimPage):
         cached_then_live(self._run, client, "customers",
                          lambda: client.sync("customers"),
                          self._fill_customers, self._load_failed)
+        # Ο κατάλογος τύπων ΠΡΩΤΑ: οι σειρές ταιριάζουν πάνω του, και χωρίς
+        # αυτόν μένουμε στους 11 χειρόγραφους τύπους αντί για τους 24 της ΑΑΔΕ.
+        cached_then_live(self._run, client, "invtypes", lambda: client.sync("invtypes"),
+                         self._got_types, lambda _m: None)
         cached_then_live(self._run, client, "series", lambda: client.sync("series"),
                          self._got_series, self._load_failed)
         cached_then_live(self._run, client, "products", lambda: client.sync("products"),
@@ -672,10 +679,51 @@ class IssuePage(EtimPage):
         )
         self._run(call, created, self._failed)
 
+    def _fill_types(self) -> None:
+        """(Ξανα)γεμίζει το «Τύπος», κρατώντας ό,τι είχε επιλεγεί.
+
+        Ο κατάλογος τύπων έρχεται από την ΑΑΔΕ (24 τύποι) και αντικαθιστά τον
+        χειρόγραφο πίνακα των 11 — αλλιώς μια ενεργή σειρά όπως το «9.3 Δελτίο
+        Αποστολής» δεν έχει τύπο να διαλέξεις για να την εκδώσεις.
+        """
+        current = str(self._type.currentData() or "")
+        self._type.blockSignals(True)
+        self._type.clear()
+        for code, label in INVOICE_TYPES:
+            self._type.addItem(label, code)
+        index = self._type.findData(current) if current else -1
+        if index >= 0:
+            self._type.setCurrentIndex(index)
+        self._type.blockSignals(False)
+
+    def _got_types(self, rows: list[dict[str, Any]], _from_cache: bool = False) -> None:
+        if set_live_types(rows):
+            self._fill_types()
+            self._mark_types_without_series()
+            self._fill_series()
+
     def _got_series(self, rows: list[dict[str, Any]], _from_cache: bool = False) -> None:
         self._all_series = list(rows)
         self._mark_types_without_series()
+        self._select_type_with_series()
         self._fill_series()
+
+    def _select_type_with_series(self) -> None:
+        """Αν ο επιλεγμένος τύπος δεν έχει σειρά, πάει στον πρώτο που έχει.
+
+        Η φόρμα άνοιγε στον πρώτο τύπο του πίνακα ό,τι κι αν είχε ο λογαριασμός.
+        Όποιος δεν εκδίδει «2.1» έβλεπε «— χωρίς σειρά» και άδειο δεύτερο
+        dropdown: ακριβώς η εικόνα του «δεν επιλέγεται τίποτα».
+        """
+        if not self._all_series:
+            return
+        code = str(self._type.currentData() or "")
+        if code and series_for_type(self._all_series, code):
+            return
+        for index in range(self._type.count()):
+            if series_for_type(self._all_series, str(self._type.itemData(index) or "")):
+                self._type.setCurrentIndex(index)
+                return
 
     def _mark_types_without_series(self) -> None:
         """Σημειώνει στην ετικέτα ποιοι τύποι δεν έχουν σειρά.
@@ -705,8 +753,9 @@ class IssuePage(EtimPage):
             self._series.addItem(
                 f"{text} — {description}" if description else text, text
             )
-        if not matching:
-            self._series.addItem("A", "A")
+        # ΚΑΜΙΑ επινοημένη σειρά «A» όταν δεν υπάρχει καμία: η ΑΑΔΕ δέχεται μόνο
+        # σειρές που έχουν δημιουργηθεί, οπότε η προεπιλογή αυτή οδηγούσε σε
+        # σίγουρη απόρριψη — αφού είχε συμπληρωθεί όλο το παραστατικό.
         # «Νέα σειρά» μέσα στο ίδιο dropdown, όπως στο web: αλλιώς πρέπει να
         # φύγεις στη σελίδα Σειρές και να γυρίσεις πίσω με άδεια φόρμα.
         self._series.addItem("➕  Νέα σειρά…", _NEW_SERIES)

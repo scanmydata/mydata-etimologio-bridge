@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from ..gui.icons import logo_pixmap
 from ..gui.theme import CURRENT
+from ..gui.widgets import add_reveal
 from .client import EtimologioClient
 from .pages import (
     AdminPage,
@@ -126,6 +127,9 @@ _SECTIONS = [
     ("issue", "Έκδοση", "Νέο παραστατικό", "edit"),
     ("documents", "Παραστατικά", "Αναζήτηση, εκτύπωση, ZIP", "pdf"),
     ("customers", "Πελάτες", "Λίστα & καρτέλες", "clients"),
+    # Η καρτέλα είναι ενότητα, όχι υποσέλιδο των Πελατών: στο web έχει δική της
+    # εγγραφή στο μενού («📇 Καρτέλα»), εδώ έφτανες μόνο με διπλό κλικ.
+    ("card", "Καρτέλα", "Κίνηση & υπόλοιπο πελάτη", "csv"),
     ("bulk", "Μαζική έκδοση", "Παρτίδα παραστατικών", "import"),
     ("credit", "Ακύρωση/Πιστωτικό", "Συσχετιζόμενο πιστωτικό", "cancel"),
     ("drafts", "Πρόχειρα", "Αποθηκευμένα προσχέδια", "restore"),
@@ -200,14 +204,15 @@ class EtimologioShell(QWidget):
         #: Section key → page, used for both navigation and construction.
         self._pages = {
             "issue": self._issue, "credit": self._credit, "bulk": self._bulk,
-            "customers": self._customers, "products": self._products,
+            "customers": self._customers, "card": self._card,
+            "products": self._products,
             "series": self._series, "drafts": self._drafts,
             "payments": self._payments, "stats": self._stats,
             "documents": self._documents, "schedule": self._schedule,
             "notifications": self._notifications, "settings": self._settings,
             "admin": self._admin,
         }
-        for page in (*self._pages.values(), self._card):
+        for page in self._pages.values():
             page.go_back.connect(self.go_back)
 
         # --- ο ψηφιακός βοηθός ---------------------------------------------
@@ -241,7 +246,7 @@ class EtimologioShell(QWidget):
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(slot)
 
-        for w in (self._status, self._login, self._home, self._card, *self._pages.values()):
+        for w in (self._status, self._login, self._home, *self._pages.values()):
             self._stack.addWidget(w)
         self._stack.setCurrentWidget(self._status)
 
@@ -342,8 +347,7 @@ class EtimologioShell(QWidget):
         form = QFormLayout()
         self._email = QLineEdit()
         self._email.setPlaceholderText("email")
-        self._password = QLineEdit()
-        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password = add_reveal(QLineEdit())
         self._password.setPlaceholderText("κωδικός")
         form.addRow("Email", self._email)
         form.addRow("Κωδικός", self._password)
@@ -584,7 +588,10 @@ class EtimologioShell(QWidget):
     # `refresh()` της Μαζικής φέρνει μόνο τις σειρές και του Πιστωτικού μόνο το
     # πελατολόγιο — και χωρίς αυτά οι επιλογείς τους θα ήταν άδειοι. Η ακριβή
     # αναζήτηση παραστατικών στο Πιστωτικό μένει πίσω από κουμπί.
-    _NO_AUTOLOAD: set[str] = set()
+    #: Η Καρτέλα δεν ανανεώνεται αυτόματα από το ``_open_section``: όταν την
+    #: ανοίγει ένας πελάτης (Πελάτες, παλέτα), το ``set_customer`` φορτώνει ήδη
+    #: την κίνηση — δύο κλήσεις ledger για το ίδιο πράγμα.
+    _NO_AUTOLOAD: set[str] = {"card"}
 
     def open_section(self, key: str, *, remember: bool = True) -> None:
         """Navigate from outside (the side menu). Ignored until logged in."""
@@ -594,6 +601,10 @@ class EtimologioShell(QWidget):
                 self._show_home()
             return
         self._open_section(key, remember=remember)
+        # Από το μενού η Καρτέλα ανοίγει χωρίς πελάτη: γεμίζει τον επιλογέα και
+        # ζητά επιλογή, αντί να μένει κενή σαν χαλασμένη.
+        if key == "card" and self._client is not None:
+            self._card.refresh()
 
     def _open_section(self, key: str, *, remember: bool = True) -> None:
         if self._client is None:
@@ -725,16 +736,15 @@ class EtimologioShell(QWidget):
         self._customers.refresh()
 
     def _show_card(self, customer: dict) -> None:
-        current = self._current_key()
-        if current:
-            self._history.append(current)
-        self._crumb.setText("Καρτέλα πελάτη")
-        self._back_btn.setEnabled(True)
-        # Το πελατολόγιο ταξιδεύει μαζί: ο διάλογος «+ Πληρωμή» της καρτέλας
-        # άνοιγε με άδειο επιλογέα πελάτη.
-        self._card.set_customers(self._customers.rows())
+        """Άνοιγμα της Καρτέλας με συγκεκριμένο πελάτη (από Πελάτες ή παλέτα)."""
+        # Το πελατολόγιο ταξιδεύει μαζί όταν υπάρχει: ο διάλογος «+ Πληρωμή»
+        # της καρτέλας άνοιγε με άδειο επιλογέα πελάτη. Αν λείπει, η καρτέλα το
+        # φορτώνει μόνη της (load_customers).
+        rows = self._customers.rows()
+        if rows:
+            self._card.set_customers(rows)
+        self._open_section("card")
         self._card.set_customer(customer)
-        self._stack.setCurrentWidget(self._card)
 
     def _credit_from_card(self, invoice: dict) -> None:
         """«↩ Ακύρωση» από την Καρτέλα → Πιστωτικό με το παραστατικό έτοιμο."""

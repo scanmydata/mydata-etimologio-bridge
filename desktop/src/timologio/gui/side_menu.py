@@ -50,6 +50,7 @@ _ICONS = {
     "etim_drafts": "restore",
     "etim_documents": "pdf",
     "etim_customers": "clients",
+    "etim_card": "csv",
     "etim_products": "folder",
     "etim_series": "filter",
     "etim_payments": "income",
@@ -291,6 +292,9 @@ class SideMenu(QWidget):
         for name, text, tip in [
             ("etim_documents", "Παραστατικά", "Αναζήτηση, μαζική εκτύπωση και εξαγωγή ZIP"),
             ("etim_customers", "Πελάτες", "Πελατολόγιο και καρτέλες"),
+            # Δική της εγγραφή, όπως το «📇 Καρτέλα» του web: χωρίς αυτήν ο μόνος
+            # δρόμος ήταν διπλό κλικ σε πελάτη, και η σελίδα έμοιαζε να λείπει.
+            ("etim_card", "Καρτέλα", "Κίνηση πελάτη: χρεώσεις, πιστώσεις, υπόλοιπο"),
             ("etim_products", "Είδη", "Κατάλογος ειδών και τιμών"),
             ("etim_series", "Σειρές", "Αρίθμηση ανά τύπο παραστατικού"),
         ]:

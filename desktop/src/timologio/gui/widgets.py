@@ -18,9 +18,41 @@ from PySide6.QtCore import (
     QTimer,
 )
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QCheckBox, QDateEdit, QHeaderView, QTableWidget
+from PySide6.QtWidgets import QCheckBox, QDateEdit, QHeaderView, QLineEdit, QTableWidget
 
 from .theme import CURRENT
+
+
+def add_reveal(field: QLineEdit) -> QLineEdit:
+    """Βάζει «ματάκι» μέσα στο πεδίο, για να φαίνεται ο κωδικός με ένα κλικ.
+
+    Ζει ΜΕΣΑ στο πεδίο (``addAction`` σε δεξιά θέση) και όχι ως χωριστό
+    κουτάκι δίπλα: το κουτάκι είναι δεύτερο στοιχείο στη φόρμα και χάνεται,
+    ενώ το ματάκι βρίσκεται εκεί που κοιτά ήδη το μάτι — πάνω στον κωδικό που
+    δεν διαβάζεται.
+
+    Επιστρέφει το ίδιο πεδίο, ώστε να γράφεται ``add_reveal(QLineEdit())``.
+    """
+    from .icons import icon
+
+    field.setEchoMode(QLineEdit.EchoMode.Password)
+    action = field.addAction(
+        icon("eye", CURRENT.muted), QLineEdit.ActionPosition.TrailingPosition
+    )
+    action.setToolTip("Εμφάνιση κωδικού")
+
+    def toggle() -> None:
+        hidden = field.echoMode() == QLineEdit.EchoMode.Password
+        field.setEchoMode(
+            QLineEdit.EchoMode.Normal if hidden else QLineEdit.EchoMode.Password
+        )
+        action.setIcon(icon("eye_off" if hidden else "eye", CURRENT.muted))
+        action.setToolTip("Απόκρυψη κωδικού" if hidden else "Εμφάνιση κωδικού")
+
+    action.triggered.connect(toggle)
+    #: Το βοήθημα το βρίσκουν τα τεστ και ο διακόπτης θέματος.
+    field.reveal_action = action
+    return field
 
 
 def _blend(a: QColor, b: QColor, t: float) -> QColor:

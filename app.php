@@ -281,6 +281,13 @@ $__business = $__user['business_name'];
   :root[data-theme="light"] .sched-status.done{background:#dcfce7;color:#166534}
   :root[data-theme="light"] .sched-status.failed{background:#fee2e2;color:#b91c1c}
   :root[data-theme="light"] .sched-status.running{background:#fef3c7;color:#92400e}
+  /* Το «ματάκι» των κωδικών — ίδιο με της οθόνης σύνδεσης (authview.php). */
+  .pw{position:relative;display:block}
+  .pw input{width:100%;padding-right:42px}
+  .pw .eye{position:absolute;top:50%;right:6px;transform:translateY(-50%);width:30px;height:30px;
+    display:flex;align-items:center;justify-content:center;background:none;border:0;cursor:pointer;
+    color:var(--muted);font-size:15px;line-height:1;padding:0;border-radius:7px}
+  .pw .eye:hover{color:var(--accent);background:rgba(56,189,248,.12)}
 </style>
 </head>
 <body>
@@ -3090,7 +3097,24 @@ async function cancelJob(id){if(!confirm('Ακύρωση αυτού του πρ�
   try{const d=await api({sched_cancel:1,id});if(d.success){toast('Ακυρώθηκε','ok');loadSchedule();}else toast('Δεν ακυρώθηκε (ίσως εκτελέστηκε ήδη)','warn');}
   catch(e){toast('Ακύρωση: '+e.message,'err');}}
 
-(async()=>{await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+// Ματάκι σε ΚΑΘΕ πεδίο κωδικού (αλλαγή κωδικού, νέος χρήστης), χωρίς να
+// πειραχτεί η κάθε φόρμα ξεχωριστά — ίδια συμπεριφορά με την οθόνη σύνδεσης.
+function addEyes(root){
+  (root||document).querySelectorAll('input[type=password]').forEach(inp=>{
+    if(inp.parentElement && inp.parentElement.classList.contains('pw'))return;
+    const wrap=document.createElement('div');wrap.className='pw';
+    inp.parentNode.insertBefore(wrap,inp);wrap.appendChild(inp);
+    const btn=document.createElement('button');
+    btn.type='button';btn.className='eye';btn.textContent='👁';
+    btn.title='Εμφάνιση κωδικού';btn.setAttribute('aria-label','Εμφάνιση κωδικού');
+    btn.onclick=()=>{const show=inp.type==='password';inp.type=show?'text':'password';
+      btn.textContent=show?'🙈':'👁';
+      btn.title=btn.ariaLabel=show?'Απόκρυψη κωδικού':'Εμφάνιση κωδικού';inp.focus();};
+    wrap.appendChild(btn);
+  });
+}
+
+(async()=>{addEyes();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // First-time visitors: gently offer the tour once.
   if(!localStorage.getItem('etim_tour_done'))setTimeout(()=>{try{if(confirm('Καλωσήρθες! Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;'))startTour();else localStorage.setItem('etim_tour_done','1');}catch(e){}},900);

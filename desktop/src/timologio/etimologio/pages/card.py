@@ -39,7 +39,7 @@ from ..bulkpdf import export_zip, fetch_pdfs
 from ..codes import PAYMENT_LABELS
 from ..ledgerpdf import build_ledger_pdf, entries_from
 from . import ui
-from .base import EtimPage, fmt_date, fmt_money, parse_money
+from .base import EtimPage, cached_then_live, fmt_date, fmt_money, parse_money
 from .customers import _cust_value
 from .pickers import customer_picker
 
@@ -220,16 +220,40 @@ class CustomerCard(EtimPage):
         self._customers = list(rows or [])
         self._picker.set_rows(self._customers)
 
+    def load_customers(self) -> None:
+        """Γεμίζει μόνη της τον επιλογέα — cache πρώτα, ΑΑΔΕ από πίσω.
+
+        Η καρτέλα δανειζόταν τη λίστα από τη σελίδα Πελάτες. Μπαίνοντας όμως
+        κατευθείαν από το μενού, εκείνη η σελίδα δεν έχει ανοίξει ποτέ: ο
+        επιλογέας έμενε άδειος και η καρτέλα έμοιαζε να μη λειτουργεί καθόλου.
+        """
+        client = self.client()
+        if client is None:
+            return
+        self._picker.set_loading(True)
+        cached_then_live(
+            self._run, client, "customers",
+            lambda: client.sync("customers"),
+            lambda rows, _from_cache: self.set_customers(rows),
+            lambda _msg: self._picker.set_loading(False),
+        )
+
     def refresh(self) -> None:
         client = self.client()
         if client is None:
             return
+        if not self._customers:
+            self.load_customers()
         vat = _cust_value(self._customer, "vat")
         if not vat:
+            self._table.setRowCount(0)
+            for tile in (self._kpi_invoiced, self._kpi_paid, self._kpi_balance):
+                ui.set_tile_value(tile, "—")
             self._status.setText(
                 "Ο πελάτης δεν έχει ΑΦΜ (λιανική) — η ΑΑΔΕ δεν δίνει κίνηση χωρίς ΑΦΜ."
+                if self._customer else
+                "Διάλεξε πελάτη από τον επιλογέα για να δεις την κίνησή του."
             )
-            self._table.setRowCount(0)
             return
         self._status.setText("Φόρτωση κίνησης…")
         date_from = self._from.date().toString("dd/MM/yyyy")

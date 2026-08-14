@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...gui.widgets import add_reveal
 from . import ui
 from .base import EtimPage
 
@@ -84,10 +85,8 @@ class SettingsPage(EtimPage):
         pw_card, pw = ui.card()
         pw.addWidget(ui.title("Κωδικός πρόσβασης"))
         form = QFormLayout()
-        self._current = QLineEdit()
-        self._current.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new = QLineEdit()
-        self._new.setEchoMode(QLineEdit.EchoMode.Password)
+        self._current = add_reveal(QLineEdit())
+        self._new = add_reveal(QLineEdit())
         form.addRow("Τρέχων", self._current)
         form.addRow("Νέος", self._new)
         pw.addLayout(form)

@@ -136,6 +136,9 @@ a = Analysis(
             # μονόχρωμη γλυφή του μενού.
             os.path.join(SPECPATH, "etimologio-logo.png"),
             os.path.join(ROOT, "docs", "manual.pdf"),
+            # Και του e-Τιμολόγιο, με δικό του όνομα: ζουν στον ίδιο φάκελο του
+            # bundle (etimologio/help.py:BUNDLED_NAME).
+            os.path.join(ROOT, "docs", "etim-manual.pdf"),
         )
         if os.path.exists(path)
     ] + TZDATA + BACKEND + PHPRT + VOICE,
