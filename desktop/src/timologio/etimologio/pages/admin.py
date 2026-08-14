@@ -65,6 +65,7 @@ class AdminPage(ListPage):
         super().__init__(
             get_client, run, title="Διαχείριση", columns=self._COLS,
             rows_key="users", stretch_col=1, parent=parent,
+            subtitle="Χρήστες, ρόλοι και λογαριασμοί ΑΑΔΕ ανά επιχείρηση.",
         )
         for widget in (
             ui.button("Πρόσκληση μέλους", self._invite, kind="primary", icon_name="add_client"),

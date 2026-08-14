@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from . import ui
 from .base import EtimPage, fmt_money, parse_money
 from .charts import BarChart, PieChart, breakdown_series
 
@@ -61,6 +62,8 @@ class StatsPage(EtimPage):
         refresh.clicked.connect(self.refresh)
         top.addWidget(refresh)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Σύνοψη τζίρου και παραστατικών από την ΑΑΔΕ, ανά τύπο."))
 
         self._summary = QLabel("")
         self._summary.setStyleSheet("font-weight:600;margin:4px 0;")

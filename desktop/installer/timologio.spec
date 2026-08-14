@@ -131,6 +131,10 @@ a = Analysis(
         for path in (
             ICON,
             os.path.join(SPECPATH, "logo.svg"),
+            # Το σήμα του e-Τιμολόγιο Pro — το ίδιο που φοράει και η web
+            # εφαρμογή. Χωρίς αυτό, το πακεταρισμένο build πέφτει πίσω στη
+            # μονόχρωμη γλυφή του μενού.
+            os.path.join(SPECPATH, "etimologio-logo.png"),
             os.path.join(ROOT, "docs", "manual.pdf"),
         )
         if os.path.exists(path)

@@ -131,6 +131,9 @@ def test_every_tour_step_has_a_visible_target(seeded_window) -> None:
     Συνέβη: το δεξί panel έγινε «κλειστό όσο δεν υπάρχει επιλεγμένος πελάτης»
     και το βήμα της ανάλυσης έμεινε να δείχνει αέρα.
     """
+    # Η ξενάγηση ξεκινά από τη Λήψη Παραστατικών — στην οθόνη επιλογής
+    # εφαρμογής το μενού είναι σκόπιμα κρυμμένο.
+    seeded_window._leave_etimologio()
     blank = []
     for index, step in enumerate(seeded_window._tour_steps(), start=1):
         if step.before:

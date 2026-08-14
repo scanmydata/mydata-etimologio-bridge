@@ -68,6 +68,8 @@ class CreditNotePage(EtimPage):
         top.addWidget(title)
         top.addStretch(1)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Ακύρωση ή μερική πίστωση εκδοθέντος παραστατικού. Διάλεξέ το από τη λίστα — το ΜΑΡΚ δεν πληκτρολογείται."))
 
         note = QLabel(
             "Διάλεξε το παραστατικό από τη λίστα. Πλήρης αξία = ακύρωση, "

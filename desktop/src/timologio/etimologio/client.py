@@ -122,7 +122,17 @@ class EtimologioClient:
 
     def customers_cached(self) -> dict[str, Any]:
         """Instant local-cache read (no AADE login) → ``{success, rows: [...]}``."""
-        return self._call({"cached": "customers"})
+        return self.cached("customers")
+
+    def cached(self, kind: str) -> dict[str, Any]:
+        """The last stored snapshot of a dataset → ``{success, cached, rows}``.
+
+        No AADE round-trip: answers from the local DB in milliseconds. ``kind``
+        is one of ``customers|products|series|invtypes|categories|deductions|
+        drafts``. This is what makes the web feel instant — it renders the
+        cached rows first and refreshes in the background.
+        """
+        return self._call({"cached": kind})
 
     def lookup_afm(self, vat: str) -> dict[str, Any]:
         """Taxisnet lookup for a 9-digit ΑΦΜ → ``{customer|info: {name, address,
@@ -710,6 +720,16 @@ class EtimologioClient:
         """Record a single local payment (``buyer_vat, customer_name, pay_amount,
         pay_method, pay_date, mark, pay_notes``)."""
         data: dict[str, Any] = {"add_payment": 1}
+        data.update({k: v for k, v in fields.items() if v not in (None, "")})
+        return self._call(data=data, method="POST")
+
+    def update_payment(self, payment_id: int | str, **fields: Any) -> dict[str, Any]:
+        """Διόρθωση υπάρχουσας πληρωμής — ίδια πεδία με το :meth:`add_payment`.
+
+        Κρατά το ίδιο ``payment_id``: μια διόρθωση ποσού δεν πρέπει να γεννά νέα
+        κίνηση στην καρτέλα.
+        """
+        data: dict[str, Any] = {"update_payment": 1, "payment_id": payment_id}
         data.update({k: v for k, v in fields.items() if v not in (None, "")})
         return self._call(data=data, method="POST")
 

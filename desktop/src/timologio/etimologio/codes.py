@@ -71,15 +71,27 @@ def type_label(code: str) -> str:
 def series_for_type(all_series: list[dict[str, Any]], type_code: str) -> list[dict[str, Any]]:
     """Οι σειρές που ανήκουν στον συγκεκριμένο τύπο παραστατικού.
 
-    Το backend επιστρέφει τον τύπο μιας σειράς ως «2.1 - Τιμολόγιο…»· ταιριάζουμε
-    με τον αριθμητικό πρόθεμα («2.1») που υπάρχει και στη δική μας ετικέτα. Χωρίς
-    αυτό το φιλτράρισμα η ΑΑΔΕ απορρίπτει την έκδοση στο τέλος — αφού ο χρήστης
-    έχει συμπληρώσει ολόκληρο το παραστατικό (ή ολόκληρη την παρτίδα).
+    Ταιριάζουμε με το **``invoice_type_code``** — τον αριθμητικό κωδικό που
+    δίνει το ίδιο το backend (τον βγάζει από το ``data-bound-id`` της ΑΑΔΕ) και
+    που χρησιμοποιεί και το web.
+
+    Παλιότερα ταιριάζαμε με το κείμενο της ετικέτας («2.1»). Σε πραγματικό
+    λογαριασμό με πέντε σειρές, αυτό έβρισκε **δύο**: οι σειρές για 5.1, 11.4 και
+    9.3 ήταν αόρατες, επειδή οι τύποι τους δεν υπάρχουν στον δικό μας πίνακα και
+    το ``type_label`` γύριζε κενό. Το prefix μένει μόνο ως εφεδρεία για παλιά
+    cached δεδομένα που δεν έχουν ακόμη ``invoice_type_code``.
     """
-    dotted = type_label(type_code).split(" ", 1)[0]
+    code = str(type_code or "").strip()
+    if not code:
+        return []
+    exact = [s for s in all_series if str(s.get("invoice_type_code", "")).strip() == code]
+    if exact:
+        return exact
+    dotted = type_label(code).split(" ", 1)[0]
     if not dotted:
         return []
     return [
         s for s in all_series
-        if str(s.get("invoice_type", "")).strip().startswith(dotted)
+        if not str(s.get("invoice_type_code", "")).strip()
+        and str(s.get("invoice_type", "")).strip().startswith(dotted)
     ]

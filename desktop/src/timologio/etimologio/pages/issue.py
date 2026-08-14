@@ -41,7 +41,8 @@ from ..codes import (  # noqa: F401 — re-exported for the pages that already i
     series_for_type,
     type_label,
 )
-from .base import EtimPage, fmt_money, parse_money
+from . import ui
+from .base import EtimPage, cached_then_live, fmt_money, parse_money
 from .catalog import NewProductDialog
 from .customers import NewCustomerDialog
 from .dialogs import (
@@ -68,6 +69,9 @@ def _wizard_seen() -> bool:
 
 def _mark_wizard_seen() -> None:
     QSettings().setValue(_WIZARD_KEY, True)
+
+#: Η τιμή που σημαίνει «➕ Νέα σειρά…» μέσα στο dropdown σειράς.
+_NEW_SERIES = "__new_series"
 
 #: Editor columns.
 _COLS = ["Περιγραφή / Κωδικός", "Ποσότητα", "Τιμή μον.", "ΦΠΑ %", "Έκπτ. %", "Καθαρή", "Σύνολο"]
@@ -129,6 +133,8 @@ class IssuePage(EtimPage):
         new.clicked.connect(self.reset)
         top.addWidget(new)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Έκδοση τιμολογίων και αποδείξεων στην ΑΑΔΕ. Το «Πρόχειρο» δεν στέλνει τίποτα — ΜΑΡΚ δίνει μόνο η «Έκδοση»."))
 
         # --- header: type / series / payment -------------------------------
         head = QHBoxLayout()
@@ -152,6 +158,7 @@ class IssuePage(EtimPage):
         head.addWidget(self._payment, 1)
         box.addLayout(head)
         self._type.currentIndexChanged.connect(self._fill_series)
+        self._series.currentIndexChanged.connect(self._series_changed)
 
         self._series_warn = QLabel("")
         self._series_warn.setObjectName("hint")
@@ -551,17 +558,38 @@ class IssuePage(EtimPage):
 
     # --- φόρτωση πελατολογίου & σειρών --------------------------------------
     def refresh(self) -> None:
-        """Φέρνει πελάτες, είδη και σειρές μία φορά, όταν ανοίγει η σελίδα."""
+        """Φέρνει πελάτες, είδη και σειρές, με την cache πρώτα.
+
+        Χωρίς την cache, ο επιλογέας πελάτη έμενε άδειος ~4 δευτερόλεπτα μετά το
+        άνοιγμα της σελίδας — και όποιος τον άνοιγε σε εκείνο το διάστημα έβλεπε
+        μόνο το «➕ Νέος πελάτης…».
+        """
         client = self.client()
         if client is None or self._loaded:
             return
         self._loaded = True
+        self._picker.set_loading(True)
         self._status.setText("Φόρτωση πελατών, ειδών και σειρών…")
-        quiet = lambda _m: self._status.setText("")  # noqa: E731
-        self._run(client.customers, self._fill_customers, quiet)
-        self._run(client.series, self._got_series, quiet)
-        self._run(client.products, self._got_products, quiet)
-        self._run(client.product_categories, self._got_categories, quiet)
+        # Το ζωντανό βήμα είναι το `sync`: φέρνει τα ίδια δεδομένα ΚΑΙ γράφει το
+        # snapshot, ώστε το επόμενο άνοιγμα να είναι ακαριαίο.
+        cached_then_live(self._run, client, "customers",
+                         lambda: client.sync("customers"),
+                         self._fill_customers, self._load_failed)
+        cached_then_live(self._run, client, "series", lambda: client.sync("series"),
+                         self._got_series, self._load_failed)
+        cached_then_live(self._run, client, "products", lambda: client.sync("products"),
+                         self._got_products, self._load_failed)
+        self._run(client.product_categories, self._got_categories, lambda _m: None)
+
+    def _load_failed(self, message: str) -> None:
+        """Ένα αποτυχημένο φόρτωμα ΔΕΝ σβήνεται σιωπηλά.
+
+        Πριν, κάθε σφάλμα κατέληγε σε καθαρή γραμμή κατάστασης και άδειο
+        dropdown — και ο χρήστης δεν είχε τρόπο να μάθει ότι φταίει π.χ. ένας
+        λογαριασμός ΑΑΔΕ που δεν έχει ρυθμιστεί (το backend απαντά 409).
+        """
+        self._picker.set_loading(False)
+        self._status.setText(f"Τα δεδομένα δεν φορτώθηκαν: {message}")
 
     def invalidate(self) -> None:
         """Ξεχνά τα φορτωμένα δεδομένα — καλείται όταν αλλάζει εταιρεία.
@@ -578,14 +606,15 @@ class IssuePage(EtimPage):
         self._picker.set_rows([])
         self.refresh()
 
-    def _fill_customers(self, data: dict[str, Any]) -> None:
-        rows = data.get("customers") or data.get("rows") or []
+    def _fill_customers(self, rows: list[dict[str, Any]], from_cache: bool = False) -> None:
         self._customers = list(rows)
+        self._picker.set_loading(False)
         self._picker.set_rows(self._customers)
-        self._status.setText(f"{len(self._customers)} πελάτες διαθέσιμοι.")
+        note = " (τοπικά)" if from_cache else ""
+        self._status.setText(f"{len(self._customers)} πελάτες διαθέσιμοι{note}.")
 
-    def _got_products(self, data: dict[str, Any]) -> None:
-        self._products = list(data.get("products") or data.get("rows") or [])
+    def _got_products(self, rows: list[dict[str, Any]], _from_cache: bool = False) -> None:
+        self._products = list(rows)
         for r in range(self._table.rowCount()):
             picker = self._line_picker(r)
             if picker is not None:
@@ -643,27 +672,91 @@ class IssuePage(EtimPage):
         )
         self._run(call, created, self._failed)
 
-    def _got_series(self, data: dict[str, Any]) -> None:
-        self._all_series = list(data.get("series", []))
+    def _got_series(self, rows: list[dict[str, Any]], _from_cache: bool = False) -> None:
+        self._all_series = list(rows)
+        self._mark_types_without_series()
         self._fill_series()
+
+    def _mark_types_without_series(self) -> None:
+        """Σημειώνει στην ετικέτα ποιοι τύποι δεν έχουν σειρά.
+
+        Το web δείχνει μόνο όσους έχουν· εμείς κρατάμε όλη τη λίστα, αλλά πρέπει
+        να φαίνεται **πριν** συμπληρωθεί το παραστατικό ότι ο τύπος δεν είναι
+        εκδόσιμος.
+        """
+        self._type.blockSignals(True)
+        for index in range(self._type.count()):
+            code = str(self._type.itemData(index) or "")
+            base = type_label(code) or self._type.itemText(index)
+            has = bool(series_for_type(self._all_series, code))
+            self._type.setItemText(index, base if has else f"{base}  — χωρίς σειρά")
+        self._type.blockSignals(False)
 
     def _fill_series(self) -> None:
         """Δείχνει μόνο τις σειρές που ανήκουν στον επιλεγμένο τύπο."""
         code = str(self._type.currentData() or "")
         label = type_label(code)
         matching = series_for_type(self._all_series, code)
+        self._series.blockSignals(True)
         self._series.clear()
         for s in matching:
-            self._series.addItem(str(s.get("series_code", "")), str(s.get("series_code", "")))
+            description = str(s.get("description") or "").strip()
+            text = str(s.get("series_code", ""))
+            self._series.addItem(
+                f"{text} — {description}" if description else text, text
+            )
+        if not matching:
+            self._series.addItem("A", "A")
+        # «Νέα σειρά» μέσα στο ίδιο dropdown, όπως στο web: αλλιώς πρέπει να
+        # φύγεις στη σελίδα Σειρές και να γυρίσεις πίσω με άδεια φόρμα.
+        self._series.addItem("➕  Νέα σειρά…", _NEW_SERIES)
+        self._series.blockSignals(False)
         if matching:
             self._series_warn.hide()
         else:
-            self._series.addItem("A", "A")
             self._series_warn.setText(
-                f"⚠ Δεν υπάρχει σειρά για «{label}». Δημιουργήστε μία από τις "
-                "Σειρές, αλλιώς η ΑΑΔΕ θα απορρίψει την έκδοση."
+                f"⚠ Δεν υπάρχει σειρά για «{label}». Φτιάξε μία από το ίδιο "
+                "dropdown («➕ Νέα σειρά…»), αλλιώς η ΑΑΔΕ θα απορρίψει την έκδοση."
             )
             self._series_warn.show()
+
+    def _series_changed(self) -> None:
+        """«➕ Νέα σειρά…»: τη φτιάχνει επί τόπου και την επιλέγει."""
+        if str(self._series.currentData() or "") != _NEW_SERIES:
+            return
+        client = self.client()
+        code = str(self._type.currentData() or "")
+        if client is None:
+            self._fill_series()
+            return
+        from .catalog import NewSeriesDialog
+
+        dialog = NewSeriesDialog(self, invoice_type=code)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._fill_series()
+            return
+        fields = dialog.fields()
+
+        def created(result: dict[str, Any]) -> None:
+            if not result.get("success"):
+                self._failed(result.get("error", "Η σειρά δεν δημιουργήθηκε."))
+                self._fill_series()
+                return
+            self._status.setText(f"Η σειρά {fields['series_code']} δημιουργήθηκε.")
+            self._run(
+                client.series,
+                lambda data: self._after_new_series(data, fields["series_code"]),
+                self._failed,
+            )
+
+        self._status.setText("Δημιουργία σειράς…")
+        self._run(lambda: client.create_series(**fields), created, self._failed)
+
+    def _after_new_series(self, data: dict[str, Any], series_code: str) -> None:
+        self._got_series(list(data.get("series", [])))
+        index = self._series.findData(series_code)
+        if index >= 0:
+            self._series.setCurrentIndex(index)
 
     def _wizard_pick(self, who: str) -> None:
         """Διαλέγει τον πρώτο τύπο που ταιριάζει και κλείνει τον οδηγό.

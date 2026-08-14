@@ -193,6 +193,7 @@ class EtimologioShell(QWidget):
         # Κάθε ← περνά από το ιστορικό, ώστε να γυρίζει εκεί από όπου ήρθε ο
         # χρήστης — όχι πάντα στην αρχική.
         self._customers.open_card.connect(self._show_card)
+        self._card.credit_requested.connect(self._credit_from_card)
         self._notifications.unread_changed.connect(self.set_unread)
         self._settings.mode_change_requested.connect(self._switch_backend)
         self._drafts.open_in_issue.connect(self._edit_draft)
@@ -409,8 +410,11 @@ class EtimologioShell(QWidget):
         row.setContentsMargins(14, 6, 14, 6)
         row.setSpacing(8)
 
-        self._back_btn = ui.button("←", self.go_back, tip="Πίσω (Alt+←)")
-        self._back_btn.setFixedWidth(38)
+        # Κανονικό κουμπί με εικονίδιο και ετικέτα, όπως το «Πελάτες» της
+        # προβολής παραστατικών. Η γλυφή «←» σε κουμπί πλάτους 38 έβγαινε
+        # μικροσκοπική δίπλα στα υπόλοιπα κουμπιά της μπάρας.
+        self._back_btn = ui.button("Πίσω", self.go_back, icon_name="back",
+                                   tip="Επιστροφή στην προηγούμενη σελίδα (Alt+←)")
         row.addWidget(self._back_btn)
         self._crumb = QLabel("")
         self._crumb.setStyleSheet("font-weight:600;")
@@ -731,6 +735,11 @@ class EtimologioShell(QWidget):
         self._card.set_customers(self._customers.rows())
         self._card.set_customer(customer)
         self._stack.setCurrentWidget(self._card)
+
+    def _credit_from_card(self, invoice: dict) -> None:
+        """«↩ Ακύρωση» από την Καρτέλα → Πιστωτικό με το παραστατικό έτοιμο."""
+        self.open_section("credit")
+        self._credit.pick_invoice(invoice)
 
     def _edit_draft(self, draft: dict) -> None:
         """Ανοίγει ένα πρόχειρο στην Έκδοση για συνέχεια.

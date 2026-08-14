@@ -324,18 +324,29 @@ def arrow_image(color: str, size: int = 12) -> str:
 _logo_cache: dict[tuple[int, bool], QPixmap] = {}
 
 
-def _logo_path() -> Path | None:
-    """Το logo.svg, από το bundle ή από τον φάκελο του έργου."""
+#: Το λογότυπο του e-Τιμολόγιο Pro — αντίγραφο του εικονιδίου της web εφαρμογής
+#: (`assets/icons/app-icon-512.png`), ώστε οι δύο όψεις του ίδιου προϊόντος να
+#: έχουν το ίδιο σήμα.
+_ETIMOLOGIO_LOGO = "etimologio-logo.png"
+
+
+def _asset_path(name: str) -> Path | None:
+    """Ένα γραφικό του installer, από το bundle ή από τον φάκελο του έργου."""
     candidates: list[Path] = []
     base = getattr(sys, "_MEIPASS", "")
     if base:
-        candidates.append(Path(base) / "logo.svg")
+        candidates.append(Path(base) / name)
     here = Path(__file__).resolve()
-    candidates.append(here.parents[3] / "installer" / "logo.svg")
+    candidates.append(here.parents[3] / "installer" / name)
     for path in candidates:
         if path.exists():
             return path
     return None
+
+
+def _logo_path() -> Path | None:
+    """Το logo.svg, από το bundle ή από τον φάκελο του έργου."""
+    return _asset_path("logo.svg")
 
 
 def logo_pixmap(size: int = 38, etimologio: bool = False) -> QPixmap:
@@ -355,7 +366,22 @@ def logo_pixmap(size: int = 38, etimologio: bool = False) -> QPixmap:
     pixmap.fill(Qt.GlobalColor.transparent)
 
     if etimologio:
-        # Το ίδιο εικονίδιο που φέρει και η ενότητα στο μενού, στο χρώμα τόνου.
+        # Το πραγματικό σήμα του e-Τιμολόγιο Pro — το ίδιο αρχείο που φοράει και
+        # το web (`assets/icons/app-icon-512.png`, αντιγραμμένο στο installer/).
+        # Πριν ζωγραφίζαμε τη μονόχρωμη γλυφή του μενού, που δεν είναι το
+        # λογότυπο της εφαρμογής.
+        brand = _asset_path(_ETIMOLOGIO_LOGO)
+        if brand is not None:
+            source = QPixmap(str(brand))
+            if not source.isNull():
+                scaled = source.scaled(
+                    size, size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                _logo_cache[key] = scaled
+                return scaled
+        # Εφεδρεία: η γλυφή του μενού, αν λείπει το αρχείο.
         painter = QPainter(pixmap)
         # Τοπικό import, όπως κάνει και το theme.py προς τα εδώ: κρατά τα δύο
         # modules ανεξάρτητα κατά τη φόρτωση.

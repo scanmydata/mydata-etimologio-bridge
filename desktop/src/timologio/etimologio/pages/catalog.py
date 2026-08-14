@@ -184,6 +184,7 @@ class ProductsPage(ListPage):
         super().__init__(
             get_client, run, title="Είδη", columns=self._COLS,
             rows_key="products", stretch_col=1, parent=parent,
+            subtitle="Ο κατάλογος ειδών που τροφοδοτεί την Έκδοση. Η κατηγορία είναι υποχρεωτική για την ΑΑΔΕ.",
         )
         self._categories: list[dict[str, Any]] = []
         new = QPushButton("Νέο είδος")
@@ -268,7 +269,13 @@ class ProductsPage(ListPage):
 
 
 class NewSeriesDialog(_Dialog):
-    def __init__(self, parent=None, *, row: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        parent=None,
+        *,
+        row: dict[str, Any] | None = None,
+        invoice_type: str = "",
+    ) -> None:
         editing = row is not None
         super().__init__("Επεξεργασία σειράς" if editing else "Νέα σειρά", parent)
         row = row or {}
@@ -286,9 +293,17 @@ class NewSeriesDialog(_Dialog):
         self.form.addRow("Περιγραφή", self.description)
         self.add_buttons(self.code)
 
-        # Στο edit προεπιλέγουμε τον τύπο της σειράς — το backend επιστρέφει
-        # «2.1 - Τιμολόγιο…», η δική μας ετικέτα ξεκινά με τον ίδιο κωδικό.
-        current = str(row.get("invoice_type") or "")
+        # Ο κωδικός τύπου είναι το ασφαλές κλειδί — τον δίνει το backend ως
+        # `invoice_type_code` και τον περνά η Έκδοση όταν ζητά νέα σειρά για τον
+        # τύπο που δουλεύει ο χρήστης.
+        wanted = str(invoice_type or row.get("invoice_type_code") or "")
+        if wanted:
+            index = self.type.findData(wanted)
+            if index >= 0:
+                self.type.setCurrentIndex(index)
+
+        # Εφεδρεία για γραμμές που έχουν μόνο την ετικέτα («2.1 - Τιμολόγιο…»).
+        current = "" if wanted else str(row.get("invoice_type") or "")
         if current:
             dotted = current.split(" ", 1)[0]
             for index in range(self.type.count()):
@@ -319,6 +334,7 @@ class SeriesPage(ListPage):
         super().__init__(
             get_client, run, title="Σειρές", columns=self._COLS,
             rows_key="series", stretch_col=3, parent=parent,
+            subtitle="Σειρές αρίθμησης ανά τύπο παραστατικού. Χωρίς σειρά, ο τύπος δεν εκδίδεται.",
         )
         new = QPushButton("Νέα σειρά")
         new.clicked.connect(self._new)

@@ -69,6 +69,16 @@ class DraftClient(EtimologioClient):
         self.calls.append((dict(params or {}), dict(data) if data else None, method))
         return self.reply
 
+    def sync(self, kind: str):
+        """Οι σελίδες φορτώνουν με ``cached`` → ``sync`` (μόνο το δεύτερο
+        γράφει το snapshot)."""
+        from timologio.etimologio.pages.base import rows_of
+
+        source = {"customers": self.customers, "series": self.series,
+                  "products": self.products}.get(kind)
+        rows = rows_of(source()) if source else []
+        return {"success": True, "kind": kind, "rows": rows, "count": len(rows)}
+
     def customers(self, **_):
         return {"success": True, "customers": CUSTOMERS}
 

@@ -250,6 +250,8 @@ class CustomersPage(EtimPage):
         del_btn.clicked.connect(self._delete_customer)
         top.addWidget(del_btn)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Έξυπνη αναζήτηση και διαχείριση πελατολογίου. Διπλό κλικ ανοίγει την καρτέλα του πελάτη."))
 
         self._table = QTableWidget(0, len(_COLS))
         self._table.setHorizontalHeaderLabels([h for h, _ in _COLS])

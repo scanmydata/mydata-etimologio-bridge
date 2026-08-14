@@ -41,10 +41,12 @@ from ..ledgerpdf import build_ledger_pdf, entries_from
 from . import ui
 from .base import EtimPage, fmt_date, fmt_money, parse_money
 from .customers import _cust_value
+from .pickers import customer_picker
 
-#: Οι στήλες της ενιαίας κίνησης.
-_COLS: list[str] = ["Ημ/νία", "Κίνηση", "Χρέωση", "Πίστωση", "Υπόλοιπο"]
-_DATE, _LABEL, _DEBIT, _CREDIT, _BALANCE = range(5)
+#: Οι στήλες της ενιαίας κίνησης — ίδιες με του web (ΜΑΡΚ/σημειώσεις χωριστά
+#: από το είδος της κίνησης, ώστε να φιλτράρονται ανεξάρτητα).
+_COLS: list[str] = ["Ημ/νία", "Κίνηση", "Στοιχεία", "Χρέωση", "Πίστωση", "Υπόλοιπο"]
+_DATE, _LABEL, _DETAIL, _DEBIT, _CREDIT, _BALANCE = range(6)
 
 #: Payment method codes → labels. Kept as an alias so the pages that already
 #: import ``_METHODS`` from here keep working; the table itself lives in
@@ -69,6 +71,8 @@ class CustomerCard(EtimPage):
     """Ενιαία καρτέλα ενός πελάτη: κίνηση, υπόλοιπο, πληρωμές, εκτυπώσεις."""
 
     go_back = Signal()
+    #: Ζητά να ανοίξει το Πιστωτικό με προεπιλεγμένο το παραστατικό της γραμμής.
+    credit_requested = Signal(dict)
 
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(get_client, run, parent)
@@ -100,6 +104,30 @@ class CustomerCard(EtimPage):
                                 tip="Πακετάρει τα PDF των παραστατικών σε ένα ZIP"))
         top.addWidget(ui.button("Ανανέωση", self.refresh, icon_name="refresh"))
         box.addLayout(top)
+
+        box.addWidget(ui.page_hint(
+            "Τιμολόγια ΑΑΔΕ και τοπικές πληρωμές σε μία κίνηση, με τρέχον υπόλοιπο. "
+            "Διπλό κλικ: παραστατικό → PDF, πληρωμή → επεξεργασία."))
+
+        # Επιλογέας πελάτη μέσα στην ίδια τη σελίδα, όπως στο web: αλλιώς για να
+        # δεις άλλη καρτέλα πρέπει να φύγεις στους Πελάτες και να ξαναμπείς.
+        picker_row = QHBoxLayout()
+        picker_row.addWidget(QLabel("Πελάτης:"))
+        self._picker = customer_picker(placeholder="Αναζήτηση με επωνυμία ή ΑΦΜ…")
+        self._picker.picked.connect(self._picked_customer)
+        picker_row.addWidget(self._picker, 2)
+        picker_row.addStretch(1)
+        box.addLayout(picker_row)
+
+        # Τρία πλακίδια, όπως τα `cardCards` του web.
+        kpis = QHBoxLayout()
+        kpis.setSpacing(10)
+        self._kpi_invoiced = ui.stat_tile("—", "Τζίρος")
+        self._kpi_paid = ui.stat_tile("—", "Πληρωμές")
+        self._kpi_balance = ui.stat_tile("—", "Υπόλοιπο")
+        for tile in (self._kpi_invoiced, self._kpi_paid, self._kpi_balance):
+            kpis.addWidget(tile, 1)
+        box.addLayout(kpis)
 
         period = QHBoxLayout()
         self._period = QComboBox()
@@ -135,12 +163,27 @@ class CustomerCard(EtimPage):
         )
         self._table.doubleClicked.connect(lambda *_: self._open_entry())
         self._table.setToolTip(
-            "Διπλό κλικ: παραστατικό → άνοιγμα PDF · πληρωμή → διαγραφή"
+            "Διπλό κλικ: παραστατικό → άνοιγμα PDF · πληρωμή → επεξεργασία"
         )
         box.addWidget(self._table, 1)
         self._filter = ui.make_sortable(
-            self._table, "card/entries", filter_columns=[_DATE, _LABEL]
+            self._table, "card/entries", filter_columns=[_DATE, _LABEL, _DETAIL]
         )
+
+        # Ενέργειες για την επιλεγμένη γραμμή — το web τις έχει ως κουμπάκια σε
+        # κάθε γραμμή· εδώ μία μπάρα, ώστε ο πίνακας να μένει ταξινομήσιμος.
+        actions = QHBoxLayout()
+        actions.addWidget(ui.button("Άνοιγμα PDF", self._open_pdf, icon_name="pdf",
+                                    tip="Το PDF του επιλεγμένου παραστατικού"))
+        actions.addWidget(ui.button("↩ Ακύρωση / Πιστωτικό", self._credit_selected,
+                                    kind="danger",
+                                    tip="Πιστωτικό για το επιλεγμένο παραστατικό"))
+        actions.addWidget(ui.button("✎ Επεξεργασία πληρωμής", self._edit_payment,
+                                    tip="Διόρθωση ποσού, ημερομηνίας ή σημειώσεων"))
+        actions.addWidget(ui.button("✕ Διαγραφή πληρωμής", self._delete_selected,
+                                    kind="danger"))
+        actions.addStretch(1)
+        box.addLayout(actions)
 
         self._status = QLabel("")
         self._status.setObjectName("muted")
@@ -173,8 +216,9 @@ class CustomerCard(EtimPage):
         self.refresh()
 
     def set_customers(self, rows: list[dict[str, Any]]) -> None:
-        """Το πελατολόγιο, για τον επιλογέα του διαλόγου πληρωμής."""
+        """Το πελατολόγιο — για τον επιλογέα της σελίδας και του διαλόγου."""
         self._customers = list(rows or [])
+        self._picker.set_rows(self._customers)
 
     def refresh(self) -> None:
         client = self.client()
@@ -215,6 +259,7 @@ class CustomerCard(EtimPage):
             cells = (
                 ui.date_cell(str(entry.get("date", ""))),
                 ui.cell(self._label(entry)),
+                ui.cell(self._detail(entry)),
                 ui.money_cell(fmt_money(debit) if debit else ""),
                 ui.money_cell(fmt_money(credit) if credit else ""),
                 ui.money_cell(fmt_money(parse_money(entry.get("balance")))),
@@ -230,24 +275,30 @@ class CustomerCard(EtimPage):
         self._done()
 
     def _label(self, entry: dict[str, Any]) -> str:
+        """Το είδος της κίνησης — η στήλη πάνω στην οποία φιλτράρει κανείς."""
         if str(entry.get("kind")) == "payment":
-            parts = [
-                "Πληρωμή",
-                _METHODS.get(str(entry.get("method") or ""), ""),
-                str(entry.get("notes") or ""),
-            ]
-        else:
-            series, aa = entry.get("series"), entry.get("aa")
-            parts = [
-                str(entry.get("type") or "Παραστατικό"),
-                f"Σειρά {series} Αρ. {aa}" if series else "",
-                f"ΜΑΡΚ {entry.get('mark')}" if entry.get("mark") else "",
-            ]
+            method = _METHODS.get(str(entry.get("method") or ""), "")
+            return f"Πληρωμή · {method}" if method else "Πληρωμή"
+        series, aa = entry.get("series"), entry.get("aa")
+        parts = [
+            str(entry.get("type") or "Παραστατικό"),
+            f"Σειρά {series} Αρ. {aa}" if series else "",
+        ]
         return " · ".join(p for p in parts if p)
+
+    def _detail(self, entry: dict[str, Any]) -> str:
+        """Ό,τι ξεχωρίζει τη συγκεκριμένη κίνηση: ΜΑΡΚ ή σημείωση."""
+        if str(entry.get("kind")) == "payment":
+            return str(entry.get("notes") or "")
+        mark = str(entry.get("mark") or "")
+        return f"ΜΑΡΚ {mark}" if mark else ""
 
     def _done(self) -> None:
         opening = self._totals["opening"]
         self._status.setText(f"{len(self._entries)} κινήσεις")
+        ui.set_tile_value(self._kpi_invoiced, f"{fmt_money(self._totals['invoiced'])} €")
+        ui.set_tile_value(self._kpi_paid, f"{fmt_money(self._totals['paid'])} €")
+        ui.set_tile_value(self._kpi_balance, f"{fmt_money(self._totals['balance'])} €")
         self._summary.setText(
             f"ΑΦΜ: {_cust_value(self._customer, 'vat')}    ·    "
             + (f"Αρχικό υπόλοιπο: {fmt_money(opening)} €    ·    " if opening else "")
@@ -289,26 +340,102 @@ class CustomerCard(EtimPage):
             })
         return rows
 
+    def _picked_customer(self, row: dict[str, Any]) -> None:
+        """Αλλαγή πελάτη χωρίς να φύγει κανείς από την καρτέλα."""
+        self.set_customer(row)
+
+    def _selected_entry(self, kind: str = "") -> dict[str, Any] | None:
+        entry = self.entry_at(self._table.currentRow())
+        if entry is None:
+            self._status.setText("Διάλεξε πρώτα μια γραμμή.")
+            return None
+        if kind and str(entry.get("kind")) != kind:
+            self._status.setText(
+                "Διάλεξε πληρωμή." if kind == "payment" else "Διάλεξε παραστατικό."
+            )
+            return None
+        return entry
+
     def _open_entry(self) -> None:
+        """Διπλό κλικ: PDF για παραστατικό, **επεξεργασία** για πληρωμή.
+
+        Η διαγραφή έφευγε με διπλό κλικ — μια μη αναστρέψιμη ενέργεια στην πιο
+        εύκολη χειρονομία του πίνακα.
+        """
         entry = self.entry_at(self._table.currentRow())
         if entry is None:
             return
         if str(entry.get("kind")) == "payment":
-            self._delete_payment(entry)
+            self._edit_payment(entry)
+        else:
+            self._open_pdf(entry)
+
+    def _open_pdf(self, entry: dict[str, Any] | None = None) -> None:
+        client = self.client()
+        entry = entry if isinstance(entry, dict) else self._selected_entry("invoice")
+        if client is None or entry is None:
             return
         mark = str(entry.get("mark") or "")
-        if not mark:
-            return
-        client = self.client()
-        if client is None:
-            return
         row = next((r for r in self.invoice_rows() if r["mark"] == mark), None)
+        if row is None:
+            self._status.setText("Το παραστατικό δεν έχει ΜΑΡΚ.")
+            return
         self._status.setText("Λήψη PDF…")
         self._run(
             lambda: fetch_pdfs(client, [row]),
             lambda result: self._after_fetch(result, mode="open"),
             self._failed,
         )
+
+    def _credit_selected(self) -> None:
+        """Στέλνει το επιλεγμένο παραστατικό στο Πιστωτικό, όπως το web."""
+        entry = self._selected_entry("invoice")
+        if entry is None:
+            return
+        mark = str(entry.get("mark") or "")
+        if not mark:
+            self._status.setText("Χωρίς ΜΑΡΚ δεν υπάρχει τι να πιστωθεί.")
+            return
+        self.credit_requested.emit({
+            "mark": mark,
+            "net_value": entry.get("debit", 0),
+            "buyer_vat": _cust_value(self._customer, "vat"),
+            "buyer_name": _cust_value(self._customer, "name"),
+        })
+
+    def _edit_payment(self, entry: dict[str, Any] | None = None) -> None:
+        client = self.client()
+        entry = entry if isinstance(entry, dict) else self._selected_entry("payment")
+        if client is None or entry is None:
+            return
+        payment_id = entry.get("payment_id") or entry.get("id")
+        if not payment_id:
+            self._status.setText("Η πληρωμή δεν έχει κωδικό — δεν επεξεργάζεται.")
+            return
+        from .payments import NewPaymentDialog
+
+        row = {
+            **entry,
+            "customer_vat": _cust_value(self._customer, "vat"),
+            "customer_name": _cust_value(self._customer, "name"),
+            "amount": entry.get("credit", 0),
+        }
+        dialog = NewPaymentDialog(self, row=row)
+        dialog.set_customers(self._customers)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields = dialog.fields()
+        self._status.setText("Αποθήκευση αλλαγών…")
+        self._run(
+            lambda: client.update_payment(payment_id, **fields),
+            lambda _r: self.refresh(),
+            self._failed,
+        )
+
+    def _delete_selected(self) -> None:
+        entry = self._selected_entry("payment")
+        if entry is not None:
+            self._delete_payment(entry)
 
     # --- payments ----------------------------------------------------------
     def _new_payment(self) -> None:

@@ -90,6 +90,63 @@ def fmt_money(value: float) -> str:
     return f"{value:,.2f}".replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
+def cached_then_live(
+    run: RunFn,
+    client: Any,
+    kind: str,
+    live: Callable[[], Any],
+    on_rows: Callable[[list[dict[str, Any]], bool], None],
+    on_error: Callable[[str], None] | None = None,
+) -> None:
+    """Δείχνει αμέσως την τοπική cache, και ανανεώνει από την ΑΑΔΕ από πίσω.
+
+    Το web το κάνει έτσι (``cachedThenSync``) και γι' αυτό ανοίγει ακαριαία. Η
+    εφαρμογή υπολογιστή ρωτούσε κάθε φορά την ΑΑΔΕ: μετρημένα **4,3 δευτερόλεπτα
+    για το πελατολόγιο** και ~5 συνολικά, με τον επιλογέα πελάτη άδειο σε όλο
+    αυτό το διάστημα — που μοιάζει με «το dropdown δεν έχει τίποτα».
+
+    Το ``on_rows(rows, from_cache)`` καλείται μία ή δύο φορές: πρώτα με τα
+    caches (αν υπάρχουν) και μετά με τα ζωντανά.
+
+    **Το ζωντανό βήμα πρέπει να είναι το ``sync``**: μόνο αυτό γράφει το
+    snapshot στη βάση (``cache_set``). Καλώντας το απλό ``list_*`` η cache δεν
+    γεμίζει ποτέ και η επόμενη φόρτωση ξαναπερίμενε την ΑΑΔΕ.
+    """
+    def live_ok(data: dict[str, Any]) -> None:
+        rows = rows_of(data)
+        # Ένα άδειο sync δεν σβήνει ό,τι έδειξε η cache: μπορεί απλώς να μη
+        # γνωρίζει αυτό το είδος δεδομένων.
+        if rows or not data.get("kind"):
+            on_rows(rows, False)
+
+    def start_live(*_args: Any) -> None:
+        run(live, live_ok, on_error or (lambda _m: None))
+
+    def cache_ok(data: dict[str, Any]) -> None:
+        rows = data.get("rows") or []
+        if rows:
+            on_rows(list(rows), True)
+        # Το ζωντανό ξεκινά ΜΕΤΑ την ανάγνωση της cache, όχι παράλληλα: ο
+        # ενσωματωμένος server της PHP εξυπηρετεί **σειριακά**, οπότε μια
+        # παράλληλη γρήγορη ανάγνωση περίμενε πίσω από ένα sync 4 δευτερολέπτων
+        # και η cache δεν πρόφταινε να ωφελήσει κανέναν.
+        start_live()
+
+    run(lambda: client.cached(kind), cache_ok, start_live)
+
+
+def rows_of(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Οι γραμμές μιας απάντησης, όποιο κι αν είναι το κλειδί τους."""
+    if not isinstance(data, dict):
+        return []
+    for key in ("customers", "products", "series", "categories",
+                "product_categories", "items", "rows"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return list(value)
+    return []
+
+
 class EtimPage(QWidget):
     """Base for a native page: gives access to the client and the worker."""
 
@@ -125,6 +182,7 @@ class ListPage(EtimPage):
         title: str,
         columns: list[tuple[str, str]],
         rows_key: str,
+        subtitle: str = "",
         stretch_col: int = -1,
         newest_first: int | None = None,
         parent: QWidget | None = None,
@@ -149,6 +207,10 @@ class ListPage(EtimPage):
         refresh.clicked.connect(self.refresh)
         self.toolbar.addWidget(refresh)
         box.addLayout(self.toolbar)
+        if subtitle:
+            from . import ui as _ui
+
+            box.addWidget(_ui.page_hint(subtitle))
 
         self.table = QTableWidget(0, len(columns))
         self.table.setHorizontalHeaderLabels([h for h, _ in columns])

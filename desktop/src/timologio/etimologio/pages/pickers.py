@@ -69,6 +69,7 @@ class SearchPicker(QWidget):
     ) -> None:
         super().__init__(parent)
         self._rows: list[dict[str, Any]] = []
+        self._loading = False
         self._create_label = create_label
         self._label = label or (lambda row: str(row.get("name") or ""))
         self._detail = detail or (lambda _row: "")
@@ -109,9 +110,24 @@ class SearchPicker(QWidget):
 
     def set_rows(self, rows: Sequence[dict[str, Any]]) -> None:
         self._rows = [r for r in rows if isinstance(r, dict)]
+        if self._rows:
+            self._loading = False
+        if self.popup_visible():
+            self.show_popup()          # τα δεδομένα ήρθαν ενώ ήταν ανοιχτή
 
     def rows(self) -> list[dict[str, Any]]:
         return self._rows
+
+    def set_loading(self, loading: bool) -> None:
+        """Δηλώνει ότι τα δεδομένα είναι καθ' οδόν.
+
+        Το πελατολόγιο έρχεται από την ΑΑΔΕ σε ~4 δευτερόλεπτα. Χωρίς αυτή την
+        ένδειξη, όποιος άνοιγε τη λίστα σε εκείνο το διάστημα έβλεπε μόνο το
+        «➕ Νέο…» και συμπέραινε — εύλογα — ότι το dropdown δεν έχει τίποτα.
+        """
+        self._loading = bool(loading)
+        if self.popup_visible():
+            self.show_popup()
 
     def setEnabled(self, enabled: bool) -> None:  # noqa: N802
         super().setEnabled(enabled)
@@ -130,6 +146,10 @@ class SearchPicker(QWidget):
             item = QListWidgetItem(self._create_label)
             item.setData(_CREATE, True)
             self._popup.addItem(item)
+        if self._loading and not self._rows:
+            waiting = QListWidgetItem("⏳  Φόρτωση από την ΑΑΔΕ…")
+            waiting.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._popup.addItem(waiting)
         for row in matches:
             detail = self._detail(row)
             text = f"{self._label(row)}   ·   {detail}" if detail else self._label(row)

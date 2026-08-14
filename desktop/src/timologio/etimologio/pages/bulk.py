@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..codes import INVOICE_TYPES, PAYMENT_METHODS, series_for_type, type_label
+from . import ui
 from .base import EtimPage, parse_money
 from .pickers import customer_picker, customer_vat_picker, product_picker
 
@@ -57,6 +58,8 @@ class BulkPage(EtimPage):
         top.addWidget(title)
         top.addStretch(1)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Πολλά παραστατικά μαζί: κοινός τύπος, σειρά και τρόπος πληρωμής, μία γραμμή ανά πελάτη."))
 
         head = QHBoxLayout()
         self._type = QComboBox()

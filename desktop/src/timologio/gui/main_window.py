@@ -450,6 +450,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(_PAGES.index("launcher"))
         self.menu.set_active("clients")
         self.menu.set_enabled_action("documents", False)
+        self._chrome_for("launcher")
 
     def _build_status_bar(self) -> None:
         """Η γραμμή κατάστασης μένει για τα προσωρινά μηνύματα (showMessage).
@@ -651,6 +652,11 @@ class MainWindow(QMainWindow):
                 w.setProperty("help_text", stored)
             if stored:
                 w.setToolTip(stored if enabled else "")
+            # Οι επεξηγηματικές γραμμές κάτω από τους τίτλους των σελίδων —
+            # το αντίστοιχο των `<p class="sub">` του web — ακολουθούν τον ίδιο
+            # διακόπτη: «Βοηθητικά μηνύματα» σημαίνει όλες τις επεξηγήσεις.
+            if w.property("help_line"):
+                w.setVisible(enabled)
 
     def _refresh_tooltips(self) -> None:
         if not self._tooltips_on:
@@ -1107,7 +1113,21 @@ class MainWindow(QMainWindow):
     def _show_page(self, name: str) -> None:
         self.stack.setCurrentIndex(_PAGES.index(name))
         self.menu.set_active(name)
+        self._chrome_for(name)
         self._restyle_page(name)
+
+    def _chrome_for(self, name: str) -> None:
+        """Τι από το κέλυφος ταιριάζει σε κάθε σελίδα.
+
+        Στην οθόνη επιλογής εφαρμογής δεν έχει νόημα τίποτα από τα δύο: ούτε το
+        μενού μιας εφαρμογής που δεν έχεις ακόμη διαλέξει, ούτε ο «ενεργός
+        πελάτης». Και ο ενεργός πελάτης είναι έννοια **της Λήψης Παραστατικών**
+        — στο e-Τιμολόγιο η αντίστοιχη έννοια είναι η εταιρεία, που έχει δική
+        της μπάρα.
+        """
+        chooser = name == "launcher"
+        self.menu.setVisible(not chooser)
+        self.active_client.setVisible(not chooser and name != "etimologio")
 
     def _current_page(self) -> str:
         return _PAGES[self.stack.currentIndex()]
@@ -2092,6 +2112,11 @@ class MainWindow(QMainWindow):
 
     def start_tour(self) -> None:
         self._tour_pending = False
+        # Η ξενάγηση δείχνει widget της Λήψης Παραστατικών. Από την οθόνη
+        # επιλογής εφαρμογής (όπου το μενού είναι κρυμμένο) θα φώτιζε αέρα, οπότε
+        # μπαίνουμε πρώτα στην εφαρμογή που περιγράφει.
+        if self._current_page() == "launcher":
+            self._leave_etimologio()
         if self._tour is not None:
             self._tour.deleteLater()
         self._tour = Tour(self, self._tour_steps())

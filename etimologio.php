@@ -3506,6 +3506,23 @@ if ($addPaymentFlag) {
     jsonResponse(['success' => true, 'payment_id' => $id]);
 }
 
+// Διόρθωση υπάρχουσας πληρωμής (λάθος ποσό ή ημερομηνία). Δεν το έχει το web:
+// εκεί η μόνη διέξοδος είναι διαγραφή και νέα καταχώρηση, που αλλάζει το id.
+if (!empty($_GET['update_payment'] ?? $_POST['update_payment'] ?? '')) {
+    $pid = (int)($_GET['payment_id'] ?? $_POST['payment_id'] ?? 0);
+    if ($pid <= 0) jsonError('Λείπει το payment_id');
+    $ok = payment_update(COMPANY_VAT, $pid, [
+        'customer_vat'  => trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm),
+        'customer_name' => trim($_GET['customer_name'] ?? $_POST['customer_name'] ?? $name),
+        'amount'        => (float)($_GET['pay_amount'] ?? $_POST['pay_amount'] ?? $amount),
+        'method'        => (int)($_GET['pay_method'] ?? $_POST['pay_method'] ?? $payment),
+        'pay_date'      => trim($_GET['pay_date'] ?? $_POST['pay_date'] ?? ''),
+        'notes'         => trim($_GET['pay_notes'] ?? $_POST['pay_notes'] ?? ''),
+    ]);
+    if (!$ok) jsonError('Η πληρωμή δεν βρέθηκε σε αυτόν τον λογαριασμό');
+    jsonResponse(['success' => true, 'payment_id' => $pid]);
+}
+
 if ($deletePaymentId !== '') {
     $ok = payment_delete(COMPANY_VAT, (int)$deletePaymentId);
     jsonResponse(['success' => $ok, 'deleted' => $ok ? (int)$deletePaymentId : null]);

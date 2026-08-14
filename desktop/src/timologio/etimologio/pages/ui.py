@@ -54,6 +54,21 @@ def hint(text: str = "") -> QLabel:
     return label
 
 
+def page_hint(text: str) -> QLabel:
+    """Η επεξηγηματική γραμμή κάτω από τον τίτλο μιας σελίδας.
+
+    Το web έχει μία τέτοια κάτω από κάθε τίτλο (``<p class="sub">``, 36 συνολικά)
+    και εκεί μαθαίνει ο χρήστης τι κάνει η σελίδα. Στο native έλειπαν εντελώς.
+    Σημειώνονται με ``help_line`` ώστε ο διακόπτης «Βοηθητικά μηνύματα» να τις
+    σβήνει μαζί με τα tooltips.
+    """
+    label = QLabel(text)
+    label.setObjectName("muted")
+    label.setWordWrap(True)
+    label.setProperty("help_line", True)
+    return label
+
+
 def title(text: str) -> QLabel:
     label = QLabel(text)
     label.setStyleSheet("font-size:16px;font-weight:700;")

@@ -45,9 +45,17 @@ _PREVIEW_COLS = ["Ημ/νία", "Περιγραφή", "Ποσό", "ΑΦΜ πελ
 
 
 class NewPaymentDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    """Καταχώρηση ή **διόρθωση** πληρωμής.
+
+    Με ``row`` ανοίγει συμπληρωμένος για επεξεργασία· το ``payment_id`` του
+    επιβιώνει, ώστε η διόρθωση να μην γεννά δεύτερη κίνηση στην καρτέλα.
+    """
+
+    def __init__(self, parent=None, *, row: dict[str, Any] | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Νέα πληρωμή")
+        editing = row is not None
+        self.payment_id = (row or {}).get("payment_id") or (row or {}).get("id") or ""
+        self.setWindowTitle("Επεξεργασία πληρωμής" if editing else "Νέα πληρωμή")
         self.setMinimumWidth(340)
         form = QFormLayout(self)
         # Ο πελάτης επιλέγεται από τη λίστα· το ΑΦΜ γεμίζει μόνο του. Ένα
@@ -83,6 +91,25 @@ class NewPaymentDialog(QDialog):
         buttons.accepted.connect(lambda: self.accept() if parse_money(self.amount.text()) > 0 else self.amount.setFocus())
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+        if editing:
+            self.load(row or {})
+
+    def load(self, row: dict[str, Any]) -> None:
+        """Γεμίζει τη φόρμα από μια αποθηκευμένη πληρωμή."""
+        from .base import date_key
+
+        self.vat.setText(str(row.get("customer_vat") or row.get("buyer_vat") or ""))
+        self.name.setText(str(row.get("customer_name") or ""))
+        self.customer.setText(str(row.get("customer_name") or ""))
+        amount = parse_money(row.get("amount") or row.get("credit") or 0)
+        self.amount.setText(f"{amount:.2f}")
+        self.notes.setText(str(row.get("notes") or ""))
+        index = self.method.findData(str(row.get("method") or ""))
+        if index >= 0:
+            self.method.setCurrentIndex(index)
+        year, month, day = date_key(row.get("pay_date") or row.get("date"))
+        if year:
+            self.date.setDate(QDate(year, month, day))
 
     def _picked(self, row: dict[str, Any]) -> None:
         self.vat.setText(str(row.get("vat") or row.get("afm") or ""))
@@ -121,6 +148,8 @@ class PaymentsPage(EtimPage):
         top.addWidget(title)
         top.addStretch(1)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Τοπικό ταμείο: εισπράξεις ανά πελάτη και εισαγωγή από extrait τράπεζας. Η ΑΑΔΕ δεν γνωρίζει τις πληρωμές."))
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._ledger_tab(), "Πληρωμές")

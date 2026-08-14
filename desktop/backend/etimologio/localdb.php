@@ -429,6 +429,32 @@ function payment_add(string $accountVat, array $d): int {
     ]);
 }
 
+/**
+ * Ενημερώνει μια υπάρχουσα πληρωμή. Επιστρέφει false αν δεν ανήκει στον λογαριασμό.
+ *
+ * Η διαγραφή-και-νέα θα άλλαζε το id της κίνησης· η καρτέλα δείχνει πληρωμές με
+ * το id τους, οπότε μια διόρθωση ποσού δεν πρέπει να φτιάχνει άλλη εγγραφή.
+ */
+function payment_update(string $accountVat, int $id, array $d): bool {
+    $st = localdb()->prepare("
+        UPDATE payments
+           SET customer_vat = :cv, customer_name = :cn, amount = :amt,
+               method = :m, pay_date = :dt, notes = :nt
+         WHERE account_vat = :acc AND id = :id
+    ");
+    $st->execute([
+        ':acc' => $accountVat,
+        ':id'  => $id,
+        ':cv'  => trim($d['customer_vat']  ?? ''),
+        ':cn'  => enc(trim($d['customer_name'] ?? '')),
+        ':amt' => enc_num(round((float)($d['amount'] ?? 0), 2)),
+        ':m'   => (int)($d['method'] ?? 3),
+        ':dt'  => payment_date_iso((string)($d['pay_date'] ?? '')),
+        ':nt'  => enc(trim($d['notes'] ?? '')),
+    ]);
+    return $st->rowCount() > 0;
+}
+
 function payment_delete(string $accountVat, int $id): bool {
     $st = localdb()->prepare("DELETE FROM payments WHERE account_vat = :acc AND id = :id");
     $st->execute([':acc' => $accountVat, ':id' => $id]);

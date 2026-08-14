@@ -52,6 +52,13 @@ def app():
     yield existing or QApplication([])
 
 
+def _rows_of(data: dict) -> list:
+    """Οι γραμμές μιας απάντησης, όποιο κι αν είναι το κλειδί τους."""
+    from timologio.etimologio.pages.base import rows_of
+
+    return rows_of(data)
+
+
 def sync_run(fn, on_ok, on_err) -> None:
     """Τρέχει τον worker σύγχρονα, όπως το QThreadPool αλλά ντετερμινιστικά."""
     try:
@@ -71,6 +78,20 @@ class RecordingClient(EtimologioClient):
     def _call(self, params=None, data=None, method="GET"):  # type: ignore[override]
         self.calls.append((dict(params or {}), dict(data) if data else None, method))
         return self.reply
+
+    def sync(self, kind: str):
+        """Ό,τι κάνει το πραγματικό backend: ίδια δεδομένα, γραμμένα στην cache.
+
+        Οι σελίδες φορτώνουν με ``cached`` → ``sync``, γιατί **μόνο** το δεύτερο
+        γεμίζει το snapshot που κάνει το επόμενο άνοιγμα ακαριαίο.
+        """
+        source = {"customers": getattr(self, "customers", None),
+                  "series": getattr(self, "series", None),
+                  "products": getattr(self, "products", None)}.get(kind)
+        if not callable(source):
+            return super().sync(kind)          # άλλα είδη: η κανονική διαδρομή
+        rows = _rows_of(source())
+        return {"success": True, "kind": kind, "rows": rows, "count": len(rows)}
 
 
 class FakeClient:
@@ -302,9 +323,18 @@ def test_card_shows_one_ledger_with_a_running_balance(app) -> None:
     # Τιμολόγια 124+248 = 372· Πληρωμές 124· Υπόλοιπο 248.
     assert "248,00" in card._summary.text()
     # Τελευταία γραμμή: η πληρωμή, με πίστωση και τρέχον υπόλοιπο.
-    assert card._table.item(2, 3).text() == "124,00"
-    assert card._table.item(2, 4).text() == "248,00"
-    assert "Πληρωμή" in card._table.item(2, 1).text()
+    from timologio.etimologio.pages.card import _BALANCE, _CREDIT, _DETAIL, _LABEL
+
+    assert card._table.item(2, _CREDIT).text() == "124,00"
+    assert card._table.item(2, _BALANCE).text() == "248,00"
+    assert "Πληρωμή" in card._table.item(2, _LABEL).text()
+    # Η στήλη «Στοιχεία» ξεχωρίζει τη γραμμή: ΜΑΡΚ για παραστατικό, σημείωση
+    # για πληρωμή — όπως στο web.
+    assert card._table.item(2, _DETAIL).text() == "μετρητά"
+    assert card._table.item(0, _DETAIL).text() == "ΜΑΡΚ 400001"
+    # Τα τρία πλακίδια δείχνουν τα ίδια σύνολα με τη σύνοψη.
+    assert "372,00" in card._kpi_invoiced._value.text()
+    assert "248,00" in card._kpi_balance._value.text()
 
 
 def test_card_normalises_both_date_formats(app) -> None:
@@ -1673,3 +1703,143 @@ def test_palette_lists_customers_from_the_backend(app) -> None:
     palette.input.setText("094000000")
     palette._search_customers()
     assert fake.customer_kwargs == {"vat": "094000000"}
+
+
+# --- Αντιπαραβολή με το web: σειρές, καρτέλα, πληρωμές ----------------------
+
+def test_series_match_by_code_not_by_label(app) -> None:
+    """Σε πραγματικό λογαριασμό το ταίριασμα με ετικέτα έβρισκε 2 από 5 σειρές.
+
+    Οι σειρές για 5.1, 11.4 και 9.3 ήταν αόρατες: οι τύποι τους δεν υπάρχουν
+    στον δικό μας πίνακα, οπότε το `type_label` γύριζε κενό.
+    """
+    live = [
+        {"invoice_type": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών",
+         "invoice_type_code": "20", "series_code": "ΤΠΥ"},
+        {"invoice_type": "5.1 - Πιστωτικό Τιμολόγιο (Συσχετιζόμενο)",
+         "invoice_type_code": "50", "series_code": "ΠΤ"},
+        {"invoice_type": "9.3 - Δελτίο Αποστολής",
+         "invoice_type_code": "503", "series_code": "ΔΑ"},
+    ]
+    assert [s["series_code"] for s in series_for_type(live, "20")] == ["ΤΠΥ"]
+    assert [s["series_code"] for s in series_for_type(live, "50")] == ["ΠΤ"]
+    assert [s["series_code"] for s in series_for_type(live, "503")] == ["ΔΑ"]
+    assert series_for_type(live, "58") == []
+
+    # Παλιά cached δεδομένα χωρίς κωδικό: η ετικέτα μένει ως εφεδρεία.
+    legacy = [{"invoice_type": "2.1 - Τιμολόγιο Παροχής Υπηρεσιών", "series_code": "ΤΠΥ"}]
+    assert [s["series_code"] for s in series_for_type(legacy, "20")] == ["ΤΠΥ"]
+
+
+def test_issue_series_dropdown_offers_a_new_series(app) -> None:
+    """Στο web η «➕ Νέα σειρά…» είναι μέσα στο ίδιο dropdown."""
+    page = IssuePage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+    entries = [page._series.itemText(i) for i in range(page._series.count())]
+    assert entries[-1].startswith("➕")
+    assert "ΤΠΥ" in entries[0]
+
+
+def test_issue_marks_types_without_a_series(app) -> None:
+    """Ο τύπος χωρίς σειρά φαίνεται ΠΡΙΝ συμπληρωθεί το παραστατικό."""
+    page = IssuePage(lambda: IssueFullClient(), sync_run)
+    page.refresh()
+    labels = {page._type.itemData(i): page._type.itemText(i)
+              for i in range(page._type.count())}
+    assert "χωρίς σειρά" not in labels["20"]          # έχει ΤΠΥ
+    assert "χωρίς σειρά" in labels["1"]               # 1.1, καμία σειρά
+
+
+def test_issue_surfaces_a_failed_load(app) -> None:
+    """Ένα 409 δεν πρέπει να καταλήγει σε άδειο dropdown χωρίς εξήγηση."""
+    class Broken(IssueFullClient):
+        def customers(self, **_):
+            raise EtimologioError("409 Client Error: Conflict")
+
+    page = IssuePage(lambda: Broken(), sync_run)
+    page.refresh()
+    assert "409" in page._status.text()
+    assert page._picker.rows() == []
+
+
+def test_picker_says_it_is_still_loading(app) -> None:
+    from timologio.etimologio.pages.pickers import customer_picker
+
+    picker = customer_picker()
+    picker.set_loading(True)
+    picker.show_popup()
+    texts = [picker._popup.item(i).text() for i in range(picker._popup.count())]
+    assert any("Φόρτωση" in t for t in texts)
+
+    picker.set_rows([{"vat": "094039270", "name": "ΞΕΝΤΕ ΑΕ"}])
+    picker.show_popup()
+    texts = [picker._popup.item(i).text() for i in range(picker._popup.count())]
+    assert not any("Φόρτωση" in t for t in texts)
+    assert any("ΞΕΝΤΕ" in t for t in texts)
+
+
+def test_card_double_click_on_a_payment_edits_it(app) -> None:
+    """Η διαγραφή έφευγε με τη χειρονομία που όλοι κάνουν κατά λάθος."""
+    card = CustomerCard(lambda: FakeClient(), sync_run)
+    card.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
+
+    opened: list[dict] = []
+    card._edit_payment = lambda entry=None: opened.append(entry or {})
+    deleted: list[dict] = []
+    card._delete_payment = lambda entry: deleted.append(entry)
+
+    card._table.setCurrentCell(2, 0)                  # η γραμμή της πληρωμής
+    card._open_entry()
+    assert deleted == []
+    assert opened and opened[0].get("payment_id") == 7
+
+
+def test_card_can_switch_customer_from_inside(app) -> None:
+    """Στο web ο πελάτης αλλάζει μέσα στην καρτέλα· εδώ έπρεπε να φύγεις."""
+    fake = FakeClient()
+    card = CustomerCard(lambda: fake, sync_run)
+    card.set_customers([{"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"},
+                        {"vat": "802012659", "name": "MEGATECH ΙΚΕ"}])
+    assert len(card._picker.rows()) == 2
+    card._picked_customer({"vat": "802012659", "name": "MEGATECH ΙΚΕ"})
+    assert fake.ledger_vat == "802012659"
+    assert "MEGATECH" in card._title.text()
+
+
+def test_card_credit_button_hands_the_invoice_to_the_credit_page(app) -> None:
+    card = CustomerCard(lambda: FakeClient(), sync_run)
+    card.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
+    asked: list[dict] = []
+    card.credit_requested.connect(asked.append)
+
+    card._table.setCurrentCell(0, 0)                  # παραστατικό
+    card._credit_selected()
+    assert asked and asked[0]["mark"] == "400001"
+
+    card._table.setCurrentCell(2, 0)                  # πληρωμή → δεν πιστώνεται
+    card._credit_selected()
+    assert len(asked) == 1
+    assert "παραστατικό" in card._status.text()
+
+
+def test_update_payment_keeps_the_same_id() -> None:
+    client = RecordingClient()
+    client.update_payment(7, buyer_vat="094039270", pay_amount=50.0,
+                          pay_date="14/08/2026", pay_method="3")
+    data = client.calls[0][1]
+    assert data["update_payment"] == 1 and data["payment_id"] == 7
+    assert data["pay_amount"] == 50.0
+
+
+def test_payment_dialog_loads_an_existing_payment(app) -> None:
+    from timologio.etimologio.pages.payments import NewPaymentDialog
+
+    dialog = NewPaymentDialog(row={
+        "payment_id": 7, "customer_vat": "094039270", "customer_name": "ΞΕΝΤΕ ΑΕ",
+        "amount": 124.0, "method": "3", "pay_date": "2026-08-10", "notes": "μετρητά",
+    })
+    assert dialog.payment_id == 7
+    assert dialog.vat.text() == "094039270"
+    assert dialog.amount.text() == "124.00"
+    assert dialog.date.date().toString("dd/MM/yyyy") == "10/08/2026"
+    assert dialog.notes.text() == "μετρητά"
