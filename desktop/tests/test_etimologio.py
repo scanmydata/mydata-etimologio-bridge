@@ -87,7 +87,9 @@ class RecordingClient(EtimologioClient):
         """
         source = {"customers": getattr(self, "customers", None),
                   "series": getattr(self, "series", None),
-                  "products": getattr(self, "products", None)}.get(kind)
+                  "products": getattr(self, "products", None),
+                  "drafts": getattr(self, "temp_invoices", None),
+                  "invoices": getattr(self, "search_invoices", None)}.get(kind)
         if not callable(source):
             return super().sync(kind)          # άλλα είδη: η κανονική διαδρομή
         rows = _rows_of(source())
@@ -96,6 +98,17 @@ class RecordingClient(EtimologioClient):
 
 class FakeClient:
     """Ελάχιστος client για τις σελίδες: επιστρέφει σταθερά δεδομένα."""
+
+    def cached(self, kind: str):
+        """Άδεια cache — η σελίδα πρέπει να δουλεύει και χωρίς snapshot."""
+        return {"success": True, "cached": False, "kind": kind, "rows": []}
+
+    def sync(self, kind: str):
+        source = {"customers": getattr(self, "customers", None),
+                  "products": getattr(self, "products", None),
+                  "series": getattr(self, "series", None)}.get(kind)
+        rows = _rows_of(source()) if callable(source) else []
+        return {"success": True, "kind": kind, "rows": rows, "count": len(rows)}
 
     def __init__(self) -> None:
         self.customer_kwargs: dict[str, Any] = {}

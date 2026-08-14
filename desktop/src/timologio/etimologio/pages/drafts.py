@@ -43,6 +43,7 @@ class DraftsPage(ListPage):
         super().__init__(
             get_client, run, title="Πρόχειρα", columns=self._COLS,
             rows_key="temp_invoices", stretch_col=2, newest_first=1, parent=parent,
+            cache_kind="drafts",
             subtitle="Αποθηκευμένα προσχέδια χωρίς ΜΑΡΚ — προεπισκόπηση, μαζική εκτύπωση, ή συνέχεια στην Έκδοση.",
         )
         self.table.setColumnWidth(0, 34)

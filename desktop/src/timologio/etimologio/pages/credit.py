@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ui
-from .base import ROW_ROLE, EtimPage, fmt_money, parse_money
+from .base import ROW_ROLE, EtimPage, cached_then_live, fmt_money, parse_money
 from .pickers import customer_picker
 
 #: Στήλες του πίνακα παραστατικών προς πίστωση.
@@ -166,12 +166,11 @@ class CreditNotePage(EtimPage):
         client = self.client()
         if client is None or self._customer.rows():
             return
-        self._run(
-            client.customers,
-            lambda data: self._customer.set_rows(
-                data.get("customers") or data.get("rows") or []
-            ),
-            lambda _m: None,
+        self._customer.set_loading(True)
+        cached_then_live(
+            self._run, client, "customers", lambda: client.sync("customers"),
+            lambda rows, _from_cache: self._customer.set_rows(rows),
+            lambda _m: self._customer.set_loading(False),
         )
 
     def _picked_customer(self, row: dict[str, Any]) -> None:

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ui
-from .base import ROW_ROLE, EtimPage
+from .base import ROW_ROLE, EtimPage, cached_then_live
 
 #: Column order for the customers table: (header, source key).
 _COLS: list[tuple[str, str]] = [
@@ -291,6 +291,18 @@ class CustomersPage(EtimPage):
             return
         term = self._search.text().strip()
         self._status.setText("Φόρτωση…")
+        if not term:
+            # Χωρίς όρο αναζήτησης είναι «όλο το πελατολόγιο» — ακριβώς το
+            # snapshot που κρατά η τοπική cache. Ο πίνακας ήταν άδειος για ~6
+            # δευτερόλεπτα σε κάθε άνοιγμα της σελίδας, χωρίς κανέναν λόγο.
+            cached_then_live(
+                self._run, client, "customers", lambda: client.sync("customers"),
+                lambda rows, from_cache: self._fill(
+                    {"customers": rows, "_from_cache": from_cache}
+                ),
+                self._failed,
+            )
+            return
         # A digits-only term is almost certainly an ΑΦΜ; else a name.
         kwargs = {"vat": term} if term.isdigit() and len(term) >= 8 else {"name": term}
         self._run(lambda: client.customers(**kwargs), self._fill, self._failed)

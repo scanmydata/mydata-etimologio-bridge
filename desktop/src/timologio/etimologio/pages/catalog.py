@@ -183,7 +183,7 @@ class ProductsPage(ListPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(
             get_client, run, title="Είδη", columns=self._COLS,
-            rows_key="products", stretch_col=1, parent=parent,
+            rows_key="products", stretch_col=1, parent=parent, cache_kind="products",
             subtitle="Ο κατάλογος ειδών που τροφοδοτεί την Έκδοση. Η κατηγορία είναι υποχρεωτική για την ΑΑΔΕ.",
         )
         self._categories: list[dict[str, Any]] = []
@@ -333,7 +333,7 @@ class SeriesPage(ListPage):
     def __init__(self, get_client, run, parent=None) -> None:
         super().__init__(
             get_client, run, title="Σειρές", columns=self._COLS,
-            rows_key="series", stretch_col=3, parent=parent,
+            rows_key="series", stretch_col=3, parent=parent, cache_kind="series",
             subtitle="Σειρές αρίθμησης ανά τύπο παραστατικού. Χωρίς σειρά, ο τύπος δεν εκδίδεται.",
         )
         new = QPushButton("Νέα σειρά")

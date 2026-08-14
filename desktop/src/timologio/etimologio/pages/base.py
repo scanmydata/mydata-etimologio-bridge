@@ -146,8 +146,11 @@ def rows_of(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Οι γραμμές μιας απάντησης, όποιο κι αν είναι το κλειδί τους."""
     if not isinstance(data, dict):
         return []
+    # Η σειρά μετράει μόνο για απαντήσεις με πολλά κλειδιά· το «rows» μένει
+    # τελευταίο γιατί είναι το γενικό κλειδί των snapshot.
     for key in ("customers", "products", "series", "categories",
-                "product_categories", "items", "rows"):
+                "product_categories", "temp_invoices", "invoices",
+                "deductions", "items", "rows"):
         value = data.get(key)
         if isinstance(value, list):
             return list(value)
@@ -192,11 +195,16 @@ class ListPage(EtimPage):
         subtitle: str = "",
         stretch_col: int = -1,
         newest_first: int | None = None,
+        cache_kind: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(get_client, run, parent)
         self._columns = columns
         self._rows_key = rows_key
+        #: Το είδος snapshot που ξέρει το backend (`?sync=`/`?cached=`). Όταν
+        #: δίνεται, η σελίδα ανοίγει από την τοπική cache και ανανεώνεται από
+        #: πίσω, αντί να περιμένει την ΑΑΔΕ με άδειο πίνακα.
+        self._cache_kind = cache_kind
         self._rows: list[dict[str, Any]] = []
 
         box = QVBoxLayout(self)
@@ -257,7 +265,20 @@ class ListPage(EtimPage):
         if client is None:
             return
         self.status.setText("Φόρτωση…")
-        self._run(lambda: self.fetch(client), self._fill, self._failed)
+        if not self._cache_kind:
+            self._run(lambda: self.fetch(client), self._fill, self._failed)
+            return
+        kind = self._cache_kind
+        # Το αποτέλεσμα ξαναγίνεται απάντηση backend ώστε να περάσει από το
+        # ΙΔΙΟ `_fill` — οι υποκλάσεις το επεκτείνουν (π.χ. στήλη επιλογής στα
+        # Πρόχειρα) και δεν πρέπει να υπάρχει δεύτερος δρόμος γεμίσματος.
+        cached_then_live(
+            self._run, client, kind, lambda: client.sync(kind),
+            lambda rows, from_cache: self._fill(
+                {self._rows_key: rows, "_from_cache": from_cache}
+            ),
+            self._failed,
+        )
 
     def _fill(self, data: dict[str, Any]) -> None:
         from . import ui as _ui
@@ -281,7 +302,8 @@ class ListPage(EtimPage):
                 self.table.setItem(r, c, item)
         self.table.setSortingEnabled(True)
         _resort(self.table)
-        self.status.setText(f"{len(self._rows)} εγγραφές")
+        note = "   ·   τοπικά, ανανέωση από ΑΑΔΕ…" if data.get("_from_cache") else ""
+        self.status.setText(f"{len(self._rows)} εγγραφές{note}")
 
     def _failed(self, msg: str) -> None:
         self.status.setText(f"Σφάλμα: {msg}")

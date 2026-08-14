@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..codes import INVOICE_TYPES, PAYMENT_METHODS, series_for_type, type_label
 from . import ui
-from .base import EtimPage, parse_money
+from .base import EtimPage, cached_then_live, parse_money
 from .pickers import customer_picker, customer_vat_picker, product_picker
 
 _COLS = ["ΑΦΜ", "Επωνυμία", "Περιγραφή", "Ποσότητα", "Τιμή", "ΦΠΑ %", "Αποτέλεσμα"]
@@ -128,9 +128,19 @@ class BulkPage(EtimPage):
             return
         self._loaded = True
         quiet = lambda _m: self._status.setText("")  # noqa: E731
-        self._run(client.series, self._got_series, quiet)
-        self._run(client.customers, self._got_customers, quiet)
-        self._run(client.products, self._got_products, quiet)
+        # Cache πρώτα, ΑΑΔΕ από πίσω — ίδιο μοτίβο με την Έκδοση. Οι τρεις
+        # επιλογείς έμεναν άδειοι ~10 δευτερόλεπτα σε κάθε άνοιγμα.
+        for kind, key, handler in (
+            ("series", "series", self._got_series),
+            ("customers", "customers", self._got_customers),
+            ("products", "products", self._got_products),
+        ):
+            cached_then_live(
+                self._run, client, kind,
+                (lambda k=kind: client.sync(k)),
+                (lambda rows, _fc, k=key, h=handler: h({k: rows})),
+                quiet,
+            )
         self._run(client.product_categories, self._got_categories, quiet)
 
     def invalidate(self) -> None:
