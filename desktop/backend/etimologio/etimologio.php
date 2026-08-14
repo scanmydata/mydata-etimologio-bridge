@@ -156,6 +156,30 @@ function curlPostInvoice(\CurlHandle $ch, string $url, array $data): string {
     return curl_exec($ch);
 }
 
+/**
+ * Γιατί δεν ήρθε η σελίδα σύνδεσης της ΑΑΔΕ.
+ *
+ * Το σκέτο «Could not reach e-timologio» έστελνε τον χρήστη να ψάχνει βλάβη
+ * στην ΑΑΔΕ, ενώ η συνηθέστερη αιτία είναι τοπική: **PHP χωρίς CA bundle**
+ * (curl 60 — «unable to get local issuer certificate»). Ίδιο μήνυμα, ώρες
+ * χαμένες. Εδώ λέγεται η πραγματική αιτία και τι να ρυθμιστεί.
+ */
+function loginFailureReason(\CurlHandle $ch): string {
+    $errno = curl_errno($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    if ($errno === CURLE_SSL_CACERT || $errno === CURLE_PEER_FAILED_VERIFICATION || $errno === 60) {
+        return 'Η σύνδεση TLS με την ΑΑΔΕ απέτυχε (' . curl_error($ch) . '). '
+             . 'Λείπει CA bundle: όρισε curl.cainfo στο php.ini (π.χ. cacert.pem).';
+    }
+    if ($errno !== 0) {
+        return 'Δεν υπάρχει επικοινωνία με την ΑΑΔΕ: ' . curl_error($ch) . ' (curl ' . $errno . ')';
+    }
+    if ($status >= 400) {
+        return 'Η ΑΑΔΕ απάντησε HTTP ' . $status . ' στη σελίδα σύνδεσης.';
+    }
+    return 'Η σελίδα σύνδεσης της ΑΑΔΕ ήρθε χωρίς token — πιθανή αλλαγή της φόρμας ή ενδιάμεσος proxy.';
+}
+
 function getToken(\CurlHandle $ch, string $url): string {
     $html = curlGet($ch, $url);
     preg_match('/name="__RequestVerificationToken".*?value="([^"]+)"/', $html, $m);
@@ -172,7 +196,7 @@ function login(): \CurlHandle {
     curl_setopt($ch, CURLOPT_USERAGENT,      'Mozilla/5.0');
 
     $token = getToken($ch, BASE_URL . '/Account/Login');
-    if (!$token) jsonError('Could not reach e-timologio', 503);
+    if (!$token) jsonError(loginFailureReason($ch), 503);
 
     curlPost($ch, BASE_URL . '/Account/Login', [
         'UserName'                   => USERNAME,
@@ -235,6 +259,31 @@ function getFromTaxisnet(\CurlHandle $ch, string $afm): ?array {
         'zip'     => $data['z']  ?? '',
         'doy'     => $data['do'] ?? '',
     ];
+}
+
+/**
+ * Στοιχεία πελάτη από ΑΦΜ, με σειρά αξιοπιστίας: Taxisnet πρώτα (επίσημα και
+ * πάντα ενημερωμένα), αλλιώς η ίδια η καρτέλα πελάτη του e-timologio.
+ *
+ * Το δεύτερο βήμα υπάρχει επειδή το Taxisnet απαντά κενό για μη ενεργά ΑΦΜ και
+ * για ιδιώτες — και τότε το μόνο που έχουμε είναι ό,τι έχει ήδη καταχωρηθεί.
+ */
+function customerInfo(\CurlHandle $ch, string $afm): array {
+    $info = getFromTaxisnet($ch, $afm);
+    if ($info && trim((string)($info['name'] ?? '')) !== '') return $info;
+
+    $rows = listCustomers($ch, $afm)['customers'] ?? [];
+    foreach ($rows as $row) {
+        if ((string)($row['vat'] ?? '') !== $afm) continue;
+        return [
+            'name'    => (string)($row['name'] ?? ''),
+            'address' => (string)($row['address'] ?? ''),
+            'city'    => (string)($row['city'] ?? ''),
+            'zip'     => (string)($row['zip'] ?? ''),
+            'doy'     => (string)($row['doy'] ?? ''),
+        ];
+    }
+    return $info ?: [];
 }
 
 // --- 2b. GET CUSTOMER FROM E-TIMOLOGIO DATABASE (for foreign clients) --------
@@ -387,7 +436,15 @@ function createPersonalCustomer(
 function findOrCreateCustomer(\CurlHandle $ch, string $afm): array {
     $existing = searchCustomer($ch, $afm);
     if ($existing) {
-        return ['success' => true, 'status' => 'found', 'code' => $existing['code'], 'vat' => $afm];
+        // ΠΑΝΤΑ με στοιχεία, όχι μόνο για τους νεοδημιουργημένους: το UI καλεί
+        // αυτή τη διαδρομή για να συμπληρώσει επωνυμία/διεύθυνση/πόλη/ΤΚ, και
+        // για κάθε γνωστό πελάτη έπαιρνε σκέτο {status:'found'} — δηλαδή η
+        // «Άντληση» δεν άντλησε ποτέ τίποτα για όποιον ήταν ήδη καταχωρημένος.
+        return [
+            'success' => true, 'status' => 'found',
+            'code' => $existing['code'], 'vat' => $afm,
+            'info' => customerInfo($ch, $afm),
+        ];
     }
 
     $info = getFromTaxisnet($ch, $afm);
