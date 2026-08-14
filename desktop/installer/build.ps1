@@ -96,17 +96,19 @@ from timologio.etimologio.help import build_manual as build_etim_manual
 docs = Path('docs'); docs.mkdir(exist_ok=True)
 # Δύο εγχειρίδια, ένα ανά εφαρμογή. Και τα δύο χτίζονται ΕΔΩ και μπαίνουν έτοιμα
 # στο bundle: το runtime rendering στο πακεταρισμένο exe έβγαζε κενό PDF.
+# ΜΟΝΟ ASCII στα μηνύματα: η κονσόλα του build τρέχει σε codepage που δεν
+# κωδικοποιεί ελληνικά, και ένα print έριχνε ολόκληρο το build με UnicodeEncodeError.
 for label, build, out in (
     ('Downloader', build_manual, docs / 'manual.pdf'),
-    ('e-Τιμολόγιο', build_etim_manual, docs / 'etim-manual.pdf'),
+    ('e-Timologio', build_etim_manual, docs / 'etim-manual.pdf'),
 ):
     build(out)
     size = out.stat().st_size
     print('  ', label, out, size, 'bytes')
     if size < 20000:
-        raise SystemExit(f'Το εγχειρίδιο {out} βγήκε κενό ({size} bytes)')
+        raise SystemExit(f'ERROR: manual {out} came out empty ({size} bytes)')
 "@)
-if ($LASTEXITCODE -ne 0) { throw "Η δημιουργία των εγχειριδίων απέτυχε" }
+if ($LASTEXITCODE -ne 0) { throw "Manual build failed" }
 
 # --- Φορητή PHP για το e-Τιμολόγιο Pro ---------------------------------------
 # Το backend του e-Τιμολόγιο είναι PHP. Για να δουλεύει η offline λειτουργία σε
