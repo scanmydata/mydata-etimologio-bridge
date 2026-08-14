@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -66,6 +66,11 @@ class AssistantPanel(QFrame):
         self._data_dir = Path(data_dir)
         self._assistant = Assistant(customers, products)
         self._voice = None          # φτιάχνεται με το πρώτο πάτημα του μικροφώνου
+        self._speaker = None        # φτιάχνεται με την πρώτη εκφώνηση
+        # Η φωνή του βοηθού είναι ΑΝΟΙΧΤΗ από προεπιλογή, όπως στο web.
+        self._speak_on = bool(
+            QSettings().value("etimologio/assistant/speak", True, type=bool)
+        )
 
         self.setObjectName("card")
         box = QVBoxLayout(self)
@@ -77,6 +82,10 @@ class AssistantPanel(QFrame):
         title.setStyleSheet("font-weight:700;")
         head.addWidget(title)
         head.addStretch(1)
+        # Ο βοηθός του web απαντούσε φωναχτά· εδώ δεν μιλούσε καθόλου.
+        self._speak_btn = ui.button("🔊", self._toggle_speak)
+        self._speak_btn.setFixedWidth(38)
+        head.addWidget(self._speak_btn)
         head.addWidget(ui.button("✕", self.hide, tip="Κλείσιμο (Esc)"))
         box.addLayout(head)
 
@@ -107,6 +116,7 @@ class AssistantPanel(QFrame):
         row.addWidget(ui.button("Στείλε", self.submit, kind="primary"))
         box.addLayout(row)
 
+        self._sync_speak_button()
         self.setFixedSize(_WIDTH, _HEIGHT)
         self.hide()
         host.installEventFilter(self)
@@ -164,8 +174,37 @@ class AssistantPanel(QFrame):
         bar.setValue(bar.maximum())
 
     def say(self, text: str) -> None:
-        """Μήνυμα του βοηθού."""
+        """Μήνυμα του βοηθού — γραπτά, και φωναχτά αν υπάρχει ελληνική φωνή."""
         self._bubble(text, mine=False)
+        self._speak(text)
+
+    # --- φωνή του βοηθού ----------------------------------------------------
+    def _speak(self, text: str) -> None:
+        if not self._speak_on:
+            return
+        if self._speaker is None:
+            from ..speech import Speaker
+
+            self._speaker = Speaker()
+            if self._speaker.problem:
+                # Μία φορά, με τη σειρά που τη χρειάζεται ο χρήστης: δεν
+                # ακούγεται τίποτα ΚΑΙ ξέρει γιατί.
+                self._bubble("🔇  " + self._speaker.problem, mine=False)
+        self._speaker.say(text)
+
+    def _toggle_speak(self) -> None:
+        self._speak_on = not self._speak_on
+        QSettings().setValue("etimologio/assistant/speak", self._speak_on)
+        self._sync_speak_button()
+        if not self._speak_on and self._speaker is not None:
+            self._speaker.stop()
+
+    def _sync_speak_button(self) -> None:
+        self._speak_btn.setText("🔊" if self._speak_on else "🔇")
+        self._speak_btn.setToolTip(
+            "Ο βοηθός απαντά και φωναχτά" if self._speak_on
+            else "Ο βοηθός απαντά μόνο γραπτά"
+        )
 
     def _clear_choices(self) -> None:
         while self._choices.count():
@@ -237,6 +276,10 @@ class AssistantPanel(QFrame):
     def shutdown(self) -> None:
         if self._voice is not None:
             self._voice.stop()
+        # Μια εκφώνηση εν εξελίξει κρατά ζωντανή τη μηχανή ομιλίας και το
+        # κλείσιμο κολλάει, όπως ακριβώς και με το νήμα του μικροφώνου.
+        if self._speaker is not None:
+            self._speaker.stop()
 
 
 __all__ = ["AssistantPanel", "DraftSpec"]

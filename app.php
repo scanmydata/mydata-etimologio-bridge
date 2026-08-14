@@ -1186,12 +1186,29 @@ document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>showView(n.datas
 
 // Accounts
 async function initAccounts(){
-  try{const d=await api({accounts:1});const sel=$('#account');sel.innerHTML='';
-    (d.accounts||[]).forEach(a=>{const o=document.createElement('option');o.value=a.vat;o.textContent=a.label+' ('+a.vat+')';sel.appendChild(o);});
-    if(!(d.accounts||[]).length){const o=document.createElement('option');o.textContent='— κανένας λογαριασμός AADE —';sel.appendChild(o);}
-    ACCOUNT=d.active||(d.accounts[0]&&d.accounts[0].vat)||'';sel.value=ACCOUNT;
+  try{const d=await api({accounts:1});const sel=$('#account');
+    fillAccountSelect(sel,d.accounts||[],d.active||'');
     sel.onchange=()=>{ACCOUNT=sel.value;loadProductList();const v=document.querySelector('.nav-item.active').dataset.view;showView(v);};
   }catch(e){toast('Λογαριασμοί: '+e.message,'err');}
+}
+function fillAccountSelect(sel,accounts,active){
+  const previous=sel.value;
+  sel.innerHTML='';
+  accounts.forEach(a=>{const o=document.createElement('option');o.value=a.vat;o.textContent=a.label+' ('+a.vat+')';sel.appendChild(o);});
+  if(!accounts.length){const o=document.createElement('option');o.textContent='— κανένας λογαριασμός AADE —';sel.appendChild(o);}
+  // Η επιλογή επιβιώνει το ξαναγέμισμα, εκτός αν η εταιρεία δεν υπάρχει πια.
+  const keep=accounts.some(a=>a.vat===previous)?previous:'';
+  ACCOUNT=keep||active||(accounts[0]&&accounts[0].vat)||'';
+  sel.value=ACCOUNT;
+}
+// Ο επιλογέας εταιρείας ΔΕΝ ενημερωνόταν όταν προστίθετο ή αφαιρούνταν εταιρεία:
+// έπρεπε να ξαναφορτώσεις τη σελίδα για να δεις αυτή που μόλις καταχώρησες.
+async function refreshAccounts(){
+  try{const d=await api({accounts:1});
+    const before=ACCOUNT;
+    fillAccountSelect($('#account'),d.accounts||[],d.active||'');
+    if(ACCOUNT!==before){loadProductList();const nav=document.querySelector('.nav-item.active');if(nav)showView(nav.dataset.view);}
+  }catch(e){}
 }
 
 // Auth: logout, settings, admin
@@ -1290,7 +1307,8 @@ function renderAdmin(users){$('#adminUsers tbody').innerHTML=users.map(u=>{
     if(u.status==='pending'||u.status==='invited')act+=`<button class="primary sm" onclick="approveUser(${u.id})">Έγκριση</button> `;
     if(u.status!=='disabled')act+=`<button class="danger sm" onclick="setStatus(${u.id},'disabled')">Απενεργ.</button> `;
     else act+=`<button class="ghost sm" onclick="setStatus(${u.id},'active')">Ενεργοπ.</button> `;
-    act+=`<button class="ghost sm" onclick="resetPw(${u.id})">Reset</button>`;
+    act+=`<button class="ghost sm" onclick="resetPw(${u.id})">Reset</button> `;
+    act+=`<button class="danger sm" onclick="deleteUser(${u.id},'${q1(u.email)}')">Διαγραφή</button>`;
   }
   const accBtn=staff?'<span class="muted">όλες</span>':`<button class="ghost sm" onclick="openAcctModal(${u.id},'${q1(u.business_name||u.email)}')">Διαχείριση</button>`;
   return `<tr><td>${esc(u.business_name||'—')}</td><td>${esc(u.email)}</td><td>${roleCell}</td><td>${st}</td><td>${twofa}</td><td>${accBtn}</td><td class="right">${act}</td></tr>`;
@@ -1326,7 +1344,7 @@ async function createUser(){const vat=$('#uVat').value.trim(),name=$('#uName').v
   // fetch the new user's id, then link the AADE account
   const users=(await apost({auth:'admin_users'})).users||[];const nu=users.find(u=>u.email===email.toLowerCase());
   if(nu){await apost({auth:'admin_add_account',user_id:nu.id,vat,label:name,username,subkey:key});}
-  userModal.close();toast('Η επιχείρηση δημιουργήθηκε','ok');loadAdmin();}
+  userModal.close();toast('Η επιχείρηση δημιουργήθηκε','ok');loadAdmin();refreshAccounts();}
 let AM_USER=0;
 async function openAcctModal(userId,name){AM_USER=userId;$('#amUser').textContent=name;['amVat','amLabel','amUsername','amKey'].forEach(i=>$('#'+i).value='');await loadUserAccounts();acctModal.showModal();}
 async function loadUserAccounts(){const d=await apost({auth:'admin_user_accounts',user_id:AM_USER});
@@ -1337,9 +1355,24 @@ function amVatLookup(){clearTimeout(amVatT);amVatT=setTimeout(async()=>{const va
 async function addAccount(){const vat=$('#amVat').value.trim();if(!/^\d{9}$/.test(vat)){toast('ΑΦΜ 9 ψηφίων','err');return;}
   let label=$('#amLabel').value.trim();if(!label)label=await nameForVat(vat);
   const d=await apost({auth:'admin_add_account',user_id:AM_USER,vat,label,username:$('#amUsername').value,subkey:$('#amKey').value});
-  if(d.success){['amVat','amLabel','amUsername','amKey'].forEach(i=>$('#'+i).value='');toast('Προστέθηκε','ok');loadUserAccounts();}else toast(d.error||'Αποτυχία','err');}
-async function delAccount(id){if(!confirm('Διαγραφή λογαριασμού AADE;'))return;const d=await apost({auth:'admin_delete_account',account_id:id});if(d.success){toast('Διαγράφηκε','ok');loadUserAccounts();}else toast(d.error||'Αποτυχία','err');}
-async function delAccount(id){if(!confirm('Διαγραφή λογαριασμού AADE;'))return;const d=await apost({auth:'admin_delete_account',account_id:id});if(d.success){toast('Διαγράφηκε','ok');loadUserAccounts();}else toast(d.error||'Αποτυχία','err');}
+  if(d.success){['amVat','amLabel','amUsername','amKey'].forEach(i=>$('#'+i).value='');toast('Προστέθηκε','ok');loadUserAccounts();refreshAccounts();}else toast(d.error||'Αποτυχία','err');}
+// (Υπήρχε δύο φορές, πανομοιότυπη.)
+async function delAccount(id){if(!confirm('Διαγραφή λογαριασμού AADE;'))return;
+  const d=await apost({auth:'admin_delete_account',account_id:id});
+  if(d.success){toast('Διαγράφηκε','ok');loadUserAccounts();refreshAccounts();}else toast(d.error||'Αποτυχία','err');}
+// Οριστική διαγραφή χρήστη. Το backend αρνείται τον εαυτό σου και τον τελευταίο
+// διαχειριστή — εδώ λέμε μόνο πόσες εταιρείες φεύγουν μαζί, γιατί τα κλειδιά
+// ΑΑΔΕ τους σβήνονται μαζί τους και δεν ανακτώνται.
+async function deleteUser(id,email){
+  let extra='';
+  try{const a=await apost({auth:'admin_user_accounts',user_id:id});
+    const n=(a.accounts||[]).length;
+    if(n)extra=`\n\nΜαζί του διαγράφονται ${n} εταιρείες με τα κλειδιά ΑΑΔΕ τους.`;
+  }catch(e){}
+  if(!confirm(`Οριστική διαγραφή του «${email}»;${extra}\n\nΗ ενέργεια δεν αναιρείται.`))return;
+  const d=await apost({auth:'admin_delete_user',user_id:id});
+  if(d.success){toast('Ο χρήστης διαγράφηκε','ok');loadAdmin();refreshAccounts();}
+  else toast(d.error||'Αποτυχία','err');}
 
 // Statistics
 let STAT_PERIOD='month';

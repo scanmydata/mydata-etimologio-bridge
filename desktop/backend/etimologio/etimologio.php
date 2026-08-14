@@ -3199,7 +3199,8 @@ if ($authAction !== '') {
         case 'admin_users': case 'admin_approve': case 'admin_set_status':
         case 'admin_reset_pw': case 'admin_add_account': case 'admin_update_account':
         case 'admin_delete_account': case 'admin_user_accounts': case 'admin_create_user':
-        case 'admin_accounts': case 'admin_invite': case 'admin_set_role': {
+        case 'admin_accounts': case 'admin_invite': case 'admin_set_role':
+        case 'admin_delete_user': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             switch ($authAction) {
                 case 'admin_users':
@@ -3259,6 +3260,26 @@ if ($authAction !== '') {
                     jsonResponse(['success' => true]);
                 case 'admin_delete_account':
                     jsonResponse(['success' => account_delete((int)($_POST['account_id'] ?? 0))]);
+                case 'admin_delete_user': {
+                    // Οριστική διαγραφή. Δύο φύλακες, γιατί και τα δύο λάθη
+                    // κλειδώνουν έξω από την εφαρμογή χωρίς επιστροφή:
+                    // (α) να σβήσεις τον εαυτό σου, (β) να σβήσεις τον
+                    // τελευταίο διαχειριστή.
+                    $uid = (int)($_POST['user_id'] ?? 0);
+                    $me  = current_user();
+                    if ($uid <= 0) jsonError('Λείπει ο χρήστης');
+                    if ($uid === (int)($me['id'] ?? 0)) jsonError('Δεν μπορείτε να διαγράψετε τον εαυτό σας');
+                    $target = user_by_id($uid);
+                    if (!$target) jsonError('Ο χρήστης δεν βρέθηκε', 404);
+                    if (($target['role'] ?? '') === 'master' && users_count_master() <= 1) {
+                        jsonError('Δεν μπορείτε να διαγράψετε τον τελευταίο διαχειριστή');
+                    }
+                    $accounts = count(accounts_for_user($uid));
+                    jsonResponse([
+                        'success' => user_delete($uid),
+                        'deleted_accounts' => $accounts,
+                    ]);
+                }
             }
         }
         default:

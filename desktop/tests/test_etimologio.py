@@ -2028,3 +2028,187 @@ def _inflatable(blob: bytes) -> bool:
     except zlib.error:
         return False
     return True
+
+
+# --- Τρίτος γύρος: cache παντού, εταιρείες, διαγραφή χρήστη, φωνή -----------
+
+def test_list_pages_open_from_the_cache(app) -> None:
+    """Πελάτες/Είδη/Σειρές ρωτούσαν την ΑΑΔΕ σε ΚΑΘΕ άνοιγμα."""
+    class Cached(IssueFullClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.synced: list[str] = []
+
+        def cached(self, kind: str):
+            rows = {"products": [{"product_code": "ΥΠ001", "description": "Από cache"}],
+                    "series": [{"invoice_type": "2.1", "series_code": "ΤΠΥ"}],
+                    "customers": [{"code": "C9", "vat": "094039270", "name": "ΑΠΟ CACHE"}],
+                    }.get(kind, [])
+            return {"success": True, "cached": bool(rows), "kind": kind, "rows": rows}
+
+        def sync(self, kind: str):
+            self.synced.append(kind)
+            return super().sync(kind)
+
+    client = Cached()
+    page = ProductsPage(lambda: client, sync_run)
+    page.refresh()
+    # Η cache φάνηκε ΠΡΩΤΗ, και το sync έτρεξε από πίσω ώστε να μείνει φρέσκια.
+    assert "products" in client.synced
+    assert page.table.rowCount() == 2                 # τα ζωντανά του IssueFullClient
+
+    customers = CustomersPage(lambda: Cached(), sync_run)
+    customers.refresh()
+    assert customers._table.rowCount() == 2
+
+    # Με όρο αναζήτησης ΔΕΝ χρησιμοποιείται η cache — δεν είναι όλο το πελατολόγιο.
+    searching = Cached()
+    page2 = CustomersPage(lambda: searching, sync_run)
+    page2._search.setText("ΞΕΝΤΕ")
+    page2.refresh()
+    assert "customers" not in searching.synced
+
+
+def test_empty_sync_reaches_a_page_with_no_cache(app) -> None:
+    """Εταιρεία χωρίς σειρές έμενε με τελείως άδειο dropdown."""
+    seen: list[list] = []
+
+    class Empty(RecordingClient):
+        def cached(self, kind: str):
+            return {"success": True, "cached": False, "kind": kind, "rows": []}
+
+        def sync(self, kind: str):
+            return {"success": True, "kind": kind, "rows": [], "count": 0}
+
+    from timologio.etimologio.pages.base import cached_then_live
+
+    client = Empty()
+    cached_then_live(sync_run, client, "series", lambda: client.sync("series"),
+                     lambda rows, _fc: seen.append(list(rows)))
+    assert seen == [[]]                                # έφτασε, άδειο αλλά έφτασε
+
+    # Όταν η cache ΕΧΕΙ δείξει κάτι, ένα άδειο sync δεν το σβήνει.
+    class Warm(Empty):
+        def cached(self, kind: str):
+            return {"success": True, "cached": True, "kind": kind,
+                    "rows": [{"series_code": "ΤΠΥ"}]}
+
+    seen.clear()
+    warm = Warm()
+    cached_then_live(sync_run, warm, "series", lambda: warm.sync("series"),
+                     lambda rows, _fc: seen.append(list(rows)))
+    assert len(seen) == 1 and seen[0][0]["series_code"] == "ΤΠΥ"
+
+
+class CompanyClient(RecordingClient):
+    def admin_accounts(self):
+        return {"success": True, "accounts": [
+            {"id": 1, "vat": "802576637", "label": "ΤΟ ΒΑΨΙΜΟ", "username": "U1",
+             "owner_email": "admin@localhost"},
+            {"id": 2, "vat": "094039270", "label": "ΞΕΝΤΕ ΑΕ", "username": "U2",
+             "owner_email": "admin@localhost"},
+        ]}
+
+
+def test_companies_page_lists_and_opens(app) -> None:
+    """Το γραφείο χρειάζεται κατάλογο εταιρειών, όχι ένα «＋» δίπλα σε dropdown."""
+    from timologio.etimologio.pages import CompaniesPage
+
+    page = CompaniesPage(lambda: CompanyClient(), sync_run)
+    page.refresh()
+    assert page.table.rowCount() == 2
+    # Ο πίνακας ταξινομείται, οπότε η σειρά των γραμμών δεν είναι η σειρά φόρτωσης.
+    labels = {page.table.item(r, 1).text() for r in range(page.table.rowCount())}
+    assert labels == {"ΤΟ ΒΑΨΙΜΟ", "ΞΕΝΤΕ ΑΕ"}
+
+    opened: list[str] = []
+    page.open_company.connect(opened.append)
+    row = next(r for r in range(page.table.rowCount())
+               if page.table.item(r, 1).text() == "ΞΕΝΤΕ ΑΕ")
+    page.table.setCurrentCell(row, 0)
+    page._open_selected()
+    assert opened == ["094039270"]
+
+
+def test_companies_delete_refreshes_the_switcher(app) -> None:
+    """Η προσθαφαίρεση εταιρείας πρέπει να φτάνει ΑΜΕΣΩΣ στον επιλογέα."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from timologio.etimologio.pages import CompaniesPage
+
+    client = CompanyClient()
+    page = CompaniesPage(lambda: client, sync_run)
+    page.refresh()
+    notified: list[int] = []
+    page.accounts_changed.connect(lambda: notified.append(1))
+
+    page.table.setCurrentCell(0, 0)
+    original = QMessageBox.question
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    try:
+        page._delete()
+    finally:
+        QMessageBox.question = original
+    assert client.calls[-1][0]["auth"] == "admin_delete_account"
+    assert notified == [1]
+
+
+def test_edit_company_keeps_the_stored_key_when_left_blank(app) -> None:
+    """Το κλειδί δεν επιστρέφεται από το backend — κενό πεδίο δεν το σβήνει."""
+    from timologio.etimologio.pages.companies import EditCompanyDialog
+
+    dialog = EditCompanyDialog(row={"id": 3, "vat": "802576637", "label": "Χ",
+                                    "username": "U", "subkey": "ΚΛΕΙΔΙ"})
+    assert dialog.fields()["subkey"] == "ΚΛΕΙΔΙ"
+    dialog.subkey.setText("ΝΕΟ")
+    assert dialog.fields()["subkey"] == "ΝΕΟ"
+
+
+def test_admin_delete_user_sends_the_id() -> None:
+    client = RecordingClient()
+    client.admin_delete_user(7)
+    params, data, method = client.calls[0]
+    assert params["auth"] == "admin_delete_user" and data["user_id"] == 7
+    assert method == "POST"
+
+
+def test_speaker_stays_silent_without_a_greek_voice(app) -> None:
+    """Ελληνικά με αγγλική φωνή ακούγονται σαν σφάλμα — καλύτερα σιωπή + αιτία."""
+    from timologio.etimologio.speech import MISSING_VOICE_HINT, Speaker
+
+    speaker = Speaker()
+    if speaker.available:
+        assert speaker.problem == ""          # το μηχάνημα έχει ελληνική φωνή
+    else:
+        assert speaker.problem
+        assert speaker.say("δοκιμή") is False
+    # Ό,τι κι αν συμβεί, το μήνυμα λέει πού μπαίνει η φωνή.
+    assert "Ελληνικά" in MISSING_VOICE_HINT
+
+
+def test_card_reopens_on_the_last_customer(app) -> None:
+    """Η καρτέλα από το μενού άνοιγε πάντα άδεια."""
+    card = CustomerCard(lambda: FakeClient(), sync_run)
+    card.set_account("802576637")
+    card.set_customers([
+        {"code": "C1", "vat": "094000000", "name": "ΑΛΦΑ ΑΕ"},
+        {"code": "C2", "vat": "094039270", "name": "ΒΗΤΑ ΑΕ"},
+    ])
+    card.set_customer({"vat": "094039270", "name": "ΒΗΤΑ ΑΕ"})
+
+    again = CustomerCard(lambda: FakeClient(), sync_run)
+    again.set_account("802576637")
+    again.set_customers([
+        {"code": "C1", "vat": "094000000", "name": "ΑΛΦΑ ΑΕ"},
+        {"code": "C2", "vat": "094039270", "name": "ΒΗΤΑ ΑΕ"},
+    ])
+    assert again._customer.get("vat") == "094039270"
+
+    # Άλλη εταιρεία, άλλη μνήμη — και το invalidate καθαρίζει τη σελίδα.
+    other = CustomerCard(lambda: FakeClient(), sync_run)
+    other.set_account("999999999")
+    other.set_customers([{"code": "C1", "vat": "094000000", "name": "ΑΛΦΑ ΑΕ"}])
+    assert other._customer == {}
+    other.set_customer({"vat": "094000000", "name": "ΑΛΦΑ ΑΕ"})
+    other.invalidate()
+    assert other._customer == {} and other._table.rowCount() == 0

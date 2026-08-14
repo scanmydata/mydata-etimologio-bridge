@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDate, Qt, QUrl, Signal
+from PySide6.QtCore import QDate, QSettings, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -79,6 +79,7 @@ class CustomerCard(EtimPage):
         self._customer: dict[str, Any] = {}
         self._entries: list[dict[str, Any]] = []
         self._customers: list[dict[str, Any]] = []
+        self._account = ""
         self._totals = {"invoiced": 0.0, "paid": 0.0, "balance": 0.0, "opening": 0.0}
 
         box = QVBoxLayout(self)
@@ -209,16 +210,59 @@ class CustomerCard(EtimPage):
     # --- data --------------------------------------------------------------
     def set_customer(self, customer: dict[str, Any]) -> None:
         self._customer = dict(customer or {})
+        self._remember(self._customer)
         name = _cust_value(self._customer, "name")
         vat = _cust_value(self._customer, "vat")
         self._title.setText(f"Καρτέλα: {name}" if name else "Καρτέλα πελάτη")
         self._summary.setText(f"ΑΦΜ: {vat}" if vat else "")
         self.refresh()
 
+    def set_account(self, vat: str) -> None:
+        """Ποια εταιρεία βλέπουμε — η «τελευταία καρτέλα» θυμάται ανά εταιρεία."""
+        self._account = str(vat or "")
+
+    def invalidate(self) -> None:
+        """Αλλαγή εταιρείας: η καρτέλα του προηγούμενου πελάτη δεν ισχύει πια."""
+        self._customers = []
+        self._customer = {}
+        self._entries = []
+        self._picker.set_rows([])
+        self._picker.line_edit().clear()
+        self._table.setRowCount(0)
+        self._title.setText("Καρτέλα πελάτη")
+        self._summary.setText("")
+
     def set_customers(self, rows: list[dict[str, Any]]) -> None:
         """Το πελατολόγιο — για τον επιλογέα της σελίδας και του διαλόγου."""
         self._customers = list(rows or [])
         self._picker.set_rows(self._customers)
+        if not self._customer:
+            self._restore_last()
+
+    # --- τελευταίος πελάτης -------------------------------------------------
+    def _settings_key(self) -> str:
+        return f"etimologio/card/last/{self._account or 'default'}"
+
+    def _remember(self, customer: dict[str, Any]) -> None:
+        vat = _cust_value(customer, "vat")
+        if vat:
+            QSettings().setValue(self._settings_key(), vat)
+
+    def _restore_last(self) -> None:
+        """Ανοίγει στον πελάτη που κοίταζες τελευταία φορά.
+
+        Η καρτέλα από το μενού άνοιγε πάντα άδεια, με έναν επιλογέα να περιμένει
+        — και «άδεια καρτέλα» είναι ακριβώς αυτό που φαίνεται. Ο λογιστής
+        δουλεύει τον ίδιο φάκελο για ώρα· η μνήμη τον ξαναβρίσκει.
+        """
+        vat = str(QSettings().value(self._settings_key(), "", type=str) or "")
+        if not vat:
+            return
+        row = next(
+            (r for r in self._customers if _cust_value(r, "vat") == vat), None
+        )
+        if row is not None:
+            self.set_customer(row)
 
     def load_customers(self) -> None:
         """Γεμίζει μόνη της τον επιλογέα — cache πρώτα, ΑΑΔΕ από πίσω.

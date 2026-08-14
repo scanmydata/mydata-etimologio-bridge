@@ -283,6 +283,22 @@ function users_count_master(): int {
     return (int)localdb()->query("SELECT COUNT(*) FROM users WHERE role='master'")->fetchColumn();
 }
 
+/**
+ * Οριστική διαγραφή χρήστη ΜΑΖΙ με τις εταιρείες του.
+ *
+ * Η απενεργοποίηση κρατά τη γραμμή για πάντα: ένας λογιστής που έφυγε μένει
+ * στη λίστα, με τα κρυπτογραφημένα κλειδιά των πελατών του δίπλα. Η διαγραφή
+ * αφαιρεί και τα δύο. Οι φύλακες (τελευταίος master, ο εαυτός σου) είναι στο
+ * επίπεδο της διαδρομής, όχι εδώ — εδώ γίνεται η πράξη.
+ */
+function user_delete(int $id): bool {
+    $db = localdb();
+    $db->prepare("DELETE FROM aade_accounts WHERE user_id = :u")->execute([':u' => $id]);
+    $st = $db->prepare("DELETE FROM users WHERE id = :id");
+    $st->execute([':id' => $id]);
+    return $st->rowCount() > 0;
+}
+
 // --- Auth: AADE accounts ----------------------------------------------------
 
 function account_row(array $r): array {

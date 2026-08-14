@@ -844,6 +844,16 @@ class EtimologioClient:
             {"auth": "admin_reset_pw"}, data={"user_id": user_id}, method="POST"
         )
 
+    def admin_delete_user(self, user_id: int) -> dict[str, Any]:
+        """Οριστική διαγραφή χρήστη **και** των εταιρειών του.
+
+        Το backend αρνείται τον εαυτό σου και τον τελευταίο διαχειριστή — δύο
+        λάθη που κλειδώνουν έξω από την εφαρμογή χωρίς επιστροφή.
+        """
+        return self._call(
+            {"auth": "admin_delete_user"}, data={"user_id": user_id}, method="POST"
+        )
+
     def admin_create_user(self, email: str, password: str, business_name: str = "") -> dict[str, Any]:
         return self._call(
             {"auth": "admin_create_user"},

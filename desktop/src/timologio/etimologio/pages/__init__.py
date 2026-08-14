@@ -12,6 +12,7 @@ from .base import EtimPage, ListPage, parse_money
 from .bulk import BulkPage
 from .card import CustomerCard
 from .catalog import ProductsPage, SeriesPage
+from .companies import CompaniesPage
 from .credit import CreditNotePage
 from .customers import CustomersPage
 from .documents import DocumentsPage
@@ -30,6 +31,7 @@ __all__ = [
     "parse_money",
     "CustomersPage",
     "CustomerCard",
+    "CompaniesPage",
     "IssuePage",
     "ProductsPage",
     "SeriesPage",

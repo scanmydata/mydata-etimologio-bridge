@@ -39,6 +39,7 @@ from .client import EtimologioClient
 from .pages import (
     AdminPage,
     BulkPage,
+    CompaniesPage,
     CreditNotePage,
     CustomerCard,
     CustomersPage,
@@ -130,6 +131,9 @@ _SECTIONS = [
     # Η καρτέλα είναι ενότητα, όχι υποσέλιδο των Πελατών: στο web έχει δική της
     # εγγραφή στο μενού («📇 Καρτέλα»), εδώ έφτανες μόνο με διπλό κλικ.
     ("card", "Καρτέλα", "Κίνηση & υπόλοιπο πελάτη", "csv"),
+    # Το γραφείο δουλεύει ΠΟΛΛΕΣ εταιρείες: ο κατάλογός τους είναι ενότητα, όχι
+    # ένα «＋» δίπλα σε ένα dropdown.
+    ("companies", "Εταιρείες", "Πελάτες του γραφείου", "network"),
     ("bulk", "Μαζική έκδοση", "Παρτίδα παραστατικών", "import"),
     ("credit", "Ακύρωση/Πιστωτικό", "Συσχετιζόμενο πιστωτικό", "cancel"),
     ("drafts", "Πρόχειρα", "Αποθηκευμένα προσχέδια", "restore"),
@@ -179,6 +183,7 @@ class EtimologioShell(QWidget):
         # Native pages (Phase 1). They read the live client lazily via the
         # accessor, so they can be built before login completes.
         self._customers = CustomersPage(lambda: self._client, _run)
+        self._companies = CompaniesPage(lambda: self._client, _run)
         self._card = CustomerCard(lambda: self._client, _run)
         self._issue = IssuePage(lambda: self._client, _run)
         self._products = ProductsPage(lambda: self._client, _run)
@@ -198,6 +203,8 @@ class EtimologioShell(QWidget):
         # χρήστης — όχι πάντα στην αρχική.
         self._customers.open_card.connect(self._show_card)
         self._card.credit_requested.connect(self._credit_from_card)
+        self._companies.open_company.connect(self._switch_company)
+        self._companies.accounts_changed.connect(self._load_accounts)
         self._notifications.unread_changed.connect(self.set_unread)
         self._settings.mode_change_requested.connect(self._switch_backend)
         self._drafts.open_in_issue.connect(self._edit_draft)
@@ -205,6 +212,7 @@ class EtimologioShell(QWidget):
         self._pages = {
             "issue": self._issue, "credit": self._credit, "bulk": self._bulk,
             "customers": self._customers, "card": self._card,
+            "companies": self._companies,
             "products": self._products,
             "series": self._series, "drafts": self._drafts,
             "payments": self._payments, "stats": self._stats,
@@ -560,6 +568,7 @@ class EtimologioShell(QWidget):
             if idx >= 0:
                 self._accounts.setCurrentIndex(idx)
         self._accounts.blockSignals(False)
+        self._card.set_account(str(self._accounts.currentData() or ""))
 
     def _account_changed(self, _index: int) -> None:
         if self._client is None:
@@ -568,6 +577,8 @@ class EtimologioShell(QWidget):
         if not vat:
             return
         self._client.set_account(str(vat))
+        # Η Καρτέλα θυμάται τον τελευταίο πελάτη **ανά εταιρεία**.
+        self._card.set_account(str(vat))
         # Οι σελίδες κρατούν φορτωμένα δεδομένα της ΠΡΟΗΓΟΥΜΕΝΗΣ εταιρείας — το
         # πελατολόγιο της Έκδοσης, οι σειρές της Μαζικής, οι πελάτες του
         # Πιστωτικού. Χωρίς ακύρωση, ο χρήστης τιμολογούσε σε πελάτη που δεν
@@ -745,6 +756,22 @@ class EtimologioShell(QWidget):
             self._card.set_customers(rows)
         self._open_section("card")
         self._card.set_customer(customer)
+
+    def _switch_company(self, vat: str) -> None:
+        """«Άνοιγμα» από τη σελίδα Εταιρειών: αλλάζει ενεργή εταιρεία και φεύγει.
+
+        Περνά από τον ίδιο επιλογέα της μπάρας, ώστε να τρέξει το ένα και
+        μοναδικό `_account_changed` — αυτό ακυρώνει τα δεδομένα της
+        προηγούμενης εταιρείας σε κάθε σελίδα.
+        """
+        index = self._accounts.findData(str(vat))
+        if index < 0:
+            return
+        if index == self._accounts.currentIndex():
+            self._account_changed(index)      # ίδια εταιρεία: απλή ανανέωση
+        else:
+            self._accounts.setCurrentIndex(index)
+        self._show_home()
 
     def _credit_from_card(self, invoice: dict) -> None:
         """«↩ Ακύρωση» από την Καρτέλα → Πιστωτικό με το παραστατικό έτοιμο."""
