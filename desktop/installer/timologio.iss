@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.3.0"
+#define AppVersion     "0.4.1"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 

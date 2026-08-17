@@ -60,22 +60,18 @@ from .pickers import customer_picker, product_picker
 #: Ίδιο με το web — αρκετά ώστε να μη φύγει ερώτημα σε κάθε ψηφίο.
 AFM_LOOKUP_DELAY_MS = 400
 
-_WIZARD_KEY = "etimologio/issue_wizard_seen"
-
-
-def _wizard_seen() -> bool:
-    return bool(QSettings().value(_WIZARD_KEY, False, type=bool))
-
-
-def _mark_wizard_seen() -> None:
-    QSettings().setValue(_WIZARD_KEY, True)
+# Ο οδηγός ΔΕΝ «απομνημονεύεται» πια: το web τον δείχνει σε κάθε νέο
+# παραστατικό, ενώ εδώ εμφανιζόταν μία φορά στη ζωή της εγκατάστασης και μετά
+# δεν ξαναγύριζε ποτέ — γι' αυτό «δεν υπάρχει σύστημα επιλογής τι θα εκδώσεις».
 
 #: Η τιμή που σημαίνει «➕ Νέα σειρά…» μέσα στο dropdown σειράς.
 _NEW_SERIES = "__new_series"
 
 #: Editor columns.
-_COLS = ["Περιγραφή / Κωδικός", "Ποσότητα", "Τιμή μον.", "ΦΠΑ %", "Έκπτ. %", "Καθαρή", "Σύνολο"]
-_DESC, _QTY, _PRICE, _RATE, _DISC, _NET, _TOTAL = range(7)
+#: Ίδια σειρά στηλών με το web (`#iLines`): η έκπτωση ΠΡΙΝ τον ΦΠΑ, γιατί έτσι
+#: εφαρμόζεται και στον υπολογισμό. Το «Καθαρή» είναι δική μας προσθήκη.
+_COLS = ["Περιγραφή / Κωδικός", "Ποσότητα", "Τιμή μον.", "Έκπτ. %", "ΦΠΑ %", "Καθαρή", "Σύνολο"]
+_DESC, _QTY, _PRICE, _DISC, _RATE, _NET, _TOTAL = range(7)
 
 #: Columns of the taxes/withholdings table.
 _TAX_COLS = ["Είδος", "Κατηγορία", "Ποσό (€)", "Σημ."]
@@ -179,19 +175,34 @@ class IssuePage(EtimPage):
         self._wizard = QWidget()
         wiz = QHBoxLayout(self._wizard)
         wiz.setContentsMargins(0, 0, 0, 0)
-        wiz.addWidget(QLabel("Ο πελάτης είναι:"))
-        pro = QPushButton("Επαγγελματίας")
-        pro.clicked.connect(lambda: self._wizard_pick("pro"))
-        idiot = QPushButton("Ιδιώτης")
-        idiot.clicked.connect(lambda: self._wizard_pick("idiot"))
+        self._wizard_label = QLabel("Τι θέλεις να εκδώσεις;")
+        wiz.addWidget(self._wizard_label)
+        # Βήμα 1: είδος παραστατικού. Βήμα 2: τι είναι ο πελάτης. Το web ρωτά
+        # και τα δύο και τα ξαναρωτά σε κάθε νέο παραστατικό — ο οδηγός εδώ
+        # εμφανιζόταν **μία φορά στη ζωή της εγκατάστασης** και μετά ποτέ.
+        self._wizard_buttons: list[QPushButton] = []
+        for text, choice in (
+            ("🧾 Τιμολόγιο / Απόδειξη", "invoice"),
+            ("🚚 Δελτίο αποστολής", "delivery"),
+            ("🏢 Επαγγελματίας", "pro"),
+            ("👤 Ιδιώτης", "idiot"),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(lambda _=False, c=choice: self._wizard_pick(c))
+            wiz.addWidget(button)
+            self._wizard_buttons.append(button)
         skip = QPushButton("Παράλειψη")
         skip.setObjectName("linkButton")
         skip.clicked.connect(lambda: self._wizard_pick(""))
-        for button in (pro, idiot, skip):
-            wiz.addWidget(button)
+        wiz.addWidget(skip)
+        self._again = QPushButton("↺ Αλλαγή επιλογής")
+        self._again.setObjectName("linkButton")
+        self._again.setToolTip("Άλλαξε τύπο παραστατικού / πελάτη")
+        self._again.clicked.connect(self.start_wizard)
+        wiz.addWidget(self._again)
         wiz.addStretch(1)
-        self._wizard.setVisible(not _wizard_seen())
         box.addWidget(self._wizard)
+        self.start_wizard()
 
         # --- customer ------------------------------------------------------
         cust = QFormLayout()
@@ -236,6 +247,13 @@ class IssuePage(EtimPage):
         self._table.horizontalHeader().setStretchLastSection(False)
         self._table.setColumnWidth(_DESC, 260)
         self._table.itemChanged.connect(self._on_item_changed)
+        # Ο επιλογέας είδους είναι ολόκληρο widget μέσα στο κελί και είναι
+        # ΨΗΛΟΤΕΡΟΣ από την προεπιλεγμένη γραμμή: το κάτω μέρος του κοβόταν και
+        # η γραμμή έμοιαζε μισοσχεδιασμένη. Το ύψος βγαίνει από το ίδιο το
+        # widget, όχι από σταθερά, ώστε να αντέχει άλλη γραμματοσειρά ή DPI.
+        self._table.verticalHeader().setDefaultSectionSize(
+            max(30, product_picker().sizeHint().height() + 8)
+        )
         box.addWidget(self._table, 1)
 
         line_btns = QHBoxLayout()
@@ -288,7 +306,9 @@ class IssuePage(EtimPage):
         actions.addStretch(1)
         draft = QPushButton("💾 Αποθήκευση πρόχειρου")
         draft.clicked.connect(self._save_draft)
-        preview = QPushButton("💾👁 Αποθήκευση & Προεπισκόπηση")
+        # Διπλό «&&»: το Qt διαβάζει το μονό «&» ως mnemonic και το κουμπί έγραφε
+        # «Αποθήκευση _Προεπισκόπηση».
+        preview = QPushButton("💾👁 Αποθήκευση && Προεπισκόπηση")
         preview.clicked.connect(self._preview)
         schedule = QPushButton("⏰ Προγραμματισμός")
         schedule.setToolTip("Έκδοση αργότερα, αυτόματα")
@@ -323,6 +343,7 @@ class IssuePage(EtimPage):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._table.setItem(r, col, item)
         self._guard = False
+        self._table.resizeRowToContents(r)
         self._recompute()
 
     def _line_picker(self, row: int):
@@ -815,17 +836,49 @@ class IssuePage(EtimPage):
         if index >= 0:
             self._series.setCurrentIndex(index)
 
+    def start_wizard(self) -> None:
+        """Δείχνει το πρώτο βήμα: τι είδος παραστατικού."""
+        self._wizard_step = "kind"
+        self._sync_wizard()
+
+    def _sync_wizard(self) -> None:
+        """Ποια κουμπιά φαίνονται σε κάθε βήμα."""
+        kind = self._wizard_step == "kind"
+        self._wizard_label.setText(
+            "Τι θέλεις να εκδώσεις;" if kind else "Ο πελάτης είναι:"
+        )
+        for button, step in zip(
+            self._wizard_buttons, ("kind", "kind", "who", "who"), strict=True
+        ):
+            button.setVisible((step == "kind") == kind)
+        self._again.setVisible(not kind)
+        self._wizard.setVisible(True)
+
     def _wizard_pick(self, who: str) -> None:
-        """Διαλέγει τον πρώτο τύπο που ταιριάζει και κλείνει τον οδηγό.
+        """Διαλέγει τον πρώτο τύπο που ταιριάζει και προχωρά τον οδηγό.
 
         Ψάχνει μόνο ανάμεσα στους τύπους που έχουν ενεργή σειρά — αλλιώς ο
         οδηγός θα οδηγούσε σε τύπο που η ΑΑΔΕ θα απέρριπτε.
         """
+        if who == "invoice":                       # βήμα 1 → βήμα 2
+            self._wizard_step = "who"
+            self._sync_wizard()
+            return
+        if who == "delivery":
+            self._wizard.hide()
+            self._pick_type(r"δελτίο αποστολ")
+            self._status.setText(
+                "Δελτίο αποστολής: τα στοιχεία διακίνησης (όχημα, διευθύνσεις) "
+                "συμπληρώνονται προς το παρόν από τη web εφαρμογή."
+            )
+            return
         self._wizard.hide()
-        _mark_wizard_seen()
         if not who:
             return
         pattern = r"λιανικ|απόδειξη|ΑΛΠ|ΑΠΥ" if who == "idiot" else r"τιμολ"
+        self._pick_type(pattern)
+
+    def _pick_type(self, pattern: str) -> None:
         for index in range(self._type.count()):
             code = str(self._type.itemData(index) or "")
             if not series_for_type(self._all_series, code):
@@ -1199,3 +1252,4 @@ class IssuePage(EtimPage):
         self._table.setRowCount(0)
         self.add_line()
         self._status.setText("")
+        self.start_wizard()

@@ -115,6 +115,25 @@ PHPRT = _tree(os.path.join(SPECPATH, "php"), os.path.join("backend", "php"))
 # Το voice.py το ψάχνει ως `_MEIPASS/vosk-model-el`.
 VOICE = _tree(os.path.join(SPECPATH, "vosk-model-el"), "vosk-model-el")
 
+# --- Η ΦΩΝΗ του βοηθού (Piper) ------------------------------------------------
+# Αντίθετα με το Vosk (αναγνώριση, 1.1 GB), η εκφώνηση είναι ~80 MB και μπαίνει
+# ΠΑΝΤΑ: χωρίς αυτήν ο βοηθός δεν μιλά ελληνικά σε κανένα Windows χωρίς
+# εγκατεστημένη ελληνική φωνή — δηλαδή στα περισσότερα.
+PIPER = [
+    entry for entry in _tree(os.path.join(SPECPATH, "piper"), "piper")
+    # Το `libtashkeel_model.ort` βάζει αραβικά διακριτικά — 10 MB που δεν
+    # ακουμπά ποτέ ελληνικό ή αγγλικό κείμενο.
+    if not entry[0].endswith("libtashkeel_model.ort")
+]
+
+# --- Η ΑΚΟΗ του βοηθού (whisper.cpp) -----------------------------------------
+# Το `webkitSpeechRecognition` του QtWebEngine δείχνει σε υπηρεσία της Google
+# που δεν υπάρχει: η κλήση δεν αποτυγχάνει, **παγώνει την εφαρμογή**. Το
+# whisper.cpp με το μοντέλο `base` (~142 MB) τρέχει τοπικά σε CPU — δέκατο του
+# ελληνικού Vosk. Το κατεβάζει το build.ps1· αν λείψει, το backend απαντά 501
+# και ο βοηθός ζητά γραπτή εντολή.
+WHISPER = _tree(os.path.join(SPECPATH, "whisper"), "whisper")
+
 a = Analysis(
     [os.path.join(ROOT, "entry.py")],
     pathex=[os.path.join(ROOT, "src")],
@@ -141,7 +160,7 @@ a = Analysis(
             os.path.join(ROOT, "docs", "etim-manual.pdf"),
         )
         if os.path.exists(path)
-    ] + TZDATA + BACKEND + PHPRT + VOICE,
+    ] + TZDATA + BACKEND + PHPRT + VOICE + PIPER + WHISPER,
     # websocket-client (import name «websocket») το φορτώνει το headless module
     # με τοπικό import, οπότε το PyInstaller δεν το βλέπει από το στατικό δέντρο.
     # websocket-client (import name «websocket») και openpyxl φορτώνονται με
@@ -163,9 +182,11 @@ a = Analysis(
     # Ό,τι σέρνει το PySide6 και δεν χρησιμοποιούμε. Χωρίς αυτό ο φάκελος
     # φτάνει τα ~450MB· έτσι μένει κάτω από ~120MB.
     excludes=[
-        "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuick3D", "PySide6.QtQuickWidgets",
-        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
-        "PySide6.QtWebChannel", "PySide6.QtWebSockets", "PySide6.QtMultimedia",
+        # ΤΟ QtWebEngine ΔΕΝ ΕΞΑΙΡΕΙΤΑΙ ΠΛΕΟΝ: το e-Τιμολόγιο δείχνει την ΙΔΙΑ
+        # web εφαρμογή (`etimologio/webshell.py`) αντί για ξαναγραμμένες σελίδες
+        # Qt. Κοστίζει σε μέγεθος, αλλά εξαφανίζει κάθε απόκλιση από το web.
+        # Το QtQml/QtQuick χρειάζονται από το QtWebEngine, οπότε μένουν μέσα.
+        "PySide6.QtQuick3D",
         "PySide6.QtMultimediaWidgets", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
         "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation",
         "PySide6.Qt3DExtras", "PySide6.QtCharts", "PySide6.QtDataVisualization",
@@ -182,6 +203,27 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# --- Ξεφόρτωμα του Chromium ---------------------------------------------------
+# Το QtWebEngine φέρνει debug resources και ~100 γλώσσες διεπαφής. Κρατάμε μόνο
+# ελληνικά και αγγλικά· τα debug .pak δεν χρησιμεύουν σε καμία περίπτωση.
+_KEEP_LOCALES = {"el.pak", "en-US.pak", "en-GB.pak"}
+
+
+def _useful(dest: str) -> bool:
+    name = os.path.basename(dest)
+    if name.endswith(".debug.pak"):
+        return False
+    if "qtwebengine_locales" in dest.replace("\\", "/"):
+        return name in _KEEP_LOCALES
+    return True
+
+
+_before = len(a.datas)
+a.datas = [entry for entry in a.datas if _useful(entry[0])]
+# ASCII ΜΟΝΟ: η κονσόλα του PyInstaller τρέχει σε cp1252 και ένα ελληνικό
+# print ρίχνει ΟΛΟΚΛΗΡΟ το build με UnicodeEncodeError (ίδιο με το build.ps1).
+print(f"[spec] Chromium: dropped {_before - len(a.datas)} files")
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

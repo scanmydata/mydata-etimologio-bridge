@@ -46,8 +46,15 @@ def build_ledger_pdf(
     πάντα με τη σειρά που τυπώνεται.
     """
     writer = QPdfWriter(str(path))
-    writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-    writer.setPageMargins(QMarginsF(12, 12, 12, 12), QPageLayout.Unit.Millimeter)
+    # Η διάταξη ορίζεται ΜΙΑ φορά και ολόκληρη (`setPageLayout`), όχι σε δύο
+    # βήματα: στο πακεταρισμένο build τα δύο ξεχωριστά βήματα άφηναν άκυρη
+    # διάταξη και το PDF έβγαινε με **MediaBox 0×0** — δηλαδή λευκές σελίδες.
+    writer.setPageLayout(QPageLayout(
+        QPageSize(QPageSize.PageSizeId.A4),
+        QPageLayout.Orientation.Portrait,
+        QMarginsF(_MARGIN_MM, _MARGIN_MM, _MARGIN_MM, _MARGIN_MM),
+        QPageLayout.Unit.Millimeter,
+    ))
     writer.setTitle(f"Καρτέλα {customer.get('name') or customer.get('vat') or ''}")
 
     painter = QPainter(writer)
@@ -58,13 +65,62 @@ def build_ledger_pdf(
     return path
 
 
+def _document_font() -> QFont:
+    """Η γραμματοσειρά του PDF — αυτή που ήδη γράφει ελληνικά στην οθόνη.
+
+    ⚠️ ΟΧΙ η ``painter.font()`` του ``QPdfWriter``. Η προεπιλογή του paint device
+    δεν είναι η γραμματοσειρά της εφαρμογής, και στο **πακεταρισμένο** build
+    δεν αντιστοιχίζεται σε πραγματικό αρχείο: το `drawText` δεν ζωγραφίζει
+    τίποτα και η καρτέλα βγαίνει **λευκή**. Μετρημένο στο εγκατεστημένο 0.4.0:
+    2 σελίδες με **μηδέν** pixel μελάνι, ενώ ο ίδιος κώδικας από πηγαίο έβγαζε
+    μία γεμάτη σελίδα. Ίδια οικογένεια σφάλματος με το εγχειρίδιο.
+
+    Η γραμματοσειρά της εφαρμογής υπάρχει εξ ορισμού (τα widget γράφουν ελληνικά
+    κανονικά), οπότε ζητείται από εκεί, με ρητή εφεδρεία σε γνωστές οικογένειες.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    font = QFont(app.font()) if app is not None else QFont()
+    if not font.family():
+        font.setFamily("Segoe UI")
+    # Οι εφεδρείες μπαίνουν ρητά: αν λείψει η πρώτη, το Qt κατεβαίνει στην
+    # επόμενη αντί να μείνει με μια οικογένεια που δεν υπάρχει.
+    font.setFamilies([font.family(), "Segoe UI", "Arial", "DejaVu Sans"])
+    return font
+
+
+#: Περιθώριο σελίδας σε χιλιοστά, σε ένα σημείο ώστε να συμφωνούν διάταξη και
+#: εφεδρικός υπολογισμός διαστάσεων.
+_MARGIN_MM = 12.0
+_A4_MM = (210.0, 297.0)
+
+
+def _page_size(writer) -> tuple[int, int, int]:
+    """(ανάλυση, πλάτος, ύψος) σε pixel της συσκευής — ποτέ μηδενικά.
+
+    ⚠️ Το ``writer.width()``/``height()`` επέστρεφε **0** στο πακεταρισμένο
+    build: το PDF έβγαινε με ``MediaBox 0 0 0 0``, κάθε ``drawText`` έπεφτε σε
+    μηδενικό ορθογώνιο, και η καρτέλα τύπωνε **λευκές σελίδες** (και δύο αντί
+    για μία, γιατί ο έλεγχος αλλαγής σελίδας συγκρινόταν με ύψος μηδέν). Από
+    πηγαίο κώδικα το ίδιο ακριβώς αρχείο έβγαινε σωστό — γι' αυτό δεν φαινόταν
+    σε κανένα τεστ.
+    """
+    dpi = writer.resolution() or 1200
+    rect = writer.pageLayout().paintRectPixels(dpi)
+    width, height = rect.width(), rect.height()
+    if width <= 0 or height <= 0:
+        # Ό,τι ζητήσαμε στη διάταξη, υπολογισμένο με το χέρι.
+        width = int((_A4_MM[0] - 2 * _MARGIN_MM) / 25.4 * dpi)
+        height = int((_A4_MM[1] - 2 * _MARGIN_MM) / 25.4 * dpi)
+    return dpi, width, height
+
+
 def _draw(painter, writer, customer, entries, period) -> None:
-    dpi = writer.resolution()
-    width = writer.width()
-    height = writer.height()
+    dpi, width, height = _page_size(writer)
     line_h = int(dpi * 0.22)
 
-    base = QFont(painter.font())
+    base = QFont(_document_font())
     base.setPointSizeF(9.0)
     head = QFont(base)
     head.setBold(True)

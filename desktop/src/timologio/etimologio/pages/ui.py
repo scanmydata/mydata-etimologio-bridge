@@ -12,11 +12,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -262,7 +263,42 @@ def make_sortable(
     # Σύνδεση ΜΕΤΑ την προεπιλογή: αλλιώς η ίδια μας η κλήση θα καταγραφόταν ως
     # επιλογή του χρήστη.
     header.sortIndicatorChanged.connect(lambda *_: prefs.setValue(sorted_key, True))
+    # Πλάτη στηλών στο περιεχόμενο, ΜΟΝΟ αν δεν υπάρχει αποθηκευμένο state:
+    # με το προεπιλεγμένο πλάτος των 100px, «2.1 - Τιμολόγιο Παροχής Υπηρεσιών»
+    # και «ΜΑΡΚ 400014370878566» έβγαιναν ως «2.1 - …» και «ΜΑΡΚ …» — ο πίνακας
+    # φαινόταν άδειος ενώ ήταν απλώς στριμωγμένος. Αν ο χρήστης έχει σύρει
+    # στήλες, σεβόμαστε ό,τι όρισε.
+    # ΠΑΝΤΑ, όχι μόνο την πρώτη φορά: το `persist_header` γράφει state ακόμη κι
+    # όταν δεν το ζήτησε ο χρήστης (το `sectionResized` πυροδοτείται και στην
+    # πρώτη διάταξη), οπότε ένα «μόνο αν δεν υπάρχει state» δεν έτρεχε ποτέ και
+    # οι στήλες έμεναν στα 100px με κομμένο περιεχόμενο.
+    _autosize_columns(table)
     return column_filter
+
+
+def _autosize_columns(table: QTableWidget) -> None:
+    """Πλάτη στο περιεχόμενο μία φορά, και μετά ελεύθερα για τον χρήστη.
+
+    Κρατά όποια στήλη ήταν ήδη σε Stretch (το «γεμάτο» κελί της σελίδας).
+    """
+    header = table.horizontalHeader()
+    stretched = [
+        c for c in range(table.columnCount())
+        if header.sectionResizeMode(c) == QHeaderView.ResizeMode.Stretch
+    ]
+
+    def apply() -> None:
+        table.resizeColumnsToContents()
+        for c in range(table.columnCount()):
+            # Μια πολύ μακριά περιγραφή δεν πρέπει να σπρώξει τις υπόλοιπες έξω.
+            table.setColumnWidth(c, min(max(table.columnWidth(c) + 12, 70), 420))
+        for c in stretched:
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+
+    apply()
+    # Και μετά από κάθε γέμισμα: τα πλάτη βγαίνουν από το περιεχόμενο, που δεν
+    # υπάρχει ακόμη όταν χτίζεται ο πίνακας.
+    table.model().rowsInserted.connect(lambda *_: QTimer.singleShot(0, apply))
 
 
 def page(*, margins: tuple[int, int, int, int] = (16, 14, 16, 14), spacing: int = 12):

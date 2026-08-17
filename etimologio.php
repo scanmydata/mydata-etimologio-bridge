@@ -3157,7 +3157,9 @@ if ($authAction !== '') {
             jsonResponse([
                 'success' => true,
                 'prefs'   => notify_prefs_get((int)$u['id']),
-                'companies' => array_map(fn($a) => ['vat' => (string)$a['vat'], 'label' => $a['label'] ?: $a['vat']], accounts_all()),
+                // Μόνο οι δικές του εταιρείες: ένας λογιστής δεν έχει λόγο να
+                // βλέπει (ούτε να επιλέγει) τους πελάτες άλλου λογιστή.
+                'companies' => array_map(fn($a) => ['vat' => (string)$a['vat'], 'label' => $a['label'] ?: $a['vat']], auth_visible_accounts($u)),
             ]);
         }
         case 'notif_prefs_set': {
@@ -3178,7 +3180,7 @@ if ($authAction !== '') {
             $u = current_user();
             if (!$u) jsonResponse(['success' => true, 'authenticated' => false]);
             $staff = user_is_staff($u);
-            $accts = $staff ? accounts_all() : accounts_for_user((int)$u['id']);
+            $accts = auth_visible_accounts($u);
             jsonResponse([
                 'success' => true, 'authenticated' => true, 'user' => user_public($u),
                 'is_staff' => $staff,
@@ -3195,16 +3197,127 @@ if ($authAction !== '') {
             user_update((int)$u['id'], ['password_hash' => password_hash($np, PASSWORD_DEFAULT)]);
             jsonResponse(['success' => true]);
         }
+        // ---- Προτιμήσεις UI ανά χρήστη (πλάτη/σειρά στηλών, φάκελος λήψεων) ----
+        // Η διάταξη των πινάκων είναι προσωπική: ο λογιστής που στένεψε μια
+        // στήλη πρέπει να τη βρει έτσι και αύριο, και σε άλλον υπολογιστή.
+        case 'ui_prefs_get': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            jsonResponse(['success' => true, 'prefs' => user_prefs_all((int)$u['id'])]);
+        }
+        case 'ui_prefs_set': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            $key = trim((string)($_POST['key'] ?? $_GET['key'] ?? ''));
+            if ($key === '' || !preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $key)) jsonError('Άκυρο κλειδί προτίμησης');
+            user_pref_set((int)$u['id'], $key, (string)($_POST['value'] ?? $_GET['value'] ?? ''));
+            jsonResponse(['success' => true]);
+        }
+
+        // ---- Διαχείριση εταιρειών: διαχειριστής παντού, λογιστής στις δικές του ----
+        case 'admin_scope': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $master = is_master();
+            $accounts = $master ? accounts_all() : array_map(function ($a) {
+                unset($a['subkey']);
+                $a['manager_ids'] = account_manager_ids((int)$a['id']);
+                return $a;
+            }, accounts_for_manager((int)$u['id']));
+            $staff = [];
+            if ($master) {
+                foreach (users_all() as $row) {
+                    if (($row['role'] ?? '') !== 'editor') continue;
+                    $staff[] = [
+                        'id' => (int)$row['id'],
+                        'email' => $row['email'],
+                        'name' => $row['business_name'] ?? '',
+                        'status' => $row['status'] ?? '',
+                        'account_ids' => manager_account_ids((int)$row['id']),
+                    ];
+                }
+            }
+            jsonResponse([
+                'success' => true, 'is_master' => $master,
+                'accounts' => $accounts, 'accountants' => $staff,
+            ]);
+        }
+        case 'admin_account_get': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $id = (int)($_POST['account_id'] ?? $_GET['account_id'] ?? 0);
+            $a = account_get($id);
+            if (!$a) jsonError('Η εταιρεία δεν βρέθηκε', 404);
+            if (!is_master() && !in_array((int)$u['id'], account_manager_ids($id), true)) {
+                jsonError('Η εταιρεία δεν σας έχει ανατεθεί', 403);
+            }
+            $owner = user_by_id((int)$a['user_id']);
+            // Το subscription key ΔΕΝ επιστρέφεται ποτέ — μόνο αν έχει οριστεί.
+            $a['subkey_set'] = ($a['subkey'] ?? '') !== '';
+            unset($a['subkey']);
+            $a['owner_email'] = $owner['email'] ?? '';
+            $a['owner_name']  = $owner['business_name'] ?? '';
+            $a['manager_ids'] = account_manager_ids($id);
+            jsonResponse(['success' => true, 'account' => $a]);
+        }
+        case 'admin_account_save': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $id = (int)($_POST['account_id'] ?? 0);
+            $a = account_get($id);
+            if (!$a) jsonError('Η εταιρεία δεν βρέθηκε', 404);
+            if (!is_master() && !in_array((int)$u['id'], account_manager_ids($id), true)) {
+                jsonError('Η εταιρεία δεν σας έχει ανατεθεί', 403);
+            }
+            // Κενό «subkey» = «κράτα το υπάρχον»: η φόρμα δεν το κατεβάζει ποτέ,
+            // οπότε μια αποθήκευση ετικέτας δεν πρέπει να σβήνει το κλειδί.
+            $subkey = (string)($_POST['subkey'] ?? '');
+            if ($subkey === '' || $subkey === '__SET__') $subkey = (string)$a['subkey'];
+            account_update($id, [
+                'vat'      => (string)($_POST['vat'] ?? $a['vat']),
+                'label'    => (string)($_POST['label'] ?? $a['label']),
+                'username' => (string)($_POST['username'] ?? $a['username']),
+                'subkey'   => $subkey,
+            ]);
+            if (is_master() && array_key_exists('manager_ids', $_POST)) {
+                $ids = array_filter(array_map('intval', explode(',', (string)$_POST['manager_ids'])));
+                account_set_managers($id, $ids);
+            }
+            jsonResponse(['success' => true]);
+        }
+        case 'admin_set_managers': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $uid = (int)($_POST['user_id'] ?? 0);
+            $target = user_by_id($uid);
+            if (!$target) jsonError('Ο χρήστης δεν βρέθηκε', 404);
+            $ids = array_filter(array_map('intval', explode(',', (string)($_POST['account_ids'] ?? ''))));
+            manager_set_accounts($uid, $ids);
+            jsonResponse(['success' => true, 'account_ids' => manager_account_ids($uid)]);
+        }
+
         // ---- Master-admin only ----
         case 'admin_users': case 'admin_approve': case 'admin_set_status':
         case 'admin_reset_pw': case 'admin_add_account': case 'admin_update_account':
         case 'admin_delete_account': case 'admin_user_accounts': case 'admin_create_user':
         case 'admin_accounts': case 'admin_invite': case 'admin_set_role':
-        case 'admin_delete_user': {
+        case 'admin_delete_user': case 'mail_settings_get': case 'mail_settings_set':
+        case 'mail_test': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             switch ($authAction) {
-                case 'admin_users':
-                    jsonResponse(['success' => true, 'users' => users_all()]);
+                case 'admin_users': {
+                    // Κάθε γραμμή κουβαλά και τι της έχει ανατεθεί: χωρίς αυτό η
+                    // λίστα δείχνει «Λογιστής» χωρίς να λέει ΠΟΙΩΝ.
+                    $rows = array_map(function ($row) {
+                        $row['account_ids'] = ($row['role'] ?? '') === 'editor'
+                            ? manager_account_ids((int)$row['id'])
+                            : array_map(fn($a) => (int)$a['id'], accounts_for_user((int)$row['id']));
+                        return $row;
+                    }, users_all());
+                    jsonResponse(['success' => true, 'users' => $rows]);
+                }
                 case 'admin_accounts':
                     jsonResponse(['success' => true, 'accounts' => accounts_all()]);
                 case 'admin_create_user': {
@@ -3258,6 +3371,46 @@ if ($authAction !== '') {
                 case 'admin_update_account':
                     account_update((int)($_POST['account_id'] ?? 0), ['vat'=>trim($_POST['vat'] ?? ''),'label'=>trim($_POST['label'] ?? ''),'username'=>trim($_POST['username'] ?? ''),'subkey'=>trim($_POST['subkey'] ?? '')]);
                     jsonResponse(['success' => true]);
+                case 'mail_settings_get': {
+                    // Τα μυστικά ΔΕΝ επιστρέφονται: μόνο αν έχουν οριστεί.
+                    $keys = ['MAIL_PROVIDER','RESEND_API_KEY','RESEND_EMAIL_SENDER',
+                             'SMTP_FROM','SMTP_HOST','SMTP_PORT','SMTP_SECURE','SMTP_USER','SMTP_PASS',
+                             'NOTIFY_ADMIN_EMAIL'];
+                    $out = [];
+                    foreach ($keys as $k) {
+                        $value = mail_conf($k);
+                        $secret = in_array($k, ['RESEND_API_KEY','SMTP_PASS'], true);
+                        $out[$k] = $secret ? ($value !== '' ? '__SET__' : '') : $value;
+                    }
+                    jsonResponse(['success' => true, 'settings' => $out,
+                                  'provider' => mail_provider(), 'enabled' => mail_enabled()]);
+                }
+                case 'mail_settings_set': {
+                    foreach (['MAIL_PROVIDER','RESEND_API_KEY','RESEND_EMAIL_SENDER',
+                              'SMTP_FROM','SMTP_HOST','SMTP_PORT','SMTP_SECURE','SMTP_USER','SMTP_PASS',
+                              'NOTIFY_ADMIN_EMAIL'] as $k) {
+                        if (!array_key_exists($k, $_POST)) continue;
+                        $value = (string)$_POST[$k];
+                        // «__SET__» σημαίνει «μην αγγίξεις το αποθηκευμένο μυστικό».
+                        if ($value === '__SET__') continue;
+                        setting_set('mail.' . $k, $value);
+                    }
+                    jsonResponse(['success' => true]);
+                }
+                case 'mail_test': {
+                    // Χωρίς δοκιμαστική αποστολή, το «Αποθηκεύτηκε» δεν σημαίνει
+                    // τίποτα: το πρώτο πραγματικό email είναι μια πρόσκληση που
+                    // δεν φτάνει ποτέ, και κανείς δεν το μαθαίνει.
+                    $me = current_user();
+                    $to = trim((string)($_POST['to'] ?? '')) ?: (string)($me['email'] ?? '');
+                    if ($to === '') jsonError('Δώσε παραλήπτη για τη δοκιμή');
+                    if (!mail_enabled()) jsonError('Δεν έχει ρυθμιστεί πάροχος email');
+                    $ok = send_mail($to, 'Δοκιμαστικό μήνυμα — e-Τιμολόγιο Pro',
+                        mail_template('Ο πάροχος email δουλεύει',
+                            '<p>Αν διαβάζεις αυτό το μήνυμα, οι ρυθμίσεις αποστολής είναι σωστές.</p>'));
+                    jsonResponse(['success' => $ok, 'provider' => mail_provider(),
+                                  'error' => $ok ? '' : 'Η αποστολή απέτυχε — δες το αρχείο καταγραφής του server.']);
+                }
                 case 'admin_delete_account':
                     jsonResponse(['success' => account_delete((int)($_POST['account_id'] ?? 0))]);
                 case 'admin_delete_user': {
@@ -3317,8 +3470,115 @@ if (!$__user) jsonError('Απαιτείται σύνδεση', 401);
 // a master admin WITHOUT a linked AADE account can still use them.
 // Scope: master admins see every account ('' scope); a business sees its own.
 // ===========================================================================
-$__isStaff    = user_is_staff($__user);      // master|editor → all companies
-$__acctScope  = $__isStaff ? '' : (defined('COMPANY_VAT') ? COMPANY_VAT : '__none__');
+$__isStaff    = user_is_staff($__user);      // master|editor → διαχείριση μελών/εταιρειών
+// Το εύρος των τοπικών δεδομένων: '' = τα πάντα (μόνο διαχειριστής), αλλιώς η
+// λίστα των ΑΦΜ που δικαιούται ο χρήστης. Ένας λογιστής ΔΕΝ βλέπει πια τις
+// ειδοποιήσεις και τον προγραμματισμό εταιρειών που δεν του ανήκουν.
+$__acctScope  = auth_data_scope($__user);
+if (is_array($__acctScope) && !$__acctScope) $__acctScope = ['__none__'];
+
+// --- Φωνή του βοηθού (Piper, εκτός δικτύου) ---------------------------------
+// `?tts=1&lang=el&text=…` → audio/wav.
+//
+// Γιατί εδώ και όχι στον browser: τα Windows δεν έχουν ελληνική φωνή από
+// προεπιλογή, οπότε το `speechSynthesis` είτε σωπαίνει είτε ΣΥΛΛΑΒΙΖΕΙ τα
+// ελληνικά με αγγλική φωνή. Η μηχανή ταξιδεύει με την εφαρμογή, οπότε ο ήχος
+// είναι ο ίδιος σε κάθε μηχάνημα — και δεν φεύγει τίποτα στο internet.
+// Σε εγκατάσταση server οι σταθερές απλώς δεν ορίζονται και το UI γυρίζει πίσω
+// στη φωνή του browser.
+if (!empty($_GET['tts'] ?? $_POST['tts'] ?? '')) {
+    $ttsText = trim($_GET['text'] ?? $_POST['text'] ?? '');
+    $ttsLang = (($_GET['lang'] ?? $_POST['lang'] ?? 'el') === 'en') ? 'en' : 'el';
+    // Προθέρμανση: μία σύνθεση χωρίς ήχο, ώστε η ΠΡΩΤΗ πραγματική εκφώνηση να
+    // μη χάνει τις αρχικές λέξεις όσο φορτώνει το μοντέλο (~1 δευτ.). Το UI την
+    // καλεί μόλις ανοίξει ο βοηθός.
+    $ttsWarmup = !empty($_GET['warmup'] ?? $_POST['warmup'] ?? '');
+    if ($ttsWarmup && $ttsText === '') $ttsText = 'ένα';
+    if ($ttsText === '') jsonError('Λείπει το κείμενο για εκφώνηση');
+    if (mb_strlen($ttsText) > 600) $ttsText = mb_substr($ttsText, 0, 600);
+    // Ένα κόμμα και μια παύση ΠΡΙΝ την πρόταση. Χωρίς αυτό το Piper ξεκινά την
+    // παραγωγή ταυτόχρονα με την έναρξη της αναπαραγωγής και οι πρώτες συλλαβές
+    // βγαίνουν κομμένες — ακούγεται σαν λάθος λέξη, όχι σαν καθυστέρηση.
+    $ttsText = ', ' . $ttsText;
+    $exe   = defined('PIPER_EXE') ? PIPER_EXE : '';
+    $voice = $ttsLang === 'en'
+        ? (defined('PIPER_VOICE_EN') ? PIPER_VOICE_EN : '')
+        : (defined('PIPER_VOICE_EL') ? PIPER_VOICE_EL : '');
+    if ($exe === '' || $voice === '' || !is_file($exe) || !is_file($voice)) {
+        jsonError('Η φωνή δεν είναι διαθέσιμη σε αυτή την εγκατάσταση', 501);
+    }
+    $out = tempnam(sys_get_temp_dir(), 'etimtts') . '.wav';
+    $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open(
+        [$exe, '--model', $voice, '--output_file', $out],
+        $descriptors, $pipes
+    );
+    if (!is_resource($process)) jsonError('Η μηχανή φωνής δεν ξεκίνησε', 500);
+    fwrite($pipes[0], $ttsText);
+    fclose($pipes[0]);
+    stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $ttsErr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $code = proc_close($process);
+    if ($code !== 0 || !is_file($out) || filesize($out) < 64) {
+        @unlink($out);
+        jsonError('Η σύνθεση φωνής απέτυχε: ' . substr(trim((string)$ttsErr), 0, 200), 500);
+    }
+    if ($ttsWarmup) {
+        @unlink($out);
+        jsonResponse(['success' => true, 'warm' => true]);
+    }
+    header('Content-Type: audio/wav');
+    header('Content-Length: ' . filesize($out));
+    header('Cache-Control: no-store');
+    readfile($out);
+    @unlink($out);
+    exit;
+}
+
+// --- Αναγνώριση φωνής (whisper.cpp, εκτός δικτύου) --------------------------
+// POST `stt=1` + πεδίο αρχείου `audio` (16 kHz mono WAV, το φτιάχνει το UI) →
+// `{success, text}`.
+//
+// Γιατί εδώ: το Web Speech API στηρίζεται σε υπηρεσία της Google. Μέσα στο
+// QtWebEngine δεν υπάρχει, και η κλήση **παγώνει την εφαρμογή** αντί να
+// αποτύχει. Η μηχανή ταξιδεύει μαζί μας, όπως και η φωνή, οπότε η εντολή δεν
+// φεύγει ποτέ από το μηχάνημα. Χωρίς μηχανή απαντάμε 501 και το UI το λέει.
+if (!empty($_POST['stt'] ?? $_GET['stt'] ?? '')) {
+    $exe   = defined('WHISPER_EXE')   ? WHISPER_EXE   : '';
+    $model = defined('WHISPER_MODEL') ? WHISPER_MODEL : '';
+    if ($exe === '' || $model === '' || !is_file($exe) || !is_file($model)) {
+        jsonError('Η αναγνώριση φωνής δεν είναι διαθέσιμη σε αυτή την εγκατάσταση', 501);
+    }
+    $up = $_FILES['audio'] ?? null;
+    if (!$up || ($up['error'] ?? 1) !== UPLOAD_ERR_OK || ($up['size'] ?? 0) < 1024) {
+        jsonError('Δεν ελήφθη ηχητικό απόσπασμα');
+    }
+    if ($up['size'] > 8 * 1024 * 1024) jsonError('Το απόσπασμα είναι πολύ μεγάλο');
+    $wav = tempnam(sys_get_temp_dir(), 'etimstt') . '.wav';
+    if (!@move_uploaded_file($up['tmp_name'], $wav) && !@rename($up['tmp_name'], $wav)) {
+        jsonError('Το απόσπασμα δεν αποθηκεύτηκε', 500);
+    }
+    $lang = (($_POST['lang'] ?? $_GET['lang'] ?? 'el') === 'en') ? 'en' : 'el';
+    // `-nt` βγάζει τις χρονοσημάνσεις· `-otxt` γράφει «<wav>.txt» δίπλα στο αρχείο.
+    $cmd = [$exe, '-m', $model, '-l', $lang, '-nt', '-otxt', '-f', $wav];
+    $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open($cmd, $descriptors, $pipes);
+    if (!is_resource($process)) { @unlink($wav); jsonError('Η μηχανή αναγνώρισης δεν ξεκίνησε', 500); }
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $sttErr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $code = proc_close($process);
+    $txtFile = $wav . '.txt';
+    $text = is_file($txtFile) ? (string)file_get_contents($txtFile) : (string)$stdout;
+    @unlink($wav); @unlink($txtFile);
+    // Το whisper βάζει «[BLANK_AUDIO]» ή «(σιωπή)» στη σιωπή — δεν είναι εντολή.
+    $text = trim(preg_replace('/\[[^\]]*\]|\([^)]*\)/u', ' ', $text));
+    $text = trim(preg_replace('/\s+/u', ' ', $text));
+    if ($code !== 0 && $text === '') {
+        jsonError('Η αναγνώριση απέτυχε: ' . substr(trim((string)$sttErr), 0, 200), 500);
+    }
+    jsonResponse(['success' => true, 'text' => $text, 'lang' => $lang]);
+}
 
 // --- Notifications (TODO 91) ---
 if (!empty($_GET['notif_count'] ?? $_POST['notif_count'] ?? '')) {
@@ -3347,8 +3607,13 @@ if (!empty($_GET['notif_read_all'] ?? $_POST['notif_read_all'] ?? '')) {
 if (!empty($_GET['sched_list'] ?? $_POST['sched_list'] ?? '')) {
     jsonResponse(['success' => true, 'jobs' => sched_list($__acctScope)]);
 }
+if (!empty($_GET['sched_delete'] ?? $_POST['sched_delete'] ?? '')) {
+    $n = sched_delete((int)($_GET['id'] ?? $_POST['id'] ?? 0), $__acctScope);
+    jsonResponse(['success' => $n > 0, 'deleted' => $n]);
+}
+
 if (!empty($_GET['sched_cancel'] ?? $_POST['sched_cancel'] ?? '')) {
-    $ok = sched_cancel((int)($_GET['id'] ?? $_POST['id'] ?? 0), $__isStaff ? '' : $__acctScope);
+    $ok = sched_cancel((int)($_GET['id'] ?? $_POST['id'] ?? 0), $__acctScope);
     jsonResponse(['success' => $ok]);
 }
 if (!empty($_GET['sched_add'] ?? $_POST['sched_add'] ?? '')) {
@@ -3531,9 +3796,9 @@ $custDelivSet        = !empty(($_GET['save_cust_deliv']          ?? $_POST['save
 // LOCAL-ONLY actions (no e-timologio login needed → fast)
 // ----------------------------------------------------------------------------
 if ($listAccountsFlag) {
-    // Staff (accountant/admin) switch among ALL companies; a business user only
-    // among the companies it owns.
-    $src = user_is_staff($__user) ? accounts_all() : accounts_for_user((int)$__user['id']);
+    // Ο διαχειριστής εναλλάσσει κάθε εταιρεία· ο λογιστής μόνο όσες του έχουν
+    // ανατεθεί· η επιχείρηση μόνο τις δικές της.
+    $src = auth_visible_accounts($__user);
     $out = [];
     foreach ($src as $a) {
         $out[] = ['label' => $a['label'] ?: $a['vat'], 'vat' => (string)$a['vat']];

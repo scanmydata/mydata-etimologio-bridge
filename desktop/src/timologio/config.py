@@ -42,7 +42,7 @@ ROLES = ("standalone", "server", "terminal")
 #: Η έκδοση που δηλώνει το κάθε instance στους υπόλοιπους του δικτύου. Κρατιέται
 #: εδώ ώστε να υπάρχει μία πηγή: το pyproject δεν διαβάζεται μέσα από το bundle
 #: του PyInstaller.
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.1"
 
 ROLE_LABELS_EL = {
     "standalone": "Αυτόνομος υπολογιστής",
@@ -125,6 +125,33 @@ def consume_show_once() -> bool:
     except OSError:
         pass
     return False
+
+
+def load_download_dir() -> Path | None:
+    """Ο φάκελος όπου πέφτουν τα κατεβασμένα PDF/ZIP, αν έχει οριστεί.
+
+    Χωρίς αυτόν, κάθε «PDF καρτέλας» ή «ZIP παραστατικών» άνοιγε διάλογο
+    «πού να το βάλω;» — για ένα αρχείο που ο χρήστης κατεβάζει δεκάδες φορές
+    την ημέρα, πάντα στον ίδιο φάκελο.
+    """
+    raw = os.environ.get("TIMOLOGIO_DOWNLOAD_DIR") or _registry_value("DownloadDir")
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser()
+    return path if str(path).strip() else None
+
+
+def save_download_dir(path: Path | str | None) -> None:
+    """Θυμάται τον φάκελο λήψεων (κενό = «ρώτα με κάθε φορά»)."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REG_PATH) as key:
+            winreg.SetValueEx(key, "DownloadDir", 0, winreg.REG_SZ, str(path or ""))
+    except OSError:
+        pass
 
 
 def _documents_dir() -> Path:

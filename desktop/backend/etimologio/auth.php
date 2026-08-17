@@ -304,15 +304,61 @@ function auth_totp_disable(string $verify): array {
     return ['success' => true, 'note' => 'Το 2FA απενεργοποιήθηκε.'];
 }
 
+/**
+ * Οι εταιρείες που «βλέπει» ένας χρήστης, ΜΕ διαπιστευτήρια.
+ *
+ * Τρία επίπεδα, και η διαφορά τους είναι ολόκληρο το μοντέλο πρόσβασης:
+ *   - **Διαχειριστής** (master): κάθε εταιρεία της εγκατάστασης.
+ *   - **Λογιστής** (editor): μόνο όσες του έχουν ανατεθεί ρητά. Παλιότερα έβλεπε
+ *     κι αυτός τα πάντα — σε γραφείο με πολλούς λογιστές αυτό σημαίνει ότι ο
+ *     καθένας έβλεπε τους πελάτες των υπολοίπων.
+ *   - **Επιχείρηση** (business): μόνο τις δικές της.
+ */
+function auth_accounts_in_scope(array $u): array {
+    $role = (string)($u['role'] ?? 'business');
+    if ($role === 'master')  return accounts_all_full();
+    if ($role === 'editor')  return accounts_for_manager((int)$u['id']);
+    return accounts_for_user((int)$u['id']);
+}
+
+/** Τα ΑΦΜ που βλέπει ο χρήστης — το φίλτρο για ειδοποιήσεις/προγραμματισμό. */
+function auth_scope_vats(array $u): array {
+    return array_values(array_map(fn($a) => (string)$a['vat'], auth_accounts_in_scope($u)));
+}
+
+/**
+ * Το φίλτρο εταιρείας για τα τοπικά δεδομένα: `''` για τον διαχειριστή (όλα),
+ * αλλιώς η λίστα των ΑΦΜ που δικαιούται ο χρήστης.
+ */
+function auth_data_scope(array $u) {
+    return ((string)($u['role'] ?? '') === 'master') ? '' : auth_scope_vats($u);
+}
+
+/** Οι εταιρείες που βλέπει ο χρήστης, ΧΩΡΙΣ διαπιστευτήρια (ασφαλές για το UI). */
+function auth_visible_accounts(array $u): array {
+    return array_map(function ($a) {
+        unset($a['subkey'], $a['username']);
+        return $a;
+    }, auth_accounts_in_scope($u));
+}
+
+/** Επιτρέπεται σε αυτόν τον χρήστη να δουλέψει με αυτό το ΑΦΜ; */
+function auth_may_access_vat(array $u, string $vat): bool {
+    $vat = preg_replace('/\D/', '', $vat);
+    if ($vat === '') return false;
+    foreach (auth_accounts_in_scope($u) as $a) {
+        if ((string)$a['vat'] === $vat) return true;
+    }
+    return false;
+}
+
 // --- Active AADE account resolution (defines the bridge constants) ----------
 // Called once per request after the user is known. Picks the account by the
 // `account` param (VAT) among the user's own accounts, else the first.
 function auth_resolve_account(): ?array {
     $u = current_user();
     if (!$u) return null;
-    // Staff (accountant/admin) can act on ANY linked company; a business user is
-    // limited to the companies it owns.
-    $accounts = user_is_staff($u) ? accounts_all_full() : accounts_for_user((int)$u['id']);
+    $accounts = auth_accounts_in_scope($u);
     if (empty($accounts)) return null;
 
     $reqVat = preg_replace('/\D/', '', $_GET['account'] ?? $_POST['account'] ?? '');
@@ -347,7 +393,33 @@ function auth_migrate_legacy_accounts(): void {
     }
 }
 
+/**
+ * Αυτόματη σύνδεση της εφαρμογής υπολογιστή στο δικό της backend.
+ *
+ * Η desktop εφαρμογή φιλοξενεί ΤΟ ΙΔΙΟ `app.php` μέσα σε ενσωματωμένο browser,
+ * πάνω στον PHP server που ξεκινά η ίδια. Ο χρήστης έχει ήδη ανοίξει την
+ * εφαρμογή του — δεν υπάρχει λόγος να ξαναδώσει κωδικό, και ο κωδικός αυτός
+ * παράγεται ούτως ή άλλως από την εφαρμογή (δες `bootstrap_credentials`).
+ *
+ * Τρεις φραγμοί, γιατί αυτό ΠΑΡΑΚΑΜΠΤΕΙ τη σύνδεση:
+ *   1. Το `DESKTOP_TOKEN` υπάρχει μόνο στο config που γράφει η ίδια η εφαρμογή
+ *      (ποτέ σε server εγκατάσταση — εκεί η σταθερά απλώς δεν ορίζεται).
+ *   2. Ο καλών πρέπει να είναι loopback.
+ *   3. Σύγκριση με `hash_equals`, όχι `==`.
+ */
+function auth_desktop_autologin(): void {
+    if (!defined('DESKTOP_TOKEN') || DESKTOP_TOKEN === '') return;
+    if (!empty($_SESSION['uid'])) return;
+    $token = (string)($_GET['desktop_token'] ?? $_POST['desktop_token'] ?? '');
+    if ($token === '' || !hash_equals((string)DESKTOP_TOKEN, $token)) return;
+    $remote = $_SERVER['REMOTE_ADDR'] ?? '';
+    if (!in_array($remote, ['127.0.0.1', '::1', ''], true)) return;
+    $uid = (int)localdb()->query("SELECT id FROM users WHERE role='master' ORDER BY id ASC LIMIT 1")->fetchColumn();
+    if ($uid > 0) $_SESSION['uid'] = $uid;
+}
+
 // Run bootstrap + migration + account resolution on include (safe, no output).
 auth_bootstrap();
 auth_migrate_legacy_accounts();
+auth_desktop_autologin();
 auth_resolve_account();

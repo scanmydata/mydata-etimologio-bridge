@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1141,9 +1143,13 @@ def test_issue_line_picker_fills_price_and_vat_from_the_catalogue(app) -> None:
     assert picker._popup.item(0).text().startswith("➕")       # «Νέο είδος…»
     picker._chose(picker._popup.item(1))                       # ΥΠ001
 
+    from timologio.etimologio.pages.issue import _PRICE, _RATE
+
     assert page._cell(0, 0) == "ΥΠ001"
-    assert parse_money(page._cell(0, 2)) == pytest.approx(150.0)
-    assert page._cell(0, 3) == "24"                            # vat_category 1 → 24%
+    assert parse_money(page._cell(0, _PRICE)) == pytest.approx(150.0)
+    # Οι στήλες ακολουθούν τη σειρά του web (έκπτωση πριν τον ΦΠΑ), οπότε ο
+    # δείκτης διαβάζεται από τις σταθερές και όχι καρφωτός.
+    assert page._cell(0, _RATE) == "24"                        # vat_category 1 → 24%
 
     line = page.collect_lines()[0]
     assert line["code"] == "ΥΠ001"
@@ -2172,18 +2178,38 @@ def test_admin_delete_user_sends_the_id() -> None:
     assert method == "POST"
 
 
-def test_speaker_stays_silent_without_a_greek_voice(app) -> None:
-    """Ελληνικά με αγγλική φωνή ακούγονται σαν σφάλμα — καλύτερα σιωπή + αιτία."""
-    from timologio.etimologio.speech import MISSING_VOICE_HINT, Speaker
+def test_speaker_uses_the_bundled_engine(app, tmp_path: Path) -> None:
+    """Η φωνή ταξιδεύει μαζί μας — δεν εξαρτάται από φωνές των Windows."""
+    from timologio.etimologio import speech
 
-    speaker = Speaker()
-    if speaker.available:
-        assert speaker.problem == ""          # το μηχάνημα έχει ελληνική φωνή
-    else:
-        assert speaker.problem
-        assert speaker.say("δοκιμή") is False
-    # Ό,τι κι αν συμβεί, το μήνυμα λέει πού μπαίνει η φωνή.
-    assert "Ελληνικά" in MISSING_VOICE_HINT
+    # Χωρίς μηχανή: σιωπή ΚΑΙ εξήγηση, ποτέ συλλαβισμός.
+    empty = speech.Speaker(tmp_path)
+    assert not empty.available
+    assert empty.problem
+    assert empty.say("δοκιμή") is False
+
+    # Με μηχανή και τα δύο μοντέλα: και οι δύο γλώσσες βρίσκονται.
+    root = tmp_path / speech.PIPER_DIRNAME
+    voices = root / "voices"
+    voices.mkdir(parents=True)
+    (root / ("piper.exe" if os.name == "nt" else "piper")).write_bytes(b"x")
+    for name in ("el_GR-rapunzelina-low", "en_US-lessac-low"):
+        (voices / f"{name}.onnx").write_bytes(b"x")
+        (voices / f"{name}.onnx.json").write_text("{}", encoding="utf-8")
+    assert speech.missing(tmp_path) == ""
+    assert speech.voice_path("el", tmp_path).name.startswith("el_")
+    assert speech.voice_path("en", tmp_path).name.startswith("en_")
+    # Μοντέλο χωρίς το .json δίπλα του δεν μετράει — το Piper θα έσκαγε.
+    (voices / "el_GR-rapunzelina-low.onnx.json").unlink()
+    assert speech.voice_path("el", tmp_path) is None
+
+
+def test_speakable_text_drops_icons(app) -> None:
+    """Τα εικονίδια διαβάζονταν ένα-ένα μέσα στην πρόταση."""
+    from timologio.etimologio.speech import _speakable
+
+    assert _speakable("✅ Εκδόθηκε · ΜΑΡΚ 4000") == "Εκδόθηκε  ΜΑΡΚ 4000"
+    assert _speakable("   ") == ""
 
 
 def test_card_reopens_on_the_last_customer(app) -> None:
@@ -2269,3 +2295,187 @@ def test_issue_and_bulk_offer_the_document_language(app) -> None:
     bulk._table.setItem(row, 4, QTableWidgetItem("100"))
     items = bulk.build_items()
     assert items and items[0]["issue_lang"] == "en"
+
+
+# --- Πέμπτος γύρος: το κλικ στον επιλογέα, και το λευκό PDF καρτέλας --------
+
+def test_picker_selects_on_a_real_mouse_click(app) -> None:
+    """Το «κολλάνε τα dropdown»: η επιλογή δεν γινόταν ΠΟΤΕ με το ποντίκι.
+
+    Το `itemClicked` απαιτεί πάτημα **και** άφημα στο ίδιο στοιχείο. Το πάτημα
+    έκλεινε το popup, το `FocusIn` το ξανάχτιζε με `clear()`, και στο άφημα το
+    `QListWidgetItem` είχε ήδη διαγραφεί — RuntimeError μέσα στο signal
+    dispatch, δηλαδή σιωπή.
+    """
+    from PySide6.QtCore import Qt as _Qt
+    from PySide6.QtTest import QTest
+
+    from timologio.etimologio.pages.pickers import customer_picker
+
+    picker = customer_picker()
+    picker.set_rows([
+        {"vat": "094039270", "name": "ΞΕΝΤΕ ΑΕ", "city": "ΑΘΗΝΑ"},
+        {"vat": "802012659", "name": "MEGATECH ΙΚΕ", "city": "ΠΑΤΡΑ"},
+    ])
+    got: list[dict] = []
+    picker.picked.connect(got.append)
+
+    picker.show_popup()
+    item = picker._popup.item(1)                      # μετά το «➕ Νέος πελάτης…»
+    point = picker._popup.visualItemRect(item).center()
+    QTest.mouseClick(picker._popup.viewport(), _Qt.MouseButton.LeftButton,
+                     _Qt.KeyboardModifier.NoModifier, point)
+
+    assert len(got) == 1, "το κλικ δεν επέλεξε τίποτα"
+    assert got[0]["vat"] == "094039270"
+    assert picker.text() == "ΞΕΝΤΕ ΑΕ"
+    assert not picker.popup_visible()
+
+
+def test_picker_survives_a_rebuild_during_selection(app) -> None:
+    """Ό,τι κι αν ξαναχτίσει τη λίστα την ώρα της επιλογής, δεν σκάει."""
+    from timologio.etimologio.pages.pickers import customer_picker
+
+    picker = customer_picker()
+    picker.set_rows([{"vat": "094039270", "name": "ΞΕΝΤΕ ΑΕ"}])
+    got: list[dict] = []
+    picker.picked.connect(got.append)
+    # Ο παραλήπτης ξαναγεμίζει τον επιλογέα — ακριβώς ό,τι κάνει η Καρτέλα.
+    picker.picked.connect(lambda _row: picker.set_rows([{"vat": "1", "name": "Α"}]))
+
+    picker.show_popup()
+    picker._chose(picker._popup.item(1))
+    assert len(got) == 1
+
+
+def test_ledger_pdf_has_ink(app, tmp_path: Path) -> None:
+    """Η «Εκτύπωση καρτέλας» έβγαζε λευκές σελίδες στο πακεταρισμένο build."""
+    from PySide6.QtCore import QSize
+    from PySide6.QtPdf import QPdfDocument
+
+    from timologio.etimologio.ledgerpdf import build_ledger_pdf
+
+    path = build_ledger_pdf(
+        tmp_path / "καρτέλα.pdf",
+        customer={"name": "ΞΕΝΤΕ ΑΕ", "vat": "094039270", "city": "ΑΘΗΝΑ"},
+        entries=[
+            {"date": "13/07/2026", "label": "2.1 · Σειρά ΤΠΥ Αρ. 1",
+             "debit": 45475.51, "credit": 0.0},
+            {"date": "20/07/2026", "label": "Πληρωμή · Μετρητά",
+             "debit": 0.0, "credit": 3000.0},
+        ],
+        period=("01/01/2026", "31/12/2026"),
+    )
+    doc = QPdfDocument()
+    doc.load(str(path))
+    assert doc.pageCount() == 1, f"{doc.pageCount()} σελίδες για δύο κινήσεις"
+
+    image = doc.render(0, QSize(800, 1130))
+    ink = sum(
+        1
+        for y in range(0, image.height(), 4)
+        for x in range(0, image.width(), 4)
+        if image.pixelColor(x, y).alpha() > 128
+        and image.pixelColor(x, y).lightness() < 200
+    )
+    assert ink > 200, f"η σελίδα είναι ουσιαστικά λευκή ({ink} pixels μελάνι)"
+
+
+def test_greek_voice_prefers_joy_over_rapunzelina(tmp_path: Path) -> None:
+    """Όταν υπάρχουν δύο ελληνικές φωνές, δεν κερδίζει η αλφαβητική τύχη.
+
+    Η joy-medium αρθρώνει καθαρότερα αριθμούς και ΑΦΜ — δηλαδή το μισό
+    περιεχόμενο κάθε απάντησης του βοηθού.
+    """
+    from timologio.etimologio import speech
+
+    voices = tmp_path / speech.PIPER_DIRNAME / "voices"
+    voices.mkdir(parents=True)
+    for name in ("el_GR-rapunzelina-medium", "el_GR-joy-medium"):
+        (voices / f"{name}.onnx").write_bytes(b"x")
+        (voices / f"{name}.onnx.json").write_text("{}", encoding="utf-8")
+
+    assert speech.voice_path("el", tmp_path).stem == "el_GR-joy-medium"
+    # Αν λείψει η προτιμώμενη, δεν μένουμε βουβοί.
+    (voices / "el_GR-joy-medium.onnx").unlink()
+    assert speech.voice_path("el", tmp_path).stem == "el_GR-rapunzelina-medium"
+
+
+def test_spoken_text_starts_with_a_pause(tmp_path: Path, monkeypatch) -> None:
+    """Χωρίς κόμμα μπροστά, η πρώτη συλλαβή βγαίνει κομμένη."""
+    from timologio.etimologio import speech
+
+    root = tmp_path / speech.PIPER_DIRNAME
+    voices = root / "voices"
+    voices.mkdir(parents=True)
+    (root / ("piper.exe" if os.name == "nt" else "piper")).write_bytes(b"x")
+    (voices / "el_GR-joy-medium.onnx").write_bytes(b"x")
+    (voices / "el_GR-joy-medium.onnx.json").write_text("{}", encoding="utf-8")
+
+    spoken: list[str] = []
+    speaker = speech.Speaker(tmp_path)
+    monkeypatch.setattr(
+        speaker, "_speak_now", lambda text, voice: spoken.append(text)
+    )
+    assert speaker.say("Εκδόθηκε") is True
+    # Το νήμα είναι daemon· περιμένουμε λίγο να τρέξει.
+    for _ in range(100):
+        if spoken:
+            break
+        time.sleep(0.01)
+    assert spoken and spoken[0].startswith(", ")
+
+
+def test_whisper_is_found_only_when_both_pieces_travel(tmp_path: Path) -> None:
+    """Μηχανή ΚΑΙ μοντέλο — αλλιώς το backend πρέπει να απαντά «δεν υπάρχει»."""
+    from timologio.etimologio import speech
+
+    assert speech.stt_missing(tmp_path)
+    root = tmp_path / speech.WHISPER_DIRNAME
+    root.mkdir()
+    (root / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")).write_bytes(b"x")
+    assert speech.stt_missing(tmp_path)          # λείπει το μοντέλο
+    (root / "ggml-base.bin").write_bytes(b"x" * 10)
+    assert speech.stt_missing(tmp_path) == ""
+    assert speech.whisper_model(tmp_path).name == "ggml-base.bin"
+
+
+def test_service_finds_the_speech_engines_in_its_data_dir(tmp_path: Path) -> None:
+    """Ο δρόμος από την Python στο PHP endpoint περνά από τον φάκελο δεδομένων.
+
+    Το `_write_config` γράφει στον πραγματικό φάκελο του backend, οπότε εδώ
+    ελέγχεται το κομμάτι που μπορεί να σπάσει: ότι η μηχανή και το μοντέλο
+    εντοπίζονται με τη ρίζα που περνά η υπηρεσία.
+    """
+    from timologio.etimologio import speech
+    from timologio.etimologio.service import EtimologioService
+
+    service = EtimologioService(tmp_path)
+    whisper = service.data_dir / speech.WHISPER_DIRNAME
+    whisper.mkdir(parents=True)
+    exe = whisper / ("whisper-cli.exe" if os.name == "nt" else "whisper-cli")
+    exe.write_bytes(b"x")
+    (whisper / "ggml-base.bin").write_bytes(b"x" * 10)
+
+    assert speech.whisper_engine(service.data_dir) == exe
+    assert speech.whisper_model(service.data_dir).name == "ggml-base.bin"
+
+
+def test_downloads_go_to_the_configured_folder(tmp_path: Path, monkeypatch) -> None:
+    """Ρυθμισμένος φάκελος σημαίνει «μη με ρωτάς» — και «μη σβήνεις»."""
+    from timologio.etimologio.webshell import _free_name
+
+    first = tmp_path / "ΠΑΡΑΣΤΑΤΙΚΑ.zip"
+    assert _free_name(first) == first
+    first.write_bytes(b"x")
+    assert _free_name(first).name == "ΠΑΡΑΣΤΑΤΙΚΑ (2).zip"
+
+
+def test_menu_actions_are_not_treated_as_pages() -> None:
+    """«Ειδοποιήσεις» άνοιγε την Έκδοση: ήταν κουμπί, όχι σελίδα."""
+    from timologio.etimologio.webshell import EtimologioWebShell
+
+    assert "notifications" not in EtimologioWebShell._VIEWS
+    assert "toggleNotifPanel" in EtimologioWebShell._ACTIONS["notifications"]
+    # Τα παραστατικά έχουν πλέον δική τους ενότητα στο web.
+    assert EtimologioWebShell._VIEWS["documents"] == "documents"

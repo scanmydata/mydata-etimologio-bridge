@@ -427,9 +427,19 @@ class MainWindow(QMainWindow):
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
         # ξεκινά τεμπέλικα την πρώτη φορά που ανοίγει η ενότητα, ώστε να μην
         # επιβαρύνει την εκκίνηση του Downloader.
-        from ..etimologio.shell import EtimologioShell
+        # Το UI του e-Τιμολόγιο είναι **η ίδια** web εφαρμογή, μέσα σε
+        # ενσωματωμένο browser πάνω στον τοπικό PHP server: μία υλοποίηση, καμία
+        # απόκλιση από το web. Οι παλιές native σελίδες μένουν ως εφεδρεία για
+        # εγκαταστάσεις χωρίς QtWebEngine.
+        from ..etimologio.webshell import EtimologioWebShell, webengine_available
 
-        self.etimologio = EtimologioShell(self.settings.data_dir)
+        if webengine_available():
+            self.etimologio = EtimologioWebShell(self.settings.data_dir)
+        else:
+            from ..etimologio.shell import EtimologioShell
+
+            log.warning("Λείπει το QtWebEngine — πτώση στις native σελίδες")
+            self.etimologio = EtimologioShell(self.settings.data_dir)
         self.stack.addWidget(self.etimologio)
 
         # Η αρχική οθόνη επιλογής εφαρμογής. Μπαίνει τελευταία στο stack ώστε οι
@@ -657,6 +667,24 @@ class MainWindow(QMainWindow):
             # διακόπτη: «Βοηθητικά μηνύματα» σημαίνει όλες τις επεξηγήσεις.
             if w.property("help_line"):
                 w.setVisible(enabled)
+        # Η ενσωματωμένη σελίδα του e-Τιμολόγιο έχει τα δικά της βοηθητικά
+        # μηνύματα: ο διακόπτης πρέπει να τα σβήνει κι εκεί, αλλιώς μισή
+        # εφαρμογή τα δείχνει και η άλλη μισή όχι.
+        self._etim_call("set_tooltips", enabled)
+
+    def _etim_call(self, name: str, *args) -> None:
+        """Προωθεί μια ρύθμιση στο κέλυφος του e-Τιμολόγιο, αν υπάρχει.
+
+        Το κέλυφος φτιάχνεται τεμπέλικα και σε εγκατάσταση χωρίς QtWebEngine
+        είναι το παλιό, native — γι' αυτό τίποτα δεν θεωρείται δεδομένο.
+        """
+        shell = getattr(self, "etimologio", None)
+        handler = getattr(shell, name, None)
+        if callable(handler):
+            try:
+                handler(*args)
+            except Exception:  # noqa: BLE001 — μια ρύθμιση δεν ρίχνει την εφαρμογή
+                log.debug("Η ρύθμιση «%s» δεν πέρασε στο e-Τιμολόγιο", name)
 
     def _refresh_tooltips(self) -> None:
         if not self._tooltips_on:
@@ -1140,6 +1168,10 @@ class MainWindow(QMainWindow):
         ανακατεύονται οι ενέργειες των δύο.
         """
         self.etimologio.start()
+        # Το e-Τιμολόγιο ανοίγει με το θέμα και τα βοηθητικά μηνύματα που έχει
+        # ήδη επιλέξει ο χρήστης στο μενού — όχι με τις δικές του προεπιλογές.
+        self._etim_call("set_theme", self._prefs.value("theme", "dark") == "light")
+        self._etim_call("set_tooltips", self._tooltips_on)
         self.menu.set_mode("etimologio")
         self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
         self._set_mode_icon(etimologio=True)
@@ -1275,6 +1307,9 @@ class MainWindow(QMainWindow):
         self._stale = {"clients", "documents"}
         self._restyle_page(self._current_page())
         self._refresh_tooltips()
+        # Το e-Τιμολόγιο είναι σελίδα, όχι widget: το stylesheet του Qt δεν την
+        # αγγίζει. Ο ίδιος διακόπτης πρέπει να της το πει.
+        self._etim_call("set_theme", light)
         self._repaint_everything()
 
     def _repaint_everything(self) -> None:

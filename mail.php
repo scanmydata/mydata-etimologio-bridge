@@ -20,7 +20,17 @@
 
 require_once __DIR__ . '/config.php';
 
+/**
+ * Μια ρύθμιση email: **από τη βάση πρώτα**, μετά από το `config.php`.
+ *
+ * Έτσι ο διαχειριστής ορίζει SMTP ή Resend από τις Ρυθμίσεις, χωρίς να αγγίξει
+ * αρχείο — και μια εγκατάσταση που έχει ήδη σταθερές συνεχίζει να δουλεύει.
+ */
 function mail_conf(string $name, string $default = ''): string {
+    if (function_exists('setting_get')) {
+        $stored = setting_get('mail.' . $name);
+        if ($stored !== '') return trim($stored);
+    }
     return defined($name) ? trim((string)constant($name)) : $default;
 }
 
@@ -100,10 +110,105 @@ function send_mail_resend(string $to, string $subject, string $html, string $tex
     return false;
 }
 
-// --- SMTP (PHP mail()) -------------------------------------------------------
+// --- SMTP --------------------------------------------------------------------
+//
+// Τα πεδία SMTP_HOST/PORT/USER/PASS τα ζητούσε η οθόνη ρυθμίσεων αλλά **κανείς
+// δεν τα διάβαζε**: η αποστολή γινόταν με `mail()`, που στα Windows και στη
+// φορητή PHP δεν έχει καν ρυθμισμένο server. Ο διαχειριστής συμπλήρωνε σωστά
+// στοιχεία Gmail και δεν έφευγε τίποτα, χωρίς μήνυμα λάθους. Εδώ μιλάμε SMTP
+// κανονικά· το `mail()` μένει μόνο για εγκαταστάσεις χωρίς host (π.χ. hosting
+// που έχει ήδη ρυθμισμένο τοπικό relay).
+
+/** Η διεύθυνση μέσα σε «Όνομα <mail@dom>» — ο φάκελος MAIL FROM θέλει σκέτη. */
+function mail_addr(string $value): string {
+    if (preg_match('/<([^>]+)>/', $value, $m)) return trim($m[1]);
+    return trim($value);
+}
+
+function mail_mime(string $subject, string $from, string $to, string $html, string $text): string {
+    $boundary = 'b' . bin2hex(random_bytes(8));
+    if ($text === '') $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
+    $head  = 'From: ' . $from . "\r\n";
+    $head .= 'To: ' . $to . "\r\n";
+    $head .= 'Subject: =?UTF-8?B?' . base64_encode($subject) . "?=\r\n";
+    $head .= 'Date: ' . date('r') . "\r\n";
+    $head .= 'MIME-Version: 1.0' . "\r\n";
+    $head .= 'Content-Type: multipart/alternative; boundary="' . $boundary . '"' . "\r\n";
+    $body  = "\r\n--" . $boundary . "\r\n";
+    $body .= "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+           . chunk_split(base64_encode($text)) . "\r\n";
+    $body .= '--' . $boundary . "\r\n";
+    $body .= "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+           . chunk_split(base64_encode($html)) . "\r\n";
+    $body .= '--' . $boundary . "--\r\n";
+    return $head . $body;
+}
+
 function send_mail_smtp(string $to, string $subject, string $html, string $text = ''): bool {
     $from = mail_conf('SMTP_FROM');
     if ($from === '') return false;
+    $host = mail_conf('SMTP_HOST');
+    if ($host === '') return send_mail_php($to, $subject, $html, $text);
+
+    $port   = (int)(mail_conf('SMTP_PORT') ?: '587');
+    $secure = strtolower(mail_conf('SMTP_SECURE', $port === 465 ? 'ssl' : 'tls'));
+    $user   = mail_conf('SMTP_USER');
+    $pass   = mail_conf('SMTP_PASS');
+    $target = ($secure === 'ssl' ? 'ssl://' : '') . $host . ':' . $port;
+
+    $sock = @stream_socket_client($target, $errno, $errstr, 20);
+    if (!$sock) { error_log("[mail] SMTP connect $target: $errstr"); return false; }
+    stream_set_timeout($sock, 20);
+
+    $read = function () use ($sock): string {
+        $out = '';
+        while (($line = fgets($sock, 1024)) !== false) {
+            $out .= $line;
+            // Το τελευταίο μιας πολύγραμμης απάντησης έχει κενό μετά τον κωδικό.
+            if (strlen($line) >= 4 && $line[3] === ' ') break;
+        }
+        return $out;
+    };
+    $cmd = function (string $line, string $expect) use ($sock, $read): bool {
+        if ($line !== '') fwrite($sock, $line . "\r\n");
+        $resp = $read();
+        if (strncmp($resp, $expect, strlen($expect)) === 0) return true;
+        error_log('[mail] SMTP «' . substr($line, 0, 20) . '» → ' . trim(substr($resp, 0, 160)));
+        return false;
+    };
+
+    $ok = $cmd('', '220');
+    $ehlo = 'EHLO ' . (parse_url(app_base_url(), PHP_URL_HOST) ?: 'localhost');
+    $ok = $ok && $cmd($ehlo, '250');
+    if ($ok && $secure === 'tls') {
+        $ok = $cmd('STARTTLS', '220')
+           && @stream_socket_enable_crypto($sock, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)
+           && $cmd($ehlo, '250');
+    }
+    if ($ok && $user !== '') {
+        $ok = $cmd('AUTH LOGIN', '334')
+           && $cmd(base64_encode($user), '334')
+           && $cmd(base64_encode($pass), '235');
+    }
+    $ok = $ok
+       && $cmd('MAIL FROM:<' . mail_addr($from) . '>', '250')
+       && $cmd('RCPT TO:<' . mail_addr($to) . '>', '250')
+       && $cmd('DATA', '354');
+    if ($ok) {
+        $message = mail_mime($subject, $from, $to, $html, $text);
+        // Η τελεία στην αρχή γραμμής τερματίζει το DATA — διπλασιάζεται.
+        $message = preg_replace('/^\./m', '..', $message);
+        fwrite($sock, $message . "\r\n.\r\n");
+        $ok = strncmp($read(), '250', 3) === 0;
+    }
+    @fwrite($sock, "QUIT\r\n");
+    @fclose($sock);
+    return $ok;
+}
+
+/** Εφεδρεία για εγκαταστάσεις με ρυθμισμένο relay στο ίδιο το PHP. */
+function send_mail_php(string $to, string $subject, string $html, string $text = ''): bool {
+    $from = mail_conf('SMTP_FROM');
     $boundary = 'b' . bin2hex(random_bytes(8));
     $headers  = 'From: ' . $from . "\r\n";
     $headers .= 'MIME-Version: 1.0' . "\r\n";
@@ -114,8 +219,7 @@ function send_mail_smtp(string $to, string $subject, string $html, string $text 
     $body .= '--' . $boundary . "\r\n";
     $body .= 'Content-Type: text/html; charset=UTF-8' . "\r\n\r\n" . $html . "\r\n\r\n";
     $body .= '--' . $boundary . "--";
-    $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
-    return @mail($to, $encodedSubject, $body, $headers);
+    return @mail($to, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, $headers);
 }
 
 // --- Branded HTML template ---------------------------------------------------

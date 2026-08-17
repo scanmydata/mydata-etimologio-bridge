@@ -1,0 +1,372 @@
+"""e-Τιμολόγιο Pro στον υπολογιστή: **η ίδια** web εφαρμογή, μέσα σε παράθυρο.
+
+Γιατί άλλαξε η αρχιτεκτονική
+----------------------------
+Οι σελίδες ήταν ξαναγραμμένες σε Qt, μία προς μία, με στόχο να μοιάζουν με το
+``app.php``. Κάθε γύρος δοκιμών έβρισκε νέα απόκλιση — επιλογείς που δεν
+επέλεγαν, στήλες κομμένες, οδηγός που δεν επέστρεφε, σελίδες που έλειπαν —
+επειδή η ομοιότητα συντηρούνταν **με το χέρι**. Δύο υλοποιήσεις του ίδιου UI
+αποκλίνουν πάντα· το ερώτημα είναι μόνο πόσο γρήγορα.
+
+Εδώ το UI είναι ένα: η εφαρμογή σηκώνει τον δικό της PHP server (όπως πάντα) και
+δείχνει το ``app.php`` του μέσα σε ``QWebEngineView``. Ό,τι αλλάζει στο web
+εμφανίζεται αυτούσιο και στον υπολογιστή, χωρίς μεταφορά.
+
+Τι ΔΕΝ αλλάζει: τα δεδομένα μένουν τοπικά και κρυπτογραφημένα, ο server ακούει
+μόνο σε loopback, και τίποτα δεν ταξιδεύει στο internet πέρα από τις κλήσεις
+προς την ΑΑΔΕ που έκανε ήδη το backend.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from urllib.parse import quote
+
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
+from PySide6.QtWidgets import (
+    QLabel,
+    QPushButton,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .service import EtimologioService
+
+log = logging.getLogger(__name__)
+
+
+class _Signals(QObject):
+    ok = Signal(object)
+    err = Signal(str)
+
+
+class _Job(QRunnable):
+    """Ένα σύγχρονο κομμάτι δουλειάς εκτός του νήματος του UI."""
+
+    def __init__(self, fn) -> None:
+        super().__init__()
+        self._fn = fn
+        self.signals = _Signals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._fn()
+        except Exception as exc:  # noqa: BLE001 — φτάνει στο UI ως μήνυμα
+            self._emit(self.signals.err, str(exc))
+        else:
+            self._emit(self.signals.ok, result)
+
+    @staticmethod
+    def _emit(signal, payload) -> None:
+        try:
+            signal.emit(payload)
+        except RuntimeError:
+            log.debug("Το αποτέλεσμα αγνοήθηκε: ο παραλήπτης έχει καταστραφεί")
+
+
+#: Οι εργασίες που τρέχουν, κρατημένες ζωντανές επίτηδες: το ``QThreadPool``
+#: κατέχει το runnable μόνο στη C++ πλευρά και το ``_Signals`` θα μπορούσε να
+#: συλλεχθεί πριν προλάβει να εκπέμψει.
+_INFLIGHT: set[_Job] = set()
+
+
+def _run(fn, on_ok, on_err) -> None:
+    job = _Job(fn)
+    _INFLIGHT.add(job)
+    job.signals.ok.connect(on_ok)
+    job.signals.err.connect(on_err)
+    job.signals.ok.connect(lambda *_: _INFLIGHT.discard(job))
+    job.signals.err.connect(lambda *_: _INFLIGHT.discard(job))
+    QThreadPool.globalInstance().start(job)
+
+
+def _free_name(path: Path) -> Path:
+    """«αρχείο.pdf» → «αρχείο (2).pdf» όταν υπάρχει ήδη.
+
+    Ο ρυθμισμένος φάκελος σημαίνει «μη με ρωτάς» — δεν σημαίνει «σβήσε ό,τι
+    κατέβασα πριν από πέντε λεπτά».
+    """
+    if not path.exists():
+        return path
+    stem, suffix = path.stem, path.suffix
+    for n in range(2, 999):
+        candidate = path.with_name(f"{stem} ({n}){suffix}")
+        if not candidate.exists():
+            return candidate
+    return path
+
+
+def webengine_available() -> bool:
+    """Υπάρχει το QtWebEngine σε αυτή την εγκατάσταση;"""
+    try:
+        from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+    except Exception:  # noqa: BLE001 — λείπει ή δεν φορτώνει
+        return False
+    return True
+
+
+class EtimologioWebShell(QWidget):
+    """Το κέλυφος: ξεκινά το backend και δείχνει το ``app.php`` του."""
+
+    def __init__(self, data_dir: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._service = EtimologioService(data_dir)
+        self._started = False
+        self._base = ""
+        self._pending_section = ""
+        # `None` = «δεν το έχει πει κανείς ακόμη»: η σελίδα κρατά ό,τι είχε.
+        self._theme_light: bool | None = None
+        self._tips_on: bool | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self._stack = QStackedWidget()
+        root.addWidget(self._stack)
+
+        self._status = QLabel("Εκκίνηση e-Τιμολόγιο Pro…")
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setWordWrap(True)
+        holder = QWidget()
+        holder_box = QVBoxLayout(holder)
+        holder_box.addStretch(1)
+        holder_box.addWidget(self._status)
+        self._retry = QPushButton("Δοκίμασε ξανά")
+        self._retry.clicked.connect(self._restart)
+        self._retry.hide()
+        holder_box.addWidget(self._retry, 0, Qt.AlignmentFlag.AlignHCenter)
+        holder_box.addStretch(1)
+        self._stack.addWidget(holder)
+
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+
+        self._view = QWebEngineView()
+        # ⚠️ Χωρίς χειριστή λήψης, το QtWebEngine **ακυρώνει σιωπηλά** κάθε
+        # κατέβασμα: ο χρήστης πατούσε «PDF καρτέλας» ή «ZIP» και δεν συνέβαινε
+        # τίποτα. Ρωτάμε πού να μπει το αρχείο και μετά το ανοίγουμε.
+        self._view.page().profile().downloadRequested.connect(self._download)
+        # Το μικρόφωνο του βοηθού: χωρίς ρητή παραχώρηση, το `getUserMedia`
+        # απορρίπτεται σιωπηλά μέσα στο QtWebEngine και η φωνητική εντολή
+        # «δεν κάνει τίποτα». Η σελίδα είναι η δική μας, σε loopback.
+        self._view.page().featurePermissionRequested.connect(self._permission)
+        # Το ενσωματωμένο UI είναι η εφαρμογή μας πάνω σε loopback — δεν υπάρχει
+        # λόγος να δείχνει μενού δεξιού κλικ του browser («Reload», «View source»).
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self._view.loadFinished.connect(self._load_finished)
+        self._stack.addWidget(self._view)
+
+    # --- κύκλος ζωής --------------------------------------------------------
+    def start(self) -> None:
+        """Ξεκινά το backend μία φορά και φορτώνει το UI."""
+        if self._started:
+            return
+        self._started = True
+        self._set_status("Εκκίνηση e-Τιμολόγιο Pro…")
+        _run(self._service.start_local, self._on_ready, self._on_error)
+
+    def _restart(self) -> None:
+        self._started = False
+        self._retry.hide()
+        self.start()
+
+    def shutdown(self) -> None:
+        # Πρώτα η σελίδα: ένα ζωντανό QWebEngineView που δείχνει σε server που
+        # μόλις σκοτώθηκε κρατά ανοιχτές συνδέσεις και καθυστερεί το κλείσιμο.
+        try:
+            self._view.stop()
+            self._view.setUrl(QUrl("about:blank"))
+        except RuntimeError:
+            pass
+        self._service.stop()
+
+    # --- φόρτωση ------------------------------------------------------------
+    def _on_ready(self, url: str) -> None:
+        self._base = str(url).rstrip("/")
+        self._view.load(QUrl(self._app_url(self._pending_section)))
+        self._pending_section = ""
+
+    def _app_url(self, section: str = "") -> str:
+        """Η διεύθυνση του UI, με το κλειδί αυτόματης σύνδεσης.
+
+        Το κλειδί ταξιδεύει σε loopback και το δέχεται μόνο ο δικός μας server
+        (``auth_desktop_autologin``): ο χρήστης έχει ήδη ανοίξει την εφαρμογή
+        του και ο κωδικός που θα ζητούσαμε είναι αυτός που παρήγαγε η ίδια.
+        """
+        token = quote(self._service.desktop_token(), safe="")
+        address = f"{self._base}/app.php?desktop_token={token}"
+        return f"{address}#{section}" if section else address
+
+    def _load_finished(self, ok: bool) -> None:
+        if ok:
+            self._stack.setCurrentWidget(self._view)
+            self._apply_prefs()
+            return
+        self._set_status(
+            "Η εφαρμογή δεν φορτώθηκε.\n\nΤο τοπικό backend ξεκίνησε, αλλά η "
+            "σελίδα δεν ήρθε. Δες το αρχείο καταγραφής για λεπτομέρειες."
+        )
+        self._retry.show()
+
+    def _on_error(self, message: str) -> None:
+        self._set_status(f"Το τοπικό backend δεν ξεκίνησε.\n\n{message}")
+        self._retry.show()
+
+    def _set_status(self, text: str) -> None:
+        self._status.setText(text)
+        self._stack.setCurrentIndex(0)
+
+    # --- δικαιώματα σελίδας -------------------------------------------------
+    def _permission(self, origin, feature) -> None:
+        from PySide6.QtWebEngineCore import QWebEnginePage
+
+        allowed = {
+            QWebEnginePage.Feature.MediaAudioCapture,
+        }
+        page = self._view.page()
+        policy = (
+            QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
+            if feature in allowed
+            else QWebEnginePage.PermissionPolicy.PermissionDeniedByUser
+        )
+        page.setFeaturePermission(origin, feature, policy)
+
+    # --- λήψεις -------------------------------------------------------------
+    def _download(self, item) -> None:
+        """Αποθηκεύει το αρχείο — στον ρυθμισμένο φάκελο, αλλιώς ρωτά."""
+        from PySide6.QtWidgets import QFileDialog
+
+        from .. import config
+
+        suggested = item.downloadFileName() or "αρχείο"
+        folder = config.load_download_dir()
+        if folder is not None:
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                folder = None
+        if folder is not None:
+            target = str(_free_name(folder / suggested))
+        else:
+            target, _ = QFileDialog.getSaveFileName(
+                self, "Αποθήκευση", str(Path.home() / "Downloads" / suggested)
+            )
+        if not target:
+            item.cancel()
+            return
+        path = Path(target)
+        item.setDownloadDirectory(str(path.parent))
+        item.setDownloadFileName(path.name)
+        item.isFinishedChanged.connect(lambda: self._download_done(item, path))
+        item.accept()
+
+    def _download_done(self, item, path: Path) -> None:
+        from PySide6.QtWebEngineCore import QWebEngineDownloadRequest
+
+        if item.state() != QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
+            return
+        from .pages import ui
+
+        ui.open_file(path, self)
+
+    # --- πλοήγηση από το πλαϊνό μενού --------------------------------------
+    #: Κλειδί μενού → `data-view` του web. Ό,τι δεν υπάρχει εδώ ανοίγει την
+    #: αρχική οθόνη της εφαρμογής.
+    _VIEWS = {
+        "issue": "issue", "bulk": "bulk", "customers": "customers",
+        "card": "card", "companies": "admin", "products": "products",
+        "series": "series", "drafts": "drafts", "credit": "cancel",
+        "payments": "bankimp", "stats": "stats", "schedule": "schedule",
+        "settings": "settings", "admin": "admin",
+        # Η «Παραστατικά» έχει πλέον δική της ενότητα στο web (όλα τα
+        # παραστατικά του έτους, με μαζική εκτύπωση/ZIP)· έδειχνε στην Καρτέλα.
+        "documents": "documents",
+        "home": "issue",
+    }
+
+    #: Ό,τι δεν είναι σελίδα αλλά κουμπί της σελίδας. Το μενού της εφαρμογής
+    #: υπολογιστή τα καλούσε ως «ενότητες» και άνοιγαν λάθος οθόνη — π.χ. οι
+    #: «Ειδοποιήσεις» πήγαιναν στην Έκδοση.
+    _ACTIONS = {
+        "notifications": "toggleNotifPanel();",
+        "tour": "startTour();",
+        "manual": "downloadManual();",
+        "assistant": "cbTogglePanel();",
+    }
+
+    def open_section(self, key: str, *, remember: bool = True) -> None:
+        """Ανοίγει μια ενότητα του web UI (το πλαϊνό μενού το καλεί)."""
+        action = self._ACTIONS.get(key)
+        if action:
+            self._js(action)
+            return
+        view = self._VIEWS.get(key, "")
+        if not self._base:
+            self._pending_section = view
+            return
+        if not view:
+            return
+        # Η αλλαγή γίνεται μέσα στη σελίδα, χωρίς επαναφόρτωση: το `showView`
+        # είναι η ίδια συνάρτηση που καλεί το μενού του web.
+        self._js(f"showView({view!r});")
+
+    def _js(self, code: str) -> None:
+        """Τρέχει κώδικα στη σελίδα, αγνοώντας ό,τι δεν υπάρχει ακόμη."""
+        try:
+            self._view.page().runJavaScript("try{" + code + "}catch(e){}")
+        except RuntimeError:
+            pass
+
+    def start_tour(self) -> None:
+        self._js("startTour();")
+
+    def open_manual(self) -> None:
+        self._js("downloadManual();")
+
+    def toggle_assistant(self) -> None:
+        self._js("cbTogglePanel();")
+
+    def toggle_notifications(self) -> None:
+        self._js("toggleNotifPanel();")
+
+    # --- ρυθμίσεις που ζουν στο πλαϊνό μενού της εφαρμογής ------------------
+    # Το θέμα και τα βοηθητικά μηνύματα έχουν διακόπτη στο μενού του Downloader,
+    # αλλά η ενσωματωμένη σελίδα δεν τους άκουγε: άλλαζε το Qt και η σελίδα
+    # έμενε σκούρα (ή γεμάτη tooltips). Οι ίδιοι διακόπτες οδηγούν τώρα και τα
+    # δύο — η σελίδα κρύβει τη δική της στήλη ρυθμίσεων όταν είναι ενσωματωμένη.
+    def set_theme(self, light: bool) -> None:
+        self._theme_light = bool(light)
+        self._apply_prefs()
+
+    def set_tooltips(self, on: bool) -> None:
+        self._tips_on = bool(on)
+        self._apply_prefs()
+
+    def _apply_prefs(self) -> None:
+        """Στέλνει θέμα + βοηθητικά μηνύματα στη σελίδα.
+
+        Καλείται και μετά από κάθε φόρτωση: μια ρύθμιση που άλλαξε πριν ανοίξει
+        η σελίδα δεν έχει πού να πάει, και χωρίς αυτό η πρώτη εμφάνιση ερχόταν
+        πάντα με τις προεπιλογές της σελίδας.
+        """
+        if self._theme_light is not None:
+            name = "light" if self._theme_light else "dark"
+            self._js(f"applyTheme('{name}');localStorage.setItem('etim_theme','{name}');")
+        if self._tips_on is not None:
+            flag = "true" if self._tips_on else "false"
+            stored = "1" if self._tips_on else "0"
+            self._js(f"applyTips({flag});localStorage.setItem('etim_tips','{stored}');")
+
+    # --- συμβατότητα με το κέλυφος του Downloader ---------------------------
+    def focus_customer(self, vat: str) -> None:
+        """Ανοίγει την καρτέλα ενός ΑΦΜ (το ζητά η «Λήψη Παραστατικών»)."""
+        digits = "".join(ch for ch in str(vat) if ch.isdigit())
+        if not digits:
+            return
+        self._view.page().runJavaScript(
+            f"try{{openCard({digits!r},'');}}catch(e){{}}"
+        )
+
+
+__all__ = ["EtimologioWebShell", "webengine_available"]

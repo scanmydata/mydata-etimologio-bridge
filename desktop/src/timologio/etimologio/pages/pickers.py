@@ -86,12 +86,26 @@ class SearchPicker(QWidget):
         self._edit.installEventFilter(self)
         box.addWidget(self._edit)
 
+        #: Όσο τρέχει μια επιλογή, το popup ΔΕΝ ξαναχτίζεται. Δες `_chose`.
+        self._choosing = False
+
         self._popup = QListWidget(self)
         self._popup.setWindowFlags(Qt.WindowType.Popup)
         self._popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._popup.setFrameShape(QFrame.Shape.StyledPanel)
         self._popup.setUniformItemSizes(False)
-        self._popup.itemClicked.connect(self._chose)
+        # ⚠️ `itemPressed`, ΟΧΙ `itemClicked` — η επιλογή κρίνεται στο **πάτημα**.
+        #
+        # Με το `itemClicked` (πάτημα + άφημα στο ίδιο στοιχείο) η επιλογή δεν
+        # γινόταν ΠΟΤΕ με το ποντίκι: το πάτημα έκλεινε το popup (είναι
+        # `Qt.Popup`), η εστίαση γύριζε στο πεδίο, το `FocusIn` ξανάχτιζε τη
+        # λίστα με `clear()` — και όταν έφτανε το άφημα, το `QListWidgetItem`
+        # του κλικ **είχε ήδη διαγραφεί**:
+        #     RuntimeError: Internal C++ object (QListWidgetItem) already deleted
+        # Η εξαίρεση πνιγόταν μέσα στο signal dispatch του Qt, οπότε προς τα έξω
+        # φαινόταν σαν «το dropdown κολλάει και δεν διαλέγει τίποτα».
+        # Το web λύνει το ίδιο πρόβλημα με `onmousedown` — αυτό είναι το ίδιο.
+        self._popup.itemPressed.connect(self._chose)
         self._popup.hide()
 
     # --- API ---------------------------------------------------------------
@@ -135,6 +149,10 @@ class SearchPicker(QWidget):
 
     # --- popup -------------------------------------------------------------
     def show_popup(self) -> None:
+        # Όσο διαλέγει ο χρήστης, μην ξαναχτίζεις τη λίστα: το `clear()` σβήνει
+        # το ίδιο το στοιχείο που μόλις πατήθηκε.
+        if self._choosing:
+            return
         term = self._edit.text().strip().lower()
         matches = self._rows
         if term:
@@ -216,14 +234,27 @@ class SearchPicker(QWidget):
         self.text_edited.emit(text)
 
     def _chose(self, item: QListWidgetItem) -> None:
-        self.hide_popup()
-        if item.data(_CREATE):
-            self.create_requested.emit(self._edit.text().strip())
+        # Τα δεδομένα διαβάζονται ΠΡΩΤΑ και μόνο μετά κλείνει το popup: το
+        # κλείσιμο μπορεί να πυροδοτήσει `FocusIn` → `show_popup()` → `clear()`,
+        # που θα κατέστρεφε το `item` κάτω από τα πόδια μας.
+        self._choosing = True
+        try:
+            create = bool(item.data(_CREATE))
+            row = item.data(_ROW)
+        except RuntimeError:
+            # Το στοιχείο πρόλαβε να διαγραφεί — δεν υπάρχει τίποτα να επιλεγεί.
+            self._choosing = False
             return
-        row = item.data(_ROW)
-        if isinstance(row, dict):
-            self._edit.setText(self._label(row))
-            self.picked.emit(row)
+        try:
+            self.hide_popup()
+            if create:
+                self.create_requested.emit(self._edit.text().strip())
+                return
+            if isinstance(row, dict):
+                self._edit.setText(self._label(row))
+                self.picked.emit(row)
+        finally:
+            self._choosing = False
 
 
 def customer_picker(*, placeholder: str = "Αναζήτηση με επωνυμία ή ΑΦΜ…") -> SearchPicker:

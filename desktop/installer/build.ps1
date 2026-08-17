@@ -110,6 +110,100 @@ for label, build, out in (
 "@)
 if ($LASTEXITCODE -ne 0) { throw "Manual build failed" }
 
+# --- Piper TTS: η φωνή του βοηθού (ελληνικά + αγγλικά) -----------------------
+# Τα Windows ΔΕΝ έχουν ελληνική φωνή από προεπιλογή, οπότε κάθε λύση που
+# στηρίζεται στο λειτουργικό ή στον browser είτε σωπαίνει είτε συλλαβίζει τα
+# ελληνικά με αγγλική φωνή. Κουβαλάμε δική μας μηχανή και δύο μοντέλα (~80 MB).
+# Δεν μπαίνουν στο git — κατεβαίνουν εδώ και ξαναχρησιμοποιούνται.
+Write-Host "== 3.6/5  Piper TTS (installer\piper) ==" -ForegroundColor Cyan
+$piperDir = Join-Path $PSScriptRoot "piper"
+$piperExe = Join-Path $piperDir "piper.exe"
+$voiceDir = Join-Path $piperDir "voices"
+if (-not (Test-Path $piperExe)) {
+    New-Item -ItemType Directory -Force $piperDir | Out-Null
+    $zip = Join-Path $env:TEMP "piper_windows_amd64.zip"
+    $url = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+    Write-Host "   λήψη μηχανής φωνής..." -ForegroundColor DarkGray
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    Expand-Archive -Path $zip -DestinationPath $env:TEMP -Force
+    # Το zip ξεπακετάρει σε υποφάκελο piper\ — ισοπεδώνουμε.
+    $inner = Join-Path $env:TEMP "piper"
+    Copy-Item (Join-Path $inner "*") $piperDir -Recurse -Force
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+}
+New-Item -ItemType Directory -Force $voiceDir | Out-Null
+# ΜΕΣΑΙΑ ποιότητα, όχι low: μετρημένα στην ίδια πρόταση 56 χαρακτήρων —
+#   rapunzelina-low     8,19s @ 16000 Hz
+#   rapunzelina-medium  8,38s @ 22050 Hz   <- ίδιος ρυθμός, καθαρότερη άρθρωση
+#   joy-medium         11,50s @ 22050 Hz   (37% πιο αργή· εναλλακτική χροιά)
+# Ίδιο μέγεθος (~63 MB), αισθητά καλύτερη ποιότητα.
+# Η ΕΠΙΛΕΓΜΕΝΗ ελληνική φωνή είναι η joy-medium: πιο αργή, με καθαρότερη άρθρωση
+# στους αριθμούς και στα ΑΦΜ, που είναι το μισό περιεχόμενο των απαντήσεων.
+# Η rapunzelina μένει ως εφεδρεία (το speech.py προτιμά ρητά την joy).
+$voices = @(
+    @{ name = "el_GR-joy-medium";         url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/el/el_GR/joy/medium/el_GR-joy-medium" },
+    @{ name = "en_US-lessac-medium";      url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium" }
+)
+foreach ($v in $voices) {
+    $onnx = Join-Path $voiceDir ($v.name + ".onnx")
+    $json = Join-Path $voiceDir ($v.name + ".onnx.json")
+    if (-not (Test-Path $onnx)) {
+        Write-Host ("   voice " + $v.name) -ForegroundColor DarkGray
+        Invoke-WebRequest -Uri ($v.url + ".onnx") -OutFile $onnx -UseBasicParsing
+    }
+    if (-not (Test-Path $json)) {
+        Invoke-WebRequest -Uri ($v.url + ".onnx.json") -OutFile $json -UseBasicParsing
+    }
+}
+if (-not (Test-Path $piperExe)) { throw "Piper engine missing" }
+Write-Host ("   OK: " + (Get-ChildItem $voiceDir -Filter *.onnx).Count + " voices") -ForegroundColor DarkGray
+
+# --- whisper.cpp: η ΑΝΑΓΝΩΡΙΣΗ φωνής του βοηθου -----------------------------
+# Το Web Speech API θελει υπηρεσια της Google. Μεσα στο QtWebEngine δεν υπαρχει
+# και η κληση ΠΑΓΩΝΕΙ ολοκληρη την εφαρμογη. Το ελληνικο μοντελο του Vosk ειναι
+# ~1.1 GB (δεκαπλασιο του installer)· το whisper.cpp base ειναι πολυγλωσσο,
+# ~142 MB και τρεχει σε CPU. Δεν μπαινει στο git.
+Write-Host "== 3.7/5  whisper.cpp STT (installer\whisper) ==" -ForegroundColor Cyan
+$sttDir = Join-Path $PSScriptRoot "whisper"
+$sttExe = Join-Path $sttDir "whisper-cli.exe"
+New-Item -ItemType Directory -Force $sttDir | Out-Null
+if (-not (Test-Path $sttExe)) {
+    $sttZip = Join-Path $env:TEMP "whisper-bin-x64.zip"
+    $sttUrl = "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip"
+    Write-Host "   downloading speech-recognition engine..." -ForegroundColor DarkGray
+    try {
+        Invoke-WebRequest -Uri $sttUrl -OutFile $sttZip -UseBasicParsing
+        $sttTmp = Join-Path $env:TEMP "whisper_extract"
+        Remove-Item $sttTmp -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-Archive -Path $sttZip -DestinationPath $sttTmp -Force
+        # Το zip αλλαζει διαταξη αναμεσα σε εκδοσεις (Release\ ή ριζα): παιρνουμε
+        # ο,τι ειναι exe/dll, οπου κι αν βρισκεται.
+        Get-ChildItem $sttTmp -Recurse -Include *.exe, *.dll |
+            ForEach-Object { Copy-Item $_.FullName $sttDir -Force }
+        Remove-Item $sttZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $sttTmp -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "   WARNING: speech-recognition engine not downloaded" -ForegroundColor Yellow
+    }
+}
+$sttModel = Join-Path $sttDir "ggml-base.bin"
+if (-not (Test-Path $sttModel)) {
+    $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+    Write-Host "   downloading speech model (~142 MB)..." -ForegroundColor DarkGray
+    try {
+        Invoke-WebRequest -Uri $modelUrl -OutFile $sttModel -UseBasicParsing
+    } catch {
+        Write-Host "   WARNING: speech model not downloaded" -ForegroundColor Yellow
+    }
+}
+# Η φωνητικη εντολη ειναι προαιρετικη: αν λειψει, το backend απανται 501 και το
+# UI ζηταει γραπτη εντολη. Δεν ριχνουμε το build γι' αυτο.
+if ((Test-Path $sttExe) -and (Test-Path $sttModel)) {
+    Write-Host "   OK: speech recognition bundled" -ForegroundColor DarkGray
+} else {
+    Write-Host "   NOTE: building WITHOUT speech recognition" -ForegroundColor Yellow
+}
+
 # --- Φορητή PHP για το e-Τιμολόγιο Pro ---------------------------------------
 # Το backend του e-Τιμολόγιο είναι PHP. Για να δουλεύει η offline λειτουργία σε
 # υπολογιστή χωρίς εγκατεστημένη PHP, πακετάρουμε ένα φορητό runtime.
