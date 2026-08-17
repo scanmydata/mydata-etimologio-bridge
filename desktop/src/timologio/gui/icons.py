@@ -61,6 +61,18 @@ _SVG: dict[str, str] = {
         '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>'
         '<path d="M7 11V7a5 5 0 0 1 10 0v4"/>'
     ),
+    # Το «ματάκι» των πεδίων κωδικού. Δύο καταστάσεις: ανοιχτό = ο κωδικός
+    # φαίνεται, διαγραμμένο = κρύβεται.
+    "eye": (
+        '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/>'
+        '<circle cx="12" cy="12" r="3"/>'
+    ),
+    "eye_off": (
+        '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 '
+        '5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>'
+        '<path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>'
+        '<line x1="1" y1="1" x2="23" y2="23"/>'
+    ),
     "info": (
         '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/>'
         '<line x1="12" y1="8" x2="12.01" y2="8"/>'
@@ -321,39 +333,84 @@ def arrow_image(color: str, size: int = 12) -> str:
     return result
 
 
-_logo_cache: dict[int, QPixmap] = {}
+_logo_cache: dict[tuple[int, bool], QPixmap] = {}
 
 
-def _logo_path() -> Path | None:
-    """Το logo.svg, από το bundle ή από τον φάκελο του έργου."""
+#: Το λογότυπο του e-Τιμολόγιο Pro — αντίγραφο του εικονιδίου της web εφαρμογής
+#: (`assets/icons/app-icon-512.png`), ώστε οι δύο όψεις του ίδιου προϊόντος να
+#: έχουν το ίδιο σήμα.
+_ETIMOLOGIO_LOGO = "etimologio-logo.png"
+
+
+def _asset_path(name: str) -> Path | None:
+    """Ένα γραφικό του installer, από το bundle ή από τον φάκελο του έργου."""
     candidates: list[Path] = []
     base = getattr(sys, "_MEIPASS", "")
     if base:
-        candidates.append(Path(base) / "logo.svg")
+        candidates.append(Path(base) / name)
     here = Path(__file__).resolve()
-    candidates.append(here.parents[3] / "installer" / "logo.svg")
+    candidates.append(here.parents[3] / "installer" / name)
     for path in candidates:
         if path.exists():
             return path
     return None
 
 
-def logo_pixmap(size: int = 38) -> QPixmap:
+def _logo_path() -> Path | None:
+    """Το logo.svg, από το bundle ή από τον φάκελο του έργου."""
+    return _asset_path("logo.svg")
+
+
+def logo_pixmap(size: int = 38, etimologio: bool = False) -> QPixmap:
     """Το λογότυπο για μέσα στην εφαρμογή.
 
-    Επιστρέφει κενό pixmap αν λείπει το SVG — ένα λογότυπο που λείπει δεν είναι
-    λόγος να μην ανοίξει η εφαρμογή.
+    Με ``etimologio=True`` επιστρέφει το σήμα του e-Τιμολόγιο Pro, ώστε να
+    αλλάζει μαζί με το μενού και ο χρήστης να βλέπει με μια ματιά σε ποια από
+    τις δύο εφαρμογές βρίσκεται.
+
+    Επιστρέφει κενό pixmap αν λείπει το σχέδιο — ένα λογότυπο που λείπει δεν
+    είναι λόγος να μην ανοίξει η εφαρμογή.
     """
-    if size in _logo_cache:
-        return _logo_cache[size]
-    path = _logo_path()
+    key = (size, etimologio)
+    if key in _logo_cache:
+        return _logo_cache[key]
     pixmap = QPixmap(QSize(size, size))
     pixmap.fill(Qt.GlobalColor.transparent)
+
+    if etimologio:
+        # Το πραγματικό σήμα του e-Τιμολόγιο Pro — το ίδιο αρχείο που φοράει και
+        # το web (`assets/icons/app-icon-512.png`, αντιγραμμένο στο installer/).
+        # Πριν ζωγραφίζαμε τη μονόχρωμη γλυφή του μενού, που δεν είναι το
+        # λογότυπο της εφαρμογής.
+        brand = _asset_path(_ETIMOLOGIO_LOGO)
+        if brand is not None:
+            source = QPixmap(str(brand))
+            if not source.isNull():
+                scaled = source.scaled(
+                    size, size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                _logo_cache[key] = scaled
+                return scaled
+        # Εφεδρεία: η γλυφή του μενού, αν λείπει το αρχείο.
+        painter = QPainter(pixmap)
+        # Τοπικό import, όπως κάνει και το theme.py προς τα εδώ: κρατά τα δύο
+        # modules ανεξάρτητα κατά τη φόρτωση.
+        from .theme import CURRENT
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        icon("etimologio", CURRENT.accent).paint(painter, 0, 0, size, size)
+        painter.end()
+        _logo_cache[key] = pixmap
+        return pixmap
+
+    path = _logo_path()
     if path is not None:
         renderer = QSvgRenderer(str(path))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         renderer.render(painter)
         painter.end()
-    _logo_cache[size] = pixmap
+    _logo_cache[key] = pixmap
     return pixmap

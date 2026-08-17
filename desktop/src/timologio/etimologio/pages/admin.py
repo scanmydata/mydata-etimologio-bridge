@@ -65,12 +65,15 @@ class AdminPage(ListPage):
         super().__init__(
             get_client, run, title="Διαχείριση", columns=self._COLS,
             rows_key="users", stretch_col=1, parent=parent,
+            subtitle="Χρήστες, ρόλοι και λογαριασμοί ΑΑΔΕ ανά επιχείρηση.",
         )
         for widget in (
             ui.button("Πρόσκληση μέλους", self._invite, kind="primary", icon_name="add_client"),
             ui.button("Αλλαγή ρόλου", self._change_role, icon_name="edit"),
             ui.button("Ενεργοποίηση", lambda: self._set_status("active"), icon_name="check"),
             ui.button("Απενεργοποίηση", lambda: self._set_status("disabled"), kind="danger", icon_name="cancel"),
+            ui.button("Διαγραφή χρήστη", self._delete_user, kind="danger", icon_name="delete",
+                      tip="Οριστική διαγραφή, μαζί με τις εταιρείες του"),
         ):
             self.toolbar.insertWidget(self.toolbar.count() - 1, widget)
 
@@ -140,6 +143,32 @@ class AdminPage(ListPage):
             return
         user_id = row.get("id")
         self._run(lambda: client.admin_set_status(user_id, status), self._after_write, self._failed)
+
+    def _delete_user(self) -> None:
+        """Οριστική διαγραφή — η απενεργοποίηση κρατά τη γραμμή για πάντα.
+
+        Λέει ΠΟΣΕΣ εταιρείες φεύγουν μαζί: τα κλειδιά ΑΑΔΕ που είναι δεμένα
+        στον χρήστη σβήνονται μαζί του και δεν ανακτώνται.
+        """
+        client = self.client()
+        row = self.selected_row()
+        if client is None or row is None:
+            self.status.setText("Διάλεξε πρώτα χρήστη.")
+            return
+        user_id = row.get("id")
+        email = str(row.get("email", ""))
+        companies = len(client.admin_user_accounts(int(user_id)).get("accounts", []))
+        extra = (f"\n\nΜαζί του διαγράφονται {companies} εταιρείες με τα "
+                 "κλειδιά ΑΑΔΕ τους.") if companies else ""
+        if QMessageBox.question(
+            self, "Διαγραφή χρήστη",
+            f"Οριστική διαγραφή του «{email}»;{extra}\n\nΗ ενέργεια δεν αναιρείται.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.status.setText("Διαγραφή…")
+        self._run(lambda: client.admin_delete_user(user_id), self._after_write, self._failed)
 
     def _after_write(self, result: dict) -> None:
         if result.get("success"):

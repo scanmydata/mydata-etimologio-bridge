@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -21,11 +22,12 @@ from .icons import icon, logo_pixmap
 from .theme import CURRENT
 from .widgets import ToggleSwitch
 
-# Το WIDE δεν είναι στρογγυλός αριθμός για την ομορφιά: στα 200 ο υπότιτλος
-# «Λήψη Παραστατικών» ζητούσε 96px σε κουτί 94px και κοβόταν το τελευταίο
-# γράμμα. Τα 226 αφήνουν ~12px περιθώριο, ώστε να αντέχει και μεγαλύτερη
-# γραμματοσειρά συστήματος ή άλλη κλίμακα οθόνης.
-WIDE, NARROW = 226, 58
+# Ελάχιστο και μέγιστο πλάτος του ανοιχτού μενού. Το πραγματικό πλάτος
+# υπολογίζεται στο `_fit_width()` από τις ΠΡΑΓΜΑΤΙΚΕΣ διαστάσεις των ετικετών:
+# με καρφωμένο 226 και λίγο μεγαλύτερη γραμματοσειρά συστήματος, μισή ντουζίνα
+# ετικέτες («Αντίγραφο ασφαλείας», «Αρχείο καταγραφής», …) κόβονταν στη μέση.
+WIDE_MIN, WIDE_MAX, NARROW = 226, 320, 58
+WIDE = WIDE_MIN
 
 
 #: Εικονίδιο ανά ενέργεια, όπου το όνομα της ενέργειας δεν είναι και όνομα
@@ -39,6 +41,30 @@ _ICONS = {
     "password": "lock",
     "control": "network",
     "online_pdf": "link",
+    # --- e-Τιμολόγιο Pro: τα ονόματα είναι με πρόθεμα ώστε να μη συγκρούονται
+    # με τις ενέργειες του Downloader (π.χ. «Πελάτες» υπάρχει και στα δύο).
+    "etim_home": "network",
+    "etim_issue": "edit",
+    "etim_bulk": "import",
+    "etim_credit": "cancel",
+    "etim_drafts": "restore",
+    "etim_documents": "pdf",
+    "etim_customers": "clients",
+    "etim_card": "csv",
+    "etim_companies": "network",
+    "etim_products": "folder",
+    "etim_series": "filter",
+    "etim_payments": "income",
+    "etim_stats": "stats",
+    "etim_schedule": "schedule",
+    "etim_notifications": "bell",
+    "etim_settings": "settings",
+    "etim_admin": "key",
+    # Ίδια εικονίδια με τη ΒΟΗΘΕΙΑ του Downloader — είναι η ίδια ενέργεια.
+    "etim_tour": "tour",
+    "etim_manual": "manual",
+    "etim_assistant": "info",
+    "downloader": "download",
 }
 
 
@@ -95,7 +121,8 @@ class SideMenu(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("sideMenu")
-        self.setFixedWidth(WIDE)
+        self._wide = WIDE_MIN
+        self.setFixedWidth(self._wide)
         self._collapsed = False
 
         layout = QVBoxLayout(self)
@@ -109,67 +136,29 @@ class SideMenu(QWidget):
         self._buttons: dict[str, MenuButton] = {}
         self._sections: list[QLabel] = []
 
-        # Ο «Νέος πελάτης» πάνω από τη λίστα: είναι το πρώτο πράγμα που κάνει
-        # κάποιος σε άδεια εγκατάσταση.
-        self._add(layout, "add_client", "Νέος πελάτης",
-                  "Προσθήκη πελάτη — χειροκίνητα ή από Excel")
-        layout.addSpacing(6)
-
-        # --- Εναλλαγή εφαρμογής: Downloader ↔ e-Τιμολόγιο Pro (ανά πάσα στιγμή)
-        layout.addWidget(self._separator("ΕΦΑΡΜΟΓΕΣ"))
-        self._add(layout, "etimologio", "e-Τιμολόγιο Pro",
-                  "Έκδοση παραστατικών ΑΑΔΕ (e-τιμολόγιο) — έκδοση, πελάτες, καρτέλες")
-        layout.addSpacing(6)
-
-        # --- η καθημερινή ροή
-        self._pages = ("clients", "sync", "documents")
-        for name, text, tip in [
-            ("clients", "Πελάτες", "Η λίστα των πελατών σας"),
-            ("sync", "Λήψη", "Επιλογή πελατών, περιόδου και έναρξη λήψης"),
-            ("documents", "Παραστατικά", "Τα παραστατικά του επιλεγμένου πελάτη"),
-        ]:
-            self._add(layout, name, text, tip)
-
-        layout.addSpacing(10)
-        layout.addWidget(self._separator("ΔΕΔΟΜΕΝΑ"))
-        for name, text, tip in [
-            ("folder", "Φάκελος αρχείων", "Άνοιγμα του φακέλου με τα PDF"),
-            ("csv", "Εξαγωγή",
-             "Αναλυτική κατάσταση παραστατικών — θα επιλέξετε μορφή (Excel ή CSV) "
-             "και πού θα αποθηκευτεί· επιλέξτε πρώτα πελάτη/πελάτες"),
-            ("online_pdf", "Λήψη μόνο-online",
-             "Κατεβάζει με headless browser (Edge/Chrome) όσα παραστατικά ο "
-             "πάροχος δείχνει μόνο online"),
-        ]:
-            self._add(layout, name, text, tip)
-
-        layout.addSpacing(10)
-        layout.addWidget(self._separator("ΑΣΦΑΛΕΙΑ"))
-        for name, text, tip in [
-            ("backup", "Αντίγραφο ασφαλείας",
-             "Αντίγραφο ασφαλείας της βάσης αυτή τη στιγμή"),
-            ("restore", "Επαναφορά", "Επαναφορά της βάσης από αντίγραφο ασφαλείας"),
-            ("password", "Κύριος κωδικός",
-             "Προστασία του φακέλου δεδομένων με κωδικό"),
-            ("wipe", "Εκκαθάριση",
-             "Διαγραφή ληφθέντων παραστατικών και αρχείων — οι πελάτες μένουν"),
-        ]:
-            self._add(layout, name, text, tip)
-
-        layout.addSpacing(10)
-        layout.addWidget(self._separator("ΣΥΣΤΗΜΑ"))
-        self._add(layout, "control", "Πίνακας ελέγχου",
-                  "Συνδέσεις δικτύου, κατάσταση βάσης και ρυθμίσεις")
-
-        layout.addSpacing(10)
-        layout.addWidget(self._separator("ΒΟΗΘΕΙΑ"))
-        for name, text, tip in [
-            ("tour", "Ξενάγηση", "Σύντομη περιήγηση στις λειτουργίες της εφαρμογής"),
-            ("manual", "Εγχειρίδιο PDF", "Άνοιγμα του πλήρους εγχειριδίου χρήσης"),
-            ("logfile", "Αρχείο καταγραφής",
-             "Άνοιγμα του αρχείου με το αναλυτικό ιστορικό"),
-        ]:
-            self._add(layout, name, text, tip)
+        # Δύο εφαρμογές, δύο μενού. Το καθένα ζει σε δικό του panel και
+        # εμφανίζεται ολόκληρο ή καθόλου (`set_mode`): ανακατεμένα, ο χρήστης
+        # έβλεπε «Νέος πελάτης» του Downloader ενώ δούλευε στο e-Τιμολόγιο.
+        self._dl_panel = self._build_downloader_menu()
+        self._etim_panel = self._build_etimologio_menu()
+        # Σε χαμηλή οθόνη (ή με ανοιγμένη τη ΒΟΗΘΕΙΑ) το μενού δεν χωρά και το Qt
+        # έκοβε τα τελευταία στοιχεία χωρίς κανένα σημάδι. Με κύλιση, ό,τι
+        # περισσεύει παραμένει προσβάσιμο.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        holder = QWidget()
+        holder_box = QVBoxLayout(holder)
+        holder_box.setContentsMargins(0, 0, 0, 0)
+        holder_box.setSpacing(0)
+        holder_box.addWidget(self._dl_panel)
+        holder_box.addWidget(self._etim_panel)
+        holder_box.addStretch(1)
+        scroll.setWidget(holder)
+        layout.addWidget(scroll, 1)
+        self._etim_panel.hide()
+        self._mode = "downloader"
 
         layout.addStretch()
         self._settings_label = self._separator("ΡΥΘΜΙΣΕΙΣ")
@@ -190,6 +179,183 @@ class SideMenu(QWidget):
 
         layout.addSpacing(8)
         layout.addWidget(self._footer())
+
+        self._fit_width()
+
+    def _fit_width(self) -> None:
+        """Πλάτος όσο χρειάζεται η μακρύτερη ετικέτα — και των δύο μενού.
+
+        Με σταθερό πλάτος, όποιος έχει λίγο μεγαλύτερη γραμματοσειρά συστήματος
+        έβλεπε κομμένα τα «Αντίγραφο ασφαλείας», «Αρχείο καταγραφής» κ.λπ. Το
+        μετράμε αντί να το μαντεύουμε, με όριο ώστε να μη φάει την οθόνη.
+        """
+        widest = max(
+            (b.sizeHint().width() for b in self._buttons.values()),
+            default=WIDE_MIN,
+        )
+        margins = self._layout.contentsMargins()
+        needed = widest + margins.left() + margins.right()
+        self._wide = max(WIDE_MIN, min(WIDE_MAX, needed))
+        if not self._collapsed:
+            self.setFixedWidth(self._wide)
+
+    # --------------------------------------------------- τα δύο μενού
+    def _panel(self) -> tuple[QWidget, QVBoxLayout]:
+        panel = QWidget()
+        box = QVBoxLayout(panel)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(4)
+        return panel, box
+
+    def _build_downloader_menu(self) -> QWidget:
+        """Λήψη Παραστατικών myDATA — η αρχική εφαρμογή."""
+        panel, box = self._panel()
+
+        # Ο «Νέος πελάτης» πάνω από τη λίστα: είναι το πρώτο πράγμα που κάνει
+        # κάποιος σε άδεια εγκατάσταση.
+        self._add(box, "add_client", "Νέος πελάτης",
+                  "Προσθήκη πελάτη — χειροκίνητα ή από Excel")
+        box.addSpacing(6)
+
+        self._pages = ("clients", "sync", "documents")
+        for name, text, tip in [
+            ("clients", "Πελάτες", "Η λίστα των πελατών σας"),
+            ("sync", "Λήψη", "Επιλογή πελατών, περιόδου και έναρξη λήψης"),
+            ("documents", "Παραστατικά", "Τα παραστατικά του επιλεγμένου πελάτη"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΔΕΔΟΜΕΝΑ"))
+        for name, text, tip in [
+            ("folder", "Φάκελος αρχείων", "Άνοιγμα του φακέλου με τα PDF"),
+            ("csv", "Εξαγωγή",
+             "Αναλυτική κατάσταση παραστατικών — θα επιλέξετε μορφή (Excel ή CSV) "
+             "και πού θα αποθηκευτεί· επιλέξτε πρώτα πελάτη/πελάτες"),
+            ("online_pdf", "Λήψη μόνο-online",
+             "Κατεβάζει με headless browser (Edge/Chrome) όσα παραστατικά ο "
+             "πάροχος δείχνει μόνο online"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΑΣΦΑΛΕΙΑ"))
+        for name, text, tip in [
+            ("backup", "Αντίγραφο ασφαλείας",
+             "Αντίγραφο ασφαλείας της βάσης αυτή τη στιγμή"),
+            ("restore", "Επαναφορά", "Επαναφορά της βάσης από αντίγραφο ασφαλείας"),
+            ("password", "Κύριος κωδικός",
+             "Προστασία του φακέλου δεδομένων με κωδικό"),
+            ("wipe", "Εκκαθάριση",
+             "Διαγραφή ληφθέντων παραστατικών και αρχείων — οι πελάτες μένουν"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΣΥΣΤΗΜΑ"))
+        self._add(box, "control", "Πίνακας ελέγχου",
+                  "Συνδέσεις δικτύου, κατάσταση βάσης και ρυθμίσεις")
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΒΟΗΘΕΙΑ"))
+        for name, text, tip in [
+            ("tour", "Ξενάγηση", "Σύντομη περιήγηση στις λειτουργίες της εφαρμογής"),
+            ("manual", "Εγχειρίδιο PDF", "Άνοιγμα του πλήρους εγχειριδίου χρήσης"),
+            ("logfile", "Αρχείο καταγραφής",
+             "Άνοιγμα του αρχείου με το αναλυτικό ιστορικό"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΕΦΑΡΜΟΓΕΣ"))
+        self._add(box, "etimologio", "e-Τιμολόγιο Pro",
+                  "Έκδοση παραστατικών ΑΑΔΕ — έκδοση, πελάτες, καρτέλες")
+        return panel
+
+    def _build_etimologio_menu(self) -> QWidget:
+        """e-Τιμολόγιο Pro — ίδια διάταξη ενοτήτων με το web UI."""
+        panel, box = self._panel()
+
+        self._add(box, "etim_home", "Αρχική", "Επισκόπηση και συντομεύσεις")
+        box.addSpacing(6)
+
+        box.addWidget(self._separator("ΕΚΔΟΣΗ"))
+        for name, text, tip in [
+            ("etim_issue", "Έκδοση", "Νέο παραστατικό — πρόχειρο, προεπισκόπηση ή έκδοση"),
+            ("etim_bulk", "Μαζική έκδοση", "Πολλά παραστατικά σε μία παρτίδα"),
+            ("etim_credit", "Ακύρωση/Πιστωτικό", "Συσχετιζόμενο πιστωτικό με βάση το ΜΑΡΚ"),
+            ("etim_drafts", "Πρόχειρα", "Αποθηκευμένα προσχέδια χωρίς ΜΑΡΚ"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΑΡΧΕΙΟ"))
+        for name, text, tip in [
+            ("etim_documents", "Παραστατικά", "Αναζήτηση, μαζική εκτύπωση και εξαγωγή ZIP"),
+            ("etim_customers", "Πελάτες", "Πελατολόγιο και καρτέλες"),
+            # Δική της εγγραφή, όπως το «📇 Καρτέλα» του web: χωρίς αυτήν ο μόνος
+            # δρόμος ήταν διπλό κλικ σε πελάτη, και η σελίδα έμοιαζε να λείπει.
+            ("etim_card", "Καρτέλα", "Κίνηση πελάτη: χρεώσεις, πιστώσεις, υπόλοιπο"),
+            # Ο κατάλογος των εταιρειών που διαχειρίζεται το γραφείο.
+            ("etim_companies", "Εταιρείες", "Προσθήκη, επεξεργασία και εναλλαγή εταιρειών"),
+            ("etim_products", "Είδη", "Κατάλογος ειδών και τιμών"),
+            ("etim_series", "Σειρές", "Αρίθμηση ανά τύπο παραστατικού"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΟΙΚΟΝΟΜΙΚΑ"))
+        for name, text, tip in [
+            ("etim_payments", "Πληρωμές", "Ταμείο και εισαγωγή extrait τράπεζας"),
+            ("etim_stats", "Στατιστικά", "Τζίρος ανά τύπο παραστατικού"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΑΥΤΟΜΑΤΑ"))
+        for name, text, tip in [
+            ("etim_schedule", "Προγραμματισμός", "Αυτόματη έκδοση σε μελλοντική ώρα"),
+            ("etim_notifications", "Ειδοποιήσεις", "Ροή των εκδόσεων"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΣΥΣΤΗΜΑ"))
+        for name, text, tip in [
+            ("etim_settings", "Ρυθμίσεις", "Κωδικός, 2FA και ειδοποιήσεις email"),
+            ("etim_admin", "Διαχείριση", "Χρήστες, ρόλοι και προσκλήσεις"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        # Η βοήθεια εξαφανιζόταν μόλις έμπαινες στο e-Τιμολόγιο: η ξενάγηση και
+        # το εγχειρίδιο υπήρχαν μόνο στο μενού του Downloader.
+        box.addWidget(self._separator("ΒΟΗΘΕΙΑ"))
+        for name, text, tip in [
+            ("etim_assistant", "Βοηθός", "Εντολές με κείμενο ή φωνή (Ctrl+B)"),
+            ("etim_tour", "Ξενάγηση", "Γρήγορη περιήγηση στις λειτουργίες"),
+            ("etim_manual", "Εγχειρίδιο", "Οδηγίες σε PDF"),
+        ]:
+            self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΕΦΑΡΜΟΓΕΣ"))
+        self._add(box, "downloader", "Λήψη Παραστατικών",
+                  "Επιστροφή στη μαζική λήψη παραστατικών myDATA")
+        return panel
+
+    def set_mode(self, mode: str) -> None:
+        """Εναλλάσσει ολόκληρο το μενού, το λογότυπο και τον τίτλο."""
+        etim = mode == "etimologio"
+        self._mode = "etimologio" if etim else "downloader"
+        self._etim_panel.setVisible(etim)
+        self._dl_panel.setVisible(not etim)
+        self.logo.setPixmap(logo_pixmap(38, etimologio=etim))
+        self._title.setText("e-Τιμολόγιο" if etim else "myDATA")
+        self._subtitle.setText("Pro · ΑΑΔΕ" if etim else "Λήψη Παραστατικών")
+
+    def mode(self) -> str:
+        return self._mode
 
     # ------------------------------------------------------------------ UI
     def _header(self) -> QWidget:
@@ -212,12 +378,14 @@ class SideMenu(QWidget):
         text = QVBoxLayout(self._title_box)
         text.setContentsMargins(0, 0, 0, 0)
         text.setSpacing(0)
-        title = QLabel("myDATA")
-        title.setObjectName("menuTitle")
-        sub = QLabel("Λήψη Παραστατικών")
-        sub.setObjectName("menuSubtitle")
-        text.addWidget(title)
-        text.addWidget(sub)
+        # Κρατιούνται ως πεδία: το `set_mode` τα αλλάζει όταν ο χρήστης περνά
+        # στο e-Τιμολόγιο, ώστε να ξέρει πάντα σε ποια εφαρμογή βρίσκεται.
+        self._title = QLabel("myDATA")
+        self._title.setObjectName("menuTitle")
+        self._subtitle = QLabel("Λήψη Παραστατικών")
+        self._subtitle.setObjectName("menuSubtitle")
+        text.addWidget(self._title)
+        text.addWidget(self._subtitle)
         row.addWidget(self._title_box)
         row.addStretch()
 
@@ -296,7 +464,7 @@ class SideMenu(QWidget):
         self._layout.setContentsMargins(*((8, 10, 8, 10) if collapsed
                                           else (10, 10, 10, 10)))
 
-        target = NARROW if collapsed else WIDE
+        target = NARROW if collapsed else self._wide
         if not animate:
             self.setFixedWidth(target)
         else:

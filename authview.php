@@ -29,6 +29,13 @@
   .msg.ok{display:block;background:rgba(34,197,94,.12);color:#86efac;border:1px solid #14532d55}
   .foot{margin-top:16px;font-size:11px;color:var(--muted);text-align:center}
   form{display:none} form.on{display:block}
+  /* Το «ματάκι» των κωδικών: κάθεται ΜΕΣΑ στο πεδίο, δεξιά. */
+  .pw{position:relative}
+  .pw input{padding-right:42px}
+  .pw .eye{position:absolute;top:50%;right:6px;transform:translateY(-50%);width:30px;height:30px;
+    display:flex;align-items:center;justify-content:center;background:none;border:0;cursor:pointer;
+    color:var(--muted);font-size:15px;line-height:1;padding:0;border-radius:7px}
+  .pw .eye:hover{color:var(--accent);background:rgba(56,189,248,.12)}
 </style>
 </head>
 <body>
@@ -112,6 +119,24 @@ async function do2fa(e){e.preventDefault();try{const d=await post({auth:'login_t
 async function doSignup(e){e.preventDefault();try{const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doForgot(e){e.preventDefault();try{const d=await post({auth:'forgot',email:g('fg-email').value});msg(d.note||'Στάλθηκαν οδηγίες.',true);}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doReset(e){e.preventDefault();if(g('r-pass').value!==g('r-pass2').value){msg('Οι κωδικοί δεν ταιριάζουν');return false;}try{const d=await post({auth:'reset',token:g('r-token').value,password:g('r-pass').value});if(d.success){msg('Ο κωδικός ενημερώθηκε. Ανακατεύθυνση…',true);setTimeout(()=>location.href='app.php',1200);}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+
+// Ματάκι σε ΚΑΘΕ πεδίο κωδικού, χωρίς να αλλάξει η κάθε φόρμα ξεχωριστά: ένα
+// πεδίο που ξεχνιέται είναι ακριβώς εκείνο όπου θα χρειαστεί.
+function addEyes(root){
+  (root||document).querySelectorAll('input[type=password]').forEach(inp=>{
+    if(inp.parentElement && inp.parentElement.classList.contains('pw'))return;
+    const wrap=document.createElement('div');wrap.className='pw';
+    inp.parentNode.insertBefore(wrap,inp);wrap.appendChild(inp);
+    const btn=document.createElement('button');
+    btn.type='button';btn.className='eye';btn.textContent='👁';
+    btn.title='Εμφάνιση κωδικού';btn.setAttribute('aria-label','Εμφάνιση κωδικού');
+    btn.onclick=()=>{const show=inp.type==='password';inp.type=show?'text':'password';
+      btn.textContent=show?'🙈':'👁';
+      btn.title=btn.ariaLabel=show?'Απόκρυψη κωδικού':'Εμφάνιση κωδικού';inp.focus();};
+    wrap.appendChild(btn);
+  });
+}
+addEyes();
 </script>
 </body>
 </html>

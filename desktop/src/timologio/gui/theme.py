@@ -219,10 +219,21 @@ QComboBox::down-arrow, QDateEdit::down-arrow {{
 }}
 QComboBox QAbstractItemView {{
     background: {p.panel};
+    /* Το `color` είναι απαραίτητο: χωρίς αυτό η λίστα του popup παίρνει το
+       προεπιλεγμένο (σκούρο) χρώμα κειμένου της πλατφόρμας πάνω στο σκούρο
+       panel, και ο χρήστης βλέπει ένα άδειο κουτί. */
+    color: {p.txt};
     border: 1px solid {p.line};
     selection-background-color: {p.chip};
     selection-color: {p.txt};
     outline: none;
+}}
+/* Ίδιο θέμα στο ίδιο το item view του popup, που σε κάποια στυλ είναι
+   ξεχωριστό widget και δεν κληρονομεί το παραπάνω. */
+QComboBox QListView {{ background: {p.panel}; color: {p.txt}; }}
+QComboBox QAbstractItemView::item {{ color: {p.txt}; }}
+QComboBox QAbstractItemView::item:selected {{
+    background: {p.chip}; color: {p.txt};
 }}
 QCalendarWidget QWidget {{ alternate-background-color: {p.panel_alt}; }}
 QCalendarWidget QAbstractItemView:enabled {{

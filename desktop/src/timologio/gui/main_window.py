@@ -22,7 +22,7 @@ from PySide6.QtCore import (
     QThread,
     QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -113,7 +113,7 @@ _COL_LAST = 9
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
 
 #: Η σειρά τους είναι η σειρά τους στο QStackedWidget.
-_PAGES = ("clients", "sync", "documents", "control", "etimologio")
+_PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher")
 
 #: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
 #: εσόδων/εξόδων κόβεται στα δεξιά.
@@ -427,18 +427,40 @@ class MainWindow(QMainWindow):
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
         # ξεκινά τεμπέλικα την πρώτη φορά που ανοίγει η ενότητα, ώστε να μην
         # επιβαρύνει την εκκίνηση του Downloader.
-        from ..etimologio.shell import EtimologioShell
+        # Το UI του e-Τιμολόγιο είναι **η ίδια** web εφαρμογή, μέσα σε
+        # ενσωματωμένο browser πάνω στον τοπικό PHP server: μία υλοποίηση, καμία
+        # απόκλιση από το web. Οι παλιές native σελίδες μένουν ως εφεδρεία για
+        # εγκαταστάσεις χωρίς QtWebEngine.
+        from ..etimologio.webshell import EtimologioWebShell, webengine_available
 
-        self.etimologio = EtimologioShell(self.settings.data_dir)
+        if webengine_available():
+            self.etimologio = EtimologioWebShell(self.settings.data_dir)
+        else:
+            from ..etimologio.shell import EtimologioShell
+
+            log.warning("Λείπει το QtWebEngine — πτώση στις native σελίδες")
+            self.etimologio = EtimologioShell(self.settings.data_dir)
         self.stack.addWidget(self.etimologio)
+
+        # Η αρχική οθόνη επιλογής εφαρμογής. Μπαίνει τελευταία στο stack ώστε οι
+        # δείκτες των υπόλοιπων σελίδων να μείνουν αμετάβλητοι.
+        from .launcher import Launcher
+
+        self.launcher = Launcher(APP_VERSION)
+        self.launcher.chosen.connect(self._choose_app)
+        self.stack.addWidget(self.launcher)
         root.addWidget(self.stack, 1)
 
         root.addWidget(self._progress_strip())
 
         self.status = self.statusBar()
         self._build_status_bar()
+        # Ανοίγουμε στην επιλογή εφαρμογής και όχι κατευθείαν στη λίστα πελατών:
+        # το πρόγραμμα είναι δύο εφαρμογές και ο χρήστης διαλέγει ποια θέλει.
+        self.stack.setCurrentIndex(_PAGES.index("launcher"))
         self.menu.set_active("clients")
         self.menu.set_enabled_action("documents", False)
+        self._chrome_for("launcher")
 
     def _build_status_bar(self) -> None:
         """Η γραμμή κατάστασης μένει για τα προσωρινά μηνύματα (showMessage).
@@ -640,6 +662,29 @@ class MainWindow(QMainWindow):
                 w.setProperty("help_text", stored)
             if stored:
                 w.setToolTip(stored if enabled else "")
+            # Οι επεξηγηματικές γραμμές κάτω από τους τίτλους των σελίδων —
+            # το αντίστοιχο των `<p class="sub">` του web — ακολουθούν τον ίδιο
+            # διακόπτη: «Βοηθητικά μηνύματα» σημαίνει όλες τις επεξηγήσεις.
+            if w.property("help_line"):
+                w.setVisible(enabled)
+        # Η ενσωματωμένη σελίδα του e-Τιμολόγιο έχει τα δικά της βοηθητικά
+        # μηνύματα: ο διακόπτης πρέπει να τα σβήνει κι εκεί, αλλιώς μισή
+        # εφαρμογή τα δείχνει και η άλλη μισή όχι.
+        self._etim_call("set_tooltips", enabled)
+
+    def _etim_call(self, name: str, *args) -> None:
+        """Προωθεί μια ρύθμιση στο κέλυφος του e-Τιμολόγιο, αν υπάρχει.
+
+        Το κέλυφος φτιάχνεται τεμπέλικα και σε εγκατάσταση χωρίς QtWebEngine
+        είναι το παλιό, native — γι' αυτό τίποτα δεν θεωρείται δεδομένο.
+        """
+        shell = getattr(self, "etimologio", None)
+        handler = getattr(shell, name, None)
+        if callable(handler):
+            try:
+                handler(*args)
+            except Exception:  # noqa: BLE001 — μια ρύθμιση δεν ρίχνει την εφαρμογή
+                log.debug("Η ρύθμιση «%s» δεν πέρασε στο e-Τιμολόγιο", name)
 
     def _refresh_tooltips(self) -> None:
         if not self._tooltips_on:
@@ -1096,15 +1141,72 @@ class MainWindow(QMainWindow):
     def _show_page(self, name: str) -> None:
         self.stack.setCurrentIndex(_PAGES.index(name))
         self.menu.set_active(name)
+        self._chrome_for(name)
         self._restyle_page(name)
+
+    def _chrome_for(self, name: str) -> None:
+        """Τι από το κέλυφος ταιριάζει σε κάθε σελίδα.
+
+        Στην οθόνη επιλογής εφαρμογής δεν έχει νόημα τίποτα από τα δύο: ούτε το
+        μενού μιας εφαρμογής που δεν έχεις ακόμη διαλέξει, ούτε ο «ενεργός
+        πελάτης». Και ο ενεργός πελάτης είναι έννοια **της Λήψης Παραστατικών**
+        — στο e-Τιμολόγιο η αντίστοιχη έννοια είναι η εταιρεία, που έχει δική
+        της μπάρα.
+        """
+        chooser = name == "launcher"
+        self.menu.setVisible(not chooser)
+        self.active_client.setVisible(not chooser and name != "etimologio")
 
     def _current_page(self) -> str:
         return _PAGES[self.stack.currentIndex()]
 
     def _open_etimologio(self) -> None:
-        """Switch to e-Τιμολόγιο Pro, starting its backend on first open."""
+        """Switch to e-Τιμολόγιο Pro, starting its backend on first open.
+
+        Ολόκληρο το κέλυφος αλλάζει — μενού, λογότυπο και τίτλος παραθύρου —
+        ώστε να είναι σαφές ότι δουλεύεις σε άλλη εφαρμογή και να μην
+        ανακατεύονται οι ενέργειες των δύο.
+        """
         self.etimologio.start()
+        # Το e-Τιμολόγιο ανοίγει με το θέμα και τα βοηθητικά μηνύματα που έχει
+        # ήδη επιλέξει ο χρήστης στο μενού — όχι με τις δικές του προεπιλογές.
+        self._etim_call("set_theme", self._prefs.value("theme", "dark") == "light")
+        self._etim_call("set_tooltips", self._tooltips_on)
+        self.menu.set_mode("etimologio")
+        self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
+        self._set_mode_icon(etimologio=True)
         self._show_page("etimologio")
+
+    def _leave_etimologio(self) -> None:
+        """Επιστροφή στη Λήψη Παραστατικών."""
+        self.menu.set_mode("downloader")
+        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self._set_mode_icon(etimologio=False)
+        self._show_page("clients")
+
+    def _set_mode_icon(self, *, etimologio: bool) -> None:
+        """Το εικονίδιο του παραθύρου ακολουθεί την ενεργή εφαρμογή.
+
+        Ο τίτλος και το μενού άλλαζαν ήδη· το εικονίδιο έμενε του Downloader,
+        οπότε στη γραμμή εργασιών και στο alt-tab οι δύο εφαρμογές ήταν
+        δυσδιάκριτες.
+        """
+        from .icons import logo_pixmap
+
+        icon = QIcon()
+        for size in (16, 24, 32, 48, 64, 128):
+            pixmap = logo_pixmap(size, etimologio=etimologio)
+            if not pixmap.isNull():
+                icon.addPixmap(pixmap)
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+
+    def _choose_app(self, which: str) -> None:
+        """Επιλογή από την αρχική οθόνη."""
+        if which == "etimologio":
+            self._open_etimologio()
+        else:
+            self._leave_etimologio()
 
     def open_client_in_etimologio(self, vat: str) -> None:
         """Jump from a Downloader client straight to their e-Τιμολόγιο card."""
@@ -1159,10 +1261,26 @@ class MainWindow(QMainWindow):
             "password": self.on_password,
             "control": lambda: self._show_page("control"),
             "etimologio": self._open_etimologio,
+            "downloader": self._leave_etimologio,
             "tour": self.start_tour,
             "manual": self.on_manual,
             "logfile": self.on_open_log,
         }
+        # Οι ενότητες του e-Τιμολόγιο έχουν πρόθεμα και πάνε όλες στο shell του.
+        if action.startswith("etim_"):
+            self._open_etimologio()
+            key = action[len("etim_"):]
+            # Η ΒΟΗΘΕΙΑ δεν είναι σελίδα: ξενάγηση και εγχειρίδιο του
+            # e-Τιμολόγιο, ξεχωριστά από αυτά του Downloader.
+            if key == "tour":
+                self.etimologio.start_tour()
+            elif key == "manual":
+                self.etimologio.open_manual()
+            elif key == "assistant":
+                self.etimologio.toggle_assistant()
+            else:
+                self.etimologio.open_section(key)
+            return
         handler = handlers.get(action)
         if handler:
             handler()
@@ -1189,6 +1307,9 @@ class MainWindow(QMainWindow):
         self._stale = {"clients", "documents"}
         self._restyle_page(self._current_page())
         self._refresh_tooltips()
+        # Το e-Τιμολόγιο είναι σελίδα, όχι widget: το stylesheet του Qt δεν την
+        # αγγίζει. Ο ίδιος διακόπτης πρέπει να της το πει.
+        self._etim_call("set_theme", light)
         self._repaint_everything()
 
     def _repaint_everything(self) -> None:
@@ -2026,6 +2147,11 @@ class MainWindow(QMainWindow):
 
     def start_tour(self) -> None:
         self._tour_pending = False
+        # Η ξενάγηση δείχνει widget της Λήψης Παραστατικών. Από την οθόνη
+        # επιλογής εφαρμογής (όπου το μενού είναι κρυμμένο) θα φώτιζε αέρα, οπότε
+        # μπαίνουμε πρώτα στην εφαρμογή που περιγράφει.
+        if self._current_page() == "launcher":
+            self._leave_etimologio()
         if self._tour is not None:
             self._tour.deleteLater()
         self._tour = Tour(self, self._tour_steps())

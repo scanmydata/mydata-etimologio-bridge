@@ -24,7 +24,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from . import ui
 from .base import EtimPage, fmt_money, parse_money
+from .charts import BarChart, PieChart, breakdown_series
 
 PERIODS: list[tuple[str, str]] = [
     ("month", "Τρέχων μήνας"),
@@ -40,13 +42,12 @@ class StatsPage(EtimPage):
         super().__init__(get_client, run, parent)
         self._live_loaded = False
         box = QVBoxLayout(self)
+        # Ίδια περιθώρια με τις υπόλοιπες σελίδες: χωρίς αυτά οι ετικέτες
+        # της φόρμας ακουμπούσαν στο πλαϊνό μενού και κόβονταν τα γράμματα.
+        box.setContentsMargins(16, 14, 16, 14)
+        box.setSpacing(10)
 
         top = QHBoxLayout()
-        back = QPushButton("←")
-        back.setToolTip("Πίσω")
-        back.setFixedWidth(36)
-        back.clicked.connect(self.go_back.emit)
-        top.addWidget(back)
         title = QLabel("Στατιστικά")
         title.setStyleSheet("font-size:16px;font-weight:600;")
         top.addWidget(title)
@@ -61,10 +62,21 @@ class StatsPage(EtimPage):
         refresh.clicked.connect(self.refresh)
         top.addWidget(refresh)
         box.addLayout(top)
+        box.addWidget(ui.page_hint(
+            "Σύνοψη τζίρου και παραστατικών από την ΑΑΔΕ, ανά τύπο."))
 
         self._summary = QLabel("")
         self._summary.setStyleSheet("font-weight:600;margin:4px 0;")
         box.addWidget(self._summary)
+
+        # Γραφήματα πάνω από τον πίνακα: η κατανομή διαβάζεται με μια ματιά, τα
+        # ακριβή νούμερα μένουν από κάτω.
+        charts = QHBoxLayout()
+        self._pie = PieChart()
+        self._bars = BarChart()
+        charts.addWidget(self._pie, 1)
+        charts.addWidget(self._bars, 1)
+        box.addLayout(charts, 1)
 
         self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["Τύπος", "Πλήθος", "Καθαρή αξία"])
@@ -100,6 +112,9 @@ class StatsPage(EtimPage):
 
     def _render(self, data: dict[str, Any], *, live: bool) -> None:
         rows = data.get("breakdown", [])
+        series = breakdown_series(rows)
+        self._pie.set_data(series)
+        self._bars.set_data(series)
         self._table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             self._table.setItem(r, 0, QTableWidgetItem(str(row.get("type", ""))))

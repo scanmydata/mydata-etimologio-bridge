@@ -370,7 +370,59 @@ class ControlPanel(QWidget):
             )
             share_row.addWidget(self.share_state, 1)
             layout.addLayout(share_row)
+
+        # Φάκελος λήψεων: ισχύει για κάθε PDF/ZIP που κατεβάζει το e-Τιμολόγιο.
+        layout.addSpacing(10)
+        dl_row = QHBoxLayout()
+        dl_label = QLabel("Φάκελος λήψεων:")
+        dl_row.addWidget(dl_label)
+        self.dl_state = QLabel("")
+        self.dl_state.setWordWrap(True)
+        self.dl_state.setObjectName("muted")
+        self.dl_state.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        dl_row.addWidget(self.dl_state, 1)
+        self.btn_dl = QPushButton("Αλλαγή…")
+        self.btn_dl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_dl.setToolTip(
+            "Τα παραστατικά και οι καρτέλες αποθηκεύονται εδώ χωρίς να ρωτηθείς"
+        )
+        self.btn_dl.clicked.connect(self.choose_download_dir)
+        dl_row.addWidget(self.btn_dl)
+        self.btn_dl_clear = QPushButton("Να με ρωτά")
+        self.btn_dl_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_dl_clear.clicked.connect(lambda: self._set_download_dir(None))
+        dl_row.addWidget(self.btn_dl_clear)
+        layout.addLayout(dl_row)
+        self._refresh_download_dir()
         return box
+
+    # ------------------------------------------------------------ λήψεις
+    def choose_download_dir(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from .. import config
+
+        current = config.load_download_dir() or (Path.home() / "Downloads")
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Φάκελος λήψεων", str(current)
+        )
+        if chosen:
+            self._set_download_dir(Path(chosen))
+
+    def _set_download_dir(self, path: Path | None) -> None:
+        from .. import config
+
+        config.save_download_dir(path)
+        self._refresh_download_dir()
+
+    def _refresh_download_dir(self) -> None:
+        from .. import config
+
+        current = config.load_download_dir()
+        self.dl_state.setText(
+            str(current) if current else "(ερωτάται κάθε φορά)"
+        )
+        self.btn_dl_clear.setEnabled(current is not None)
 
     def open_share_dialog(self) -> None:
         from .share_dialog import ShareDialog

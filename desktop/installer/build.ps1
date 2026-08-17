@@ -7,6 +7,11 @@
 # Δουλεύει είτε με uv είτε με σκέτο .venv: σε μηχάνημα χωρίς uv (π.χ. καθαρός
 # υπολογιστής γραφείου) το build δεν πρέπει να κολλάει σε εργαλείο ανάπτυξης.
 
+#   -WithVoice   κατεβάζει και πακετάρει το ελληνικό μοντέλο φωνής (~1.1 GB
+#                αποσυμπιεσμένο) για τον ψηφιακό βοηθό. Χωρίς αυτό, ο βοηθός
+#                δουλεύει κανονικά με κείμενο και το μικρόφωνο εξηγεί τι λείπει.
+param([switch]$WithVoice)
+
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -81,16 +86,123 @@ Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
 & $py @("installer\make_icon.py")
 
 # --- Εγχειρίδιο --------------------------------------------------------------
-Write-Host "== 3/5  Εγχειρίδιο PDF (docs\manual.pdf) ==" -ForegroundColor Cyan
+Write-Host "== 3/5  Εγχειρίδια PDF (docs\manual.pdf, docs\etim-manual.pdf) ==" -ForegroundColor Cyan
 & $py @("-c", @"
 from pathlib import Path
 from PySide6.QtGui import QGuiApplication
 app = QGuiApplication([])
 from timologio.gui.manual import build_manual
-out = Path('docs/manual.pdf'); out.parent.mkdir(exist_ok=True)
-build_manual(out)
-print('  ', out, out.stat().st_size, 'bytes')
+from timologio.etimologio.help import build_manual as build_etim_manual
+docs = Path('docs'); docs.mkdir(exist_ok=True)
+# Δύο εγχειρίδια, ένα ανά εφαρμογή. Και τα δύο χτίζονται ΕΔΩ και μπαίνουν έτοιμα
+# στο bundle: το runtime rendering στο πακεταρισμένο exe έβγαζε κενό PDF.
+# ΜΟΝΟ ASCII στα μηνύματα: η κονσόλα του build τρέχει σε codepage που δεν
+# κωδικοποιεί ελληνικά, και ένα print έριχνε ολόκληρο το build με UnicodeEncodeError.
+for label, build, out in (
+    ('Downloader', build_manual, docs / 'manual.pdf'),
+    ('e-Timologio', build_etim_manual, docs / 'etim-manual.pdf'),
+):
+    build(out)
+    size = out.stat().st_size
+    print('  ', label, out, size, 'bytes')
+    if size < 20000:
+        raise SystemExit(f'ERROR: manual {out} came out empty ({size} bytes)')
 "@)
+if ($LASTEXITCODE -ne 0) { throw "Manual build failed" }
+
+# --- Piper TTS: η φωνή του βοηθού (ελληνικά + αγγλικά) -----------------------
+# Τα Windows ΔΕΝ έχουν ελληνική φωνή από προεπιλογή, οπότε κάθε λύση που
+# στηρίζεται στο λειτουργικό ή στον browser είτε σωπαίνει είτε συλλαβίζει τα
+# ελληνικά με αγγλική φωνή. Κουβαλάμε δική μας μηχανή και δύο μοντέλα (~80 MB).
+# Δεν μπαίνουν στο git — κατεβαίνουν εδώ και ξαναχρησιμοποιούνται.
+Write-Host "== 3.6/5  Piper TTS (installer\piper) ==" -ForegroundColor Cyan
+$piperDir = Join-Path $PSScriptRoot "piper"
+$piperExe = Join-Path $piperDir "piper.exe"
+$voiceDir = Join-Path $piperDir "voices"
+if (-not (Test-Path $piperExe)) {
+    New-Item -ItemType Directory -Force $piperDir | Out-Null
+    $zip = Join-Path $env:TEMP "piper_windows_amd64.zip"
+    $url = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+    Write-Host "   λήψη μηχανής φωνής..." -ForegroundColor DarkGray
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    Expand-Archive -Path $zip -DestinationPath $env:TEMP -Force
+    # Το zip ξεπακετάρει σε υποφάκελο piper\ — ισοπεδώνουμε.
+    $inner = Join-Path $env:TEMP "piper"
+    Copy-Item (Join-Path $inner "*") $piperDir -Recurse -Force
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+}
+New-Item -ItemType Directory -Force $voiceDir | Out-Null
+# ΜΕΣΑΙΑ ποιότητα, όχι low: μετρημένα στην ίδια πρόταση 56 χαρακτήρων —
+#   rapunzelina-low     8,19s @ 16000 Hz
+#   rapunzelina-medium  8,38s @ 22050 Hz   <- ίδιος ρυθμός, καθαρότερη άρθρωση
+#   joy-medium         11,50s @ 22050 Hz   (37% πιο αργή· εναλλακτική χροιά)
+# Ίδιο μέγεθος (~63 MB), αισθητά καλύτερη ποιότητα.
+# Η ΕΠΙΛΕΓΜΕΝΗ ελληνική φωνή είναι η joy-medium: πιο αργή, με καθαρότερη άρθρωση
+# στους αριθμούς και στα ΑΦΜ, που είναι το μισό περιεχόμενο των απαντήσεων.
+# Η rapunzelina μένει ως εφεδρεία (το speech.py προτιμά ρητά την joy).
+$voices = @(
+    @{ name = "el_GR-joy-medium";         url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/el/el_GR/joy/medium/el_GR-joy-medium" },
+    @{ name = "en_US-lessac-medium";      url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium" }
+)
+foreach ($v in $voices) {
+    $onnx = Join-Path $voiceDir ($v.name + ".onnx")
+    $json = Join-Path $voiceDir ($v.name + ".onnx.json")
+    if (-not (Test-Path $onnx)) {
+        Write-Host ("   voice " + $v.name) -ForegroundColor DarkGray
+        Invoke-WebRequest -Uri ($v.url + ".onnx") -OutFile $onnx -UseBasicParsing
+    }
+    if (-not (Test-Path $json)) {
+        Invoke-WebRequest -Uri ($v.url + ".onnx.json") -OutFile $json -UseBasicParsing
+    }
+}
+if (-not (Test-Path $piperExe)) { throw "Piper engine missing" }
+Write-Host ("   OK: " + (Get-ChildItem $voiceDir -Filter *.onnx).Count + " voices") -ForegroundColor DarkGray
+
+# --- whisper.cpp: η ΑΝΑΓΝΩΡΙΣΗ φωνής του βοηθου -----------------------------
+# Το Web Speech API θελει υπηρεσια της Google. Μεσα στο QtWebEngine δεν υπαρχει
+# και η κληση ΠΑΓΩΝΕΙ ολοκληρη την εφαρμογη. Το ελληνικο μοντελο του Vosk ειναι
+# ~1.1 GB (δεκαπλασιο του installer)· το whisper.cpp base ειναι πολυγλωσσο,
+# ~142 MB και τρεχει σε CPU. Δεν μπαινει στο git.
+Write-Host "== 3.7/5  whisper.cpp STT (installer\whisper) ==" -ForegroundColor Cyan
+$sttDir = Join-Path $PSScriptRoot "whisper"
+$sttExe = Join-Path $sttDir "whisper-cli.exe"
+New-Item -ItemType Directory -Force $sttDir | Out-Null
+if (-not (Test-Path $sttExe)) {
+    $sttZip = Join-Path $env:TEMP "whisper-bin-x64.zip"
+    $sttUrl = "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip"
+    Write-Host "   downloading speech-recognition engine..." -ForegroundColor DarkGray
+    try {
+        Invoke-WebRequest -Uri $sttUrl -OutFile $sttZip -UseBasicParsing
+        $sttTmp = Join-Path $env:TEMP "whisper_extract"
+        Remove-Item $sttTmp -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-Archive -Path $sttZip -DestinationPath $sttTmp -Force
+        # Το zip αλλαζει διαταξη αναμεσα σε εκδοσεις (Release\ ή ριζα): παιρνουμε
+        # ο,τι ειναι exe/dll, οπου κι αν βρισκεται.
+        Get-ChildItem $sttTmp -Recurse -Include *.exe, *.dll |
+            ForEach-Object { Copy-Item $_.FullName $sttDir -Force }
+        Remove-Item $sttZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $sttTmp -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "   WARNING: speech-recognition engine not downloaded" -ForegroundColor Yellow
+    }
+}
+$sttModel = Join-Path $sttDir "ggml-base.bin"
+if (-not (Test-Path $sttModel)) {
+    $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+    Write-Host "   downloading speech model (~142 MB)..." -ForegroundColor DarkGray
+    try {
+        Invoke-WebRequest -Uri $modelUrl -OutFile $sttModel -UseBasicParsing
+    } catch {
+        Write-Host "   WARNING: speech model not downloaded" -ForegroundColor Yellow
+    }
+}
+# Η φωνητικη εντολη ειναι προαιρετικη: αν λειψει, το backend απανται 501 και το
+# UI ζηταει γραπτη εντολη. Δεν ριχνουμε το build γι' αυτο.
+if ((Test-Path $sttExe) -and (Test-Path $sttModel)) {
+    Write-Host "   OK: speech recognition bundled" -ForegroundColor DarkGray
+} else {
+    Write-Host "   NOTE: building WITHOUT speech recognition" -ForegroundColor Yellow
+}
 
 # --- Φορητή PHP για το e-Τιμολόγιο Pro ---------------------------------------
 # Το backend του e-Τιμολόγιο είναι PHP. Για να δουλεύει η offline λειτουργία σε
@@ -171,6 +283,37 @@ $phpSize = [math]::Round(((Get-ChildItem $phpDir -Recurse -File | Measure-Object
 & $phpExe -n -v | Select-Object -First 1
 Write-Host "   PHP έτοιμη: $phpDir  ($phpSize MB, επεκτάσεις: $($keep.Count))"
 
+# --- Ελληνικό μοντέλο φωνής (προαιρετικό) ------------------------------------
+# Ίδια λογική με τη φορητή PHP: κατεβαίνει εδώ, δεν μπαίνει στο git. Η διαφορά
+# είναι το μέγεθος (~1.1 GB), γι' αυτό μπαίνει μόνο όταν ζητηθεί ρητά.
+$voiceDir = Join-Path $PSScriptRoot "vosk-model-el"
+if ($WithVoice) {
+    Write-Host "== 3.6/5  Ελληνικό μοντέλο φωνής (Vosk) ==" -ForegroundColor Cyan
+    if (-not (Test-Path (Join-Path $voiceDir "conf"))) {
+        $url = "https://alphacephei.com/vosk/models/vosk-model-el-gr-0.7.zip"
+        $zip = Join-Path $env:TEMP "vosk-model-el-gr-0.7.zip"
+        Write-Host "   Λήψη ~1.1 GB — θα πάρει ώρα…"
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 3600
+        $tmp = Join-Path $env:TEMP "vosk-extract"
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        # Το zip περιέχει έναν φάκελο με το όνομα της έκδοσης· εμείς θέλουμε το
+        # περιεχόμενό του σε σταθερή διαδρομή, αλλιώς το voice.py δεν το βρίσκει.
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        New-Item -ItemType Directory -Force $voiceDir | Out-Null
+        Copy-Item (Join-Path $inner.FullName "*") $voiceDir -Recurse -Force
+        Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "   Υπάρχει ήδη — παραλείπεται η λήψη."
+    }
+    $voiceSize = [math]::Round(((Get-ChildItem $voiceDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB),0)
+    Write-Host "   Μοντέλο έτοιμο: $voiceDir ($voiceSize MB)"
+} elseif (Test-Path $voiceDir) {
+    # Υπάρχει από προηγούμενο -WithVoice build: το spec θα το πακετάρει έτσι κι
+    # αλλιώς, οπότε το λέμε αντί να φουσκώσει σιωπηλά ο installer κατά 1 GB.
+    Write-Host "   ΣΗΜ.: υπάρχει installer\vosk-model-el — θα μπει στο bundle." -ForegroundColor Yellow
+}
+
 # --- PyInstaller -------------------------------------------------------------
 Write-Host "== 4/5  PyInstaller ==" -ForegroundColor Cyan
 # Ένα ανοιχτό αντίγραφο της εφαρμογής κλειδώνει τα αρχεία του dist\ και το build
@@ -179,6 +322,15 @@ Get-Process TimologioDownloader -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "   τερματίζω ανοιχτή εφαρμογή (PID $($_.Id))" -ForegroundColor Yellow
     Stop-Process -Id $_.Id -Force
 }
+# Και η φορητή PHP του dist\: ο server του e-Τιμολόγιο επιβιώνει αν η εφαρμογή
+# (ή ένα τεστ) τερματίσει απότομα, και κρατά κλειδωμένο το php_curl.dll — το
+# build έσκαγε με «Access is denied» χωρίς να λέει ποιος το κρατά.
+Get-Process php -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith((Join-Path $root "dist")) } |
+    ForEach-Object {
+        Write-Host "   τερματίζω ορφανή PHP του dist\ (PID $($_.Id))" -ForegroundColor Yellow
+        Stop-Process -Id $_.Id -Force
+    }
 Start-Sleep -Seconds 1
 Remove-Item "$root\dist\TimologioDownloader" -Recurse -Force -ErrorAction SilentlyContinue
 & $pyi @("installer\timologio.spec", "--noconfirm", "--distpath", "dist", "--workpath", "build")

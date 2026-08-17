@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 95dd0925-6c2b-4966-9e94-92c66513165e
-  modified: 2026-08-10T18:46:18.175Z
+  modified: 2026-08-14T12:35:21.485Z
 ---
 
 Conventions for the native e-Τιμολόγιο Pro screens in
@@ -34,6 +34,28 @@ per row, never aborting the batch), then `gui.printing.print_pdfs(paths)` gives
 the *same* preview dialog as the Downloader, and `export_zip(paths, target)`
 packs them (flat, de-duplicated names). Wired into **Παραστατικά** (checkbox
 multi-select) and **Καρτέλα** (whole customer).
+
+**⚠️ Ο κανόνας του θέματος για κάρτες είναι `QFrame#card`, όχι `#card`.** Ένα
+`QWidget` με `setObjectName("card")` δεν παίρνει **κανένα** φόντο — φαίνεται ό,τι
+υπάρχει από κάτω. Επηρεάζει κάθε επικάλυψη (π.χ. το panel του βοηθού): κάν' την
+`QFrame`. Το ίδιο ισχύει για κάθε νέο όνομα που προστίθεται στο `theme.build()`.
+
+**⚠️ Το `TableColumnFilter` ΑΝΤΙΚΑΘΙΣΤΑ την κεφαλίδα** (`setHorizontalHeader`).
+Πρέπει να φτιάχνεται **ΠΡΙΝ** από `persist_header`/`setup_columns`, αλλιώς πετά
+ό,τι μόλις επαναφέρθηκε: πλάτη, σειρά στηλών και δείκτη ταξινόμησης. Ο δείκτης
+τότε γυρίζει στην προεπιλογή του Qt, που είναι **φθίνουσα στη στήλη 0** — γι'
+αυτό οι λίστες άνοιγαν ανάποδα. Το `ui.make_sortable()` τα κάνει με τη σωστή
+σειρά και ορίζει ρητά τον δείκτη (αύξουσα, ή `default_column` για «νεότερα
+πρώτα»), κρατώντας σε δική του σημαία αν ταξινόμησε ο χρήστης.
+
+**Οι πληρωμές κρατούν ISO ημερομηνία στη βάση** (`payment_date_iso` στο
+`localdb.php`) γιατί το `pay_date` συγκρίνεται ως κείμενο σε κάθε φίλτρο. Στο UI
+περνούν από `fmt_date`/`ui.date_cell`, που δέχονται και τις δύο μορφές.
+
+**Offscreen renders: τα ελληνικά βγαίνουν κουτάκια.** Το `QT_QPA_PLATFORM=
+offscreen` σε αυτό το μηχάνημα δεν βρίσκει γραμματοσειρά με ελληνικά, οπότε κάθε
+`widget.grab()` δείχνει tofu. Χρήσιμο για **διάταξη και χρώματα**, άχρηστο για
+έλεγχο κειμένου — μη το εκλάβεις ως σφάλμα απόδοσης.
 
 **2FA QR:** `pages/settings.py` renders `otpauth` (note: the backend key is
 `otpauth`, not `uri`) via the `qrcode` package — declared in the `gui` extra,

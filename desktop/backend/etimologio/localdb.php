@@ -117,6 +117,27 @@ function localdb(): \PDO {
     // Upgrade path for DBs created before deliv_meta existed.
     try { $tr("ALTER TABLE customer_meta ADD COLUMN deliv_meta TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
 
+    // Θεραπεία παλιών πληρωμών: γράφονταν «dd/MM/yyyy» ενώ κάθε φίλτρο συγκρίνει
+    // ISO, οπότε δεν εμφανίζονταν ποτέ σε καρτέλα με διάστημα. Μετατρέπονται μία
+    // φορά· οι ήδη σωστές δεν ταιριάζουν στο LIKE και μένουν άθικτες.
+    try {
+        $tr("UPDATE payments
+                SET pay_date = substr(pay_date, 7, 4) || '-' || substr(pay_date, 4, 2)
+                               || '-' || substr(pay_date, 1, 2)
+              WHERE pay_date LIKE '__/__/____'");
+    } catch (\Throwable $e) {}
+
+    // Ρυθμίσεις εφαρμογής που ορίζονται από το UI αντί για το config.php:
+    // κυρίως τα στοιχεία email (SMTP / Resend). Η τιμή είναι κρυπτογραφημένη —
+    // εκεί μέσα ζουν κωδικός SMTP και API key.
+    $tr("
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL DEFAULT '',   -- encrypted
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+
     // --- Auth: application users (master admin + business accounts) ----------
     // email is the login identifier (kept plaintext so it can be queried).
     // role: 'master' | 'business'.  status: 'pending' | 'active' | 'disabled'.
@@ -159,6 +180,21 @@ function localdb(): \PDO {
         )
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_acc_user ON aade_accounts(user_id)");
+
+    // --- Ανάθεση εταιρειών σε λογιστές ---------------------------------------
+    // Ο διαχειριστής βλέπει τα πάντα· ο λογιστής μόνο ό,τι του έχει ανατεθεί.
+    // Η ανάθεση ζει εδώ και ΟΧΙ σε στήλη του `aade_accounts`, γιατί μία εταιρεία
+    // μπορεί να τη μοιράζονται δύο λογιστές (π.χ. αντικατάσταση σε άδεια).
+    $tr("
+        CREATE TABLE IF NOT EXISTS account_managers (
+            user_id    INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, account_id)
+        )
+    ");
+    $tr("CREATE INDEX IF NOT EXISTS idx_mgr_acc ON account_managers(account_id)");
+    manager_seed_existing_editors();
 
     // --- Scheduled issuance (χρονοπρογραμματισμός) ---------------------------
     // A persistent job store: each row is a παραστατικό (single or bulk) queued
@@ -269,8 +305,73 @@ function users_all(): array {
     return array_map('user_public', $rows);
 }
 
+// --- Ρυθμίσεις εφαρμογής -----------------------------------------------------
+
+/** Μια ρύθμιση, ή `$default` αν δεν έχει οριστεί ποτέ. */
+function setting_get(string $key, string $default = ''): string {
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+        try {
+            foreach (localdb()->query("SELECT key, value FROM app_settings") as $r) {
+                $cache[$r['key']] = dec($r['value']);
+            }
+        } catch (\Throwable $e) {
+            $cache = [];
+        }
+    }
+    $value = $cache[$key] ?? '';
+    return $value !== '' ? $value : $default;
+}
+
+/** Γράφει (ή σβήνει, με κενή τιμή) μια ρύθμιση. */
+function setting_set(string $key, string $value): void {
+    $now = db_now_sql();
+    $st = localdb()->prepare("
+        INSERT INTO app_settings (key, value, updated_at) VALUES (:k, :v, $now)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    ");
+    $st->execute([':k' => $key, ':v' => enc(trim($value))]);
+}
+
 function users_count_master(): int {
     return (int)localdb()->query("SELECT COUNT(*) FROM users WHERE role='master'")->fetchColumn();
+}
+
+/**
+ * Οριστική διαγραφή χρήστη ΜΑΖΙ με τις εταιρείες του.
+ *
+ * Η απενεργοποίηση κρατά τη γραμμή για πάντα: ένας λογιστής που έφυγε μένει
+ * στη λίστα, με τα κρυπτογραφημένα κλειδιά των πελατών του δίπλα. Η διαγραφή
+ * αφαιρεί και τα δύο. Οι φύλακες (τελευταίος master, ο εαυτός σου) είναι στο
+ * επίπεδο της διαδρομής, όχι εδώ — εδώ γίνεται η πράξη.
+ */
+function user_delete(int $id): bool {
+    $db = localdb();
+    $db->prepare("DELETE FROM aade_accounts WHERE user_id = :u")->execute([':u' => $id]);
+    $st = $db->prepare("DELETE FROM users WHERE id = :id");
+    $st->execute([':id' => $id]);
+    return $st->rowCount() > 0;
+}
+
+/**
+ * Το φίλτρο εταιρείας για ειδοποιήσεις/προγραμματισμό, σε τρεις καταστάσεις.
+ *
+ * `''` = όλες (διαχειριστής) · μια συμβολοσειρά = μία εταιρεία (επιχείρηση) ·
+ * πίνακας = ακριβώς αυτές (λογιστής με ανάθεση). **Άδειος πίνακας σημαίνει
+ * καμία** — γι' αυτό γυρίζει `1 = 0` και όχι κενό φίλτρο: το κενό θα άνοιγε
+ * ολόκληρη τη βάση σε λογιστή χωρίς ανάθεση.
+ */
+function db_scope_clause($scope, string $col = 'account_vat'): array {
+    if ($scope === '' || $scope === null) return ['', []];
+    if (is_array($scope)) {
+        $vats = array_values(array_unique(array_filter(array_map('strval', $scope), fn($v) => $v !== '')));
+        if (!$vats) return ['1 = 0', []];
+        $ph = []; $args = [];
+        foreach ($vats as $i => $v) { $ph[] = ":sc$i"; $args[":sc$i"] = $v; }
+        return [$col . ' IN (' . implode(',', $ph) . ')', $args];
+    }
+    return [$col . ' = :sc0', [':sc0' => (string)$scope]];
 }
 
 // --- Auth: AADE accounts ----------------------------------------------------
@@ -303,6 +404,9 @@ function accounts_all(): array {
         $a = account_row($r);
         unset($a['subkey']);
         $a['owner_email'] = $r['owner_email'] ?? '';
+        // Ποιοι λογιστές τη διαχειρίζονται — το χρειάζεται η οθόνη Διαχείρισης
+        // για να δείξει τον διαχωρισμό, όχι απλώς μια λίστα εταιρειών.
+        $a['manager_ids'] = account_manager_ids((int)$a['id']);
         return $a;
     }, $rows);
 }
@@ -351,9 +455,112 @@ function account_update(int $id, array $d): void {
 }
 
 function account_delete(int $id): bool {
-    $st = localdb()->prepare("DELETE FROM aade_accounts WHERE id = :id");
+    $db = localdb();
+    $db->prepare("DELETE FROM account_managers WHERE account_id = :id")->execute([':id' => $id]);
+    $st = $db->prepare("DELETE FROM aade_accounts WHERE id = :id");
     $st->execute([':id' => $id]);
     return $st->rowCount() > 0;
+}
+
+// --- Ανάθεση εταιρειών σε λογιστές ------------------------------------------
+//
+// Ο ρόλος «editor» (λογιστής) έβλεπε ΚΑΘΕ εταιρεία της εγκατάστασης. Σε γραφείο
+// με πολλούς λογιστές αυτό είναι λάθος: ο καθένας πρέπει να βλέπει μόνο τους
+// δικούς του πελάτες. Η ανάθεση είναι **ρητή** — κενή λίστα σημαίνει καμία
+// εταιρεία, όχι «όλες». Για να μη χάσει πρόσβαση καμία υπάρχουσα εγκατάσταση,
+// το `manager_seed_existing_editors()` τρέχει μία φορά και αναθέτει σε κάθε
+// υπάρχοντα λογιστή ό,τι έβλεπε μέχρι τότε (δηλαδή τα πάντα).
+
+/** Τα ids των εταιρειών που έχουν ανατεθεί σε έναν λογιστή. */
+function manager_account_ids(int $userId): array {
+    $st = localdb()->prepare("SELECT account_id FROM account_managers WHERE user_id = :u ORDER BY account_id ASC");
+    $st->execute([':u' => $userId]);
+    return array_map('intval', array_column($st->fetchAll(), 'account_id'));
+}
+
+/** Οι λογιστές (user ids) που διαχειρίζονται μια εταιρεία. */
+function account_manager_ids(int $accountId): array {
+    $st = localdb()->prepare("SELECT user_id FROM account_managers WHERE account_id = :a ORDER BY user_id ASC");
+    $st->execute([':a' => $accountId]);
+    return array_map('intval', array_column($st->fetchAll(), 'user_id'));
+}
+
+/** Αντικαθιστά ολόκληρη την ανάθεση ενός λογιστή. */
+function manager_set_accounts(int $userId, array $accountIds): void {
+    $db = localdb();
+    $db->prepare("DELETE FROM account_managers WHERE user_id = :u")->execute([':u' => $userId]);
+    $st = $db->prepare("INSERT INTO account_managers (user_id, account_id) VALUES (:u, :a)");
+    foreach (array_unique(array_map('intval', $accountIds)) as $aid) {
+        if ($aid > 0) $st->execute([':u' => $userId, ':a' => $aid]);
+    }
+}
+
+/** Αντικαθιστά τους λογιστές μιας εταιρείας (η ίδια σχέση, από την άλλη πλευρά). */
+function account_set_managers(int $accountId, array $userIds): void {
+    $db = localdb();
+    $db->prepare("DELETE FROM account_managers WHERE account_id = :a")->execute([':a' => $accountId]);
+    $st = $db->prepare("INSERT INTO account_managers (user_id, account_id) VALUES (:u, :a)");
+    foreach (array_unique(array_map('intval', $userIds)) as $uid) {
+        if ($uid > 0) $st->execute([':u' => $uid, ':a' => $accountId]);
+    }
+}
+
+/** Οι εταιρείες ενός λογιστή, ΜΕ διαπιστευτήρια (για την ανάλυση λογαριασμού). */
+function accounts_for_manager(int $userId): array {
+    $ids = manager_account_ids($userId);
+    if (!$ids) return [];
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $st = localdb()->prepare("SELECT * FROM aade_accounts WHERE id IN ($in) ORDER BY id ASC");
+    $st->execute($ids);
+    return array_map('account_row', $st->fetchAll());
+}
+
+/**
+ * Μία φορά ανά εγκατάσταση: ό,τι έβλεπαν οι λογιστές πριν υπάρξει ανάθεση.
+ *
+ * Χωρίς αυτό, η αναβάθμιση θα κλείδωνε έξω κάθε λογιστή που δούλευε ήδη.
+ */
+function manager_seed_existing_editors(): void {
+    if (setting_get('managers.seeded') === '1') return;
+    setting_set('managers.seeded', '1');
+    try {
+        $db = localdb();
+        $editors = $db->query("SELECT id FROM users WHERE role = 'editor'")->fetchAll();
+        if (!$editors) return;
+        $accounts = $db->query("SELECT id FROM aade_accounts")->fetchAll();
+        if (!$accounts) return;
+        $st = $db->prepare("INSERT INTO account_managers (user_id, account_id) VALUES (:u, :a)");
+        foreach ($editors as $e) {
+            foreach ($accounts as $a) {
+                try { $st->execute([':u' => (int)$e['id'], ':a' => (int)$a['id']]); } catch (\Throwable $x) {}
+            }
+        }
+    } catch (\Throwable $e) { /* η ανάθεση δεν είναι λόγος να μη σηκωθεί η βάση */ }
+}
+
+// --- Προτιμήσεις UI ανά χρήστη ----------------------------------------------
+// Πλάτη και σειρά στηλών ανά πίνακα, φάκελος λήψεων κ.λπ. Ζουν στο `app_settings`
+// με πρόθεμα ανά χρήστη: είναι μικρά, σπάνια γράφονται και ταξιδεύουν με τη βάση,
+// άρα ο ίδιος χρήστης βρίσκει τη διάταξή του και από άλλον υπολογιστή.
+function user_pref_get(int $userId, string $key, string $default = ''): string {
+    return setting_get('uipref.' . $userId . '.' . $key, $default);
+}
+
+function user_pref_set(int $userId, string $key, string $value): void {
+    setting_set('uipref.' . $userId . '.' . $key, $value);
+}
+
+/** Όλες οι προτιμήσεις ενός χρήστη, ως χάρτης κλειδί → τιμή. */
+function user_prefs_all(int $userId): array {
+    $prefix = 'uipref.' . $userId . '.';
+    $out = [];
+    try {
+        foreach (localdb()->query("SELECT key, value FROM app_settings") as $r) {
+            if (strncmp($r['key'], $prefix, strlen($prefix)) !== 0) continue;
+            $out[substr($r['key'], strlen($prefix))] = dec($r['value']);
+        }
+    } catch (\Throwable $e) {}
+    return $out;
 }
 
 // --- Payments ---------------------------------------------------------------
@@ -387,6 +594,21 @@ function payments_list(string $accountVat, string $customerVat = '', string $fro
     return array_map('payment_row', $st->fetchAll());
 }
 
+/**
+ * Ημερομηνία πληρωμής σε ISO (yyyy-mm-dd) — ό,τι κι αν έστειλε ο πελάτης.
+ *
+ * Η στήλη `pay_date` συγκρίνεται ως ΚΕΙΜΕΝΟ σε κάθε φίλτρο διαστήματος, οπότε
+ * μια αποθηκευμένη «13/08/2026» δεν είναι απλώς άσχημη: είναι αόρατη
+ * («13/08/2026» >= «2026-01-01» είναι ψευδές). Ζει εδώ, στο μοναδικό σημείο
+ * εισαγωγής, ώστε να μην μπορεί να την προσπεράσει κανένας καλών.
+ */
+function payment_date_iso(string $value): string {
+    $value = trim($value);
+    if (preg_match('#^(\d{2})/(\d{2})/(\d{4})#', $value, $m)) return "$m[3]-$m[2]-$m[1]";
+    if (preg_match('#^(\d{4})-(\d{2})-(\d{2})#', $value, $m)) return "$m[1]-$m[2]-$m[3]";
+    return $value !== '' ? $value : date('Y-m-d');
+}
+
 function payment_add(string $accountVat, array $d): int {
     return db_insert("
         INSERT INTO payments (account_vat, customer_vat, customer_code, customer_name, amount, method, pay_date, mark, notes)
@@ -398,10 +620,36 @@ function payment_add(string $accountVat, array $d): int {
         ':cn'  => enc(trim($d['customer_name'] ?? '')),
         ':amt' => enc_num(round((float)($d['amount'] ?? 0), 2)),
         ':m'   => (int)($d['method'] ?? 3),
-        ':dt'  => trim($d['pay_date'] ?? date('Y-m-d')),
+        ':dt'  => payment_date_iso((string)($d['pay_date'] ?? '')),
         ':mk'  => trim($d['mark'] ?? ''),
         ':nt'  => enc(trim($d['notes'] ?? '')),
     ]);
+}
+
+/**
+ * Ενημερώνει μια υπάρχουσα πληρωμή. Επιστρέφει false αν δεν ανήκει στον λογαριασμό.
+ *
+ * Η διαγραφή-και-νέα θα άλλαζε το id της κίνησης· η καρτέλα δείχνει πληρωμές με
+ * το id τους, οπότε μια διόρθωση ποσού δεν πρέπει να φτιάχνει άλλη εγγραφή.
+ */
+function payment_update(string $accountVat, int $id, array $d): bool {
+    $st = localdb()->prepare("
+        UPDATE payments
+           SET customer_vat = :cv, customer_name = :cn, amount = :amt,
+               method = :m, pay_date = :dt, notes = :nt
+         WHERE account_vat = :acc AND id = :id
+    ");
+    $st->execute([
+        ':acc' => $accountVat,
+        ':id'  => $id,
+        ':cv'  => trim($d['customer_vat']  ?? ''),
+        ':cn'  => enc(trim($d['customer_name'] ?? '')),
+        ':amt' => enc_num(round((float)($d['amount'] ?? 0), 2)),
+        ':m'   => (int)($d['method'] ?? 3),
+        ':dt'  => payment_date_iso((string)($d['pay_date'] ?? '')),
+        ':nt'  => enc(trim($d['notes'] ?? '')),
+    ]);
+    return $st->rowCount() > 0;
 }
 
 function payment_delete(string $accountVat, int $id): bool {
@@ -542,16 +790,16 @@ function sched_add(string $accountVat, int $userId, array $d): int {
     ]);
 }
 
-// List jobs for the UI. Master (accountVat === '') sees every account's jobs.
-function sched_list(string $accountVat = '', int $limit = 500): array {
-    if ($accountVat === '') {
-        $st = localdb()->prepare("SELECT * FROM scheduled_jobs ORDER BY (status='pending') DESC, run_at DESC LIMIT :l");
-        $st->bindValue(':l', $limit, \PDO::PARAM_INT);
-    } else {
-        $st = localdb()->prepare("SELECT * FROM scheduled_jobs WHERE account_vat = :acc ORDER BY (status='pending') DESC, run_at DESC LIMIT :l");
-        $st->bindValue(':acc', $accountVat);
-        $st->bindValue(':l', $limit, \PDO::PARAM_INT);
-    }
+// List jobs for the UI. Ο διαχειριστής ('' ) βλέπει τα πάντα· ο λογιστής παίρνει
+// τη λίστα των εταιρειών του· η επιχείρηση ένα ΑΦΜ.
+function sched_list($scope = '', int $limit = 500): array {
+    [$where, $args] = db_scope_clause($scope);
+    $sql = "SELECT * FROM scheduled_jobs"
+         . ($where !== '' ? " WHERE $where" : '')
+         . " ORDER BY (status='pending') DESC, run_at DESC LIMIT :l";
+    $st = localdb()->prepare($sql);
+    foreach ($args as $k => $v) $st->bindValue($k, $v);
+    $st->bindValue(':l', $limit, \PDO::PARAM_INT);
     $st->execute();
     return array_map('sched_row', $st->fetchAll());
 }
@@ -617,15 +865,34 @@ function sched_record_result(int $id, string $status, array $result, ?string $ne
 }
 
 // Cancel a pending job (scoped by account for safety; master passes '' to skip scope).
-function sched_cancel(int $id, string $accountVat = ''): bool {
-    if ($accountVat === '') {
-        $st = localdb()->prepare("UPDATE scheduled_jobs SET status='cancelled' WHERE id = :id AND status='pending'");
-        $st->execute([':id' => $id]);
-    } else {
-        $st = localdb()->prepare("UPDATE scheduled_jobs SET status='cancelled' WHERE id = :id AND account_vat = :acc AND status='pending'");
-        $st->execute([':id' => $id, ':acc' => $accountVat]);
-    }
+function sched_cancel(int $id, $scope = ''): bool {
+    [$where, $args] = db_scope_clause($scope);
+    $sql = "UPDATE scheduled_jobs SET status='cancelled' WHERE id = :id AND status='pending'"
+         . ($where !== '' ? " AND $where" : '');
+    $st = localdb()->prepare($sql);
+    $st->execute($args + [':id' => $id]);
     return $st->rowCount() > 0;
+}
+
+/**
+ * Οριστική διαγραφή εργασιών που **τελείωσαν** (ακυρωμένες, εκτελεσμένες,
+ * αποτυχημένες). Οι εκκρεμείς ΔΕΝ διαγράφονται: πρώτα ακυρώνονται.
+ *
+ * Χωρίς αυτό η σελίδα γέμιζε με ιστορικό που δεν καθαρίζει ποτέ.
+ * ``$id === 0`` σημαίνει «όλες όσες έχουν τελειώσει».
+ */
+function sched_delete(int $id, $scope = ''): int {
+    $done = "status IN ('cancelled','done','failed')";
+    $where = $id > 0 ? "id = :id AND $done" : $done;
+    $args = $id > 0 ? [':id' => $id] : [];
+    [$scopeSql, $scopeArgs] = db_scope_clause($scope);
+    if ($scopeSql !== '') {
+        $where .= " AND $scopeSql";
+        $args += $scopeArgs;
+    }
+    $st = localdb()->prepare("DELETE FROM scheduled_jobs WHERE $where");
+    $st->execute($args);
+    return $st->rowCount();
 }
 
 // Compute the next run for a recurring job from a base 'Y-m-d H:i:s'. Returns
@@ -689,11 +956,13 @@ function notification_add(string $accountVat, array $d): int {
     ]);
 }
 
-// Master (accountVat === '') sees all accounts; a business sees its own account.
-function notifications_list(string $accountVat = '', bool $unreadOnly = false, int $limit = 200): array {
+// Master (scope === '') sees all accounts; a business sees its own account; an
+// accountant sees exactly the companies assigned to them (array).
+function notifications_list($scope = '', bool $unreadOnly = false, int $limit = 200): array {
     $sql = "SELECT * FROM issue_notifications";
-    $conds = []; $args = [];
-    if ($accountVat !== '') { $conds[] = "account_vat = :acc"; $args[':acc'] = $accountVat; }
+    [$scopeSql, $args] = db_scope_clause($scope);
+    $conds = [];
+    if ($scopeSql !== '')   { $conds[] = $scopeSql; }
     if ($unreadOnly)        { $conds[] = "is_read = 0"; }
     if ($conds) $sql .= " WHERE " . implode(' AND ', $conds);
     $sql .= " ORDER BY id DESC LIMIT :l";
@@ -704,32 +973,29 @@ function notifications_list(string $accountVat = '', bool $unreadOnly = false, i
     return array_map('notification_row', $st->fetchAll());
 }
 
-function notifications_unread_count(string $accountVat = ''): int {
-    if ($accountVat === '') {
-        return (int)localdb()->query("SELECT COUNT(*) FROM issue_notifications WHERE is_read = 0")->fetchColumn();
-    }
-    $st = localdb()->prepare("SELECT COUNT(*) FROM issue_notifications WHERE account_vat = :acc AND is_read = 0");
-    $st->execute([':acc' => $accountVat]);
+function notifications_unread_count($scope = ''): int {
+    [$where, $args] = db_scope_clause($scope);
+    $sql = "SELECT COUNT(*) FROM issue_notifications WHERE is_read = 0"
+         . ($where !== '' ? " AND $where" : '');
+    $st = localdb()->prepare($sql);
+    $st->execute($args);
     return (int)$st->fetchColumn();
 }
 
-function notification_mark_read(int $id, string $accountVat = ''): void {
-    if ($accountVat === '') {
-        $st = localdb()->prepare("UPDATE issue_notifications SET is_read = 1 WHERE id = :id");
-        $st->execute([':id' => $id]);
-    } else {
-        $st = localdb()->prepare("UPDATE issue_notifications SET is_read = 1 WHERE id = :id AND account_vat = :acc");
-        $st->execute([':id' => $id, ':acc' => $accountVat]);
-    }
+function notification_mark_read(int $id, $scope = ''): void {
+    [$where, $args] = db_scope_clause($scope);
+    $sql = "UPDATE issue_notifications SET is_read = 1 WHERE id = :id"
+         . ($where !== '' ? " AND $where" : '');
+    $st = localdb()->prepare($sql);
+    $st->execute($args + [':id' => $id]);
 }
 
-function notifications_mark_all_read(string $accountVat = ''): void {
-    if ($accountVat === '') {
-        localdb()->exec("UPDATE issue_notifications SET is_read = 1 WHERE is_read = 0");
-    } else {
-        $st = localdb()->prepare("UPDATE issue_notifications SET is_read = 1 WHERE account_vat = :acc AND is_read = 0");
-        $st->execute([':acc' => $accountVat]);
-    }
+function notifications_mark_all_read($scope = ''): void {
+    [$where, $args] = db_scope_clause($scope);
+    $sql = "UPDATE issue_notifications SET is_read = 1 WHERE is_read = 0"
+         . ($where !== '' ? " AND $where" : '');
+    $st = localdb()->prepare($sql);
+    $st->execute($args);
 }
 
 // --- Per-user email notification preferences (staff/admin) ------------------
