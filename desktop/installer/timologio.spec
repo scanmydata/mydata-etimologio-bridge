@@ -119,8 +119,21 @@ VOICE = _tree(os.path.join(SPECPATH, "vosk-model-el"), "vosk-model-el")
 # Αντίθετα με το Vosk (αναγνώριση, 1.1 GB), η εκφώνηση είναι ~80 MB και μπαίνει
 # ΠΑΝΤΑ: χωρίς αυτήν ο βοηθός δεν μιλά ελληνικά σε κανένα Windows χωρίς
 # εγκατεστημένη ελληνική φωνή — δηλαδή στα περισσότερα.
+#: Οι φωνές που όντως χρησιμοποιούνται (δες `speech._VOICE_PREFERRED`). Ένας
+#: φάκελος από παλιότερο build κρατά και παλιά μοντέλα — 63 MB το καθένα.
+_VOICES_KEEP = {"el_GR-joy-medium", "en_US-lessac-medium"}
+
+
+def _voice_wanted(path):
+    name = os.path.basename(path)
+    if not name.endswith((".onnx", ".onnx.json")):
+        return True                     # μηχανή/δεδομένα espeak, όχι μοντέλο
+    return name.split(".onnx")[0] in _VOICES_KEEP
+
+
 PIPER = [
     entry for entry in _tree(os.path.join(SPECPATH, "piper"), "piper")
+    if _voice_wanted(entry[0])
     # Το `libtashkeel_model.ort` βάζει αραβικά διακριτικά — 10 MB που δεν
     # ακουμπά ποτέ ελληνικό ή αγγλικό κείμενο.
     if not entry[0].endswith("libtashkeel_model.ort")
@@ -129,10 +142,25 @@ PIPER = [
 # --- Η ΑΚΟΗ του βοηθού (whisper.cpp) -----------------------------------------
 # Το `webkitSpeechRecognition` του QtWebEngine δείχνει σε υπηρεσία της Google
 # που δεν υπάρχει: η κλήση δεν αποτυγχάνει, **παγώνει την εφαρμογή**. Το
-# whisper.cpp με το μοντέλο `base` (~142 MB) τρέχει τοπικά σε CPU — δέκατο του
-# ελληνικού Vosk. Το κατεβάζει το build.ps1· αν λείψει, το backend απαντά 501
-# και ο βοηθός ζητά γραπτή εντολή.
-WHISPER = _tree(os.path.join(SPECPATH, "whisper"), "whisper")
+# whisper.cpp με το μοντέλο `small-q5_1` (~182 MB) τρέχει τοπικά σε CPU — έκτο
+# του ελληνικού Vosk. Το `base` δοκιμάστηκε και ΚΟΠΗΚΕ: έβγαζε «Αν εξέτας τα
+# τυστικά» για «άνοιξε τα στατιστικά». Το κατεβάζει το build.ps1· αν λείψει, το
+# backend απαντά 501 και ο βοηθός ζητά γραπτή εντολή.
+#: Ό,τι χρειάζεται ΜΟΝΟ το `whisper-cli -m <model> -f <wav>`. Το επίσημο zip
+#: κουβαλά ολόκληρο το σετ παραδειγμάτων (talk-llama, wchess, parakeet, server,
+#: stream, benchmarks, tests, SDL2). Το `build.ps1` τα κλαδεύει· ο έλεγχος
+#: επαναλαμβάνεται εδώ γιατί ένας φάκελος από παλιότερο build τα ξαναφέρνει.
+#: ⚠️ Το `ggml-base.dll` είναι backend του ggml — ΔΕΝ είναι το μοντέλο.
+_WHISPER_KEEP = {"whisper-cli.exe", "whisper.dll", "ggml.dll", "ggml-base.dll"}
+WHISPER = [
+    entry for entry in _tree(os.path.join(SPECPATH, "whisper"), "whisper")
+    if os.path.basename(entry[0]) in _WHISPER_KEEP
+    # Το ggml διαλέγει στην εκτέλεση παραλλαγή ανά επεξεργαστή — μένουν όλες.
+    or os.path.basename(entry[0]).startswith("ggml-cpu-")
+    # Το μοντέλο, όποιο κι αν είναι (`speech.whisper_model` παίρνει το μεγαλύτερο).
+    or (os.path.basename(entry[0]).startswith("ggml-")
+        and entry[0].endswith(".bin"))
+]
 
 a = Analysis(
     [os.path.join(ROOT, "entry.py")],
