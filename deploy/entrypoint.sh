@@ -37,6 +37,10 @@ const RESEND_EMAIL_SENDER = $(php_str "${RESEND_EMAIL_SENDER:-}");
 const SMTP_FROM           = $(php_str "${SMTP_FROM:-}");
 const SMTP_HOST           = $(php_str "${SMTP_HOST:-}");
 const SMTP_PORT           = ${SMTP_PORT:-587};
+// Το mail.php μιλά πλέον SMTP κανονικά (STARTTLS/SSL), αντί να καλεί mail():
+// χωρίς αυτή τη σταθερά ο container έστελνε σε καθαρή σύνδεση στην 587 και ο
+// server απαντούσε «530 must issue a STARTTLS command first».
+const SMTP_SECURE         = $(php_str "${SMTP_SECURE:-tls}");
 const SMTP_USER           = $(php_str "${SMTP_USER:-}");
 const SMTP_PASS           = $(php_str "${SMTP_PASS:-}");
 const APP_URL             = $(php_str "${APP_URL:-}");
