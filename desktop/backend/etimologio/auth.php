@@ -72,6 +72,14 @@ function auth_login(string $email, string $password): array {
     if (!$u || !password_verify($password, $u['password_hash'])) {
         return ['success' => false, 'error' => 'Λάθος email ή κωδικός'];
     }
+    // Ανεπιβεβαίωτο email: μπλοκάρει ΠΡΙΝ από την έγκριση, γιατί μια εγγραφή με
+    // λάθος (ή ξένο) email δεν πρέπει καν να φτάσει στον διαχειριστή. Ο έλεγχος
+    // κοιτάζει και το token: λογαριασμοί που δημιουργήθηκαν πριν υπάρξει η
+    // επαλήθευση δεν έχουν token, και συνεχίζουν να μπαίνουν κανονικά.
+    if ((int)($u['email_verified'] ?? 1) === 0 && trim((string)($u['verify_token'] ?? '')) !== '') {
+        return ['success' => false, 'needs_verification' => true, 'email' => $u['email'],
+                'error' => 'Επιβεβαιώστε πρώτα το email σας — σας στείλαμε σύνδεσμο κατά την εγγραφή'];
+    }
     if ($u['status'] === 'pending')  return ['success' => false, 'error' => 'Ο λογαριασμός εκκρεμεί έγκριση από τον διαχειριστή'];
     if ($u['status'] === 'invited')  return ['success' => false, 'error' => 'Ολοκληρώστε πρώτα την ενεργοποίηση από τον σύνδεσμο στο email σας'];
     if ($u['status'] === 'disabled') return ['success' => false, 'error' => 'Ο λογαριασμός είναι απενεργοποιημένος'];
@@ -87,6 +95,7 @@ function auth_login(string $email, string $password): array {
     // login + location.href navigation can drop a regenerated cookie. Reusing the id
     // keeps login robust.
     $_SESSION['uid'] = (int)$u['id'];
+    if (function_exists('audit_log_add')) audit_log_add((int)$u['id'], '', 'login');
     return ['success' => true, 'user' => user_public($u)];
 }
 
@@ -109,10 +118,14 @@ function auth_login_totp(string $code): array {
     }
     unset($_SESSION['pending_2fa_uid'], $_SESSION['pending_2fa_at']);
     $_SESSION['uid'] = (int)$u['id'];
+    if (function_exists('audit_log_add')) audit_log_add((int)$u['id'], '', 'login_2fa');
     return ['success' => true, 'user' => user_public($u)];
 }
 
 function auth_logout(): void {
+    if (function_exists('audit_log_add') && !empty($_SESSION['uid'])) {
+        audit_log_add((int)$_SESSION['uid'], '', 'logout');
+    }
     $_SESSION = [];
     if (ini_get('session.use_cookies')) {
         $p = session_get_cookie_params();
@@ -129,10 +142,55 @@ function auth_signup(string $email, string $password, string $businessName): arr
     if (trim($businessName) === '') return ['success' => false, 'error' => 'Λείπει η επωνυμία επιχείρησης'];
     if (user_by_email($email)) return ['success' => false, 'error' => 'Υπάρχει ήδη λογαριασμός με αυτό το email'];
     $id = user_create($email, password_hash($password, PASSWORD_DEFAULT), 'business', 'pending', $businessName);
-    // Acknowledge to the applicant + notify the admins that an approval is pending.
-    auth_email_signup_ack($email, trim($businessName));
-    auth_email_admins_new_signup($email, trim($businessName));
-    return ['success' => true, 'id' => $id, 'note' => 'Η εγγραφή καταχωρήθηκε και εκκρεμεί έγκριση από τον διαχειριστή.'];
+    // Πρώτα επαλήθευση email, ΜΕΤΑ έγκριση. Ο διαχειριστής ειδοποιείται μόνο
+    // όταν αποδειχθεί ότι το email υπάρχει και ανήκει σε αυτόν που εγγράφηκε —
+    // αλλιώς η ουρά εγκρίσεων γεμίζει με τυπογραφικά λάθη και ψεύτικες εγγραφές.
+    $token = bin2hex(random_bytes(24));
+    user_update($id, ['verify_token' => $token, 'verify_expires' => time() + 24 * 3600, 'email_verified' => 0]);
+    $sent = auth_email_verification($email, trim($businessName), $token);
+    return [
+        'success' => true, 'id' => $id, 'verification_sent' => $sent,
+        'note' => $sent
+            ? 'Σας στείλαμε email επιβεβαίωσης. Ανοίξτε τον σύνδεσμο για να ολοκληρωθεί η εγγραφή.'
+            : 'Η εγγραφή καταχωρήθηκε, αλλά δεν στάλθηκε email επιβεβαίωσης — επικοινωνήστε με τον διαχειριστή.',
+    ];
+}
+
+// --- Email verification -----------------------------------------------------
+// Ο σύνδεσμος οδηγεί στο app.php, που καλεί πίσω το `auth=verify_email`.
+function auth_verify_link(string $token): string {
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    return $scheme . '://' . $host . dirname($_SERVER['SCRIPT_NAME'] ?? '/') . '/app.php?verify=' . urlencode($token);
+}
+
+function auth_verify_email(string $token): array {
+    $token = trim($token);
+    if ($token === '') return ['success' => false, 'error' => 'Λείπει το token'];
+    $st = localdb()->prepare("SELECT * FROM users WHERE verify_token = :t");
+    $st->execute([':t' => $token]);
+    $u = $st->fetch();
+    if (!$u) return ['success' => false, 'error' => 'Ο σύνδεσμος δεν ισχύει (ή έχει ήδη χρησιμοποιηθεί)'];
+    if ((int)$u['verify_expires'] < time()) {
+        return ['success' => false, 'expired' => true, 'email' => $u['email'],
+                'error' => 'Ο σύνδεσμος έληξε — ζητήστε νέο'];
+    }
+    user_update((int)$u['id'], ['email_verified' => 1, 'verify_token' => '', 'verify_expires' => 0]);
+    // Τώρα, και μόνο τώρα, μπαίνει στην ουρά των εγκρίσεων.
+    if ($u['status'] === 'pending') auth_email_admins_new_signup($u['email'], (string)$u['business_name']);
+    return ['success' => true, 'note' => 'Το email επιβεβαιώθηκε. Ο λογαριασμός εκκρεμεί έγκριση από τον διαχειριστή.'];
+}
+
+// Νέος σύνδεσμος επαλήθευσης. Απαντά πάντα το ίδιο, ώστε να μην αποκαλύπτει
+// ποια email υπάρχουν στο σύστημα.
+function auth_resend_verification(string $email): array {
+    $u = user_by_email(trim($email));
+    if ($u && (int)($u['email_verified'] ?? 1) === 0) {
+        $token = bin2hex(random_bytes(24));
+        user_update((int)$u['id'], ['verify_token' => $token, 'verify_expires' => time() + 24 * 3600]);
+        auth_email_verification($u['email'], (string)$u['business_name'], $token);
+    }
+    return ['success' => true, 'note' => 'Αν εκκρεμεί επαλήθευση, στάλθηκε νέος σύνδεσμος.'];
 }
 
 // --- Member invitations (admin/editor/business) -----------------------------
@@ -202,13 +260,49 @@ function auth_reset_link(string $token): string {
     return $scheme . '://' . $host . dirname($_SERVER['SCRIPT_NAME'] ?? '/') . '/app.php?reset=' . urlencode($token);
 }
 
+// ---------------------------------------------------------------------------
+// Τα μηνύματα του λογαριασμού, στη γλώσσα σχεδίασης του ScanmyData: κουμπί,
+// πλαίσιο «τι γίνεται μετά», πλαίσιο προσοχής με την προθεσμία, και πάντα το
+// URL σε απλό κείμενο — αρκετοί email clients δεν εμφανίζουν κουμπιά.
+// ---------------------------------------------------------------------------
+
 function auth_send_reset_email(string $to, string $token): bool {
     $link = auth_reset_link($token);
-    $inner = '<p>Λάβαμε αίτημα επαναφοράς του κωδικού σας.</p>'
-        . '<p>Πατήστε το κουμπί για να ορίσετε νέο κωδικό (ο σύνδεσμος ισχύει για 1 ώρα):</p>'
+    $inner = '<p>Λάβαμε αίτημα επαναφοράς του κωδικού σας στο <strong>e-Τιμολόγιο Pro</strong>.</p>'
+        . '<p>Πατήστε το κουμπί για να ορίσετε νέο κωδικό:</p>'
         . mail_button('Επαναφορά κωδικού', $link)
-        . '<p style="color:#5b6b84;font-size:13px;margin-top:18px">Αν δεν ζητήσατε επαναφορά, αγνοήστε αυτό το μήνυμα — ο κωδικός σας παραμένει ίδιος.</p>';
-    return send_mail($to, 'Επαναφορά κωδικού — e-Τιμολόγιο Pro', mail_template('Επαναφορά κωδικού', $inner));
+        . mail_note('Η διαδικασία', [
+            '1. Ανοίξτε τον σύνδεσμο',
+            '2. Γράψτε νέο κωδικό (τουλάχιστον 8 χαρακτήρες)',
+            '3. Συνδεθείτε με τα νέα στοιχεία',
+          ])
+        . mail_warn('Σημαντικό', [
+            'Ο σύνδεσμος ισχύει για 1 ώρα από την αποστολή',
+            'Αν δεν ζητήσατε επαναφορά, αγνοήστε το μήνυμα — ο κωδικός σας μένει ίδιος',
+          ])
+        . mail_link_fallback($link);
+    return send_mail($to, 'Επαναφορά κωδικού — e-Τιμολόγιο Pro', mail_template('🔐 Επαναφορά κωδικού', $inner));
+}
+
+// Επαλήθευση email στην εγγραφή (ισχύς 24 ώρες).
+function auth_email_verification(string $to, string $businessName, string $token): bool {
+    if (!mail_enabled()) return false;
+    $link = auth_verify_link($token);
+    $who = trim($businessName) !== '' ? htmlspecialchars(trim($businessName), ENT_QUOTES) : 'στο e-Τιμολόγιο Pro';
+    $inner = '<p>Καλώς ήρθατε, <strong>' . $who . '</strong>.</p>'
+        . '<p>Για να ολοκληρωθεί η εγγραφή σας, επιβεβαιώστε ότι αυτή η διεύθυνση email είναι δική σας:</p>'
+        . mail_button('Επιβεβαίωση email', $link)
+        . mail_note('Τι θα γίνει μετά', [
+            'Το email σας καταχωρείται ως επιβεβαιωμένο',
+            'Η εγγραφή προωθείται στον διαχειριστή για έγκριση',
+            'Θα λάβετε νέο μήνυμα μόλις ενεργοποιηθεί ο λογαριασμός',
+          ])
+        . mail_warn('Σημαντικό', [
+            'Ο σύνδεσμος ισχύει για 24 ώρες',
+            'Αν δεν κάνατε εσείς την εγγραφή, αγνοήστε αυτό το μήνυμα',
+          ])
+        . mail_link_fallback($link);
+    return send_mail($to, 'Επιβεβαίωση email — e-Τιμολόγιο Pro', mail_template('✅ Επιβεβαίωση email', $inner));
 }
 
 // Activation link for an invited member (7-day validity — same token mechanism).
@@ -216,30 +310,26 @@ function auth_email_invitation(string $to, string $token, string $role): bool {
     $link = auth_reset_link($token);
     $roleL = ['master' => 'Διαχειριστής (πλήρη δικαιώματα)', 'editor' => 'Λογιστής/Επεξεργαστής', 'business' => 'Χρήστης επιχείρησης'][$role] ?? $role;
     $inner = '<p>Προσκληθήκατε στην εφαρμογή <strong>e-Τιμολόγιο Pro</strong>.</p>'
-        . '<p>Ρόλος: <strong>' . htmlspecialchars($roleL, ENT_QUOTES) . '</strong></p>'
-        . '<p>Ενεργοποιήστε τον λογαριασμό σας ορίζοντας κωδικό (ο σύνδεσμος ισχύει για 7 ημέρες):</p>'
+        . mail_kv([['Ρόλος', $roleL], ['Email σύνδεσης', $to]])
+        . '<p>Ενεργοποιήστε τον λογαριασμό σας ορίζοντας κωδικό:</p>'
         . mail_button('Ενεργοποίηση λογαριασμού', $link)
-        . '<p style="color:#5b6b84;font-size:13px;margin-top:18px">Αν δεν αναγνωρίζετε αυτή την πρόσκληση, αγνοήστε το μήνυμα.</p>';
-    return send_mail($to, 'Πρόσκληση στο e-Τιμολόγιο Pro', mail_template('Πρόσκληση συνεργάτη', $inner));
-}
-
-// Acknowledge a public signup to the applicant.
-function auth_email_signup_ack(string $to, string $businessName): bool {
-    if (!mail_enabled()) return false;
-    $inner = '<p>Λάβαμε την εγγραφή της επιχείρησης <strong>' . htmlspecialchars($businessName, ENT_QUOTES) . '</strong>.</p>'
-        . '<p>Ο λογαριασμός σας <strong>εκκρεμεί έγκριση</strong> από τον διαχειριστή. Θα ειδοποιηθείτε μόλις ενεργοποιηθεί.</p>';
-    return send_mail($to, 'Λάβαμε την εγγραφή σας — e-Τιμολόγιο Pro', mail_template('Εγγραφή σε εκκρεμότητα', $inner));
+        . mail_warn('Σημαντικό', [
+            'Ο σύνδεσμος ισχύει για 7 ημέρες',
+            'Αν δεν αναγνωρίζετε αυτή την πρόσκληση, αγνοήστε το μήνυμα',
+          ])
+        . mail_link_fallback($link);
+    return send_mail($to, 'Πρόσκληση στο e-Τιμολόγιο Pro', mail_template('🤝 Πρόσκληση συνεργάτη', $inner));
 }
 
 // Notify the admins that a new signup awaits approval.
 function auth_email_admins_new_signup(string $applicantEmail, string $businessName): void {
     if (!mail_enabled()) return;
-    $inner = '<p>Νέα εγγραφή εκκρεμεί έγκριση:</p>'
-        . '<p><strong>' . htmlspecialchars($businessName, ENT_QUOTES) . '</strong><br>'
-        . htmlspecialchars($applicantEmail, ENT_QUOTES) . '</p>'
-        . '<p>Εγκρίνετέ την από τη Διαχείριση της εφαρμογής.</p>';
+    $inner = '<p>Μια νέα εγγραφή επιβεβαίωσε το email της και περιμένει έγκριση:</p>'
+        . mail_kv([['Επωνυμία', $businessName], ['Email', $applicantEmail], ['Ημ/νία', date('d/m/Y H:i')]])
+        . '<p>Εγκρίνετέ την από τη <strong>Διαχείριση</strong> της εφαρμογής.</p>'
+        . mail_button('Άνοιγμα εφαρμογής', app_base_url() . '/app.php');
     foreach (auth_admin_emails() as $adminEmail) {
-        send_mail($adminEmail, 'Νέα εγγραφή προς έγκριση — e-Τιμολόγιο Pro', mail_template('Νέα εγγραφή', $inner));
+        send_mail($adminEmail, 'Νέα εγγραφή προς έγκριση — e-Τιμολόγιο Pro', mail_template('📥 Νέα εγγραφή', $inner));
     }
 }
 
@@ -248,8 +338,13 @@ function auth_email_account_approved(string $to, string $businessName): bool {
     if (!mail_enabled()) return false;
     $inner = '<p>Ο λογαριασμός της επιχείρησης <strong>' . htmlspecialchars($businessName, ENT_QUOTES) . '</strong> ενεργοποιήθηκε.</p>'
         . '<p>Μπορείτε πλέον να συνδεθείτε στην εφαρμογή.</p>'
-        . mail_button('Σύνδεση', app_base_url() . '/app.php');
-    return send_mail($to, 'Ο λογαριασμός σας ενεργοποιήθηκε — e-Τιμολόγιο Pro', mail_template('Λογαριασμός ενεργός', $inner));
+        . mail_button('Σύνδεση', app_base_url() . '/app.php')
+        . mail_note('Καλό ξεκίνημα', [
+            'Καταχωρήστε τα διαπιστευτήρια ΑΑΔΕ στις Ρυθμίσεις',
+            'Προσθέστε τους λογαριασμούς σας ώστε να μπαίνουν στα email καρτέλας',
+            'Η «Ξενάγηση» στο πλαϊνό μενού δείχνει τα βασικά σε ένα λεπτό',
+          ]);
+    return send_mail($to, 'Ο λογαριασμός σας ενεργοποιήθηκε — e-Τιμολόγιο Pro', mail_template('🎉 Λογαριασμός ενεργός', $inner));
 }
 
 // Emails of all master/editor staff (for admin notifications). Falls back to
@@ -279,8 +374,31 @@ function auth_totp_setup(): array {
     return [
         'success' => true,
         'secret'  => $secret,
-        'otpauth' => totp_uri($secret, $u['email']),
+        'otpauth' => totp_uri($secret, $u['email'], auth_totp_issuer()),
+        'issuer'  => auth_totp_issuer(),
     ];
+}
+
+/**
+ * Το όνομα που θα δει ο χρήστης μέσα στην εφαρμογή authenticator.
+ *
+ * Σκέτο «e-Timologio Pro» είναι άχρηστο όταν έχεις δύο εγκαταστάσεις (π.χ. τον
+ * υπολογιστή του γραφείου και τον server): δύο πανομοιότυπες γραμμές, και δεν
+ * ξέρεις ποιος κωδικός πάει πού. Προσθέτουμε πού ζει η εγκατάσταση.
+ */
+function auth_totp_issuer(): string {
+    if (defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== '') {
+        $where = (string)(getenv('COMPUTERNAME') ?: gethostname());
+    } else {
+        $where = (string)(parse_url(function_exists('app_base_url') ? app_base_url() : '', PHP_URL_HOST)
+                          ?: ($_SERVER['HTTP_HOST'] ?? ''));
+    }
+    // ΜΟΝΟ ASCII: το όνομα ταξιδεύει μέσα σε QR και το διαβάζουν εφαρμογές που
+    // δεν χειρίζονται όλες σωστά ελληνικά ή τυπογραφικά σύμβολα. Το όνομα του
+    // υπολογιστή (ή του host) είναι ούτως ή άλλως λατινικό και αρκεί για να
+    // ξεχωρίσεις δύο εγκαταστάσεις μέσα στο authenticator.
+    $where = trim(preg_replace('/[^A-Za-z0-9._-]+/', '', $where));
+    return 'e-Timologio Pro' . ($where !== '' ? ' (' . $where . ')' : '');
 }
 
 function auth_totp_enable(string $code): array {
@@ -414,8 +532,43 @@ function auth_desktop_autologin(): void {
     if ($token === '' || !hash_equals((string)DESKTOP_TOKEN, $token)) return;
     $remote = $_SERVER['REMOTE_ADDR'] ?? '';
     if (!in_array($remote, ['127.0.0.1', '::1', ''], true)) return;
-    $uid = (int)localdb()->query("SELECT id FROM users WHERE role='master' ORDER BY id ASC LIMIT 1")->fetchColumn();
+    // Μπαίνουμε ως ΛΟΓΙΣΤΗΣ, όχι ως διαχειριστής: η καθημερινή δουλειά δεν
+    // χρειάζεται δικαιώματα που σβήνουν χρήστες και διαβάζουν κλειδιά. Ο
+    // διαχειριστής μπαίνει ρητά, με κωδικό (και 2FA), από την «Αποσύνδεση».
+    $uid = auth_desktop_workspace_user();
     if ($uid > 0) $_SESSION['uid'] = $uid;
+}
+
+//: Ο λογαριασμός εργασίας της τοπικής εγκατάστασης.
+const DESKTOP_WORKSPACE_EMAIL = 'logistis@localhost';
+
+/**
+ * Ο λογιστής της τοπικής εγκατάστασης — δημιουργείται μία φορά και κρατιέται
+ * συγχρονισμένος με τις εταιρείες.
+ *
+ * Ο ρόλος `editor` βλέπει **μόνο** όσες εταιρείες του έχουν ανατεθεί. Σε μια
+ * εγκατάσταση ενός χρήστη αυτό θα σήμαινε άδεια εφαρμογή, γι' αυτό του
+ * ανατίθενται όλες όσες υπάρχουν — και όποιες προστεθούν αργότερα, στην
+ * επόμενη εκκίνηση του κελύφους.
+ */
+function auth_desktop_workspace_user(): int {
+    $u = user_by_email(DESKTOP_WORKSPACE_EMAIL);
+    if (!$u) {
+        // Τυχαίος κωδικός: σε αυτόν τον λογαριασμό μπαίνει κανείς μόνο μέσα από
+        // την ίδια την εφαρμογή, ποτέ με πληκτρολόγηση.
+        $id = user_create(DESKTOP_WORKSPACE_EMAIL, password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT),
+                          'editor', 'active', 'Λογιστής');
+        $u = user_by_id($id);
+    }
+    if (!$u) return 0;
+    if ($u['status'] === 'disabled') return 0;
+    try {
+        $all = [];
+        foreach (localdb()->query("SELECT id FROM aade_accounts")->fetchAll() as $a) $all[] = (int)$a['id'];
+        $have = manager_account_ids((int)$u['id']);
+        if (array_diff($all, $have)) manager_set_accounts((int)$u['id'], $all);
+    } catch (\Throwable $e) { /* η ανάθεση δεν είναι λόγος να μη σηκωθεί η εφαρμογή */ }
+    return (int)$u['id'];
 }
 
 // Run bootstrap + migration + account resolution on include (safe, no output).

@@ -52,6 +52,31 @@ if ($lock && !flock($lock, LOCK_EX | LOCK_NB)) {
     exit(0);
 }
 
+// --- Προγραμματισμένη αποστολή καρτελών --------------------------------------
+// Τρέχει σε κάθε τικ αλλά στέλνει μόνο τη σωστή ημέρα και το πολύ μία φορά τον
+// μήνα· τον φύλακα τον κρατά ο ίδιος ο endpoint (`sched_last`), ώστε ο ίδιος
+// κανόνας να ισχύει και όταν το «τρέξε τώρα» πατηθεί από το UI.
+$ledgerAccounts = function_exists('mail_prefs_accounts') ? mail_prefs_accounts() : [];
+foreach ($ledgerAccounts as $lvat) {
+    if ($DRY) { slog("DRY-RUN would consider ledger dispatch for account $lvat."); continue; }
+    [$lc, $lb] = sched_http_post($ENDPOINT, [
+        'ledger_dispatch' => 1,
+        'account'         => $lvat,
+        'sched_token'     => SCHED_TOKEN,
+        'sched_uid'       => sched_master_uid(),
+        'issue_date_from' => date('01/01/Y'),
+        'issue_date_to'   => date('d/m/Y'),
+    ]);
+    $lr = $lb !== '' ? json_decode($lb, true) : null;
+    if (is_array($lr) && !empty($lr['skipped'])) {
+        if ($VERBOSE) slog("Ledger dispatch $lvat: skipped ({$lr['skipped']}).");
+    } elseif (is_array($lr) && !empty($lr['success'])) {
+        slog("Ledger dispatch $lvat: sent " . (int)($lr['sent'] ?? 0) . ' καρτέλες.');
+    } else {
+        slog("Ledger dispatch $lvat: FAILED — " . (is_array($lr) ? ($lr['error'] ?? 'HTTP ' . $lc) : ('HTTP ' . $lc)));
+    }
+}
+
 $now = date('Y-m-d H:i:s');
 $due = sched_due($now);
 if (!$due) { if ($VERBOSE) slog('No due jobs at ' . $now . '.'); exit(0); }
@@ -129,6 +154,17 @@ slog("Done. issued=$okCount failed=$failCount.");
 exit($failCount > 0 ? 2 : 0);
 
 // --- helpers ----------------------------------------------------------------
+/** Ο πρώτος ενεργός διαχειριστής — βλέπει κάθε εταιρεία, άρα κάνει για ταυτότητα. */
+function sched_master_uid(): int {
+    static $uid = null;
+    if ($uid !== null) return $uid;
+    $uid = 0;
+    foreach (users_all() as $u) {
+        if (($u['role'] ?? '') === 'master' && ($u['status'] ?? '') !== 'disabled') { $uid = (int)$u['id']; break; }
+    }
+    return $uid;
+}
+
 function sched_http_post(string $url, array $fields): array {
     $ch = curl_init();
     curl_setopt_array($ch, [

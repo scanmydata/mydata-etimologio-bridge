@@ -113,6 +113,9 @@ class EtimologioWebShell(QWidget):
 
     def __init__(self, data_dir: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # Ο φάκελος που επέλεξε ο χρήστης στην εγκατάσταση — εκεί μέσα πέφτουν
+        # και οι λήψεις, δίπλα στα παραστατικά της «Λήψης Παραστατικών».
+        self._data_root = Path(data_dir)
         self._service = EtimologioService(data_dir)
         self._started = False
         self._base = ""
@@ -154,6 +157,9 @@ class EtimologioWebShell(QWidget):
         # Το ενσωματωμένο UI είναι η εφαρμογή μας πάνω σε loopback — δεν υπάρχει
         # λόγος να δείχνει μενού δεξιού κλικ του browser («Reload», «View source»).
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        #: Έχει εμφανιστεί ποτέ η εφαρμογή; Ξεχωρίζει την πραγματική αποτυχία
+        #: εκκίνησης από μια πλοήγηση που ακύρωσε μια λήψη.
+        self._loaded_ok = False
         self._view.loadFinished.connect(self._load_finished)
         self._stack.addWidget(self._view)
 
@@ -200,8 +206,16 @@ class EtimologioWebShell(QWidget):
 
     def _load_finished(self, ok: bool) -> None:
         if ok:
+            self._loaded_ok = True
             self._stack.setCurrentWidget(self._view)
             self._apply_prefs()
+            return
+        # Μια λήψη ΑΚΥΡΩΝΕΙ την τρέχουσα πλοήγηση: το QtWebEngine αναφέρει
+        # «η σελίδα δεν φόρτωσε» ενώ το PDF κατεβαίνει και ανοίγει κανονικά.
+        # Αν η εφαρμογή έχει ήδη εμφανιστεί, δεν τη σβήνουμε για να δείξουμε
+        # μήνυμα σφάλματος που δεν αντιστοιχεί σε τίποτα.
+        if self._loaded_ok:
+            log.debug("Η αποτυχία πλοήγησης αγνοήθηκε — η εφαρμογή είναι ήδη φορτωμένη")
             return
         self._set_status(
             "Η εφαρμογή δεν φορτώθηκε.\n\nΤο τοπικό backend ξεκίνησε, αλλά η "
@@ -234,32 +248,39 @@ class EtimologioWebShell(QWidget):
 
     # --- λήψεις -------------------------------------------------------------
     def _download(self, item) -> None:
-        """Αποθηκεύει το αρχείο — στον ρυθμισμένο φάκελο, αλλιώς ρωτά."""
-        from PySide6.QtWidgets import QFileDialog
+        """Αποθηκεύει το αρχείο στον φάκελο λήψεων και το ανοίγει.
 
+        ΔΕΝ ρωτά. Ο διάλογος «πού να το βάλω;» έβγαινε σε κάθε PDF, και όποτε ο
+        χρήστης τον έκλεινε η λήψη **ακυρωνόταν σιωπηλά**: το κουμπί έμοιαζε
+        χαλασμένο. Ο φάκελος αλλάζει από τον Πίνακα ελέγχου.
+        """
         from .. import config
 
         suggested = item.downloadFileName() or "αρχείο"
-        folder = config.load_download_dir()
-        if folder is not None:
-            try:
-                folder.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                folder = None
-        if folder is not None:
-            target = str(_free_name(folder / suggested))
-        else:
-            target, _ = QFileDialog.getSaveFileName(
-                self, "Αποθήκευση", str(Path.home() / "Downloads" / suggested)
-            )
-        if not target:
-            item.cancel()
-            return
-        path = Path(target)
+        folder = config.resolve_download_dir(self._data_root)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Απρόσιτος φάκελος (π.χ. δικτυακός που έπεσε): «Λήψεις» του χρήστη,
+            # ώστε το αρχείο να φτάσει κάπου αντί να χαθεί.
+            folder = Path.home() / "Downloads"
+            folder.mkdir(parents=True, exist_ok=True)
+        # Ίδιο παραστατικό = ίδιο αρχείο. Χωρίς αυτό, το δεύτερο κατέβασμα
+        # άφηνε «ΠΑΡΑΣΤΑΤΙΚΟ (1).pdf» δίπλα σε ένα πανομοιότυπο «ΠΑΡΑΣΤΑΤΙΚΟ.pdf»
+        # και ο φάκελος γέμιζε αντίγραφα του ίδιου εγγράφου.
+        path = folder / suggested
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            # Κλειδωμένο (π.χ. ανοιχτό στον αναγνώστη PDF): καλύτερα ένα
+            # δεύτερο όνομα παρά χαμένη λήψη.
+            path = _free_name(path)
         item.setDownloadDirectory(str(path.parent))
         item.setDownloadFileName(path.name)
         item.isFinishedChanged.connect(lambda: self._download_done(item, path))
         item.accept()
+        log.info("Λήψη → %s", path)
 
     def _download_done(self, item, path: Path) -> None:
         from PySide6.QtWebEngineCore import QWebEngineDownloadRequest

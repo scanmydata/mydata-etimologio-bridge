@@ -2846,8 +2846,13 @@ function getInvoicePdf(\CurlHandle $ch, string $mark): void {
     // ?pdf_raw=1 → stream binary directly (browser/download use)
     // default    → return base64 JSON (API use)
     if (isset($_GET['pdf_raw'])) {
+        // `inline` δείχνει το PDF μέσα στη σελίδα· `attachment` το κατεβάζει.
+        // Η εφαρμογή υπολογιστή ζητά ρητά `dl=1`: εκεί δεν υπάρχει προβολέας
+        // PDF μέσα στο παράθυρο, οπότε το αρχείο πρέπει να φτάσει στον δίσκο
+        // και να ανοίξει με τον προβολέα του συστήματος.
+        $disp = !empty($_GET['dl']) ? 'attachment' : 'inline';
         header('Content-Type: application/pdf');
-        header('Content-Disposition: inline; filename="invoice-' . $mark . '.pdf"');
+        header('Content-Disposition: ' . $disp . '; filename="invoice-' . $mark . '.pdf"');
         header('Content-Length: ' . strlen($response));
         echo $response;
         exit;
@@ -2972,6 +2977,10 @@ function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to
         $entries[] = [
             'kind'       => 'payment',
             'date'       => $p['pay_date'],
+            // Το UI ανοίγει τη γραμμή για επεξεργασία με διπλό κλικ και πρέπει
+            // να ξαναγεμίσει το πεδίο ημερομηνίας· το `pay_date` είναι μορφή
+            // εμφάνισης, το ISO είναι αυτό που καταλαβαίνει η φόρμα.
+            'date_iso'   => $p['pay_date_iso'] ?? payment_date_iso((string)$p['pay_date']),
             'payment_id' => (int)$p['id'],
             'method'     => (int)$p['method'],
             'notes'      => $p['notes'],
@@ -3048,6 +3057,381 @@ function notif_category(string $docType, string $docLabel = ''): string {
 
 // Record a notification (and optionally email the admin) after a successful REAL
 // issue. NEVER call this for δελτία αποστολής (9.x). Safe to call with a draft/
+// ===========================================================================
+// ΑΠΟΣΤΟΛΗ ΜΕ EMAIL — κοινά εργαλεία για παραστατικό και καρτέλα
+// ---------------------------------------------------------------------------
+// Ένα σημείο φτιάχνει το κείμενο, τα συνημμένα και τον παραλήπτη, ώστε το ίδιο
+// μήνυμα να βγαίνει είτε το πατήσει ο χρήστης, είτε φύγει αυτόματα μετά την
+// έκδοση, είτε το στείλει η προγραμματισμένη αποστολή καρτελών.
+// ===========================================================================
+
+/** Ποσό σε ελληνική μορφή, χωρίς πρόσημο. */
+function moneyGr(float $v): string { return number_format(abs($v), 2, ',', '.'); }
+
+/**
+ * Πώς λέγεται ένα υπόλοιπο στα ελληνικά.
+ *
+ * Θετικό = ο πελάτης χρωστά («προς πληρωμή»), αρνητικό = έχει πληρώσει
+ * παραπάνω («πιστωτικό»). Το πρόσημο από μόνο του δεν λέει τίποτα σε όποιον
+ * δεν κρατά λογιστικά βιβλία.
+ */
+function balanceWording(float $balance): array {
+    if ($balance > 0.005)  return ['label' => 'υπόλοιπο προς πληρωμή', 'title' => 'Υπόλοιπο προς πληρωμή', 'amount' => moneyGr($balance), 'debit' => true];
+    if ($balance < -0.005) return ['label' => 'πιστωτικό υπόλοιπο',    'title' => 'Πιστωτικό υπόλοιπο',    'amount' => moneyGr($balance), 'debit' => false];
+    return ['label' => 'μηδενικό υπόλοιπο', 'title' => 'Υπόλοιπο', 'amount' => '0,00', 'debit' => false];
+}
+
+/**
+ * Οι λογαριασμοί που έχει επιλέξει η εταιρεία να μπαίνουν στα email, σε απλό
+ * κείμενο. Επιστρέφει '' όταν δεν υπάρχει κανένας επιλεγμένος.
+ */
+function bankBlockText(string $accountVat): string {
+    $rows = array_values(array_filter(bank_accounts_get($accountVat), fn($r) => !empty($r['in_email'])));
+    if (!$rows) return '';
+    $out = "\nτραπεζικοί λογαριασμοί για την εξόφληση:\n";
+    foreach ($rows as $r) {
+        $out .= '• ' . ($r['bank'] !== '' ? $r['bank'] : 'τράπεζα') . ': ' . iban_pretty($r['iban']);
+        if ($r['holder'] !== '') $out .= ' (δικαιούχος: ' . $r['holder'] . ')';
+        $out .= "\n";
+    }
+    return $out;
+}
+
+/** Το ίδιο σε HTML, για το σώμα του μηνύματος. */
+function bankBlockHtml(string $accountVat): string {
+    $rows = array_values(array_filter(bank_accounts_get($accountVat), fn($r) => !empty($r['in_email'])));
+    if (!$rows) return '';
+    $items = '';
+    foreach ($rows as $r) {
+        $items .= '<tr><td style="padding:5px 14px 5px 0;color:#5b6b84;white-space:nowrap">'
+               . htmlspecialchars($r['bank'] !== '' ? $r['bank'] : 'Τράπεζα', ENT_QUOTES) . '</td>'
+               . '<td style="padding:5px 0;font-weight:600;font-family:Consolas,monospace">'
+               . htmlspecialchars(iban_pretty($r['iban']), ENT_QUOTES) . '</td></tr>';
+        if ($r['holder'] !== '') {
+            $items .= '<tr><td></td><td style="padding:0 0 6px;color:#5b6b84;font-size:13px">δικαιούχος: '
+                   . htmlspecialchars($r['holder'], ENT_QUOTES) . '</td></tr>';
+        }
+    }
+    return '<div style="background:#f1f5f9;border-radius:8px;padding:14px 16px;margin:18px 0">'
+        . '<strong>Τραπεζικοί λογαριασμοί</strong>'
+        . '<table style="border-collapse:collapse;font-size:14px;margin-top:8px">' . $items . '</table></div>';
+}
+
+/**
+ * Τα στοιχεία επικοινωνίας ενός πελάτη, ζωντανά από την ΑΑΔΕ.
+ *
+ * Δεν υπάρχει «read-only» endpoint: εντοπίζουμε την καρτέλα του πελάτη και
+ * διαβάζουμε τα πεδία της φόρμας, ακριβώς όπως κάνει και η `updateCustomer()`
+ * πριν γράψει.
+ */
+function customerContactFetch(\CurlHandle $ch, string $customerVat): array {
+    $blank = ['email' => '', 'phone1' => '', 'phone2' => '', 'name' => ''];
+    $located = findCustomerViewUrl($ch, $customerVat, '');
+    if (empty($located['success']) || empty($located['view_url'])) return $blank;
+    $html = curlGet($ch, (string)$located['view_url']);
+    if (!$html) return $blank;
+    return [
+        'email'  => trim(htmlInputValue($html, 'customer.CustomerEmail')),
+        'phone1' => trim(htmlInputValue($html, 'customer.CustomerPhone1')),
+        'phone2' => trim(htmlInputValue($html, 'customer.CustomerPhone2')),
+        'name'   => trim(htmlInputValue($html, 'customer.CustomerName')),
+    ];
+}
+
+/**
+ * Το email του πελάτη: πρώτα από το τοπικό αντίγραφο, αλλιώς ζωντανά από την
+ * ΑΑΔΕ (και τότε το κρατάμε, ώστε να μη ξαναρωτήσουμε).
+ */
+function customerEmailFor(\CurlHandle $ch, string $accountVat, string $customerVat): string {
+    $customerVat = trim($customerVat);
+    if ($customerVat === '') return '';
+    $known = customer_contact_get($accountVat, $customerVat);
+    if ($known['email'] !== '') return $known['email'];
+    try { $info = customerContactFetch($ch, $customerVat); }
+    catch (\Throwable $e) { return ''; }
+    if (trim($info['email']) !== '') customer_contact_set($accountVat, $customerVat, $info);
+    return trim($info['email']);
+}
+
+/**
+ * Στέλνει το εκδοθέν παραστατικό στον πελάτη, αν η εταιρεία το έχει ζητήσει.
+ *
+ * Τρέχει μέσα από το `notifyIssue()`, δηλαδή ΜΕΤΑ την επιτυχή έκδοση: μια
+ * αποτυχία εδώ δεν πρέπει ποτέ να «χαλάσει» ένα παραστατικό που έχει ήδη πάρει
+ * ΜΑΡΚ, γι' αυτό κάθε σφάλμα καταλήγει στο ημερολόγιο ενεργειών αντί για
+ * εξαίρεση.
+ */
+function autoSendIssuedDocument(string $accountVat, array $d): void {
+    if (!function_exists('mail_enabled') || !mail_enabled()) return;
+    $prefs = mail_prefs_get($accountVat);
+    if (empty($prefs['auto_send_doc'])) return;
+
+    global $ch;
+    if (!isset($ch) || !($ch instanceof \CurlHandle)) return;
+
+    $actor    = (int)($d['actor_user_id'] ?? 0);
+    $buyerVat = trim((string)($d['buyer_vat'] ?? ''));
+    $to = customerEmailFor($ch, $accountVat, $buyerVat);
+    if ($to === '') {
+        audit_log_add($actor, $accountVat, 'auto_email_skipped',
+                      ['mark' => $d['mark'] ?? '', 'reason' => 'χωρίς email πελάτη', 'buyer_vat' => $buyerVat]);
+        return;
+    }
+
+    $mark = (string)($d['mark'] ?? '');
+    $pdf = fetchInvoicePdfBytes($ch, $mark);
+    if ($pdf === null) {
+        audit_log_add($actor, $accountVat, 'auto_email_failed', ['mark' => $mark, 'reason' => 'δεν κατέβηκε το PDF']);
+        return;
+    }
+
+    $ref     = trim(((string)($d['series'] ?? '')) . ' ' . ((string)($d['aa'] ?? '')));
+    $label   = trim((string)($d['doc_label'] ?? 'Παραστατικό'));
+    $subject = trim($label . ' ' . $ref);
+    $total   = moneyGr((float)($d['amount_total'] ?? 0));
+
+    $lines = [
+        'αγαπητέ συνεργάτη,',
+        '',
+        'σας αποστέλλουμε συνημμένο το παραστατικό ' . $ref . ' με ημερομηνία ' . date('d/m/Y')
+            . ', συνολικής αξίας ' . $total . ' €.',
+    ];
+    $bank = bankBlockText($accountVat);
+    if ($bank !== '') $lines[] = $bank;
+
+    $inner = '<p>Σας αποστέλλουμε συνημμένο το παραστατικό σας.</p>'
+        . mail_kv([
+            ['Παραστατικό', $subject],
+            ['Ημερομηνία', date('d/m/Y')],
+            ['Σύνολο', $total . ' €'],
+            ['ΜΑΡΚ', $mark],
+          ])
+        . bankBlockHtml($accountVat);
+
+    $files = [['name' => 'ΠΑΡΑΣΤΑΤΙΚΟ-' . $mark . '.pdf', 'mime' => 'application/pdf', 'data' => $pdf]];
+    $html  = mail_template($subject, $inner);
+    $text  = implode("\n", $lines);
+
+    $ok = send_mail($to, $subject, $html, $text, $files);
+    audit_log_add($actor, $accountVat, $ok ? 'auto_email_sent' : 'auto_email_failed', ['mark' => $mark, 'to' => $to]);
+
+    $bcc = trim((string)$prefs['auto_send_bcc']);
+    if ($ok && $bcc !== '') {
+        try { send_mail($bcc, '[αντίγραφο] ' . $subject, $html, $text, $files); } catch (\Throwable $e) {}
+    }
+}
+
+/**
+ * Υπόλοιπα ΟΛΩΝ των πελατών σε ένα πέρασμα.
+ *
+ * Η `buildLedger()` κάνει μία κλήση στην ΑΑΔΕ ανά πελάτη· για αποστολή σε
+ * δεκάδες πελάτες αυτό είναι δεκάδες κλήσεις για δεδομένα που έρχονται ήδη όλα
+ * μαζί. Εδώ ζητάμε μία φορά τα παραστατικά της περιόδου και τα ομαδοποιούμε.
+ */
+function ledgerBalancesAll(\CurlHandle $ch, string $from, string $to): array {
+    $inv = searchInvoices($ch, $from, $to, '', '', '', '', '0');
+    $acc = [];
+    $touch = function (string $vat) use (&$acc) {
+        if (!isset($acc[$vat])) $acc[$vat] = ['vat' => $vat, 'name' => '', 'debit' => 0.0, 'credit' => 0.0, 'docs' => 0, 'entries' => []];
+    };
+    foreach (($inv['invoices'] ?? []) as $iv) {
+        $vat = trim((string)($iv['buyer_vat'] ?? ''));
+        if ($vat === '') continue;
+        $touch($vat);
+        $amt = parseMoney((string)($iv['total'] ?? '0'));
+        $acc[$vat]['debit'] += $amt;
+        $acc[$vat]['docs']++;
+        $acc[$vat]['entries'][] = [
+            'kind' => 'invoice', 'date' => (string)($iv['issue_date'] ?? ''),
+            'series' => (string)($iv['series'] ?? ''), 'aa' => (string)($iv['aa'] ?? ''),
+            'debit' => round($amt, 2), 'credit' => 0.0,
+        ];
+    }
+    foreach (payments_list(COMPANY_VAT, '', toDbDate($from), toDbDate($to)) as $p) {
+        $vat = trim((string)$p['customer_vat']);
+        if ($vat === '') continue;
+        $touch($vat);
+        $acc[$vat]['credit'] += (float)$p['amount'];
+        if ($acc[$vat]['name'] === '') $acc[$vat]['name'] = trim((string)$p['customer_name']);
+        $acc[$vat]['entries'][] = [
+            'kind' => 'payment', 'date' => (string)$p['pay_date'],
+            'series' => '', 'aa' => '',
+            'debit' => 0.0, 'credit' => round((float)$p['amount'], 2),
+        ];
+    }
+
+    // Ονόματα: ο κατάλογος παραστατικών δίνει μόνο ΑΦΜ, οπότε η επωνυμία
+    // έρχεται από τη μνήμη πελατών — και ο πελάτης πρέπει να δει το όνομά του.
+    $names = [];
+    foreach ((cache_get(COMPANY_VAT, 'customers')['rows'] ?? []) as $c) {
+        $v = trim((string)($c['vat'] ?? ''));
+        if ($v !== '') $names[$v] = trim((string)($c['name'] ?? ''));
+    }
+    $emails = customer_emails_all(COMPANY_VAT);
+
+    $out = [];
+    foreach ($acc as $vat => $row) {
+        $meta = customer_meta_get(COMPANY_VAT, $vat);
+        $opening = (float)($meta['opening_balance'] ?? 0);
+        $row['opening'] = round($opening, 2);
+        $row['debit']   = round($row['debit'], 2);
+        $row['credit']  = round($row['credit'], 2);
+        $row['balance'] = round($opening + $row['debit'] - $row['credit'], 2);
+        if ($row['name'] === '') $row['name'] = $names[$vat] ?? (string)($meta['customer_name'] ?? '');
+        $row['email'] = $emails[$vat] ?? '';
+        usort($row['entries'], fn($a, $b) => strcmp(normDate($a['date']), normDate($b['date'])));
+        $out[] = $row;
+    }
+    usort($out, fn($a, $b) => $b['balance'] <=> $a['balance']);
+    return $out;
+}
+
+/**
+ * Οι κινήσεις της περιόδου σε πίνακα HTML, για το σώμα του μηνύματος.
+ *
+ * Η προγραμματισμένη αποστολή τρέχει χωρίς browser, και ο server δεν έχει
+ * γεννήτρια PDF με ελληνικά (η καρτέλα φτιάχνεται με jsPDF στον client). Αντί
+ * να στείλει κενό μήνυμα ή να μη σταλεί τίποτα, η καρτέλα μπαίνει ΜΕΣΑ στο
+ * email — ο πελάτης βλέπει ακριβώς τα ίδια στοιχεία.
+ */
+function ledgerTableHtml(array $entries, float $opening): string {
+    $rows = '<tr>'
+        . '<th style="text-align:left;padding:6px 10px 6px 0;border-bottom:1px solid #d7e0ec">Ημ/νία</th>'
+        . '<th style="text-align:left;padding:6px 10px 6px 0;border-bottom:1px solid #d7e0ec">Κίνηση</th>'
+        . '<th style="text-align:right;padding:6px 10px 6px 0;border-bottom:1px solid #d7e0ec">Χρέωση</th>'
+        . '<th style="text-align:right;padding:6px 10px 6px 0;border-bottom:1px solid #d7e0ec">Πίστωση</th>'
+        . '<th style="text-align:right;padding:6px 0;border-bottom:1px solid #d7e0ec">Υπόλοιπο</th></tr>';
+    $running = $opening;
+    if (abs($opening) > 0.005) {
+        $rows .= '<tr><td colspan="4" style="padding:5px 10px 5px 0;color:#5b6b84">Υπόλοιπο από προηγούμενη περίοδο</td>'
+              . '<td style="padding:5px 0;text-align:right;font-weight:600">' . moneyGr($opening) . '</td></tr>';
+    }
+    foreach ($entries as $e) {
+        $running += (float)$e['debit'] - (float)$e['credit'];
+        $what = $e['kind'] === 'payment'
+            ? 'Πληρωμή'
+            : trim('Παραστατικό ' . (string)($e['series'] ?? '') . ' ' . (string)($e['aa'] ?? ''));
+        $rows .= '<tr>'
+            . '<td style="padding:5px 10px 5px 0;white-space:nowrap">' . htmlspecialchars((string)$e['date'], ENT_QUOTES) . '</td>'
+            . '<td style="padding:5px 10px 5px 0">' . htmlspecialchars($what, ENT_QUOTES) . '</td>'
+            . '<td style="padding:5px 10px 5px 0;text-align:right">' . ((float)$e['debit'] > 0 ? moneyGr((float)$e['debit']) : '') . '</td>'
+            . '<td style="padding:5px 10px 5px 0;text-align:right">' . ((float)$e['credit'] > 0 ? moneyGr((float)$e['credit']) : '') . '</td>'
+            . '<td style="padding:5px 0;text-align:right;font-weight:600">' . moneyGr($running) . '</td></tr>';
+    }
+    return '<table style="border-collapse:collapse;font-size:13px;width:100%;margin:14px 0">' . $rows . '</table>';
+}
+
+/**
+ * Η μαζική/προγραμματισμένη αποστολή καρτελών.
+ *
+ * `$force` = «τρέξε τώρα» από το UI· χωρίς αυτό στέλνει μόνο τη σωστή ημέρα
+ * του μήνα και το πολύ μία φορά ανά μήνα (`sched_last`), ώστε ένα cron που
+ * χτυπά κάθε λεπτό να μη βομβαρδίσει τους πελάτες.
+ */
+function runLedgerDispatch(\CurlHandle $ch, string $accountVat, string $from, string $to, bool $force = false): array {
+    $prefs = mail_prefs_get($accountVat);
+    if (!$force && empty($prefs['sched_enabled'])) {
+        return ['success' => true, 'skipped' => 'ανενεργή προγραμματισμένη αποστολή', 'sent' => 0];
+    }
+    if (!mail_smtp_ready()) {
+        return ['success' => false, 'error' => 'Η αποστολή καρτελών γίνεται μόνο με SMTP — λείπουν τα στοιχεία SMTP', 'sent' => 0];
+    }
+    $month = date('Y-m');
+    if (!$force) {
+        if ((int)date('j') !== (int)$prefs['sched_day']) {
+            return ['success' => true, 'skipped' => 'δεν είναι η ημέρα αποστολής', 'sent' => 0];
+        }
+        if ((string)$prefs['sched_last'] === $month) {
+            return ['success' => true, 'skipped' => 'έχει ήδη σταλεί αυτόν τον μήνα', 'sent' => 0];
+        }
+    }
+
+    $rows = ledgerBalancesAll($ch, $from, $to);
+    $bankPdf = bank_pdf_get($accountVat);
+    $bankFile = null;
+    if ($bankPdf) {
+        $raw = base64_decode($bankPdf['b64'], true);
+        if ($raw !== false && strlen($raw) > 100) {
+            $bankFile = ['name' => $bankPdf['name'], 'mime' => 'application/pdf', 'data' => $raw];
+        }
+    }
+    $period = $from . ' – ' . $to;
+    $sent = 0; $skipped = []; $failed = [];
+
+    foreach ($rows as $r) {
+        if (!empty($prefs['sched_only_debit']) && $r['balance'] <= 0.005) continue;
+        if ((float)$prefs['sched_min'] > 0 && abs($r['balance']) < (float)$prefs['sched_min']) continue;
+        $to_ = trim((string)$r['email']);
+        if ($to_ === '' || !filter_var($to_, FILTER_VALIDATE_EMAIL)) {
+            $skipped[] = $r['name'] !== '' ? $r['name'] : $r['vat'];
+            continue;
+        }
+        $body = ledgerMailBody($accountVat, [
+            'name'    => $r['name'],
+            'balance' => (float)$r['balance'],
+            'period'  => $period,
+        ]);
+        $html = mail_template($body['subject'],
+            '<p>' . htmlspecialchars($r['name'] !== '' ? $r['name'] : 'αγαπητέ συνεργάτη', ENT_QUOTES) . ',</p>'
+            . '<p>σας αποστέλλουμε την καρτέλα κινήσεων για το διάστημα <strong>'
+            . htmlspecialchars($period, ENT_QUOTES) . '</strong>.</p>'
+            . ledgerTableHtml($r['entries'] ?? [], (float)$r['opening'])
+            . mail_kv([[balanceWording((float)$r['balance'])['title'], moneyGr((float)$r['balance']) . ' €']])
+            . ((float)$r['balance'] > 0.005 ? bankBlockHtml($accountVat) : ''));
+        $files = ((float)$r['balance'] > 0.005 && $bankFile) ? [$bankFile] : [];
+        $ok = send_mail($to_, $body['subject'], $html, $body['text'], $files, 'smtp');
+        if ($ok) { $sent++; } else { $failed[] = $to_; }
+    }
+
+    if (!$force) mail_prefs_set($accountVat, ['sched_last' => $month]);
+    audit_log_add(0, $accountVat, 'ledger_dispatch',
+                  ['sent' => $sent, 'χωρίς email' => count($skipped), 'αποτυχίες' => count($failed), 'force' => $force]);
+    return [
+        'success' => true, 'sent' => $sent,
+        'no_email' => $skipped, 'failed' => $failed,
+        'from' => $from, 'to' => $to,
+    ];
+}
+
+/**
+ * Το μήνυμα της καρτέλας: απευθύνεται στην **επωνυμία** του πελάτη (όχι στο
+ * ΑΦΜ του — κανείς δεν αναγνωρίζει τον εαυτό του από εννιά ψηφία) και λέει με
+ * λέξεις αν το υπόλοιπο είναι προς πληρωμή ή πιστωτικό.
+ */
+function ledgerMailBody(string $accountVat, array $info): array {
+    $name    = trim((string)($info['name'] ?? ''));
+    $who     = $name !== '' ? $name : 'αγαπητέ συνεργάτη';
+    $bal     = balanceWording((float)($info['balance'] ?? 0));
+    $period  = trim((string)($info['period'] ?? ''));
+    $company = trim((string)($info['company'] ?? ''));
+
+    $subject = 'Καρτέλα πελάτη' . ($name !== '' ? ' — ' . $name : '');
+    $lines = [
+        $who . ',',
+        '',
+        'σας αποστέλλουμε συνημμένη την καρτέλα κινήσεων'
+            . ($period !== '' ? ' για το διάστημα ' . $period : '') . '.',
+        '',
+        // Το μηδέν δεν έχει «τρέχον υπόλοιπο προς πληρωμή» — διαβάζεται σαν λάθος.
+        abs((float)($info['balance'] ?? 0)) < 0.005
+            ? 'το υπόλοιπό σας είναι μηδενικό — δεν εκκρεμεί πληρωμή.'
+            : 'το τρέχον ' . $bal['label'] . ' είναι ' . $bal['amount'] . ' €.',
+    ];
+    // Οι λογαριασμοί μπαίνουν μόνο όταν υπάρχει κάτι να πληρωθεί. Σε πιστωτικό
+    // υπόλοιπο θα διάβαζαν σαν απαίτηση.
+    $bank = $bal['debit'] ? bankBlockText($accountVat) : '';
+    if ($bank !== '') $lines[] = $bank;
+    if ($company !== '') { $lines[] = ''; $lines[] = 'με εκτίμηση,'; $lines[] = $company; }
+
+    $inner = '<p>' . htmlspecialchars($who, ENT_QUOTES) . ',</p>'
+        . '<p>σας αποστέλλουμε συνημμένη την καρτέλα κινήσεων'
+        . ($period !== '' ? ' για το διάστημα <strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>' : '') . '.</p>'
+        . mail_kv([[$bal['title'], $bal['amount'] . ' €']])
+        . ($bal['debit'] ? bankBlockHtml($accountVat) : '');
+
+    return ['subject' => $subject, 'text' => implode("\n", $lines), 'html' => mail_template($subject, $inner)];
+}
+
 // failed result — it no-ops unless a ΜΑΡΚ was obtained.
 function notifyIssue(array $result, array $ctx): void {
     if (empty($result['success']) || empty($result['mark'])) return;
@@ -3072,6 +3456,16 @@ function notifyIssue(array $result, array $ctx): void {
     ];
     try { notification_add($accountVat, $data); } catch (\Throwable $e) { /* never block issuance */ }
     try { notifyIssueEmail($accountVat, $data); } catch (\Throwable $e) {}
+    // Και στον ΠΕΛΑΤΗ, αν η εταιρεία έχει ζητήσει αυτόματη αποστολή.
+    try { autoSendIssuedDocument($accountVat, $data); } catch (\Throwable $e) {}
+    // Το ημερολόγιο ενεργειών κρατά ΚΑΙ τις εκδόσεις: οι ειδοποιήσεις
+    // διαβάζονται και σβήνουν, το log μένει.
+    audit_log_add((int)($u['id'] ?? 0), $accountVat, 'issue', [
+        'mark' => $data['mark'], 'type' => $docType,
+        'series' => $data['series'], 'aa' => $data['aa'],
+        'buyer_vat' => $data['buyer_vat'], 'total' => $data['amount_total'],
+        'source' => $data['source'],
+    ]);
 }
 
 // Best-effort branded email of an issuance notification to the accountant/admins
@@ -3132,6 +3526,10 @@ if ($authAction !== '') {
             jsonResponse(auth_forgot(trim($_POST['email'] ?? $_GET['email'] ?? '')));
         case 'reset':
             jsonResponse(auth_reset(trim($_POST['token'] ?? $_GET['token'] ?? ''), (string)($_POST['password'] ?? '')));
+        case 'verify_email':
+            jsonResponse(auth_verify_email(trim($_POST['token'] ?? $_GET['token'] ?? '')));
+        case 'resend_verification':
+            jsonResponse(auth_resend_verification(trim($_POST['email'] ?? $_GET['email'] ?? '')));
         case 'login_totp':   // second login step when 2FA is enabled
             jsonResponse(auth_login_totp(trim($_POST['code'] ?? $_GET['code'] ?? '')));
         case 'logout':
@@ -3197,6 +3595,55 @@ if ($authAction !== '') {
             user_update((int)$u['id'], ['password_hash' => password_hash($np, PASSWORD_DEFAULT)]);
             jsonResponse(['success' => true]);
         }
+        // ---- Σύνδεση εφαρμογής υπολογιστή σε server (κλειδί πρόσβασης) ----
+        // ΔΗΜΟΣΙΟ endpoint (χωρίς session): το κλειδί ΕΙΝΑΙ το διαπιστευτήριο.
+        // Ο χρήστης επικολλά ένα κλειδί στην εφαρμογή του, εκείνη ρωτά εδώ και
+        // παίρνει πίσω τη διεύθυνση στην οποία θα δουλεύει. Δεν ανοίγει
+        // συνεδρία — ο χρήστης συνδέεται κανονικά μετά.
+        case 'access_provision': {
+            $key = trim((string)($_POST['key'] ?? $_GET['key'] ?? ''));
+            $u = access_key_user($key);
+            // Ίδιο μήνυμα για «λάθος κλειδί» και «ανενεργός χρήστης»: δεν
+            // βοηθάμε κάποιον να μαντέψει ποια κλειδιά υπάρχουν.
+            if (!$u || ($u['status'] ?? '') !== 'active') {
+                usleep(300000);
+                jsonError('Το κλειδί δεν αναγνωρίστηκε', 403);
+            }
+            jsonResponse([
+                'success' => true,
+                'url'     => app_base_url(),
+                'email'   => $u['email'],
+                'label'   => $u['business_name'] ?: $u['email'],
+                'role'    => $u['role'],
+            ]);
+        }
+        // Τα κλειδιά πρόσβασης είναι ΜΟΝΟ του διαχειριστή. Ένα κλειδί δένει
+        // ολόκληρη εγκατάσταση υπολογιστή με αυτόν τον server — δεν είναι
+        // προσωπική ρύθμιση, και δεν πρέπει να το βγάζει μόνος του ο λογιστής.
+        case 'access_keys_list': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $u = current_user();
+            $uid = (int)($_POST['user_id'] ?? $u['id']);
+            jsonResponse(['success' => true, 'keys' => access_keys_for_user($uid)]);
+        }
+        case 'access_key_create': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $u = current_user();
+            $uid = (int)($_POST['user_id'] ?? $u['id']);
+            $secret = access_key_create($uid, (string)($_POST['label'] ?? ''));
+            // Το κλειδί που δίνεται στον χρήστη κουβαλά ΚΑΙ τη διεύθυνση, ώστε η
+            // εφαρμογή να μη ρωτά «σε ποιον server;» — αλλιώς το κλειδί δεν
+            // μπορεί να επαληθευτεί χωρίς να ξέρεις ήδη πού να ρωτήσεις.
+            $host = preg_replace('#^https?://#', '', app_base_url());
+            $token = 'etim1_' . rtrim(strtr(base64_encode($host), '+/', '-_'), '=') . '_' . $secret;
+            jsonResponse(['success' => true, 'key' => $token, 'note' => 'Φυλάξτε το — δεν εμφανίζεται ξανά.']);
+        }
+        case 'access_key_revoke': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $id = (int)($_POST['key_id'] ?? 0);
+            jsonResponse(['success' => access_key_revoke($id, 0)]);
+        }
+
         // ---- Προτιμήσεις UI ανά χρήστη (πλάτη/σειρά στηλών, φάκελος λήψεων) ----
         // Η διάταξη των πινάκων είναι προσωπική: ο λογιστής που στένεψε μια
         // στήλη πρέπει να τη βρει έτσι και αύριο, και σε άλλον υπολογιστή.
@@ -3287,6 +3734,32 @@ if ($authAction !== '') {
                 account_set_managers($id, $ids);
             }
             jsonResponse(['success' => true]);
+        }
+        case 'staff_add_company': {
+            // Ο λογιστής ανοίγει ΜΟΝΟΣ του εταιρεία. Μέχρι τώρα έπρεπε να
+            // περάσει από τον διαχειριστή για μια ανάθεση που ούτως ή άλλως
+            // θα του έδινε — μια περιττή στάση σε κάθε νέο πελάτη του γραφείου.
+            // Ο διαχειριστής τη βλέπει αμέσως: το `accounts_all_full()` δεν
+            // φιλτράρει ποτέ.
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $vat = preg_replace('/\D/', '', (string)($_POST['vat'] ?? ''));
+            if (strlen($vat) !== 9) jsonError('ΑΦΜ 9 ψηφίων');
+            $username = trim((string)($_POST['username'] ?? ''));
+            $subkey   = trim((string)($_POST['subkey'] ?? ''));
+            if ($username === '' || $subkey === '') jsonError('Συμπλήρωσε username και subscription key AADE');
+            $label = trim((string)($_POST['label'] ?? '')) ?: $vat;
+            // Ο κάτοχος είναι ο ίδιος ο λογιστής: η εταιρεία ανήκει στο γραφείο
+            // του, όχι σε λογαριασμό επιχείρησης που δεν υπάρχει ακόμη.
+            $id = account_add((int)$u['id'], $vat, $label, $username, $subkey);
+            // Και ανατίθεται αμέσως σε αυτόν, αλλιώς θα δημιουργούσε εταιρεία
+            // που ο ίδιος δεν βλέπει.
+            if (($u['role'] ?? '') === 'editor') {
+                manager_set_accounts((int)$u['id'],
+                    array_merge(manager_account_ids((int)$u['id']), [$id]));
+            }
+            jsonResponse(['success' => true, 'account_id' => $id]);
         }
         case 'admin_set_managers': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
@@ -3486,6 +3959,52 @@ if (is_array($__acctScope) && !$__acctScope) $__acctScope = ['__none__'];
 // είναι ο ίδιος σε κάθε μηχάνημα — και δεν φεύγει τίποτα στο internet.
 // Σε εγκατάσταση server οι σταθερές απλώς δεν ορίζονται και το UI γυρίζει πίσω
 // στη φωνή του browser.
+/**
+ * Πού βρίσκεται μια μηχανή φωνής σε ΑΥΤΗ την εγκατάσταση.
+ *
+ * Στην εφαρμογή υπολογιστή τις διαδρομές τις γράφει το `service.py` μέσα στο
+ * `config.php`. Στον web server όμως δεν τις γράφει κανείς, οπότε ο βοηθός
+ * έμενε βουβός ακόμη κι όταν τα αρχεία ήταν εκεί, δίπλα του. Εδώ κοιτάμε
+ * πρώτα τη ρύθμιση και μετά τις συμβατικές θέσεις — ίδιος κώδικας, ίδια
+ * συμπεριφορά και στους δύο κόσμους.
+ *
+ * `$what`: piper | voice_el | voice_en | whisper | model
+ */
+function voice_engine(string $what): string {
+    static $cache = [];
+    if (array_key_exists($what, $cache)) return $cache[$what];
+
+    $const = [
+        'piper'    => 'PIPER_EXE',
+        'voice_el' => 'PIPER_VOICE_EL',
+        'voice_en' => 'PIPER_VOICE_EN',
+        'whisper'  => 'WHISPER_EXE',
+        'model'    => 'WHISPER_MODEL',
+    ][$what] ?? '';
+    if ($const !== '' && defined($const)) {
+        $v = (string)constant($const);
+        if ($v !== '' && is_file($v)) return $cache[$what] = $v;
+    }
+
+    // Συμβατικές θέσεις: δίπλα στην εφαρμογή (Docker/VPS) ή μέσα στο repo
+    // (τοπικός web server για δοκιμές).
+    $roots = [__DIR__, __DIR__ . '/desktop/installer', dirname(__DIR__) . '/desktop/installer'];
+    $rel = [
+        'piper'    => ['piper/piper.exe', 'piper/piper'],
+        'voice_el' => ['piper/voices/el_GR-joy-medium.onnx'],
+        'voice_en' => ['piper/voices/en_US-lessac-medium.onnx'],
+        'whisper'  => ['whisper/whisper-cli.exe', 'whisper/whisper-cli', 'whisper/main.exe'],
+        'model'    => ['whisper/ggml-small-q5_1.bin', 'whisper/ggml-base.bin'],
+    ][$what] ?? [];
+    foreach ($roots as $root) {
+        foreach ($rel as $r) {
+            $candidate = $root . '/' . $r;
+            if (is_file($candidate)) return $cache[$what] = $candidate;
+        }
+    }
+    return $cache[$what] = '';
+}
+
 if (!empty($_GET['tts'] ?? $_POST['tts'] ?? '')) {
     $ttsText = trim($_GET['text'] ?? $_POST['text'] ?? '');
     $ttsLang = (($_GET['lang'] ?? $_POST['lang'] ?? 'el') === 'en') ? 'en' : 'el';
@@ -3496,14 +4015,16 @@ if (!empty($_GET['tts'] ?? $_POST['tts'] ?? '')) {
     if ($ttsWarmup && $ttsText === '') $ttsText = 'ένα';
     if ($ttsText === '') jsonError('Λείπει το κείμενο για εκφώνηση');
     if (mb_strlen($ttsText) > 600) $ttsText = mb_substr($ttsText, 0, 600);
+    // ⚠️ ΠΕΖΑ. Τα ελληνικά κεφαλαία γράφονται χωρίς τόνο («ΕΚΔΟΘΗΚΕ»), οπότε η
+    // μηχανή δεν ξέρει πού πέφτει η έμφαση και τα προφέρει λάθος — ή τα
+    // συλλαβίζει σαν ακρωνύμιο. Πεζά, η ίδια λέξη ακούγεται σωστά.
+    $ttsText = function_exists('mb_strtolower') ? mb_strtolower($ttsText, 'UTF-8') : strtolower($ttsText);
     // Ένα κόμμα και μια παύση ΠΡΙΝ την πρόταση. Χωρίς αυτό το Piper ξεκινά την
     // παραγωγή ταυτόχρονα με την έναρξη της αναπαραγωγής και οι πρώτες συλλαβές
     // βγαίνουν κομμένες — ακούγεται σαν λάθος λέξη, όχι σαν καθυστέρηση.
     $ttsText = ', ' . $ttsText;
-    $exe   = defined('PIPER_EXE') ? PIPER_EXE : '';
-    $voice = $ttsLang === 'en'
-        ? (defined('PIPER_VOICE_EN') ? PIPER_VOICE_EN : '')
-        : (defined('PIPER_VOICE_EL') ? PIPER_VOICE_EL : '');
+    $exe   = voice_engine('piper');
+    $voice = voice_engine($ttsLang === 'en' ? 'voice_en' : 'voice_el');
     if ($exe === '' || $voice === '' || !is_file($exe) || !is_file($voice)) {
         jsonError('Η φωνή δεν είναι διαθέσιμη σε αυτή την εγκατάσταση', 501);
     }
@@ -3535,6 +4056,124 @@ if (!empty($_GET['tts'] ?? $_POST['tts'] ?? '')) {
     exit;
 }
 
+// --- Χρονομέτρηση + ημερολόγιο ενεργειών ------------------------------------
+// Ο παλμός έρχεται από το UI όσο ο χρήστης δουλεύει σε μια εταιρεία. Το UI
+// στέλνει ΜΟΝΟ όταν η καρτέλα είναι ορατή, και ο server κόβει ό,τι είναι πάνω
+// από λίγα λεπτά — ένα ξεχασμένο παράθυρο δεν χρεώνει τη νύχτα.
+if (!empty($_POST['work_ping'] ?? $_GET['work_ping'] ?? '')) {
+    $secs = (int)($_POST['seconds'] ?? $_GET['seconds'] ?? 0);
+    if (defined('COMPANY_VAT')) work_time_add((int)$__user['id'], COMPANY_VAT, $secs);
+    jsonResponse(['success' => true]);
+}
+if (!empty($_GET['work_report'] ?? $_POST['work_report'] ?? '')) {
+    if (!$__isStaff) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+    $rows = work_time_report(
+        trim((string)($_GET['from'] ?? $_POST['from'] ?? '')),
+        trim((string)($_GET['to'] ?? $_POST['to'] ?? '')),
+        $__acctScope
+    );
+    // Ονόματα αντί για ids: ο πίνακας διαβάζεται από άνθρωπο.
+    $users = []; foreach (users_all() as $u) $users[(int)$u['id']] = $u['business_name'] ?: $u['email'];
+    $labels = []; foreach (auth_visible_accounts($__user) as $a) $labels[(string)$a['vat']] = $a['label'] ?: $a['vat'];
+    foreach ($rows as &$r) {
+        $r['user_label'] = $users[$r['user_id']] ?? ('#' . $r['user_id']);
+        $r['company'] = $labels[$r['account_vat']] ?? $r['account_vat'];
+    }
+    unset($r);
+    jsonResponse(['success' => true, 'rows' => $rows]);
+}
+if (!empty($_GET['audit_log'] ?? $_POST['audit_log'] ?? '')) {
+    if (!$__isStaff) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+    jsonResponse(['success' => true, 'rows' => audit_log_list($__acctScope, [
+        'user_id' => (int)($_GET['f_user'] ?? $_POST['f_user'] ?? 0),
+        'action'  => trim((string)($_GET['f_action'] ?? $_POST['f_action'] ?? '')),
+        'from'    => trim((string)($_GET['f_from'] ?? $_POST['f_from'] ?? '')),
+    ], min(1000, max(20, (int)($_GET['limit'] ?? $_POST['limit'] ?? 300))))]);
+}
+
+// --- Τραπεζικοί λογαριασμοί & ρυθμίσεις αποστολής ---------------------------
+// Δεν χρειάζονται σύνδεση στην ΑΑΔΕ, γι' αυτό απαντούν ΠΡΙΝ το `login()`: το
+// άνοιγμα των Ρυθμίσεων δεν έχει λόγο να ξοδεύει ένα ταξίδι στο myDATA.
+if (!empty($_GET['bank_get'] ?? $_POST['bank_get'] ?? '')) {
+    if (!defined('COMPANY_VAT')) jsonError('Επίλεξε πρώτα εταιρεία', 409);
+    $pdf = bank_pdf_get(COMPANY_VAT);
+    jsonResponse([
+        'success'  => true,
+        'banks'    => bank_list(),
+        'accounts' => bank_accounts_get(COMPANY_VAT),
+        'prefs'    => mail_prefs_get(COMPANY_VAT),
+        'pdf'      => $pdf ? ['name' => $pdf['name'], 'size' => (int)(strlen($pdf['b64']) * 3 / 4)] : null,
+        'mail_ready' => mail_enabled(),
+        'smtp_ready' => mail_smtp_ready(),
+    ]);
+}
+
+if (!empty($_POST['bank_save'] ?? $_GET['bank_save'] ?? '')) {
+    if (!defined('COMPANY_VAT')) jsonError('Επίλεξε πρώτα εταιρεία', 409);
+    $rowsRaw = json_decode((string)($_POST['accounts'] ?? '[]'), true);
+    if (!is_array($rowsRaw)) $rowsRaw = [];
+    // Ο έλεγχος IBAN γίνεται εδώ και όχι μόνο στο UI: ένα λάθος ψηφίο σε IBAN
+    // μέσα σε email σημαίνει χαμένο έμβασμα, και η ίδια διαδρομή είναι ανοιχτή
+    // και σε άλλους καλούντες.
+    $bad = [];
+    foreach ($rowsRaw as $r) {
+        $iban = iban_normalize((string)($r['iban'] ?? ''));
+        if ($iban === '') continue;
+        if (!iban_valid($iban)) $bad[] = iban_pretty($iban);
+    }
+    if ($bad) jsonError('Άκυρο IBAN: ' . implode(', ', $bad));
+    bank_accounts_set(COMPANY_VAT, $rowsRaw);
+
+    $prefsRaw = json_decode((string)($_POST['prefs'] ?? '{}'), true);
+    if (is_array($prefsRaw)) mail_prefs_set(COMPANY_VAT, $prefsRaw);
+    audit_log_add((int)($__user['id'] ?? 0), COMPANY_VAT, 'bank_settings_saved',
+                  ['accounts' => count(bank_accounts_get(COMPANY_VAT))]);
+    jsonResponse(['success' => true, 'accounts' => bank_accounts_get(COMPANY_VAT), 'prefs' => mail_prefs_get(COMPANY_VAT)]);
+}
+
+if (!empty($_POST['bank_pdf_up'] ?? '')) {
+    if (!defined('COMPANY_VAT')) jsonError('Επίλεξε πρώτα εταιρεία', 409);
+    $b64  = preg_replace('/^data:[^,]*,/', '', (string)($_POST['file_b64'] ?? ''));
+    $name = trim((string)($_POST['filename'] ?? 'ΛΟΓΑΡΙΑΣΜΟΙ.pdf'));
+    $raw  = $b64 !== '' ? base64_decode($b64, true) : false;
+    if ($raw === false || strlen($raw) < 100) jsonError('Άκυρο αρχείο');
+    if (substr($raw, 0, 4) !== '%PDF') jsonError('Το αρχείο πρέπει να είναι PDF');
+    if (strlen($raw) > 3 * 1024 * 1024) jsonError('Το PDF είναι πολύ μεγάλο (μέγιστο 3 MB)');
+    $name = preg_replace('/[^\w\-. ΑΆ-Ωώα-ώ]+/u', '', $name) ?: 'ΛΟΓΑΡΙΑΣΜΟΙ.pdf';
+    if (!preg_match('/\.pdf$/i', $name)) $name .= '.pdf';
+    bank_pdf_set(COMPANY_VAT, $name, base64_encode($raw));
+    jsonResponse(['success' => true, 'name' => $name, 'size' => strlen($raw)]);
+}
+
+if (!empty($_POST['bank_pdf_del'] ?? $_GET['bank_pdf_del'] ?? '')) {
+    if (!defined('COMPANY_VAT')) jsonError('Επίλεξε πρώτα εταιρεία', 409);
+    bank_pdf_set(COMPANY_VAT, '', '');
+    jsonResponse(['success' => true]);
+}
+
+if (!empty($_GET['bank_pdf_dl'] ?? $_POST['bank_pdf_dl'] ?? '')) {
+    if (!defined('COMPANY_VAT')) jsonError('Επίλεξε πρώτα εταιρεία', 409);
+    $pdf = bank_pdf_get(COMPANY_VAT);
+    if (!$pdf) jsonError('Δεν έχει ανέβει αρχείο', 404);
+    $raw = base64_decode($pdf['b64'], true);
+    if ($raw === false) jsonError('Το αποθηκευμένο αρχείο δεν διαβάζεται', 500);
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="' . rawurlencode($pdf['name']) . '"');
+    header('Content-Length: ' . strlen($raw));
+    echo $raw;
+    exit;
+}
+
+// --- Τι μπορεί η φωνή σε αυτή την εγκατάσταση -------------------------------
+// Το UI ρωτά ΜΙΑ φορά, μόλις ανοίξει ο βοηθός. Χωρίς αυτό, ο χρήστης του web
+// ηχογραφούσε ολόκληρη πρόταση για να πάρει 501 στο τέλος — και ο βοηθός
+// «δεν δούλευε» χωρίς να λέει γιατί.
+if (!empty($_GET['voice_caps'] ?? $_POST['voice_caps'] ?? '')) {
+    $ttsOk = voice_engine('piper') !== '' && voice_engine('voice_el') !== '';
+    $sttOk = voice_engine('whisper') !== '' && voice_engine('model') !== '';
+    jsonResponse(['success' => true, 'tts' => $ttsOk, 'stt' => $sttOk]);
+}
+
 // --- Αναγνώριση φωνής (whisper.cpp, εκτός δικτύου) --------------------------
 // POST `stt=1` + πεδίο αρχείου `audio` (16 kHz mono WAV, το φτιάχνει το UI) →
 // `{success, text}`.
@@ -3544,8 +4183,8 @@ if (!empty($_GET['tts'] ?? $_POST['tts'] ?? '')) {
 // αποτύχει. Η μηχανή ταξιδεύει μαζί μας, όπως και η φωνή, οπότε η εντολή δεν
 // φεύγει ποτέ από το μηχάνημα. Χωρίς μηχανή απαντάμε 501 και το UI το λέει.
 if (!empty($_POST['stt'] ?? $_GET['stt'] ?? '')) {
-    $exe   = defined('WHISPER_EXE')   ? WHISPER_EXE   : '';
-    $model = defined('WHISPER_MODEL') ? WHISPER_MODEL : '';
+    $exe   = voice_engine('whisper');
+    $model = voice_engine('model');
     if ($exe === '' || $model === '' || !is_file($exe) || !is_file($model)) {
         jsonError('Η αναγνώριση φωνής δεν είναι διαθέσιμη σε αυτή την εγκατάσταση', 501);
     }
@@ -3863,11 +4502,13 @@ if (!empty($_GET['update_payment'] ?? $_POST['update_payment'] ?? '')) {
         'notes'         => trim($_GET['pay_notes'] ?? $_POST['pay_notes'] ?? ''),
     ]);
     if (!$ok) jsonError('Η πληρωμή δεν βρέθηκε σε αυτόν τον λογαριασμό');
+    audit_log_add((int)$__user['id'], COMPANY_VAT, 'payment_update', ['payment_id' => $pid]);
     jsonResponse(['success' => true, 'payment_id' => $pid]);
 }
 
 if ($deletePaymentId !== '') {
     $ok = payment_delete(COMPANY_VAT, (int)$deletePaymentId);
+    if ($ok) audit_log_add((int)$__user['id'], COMPANY_VAT, 'payment_delete', ['payment_id' => (int)$deletePaymentId]);
     jsonResponse(['success' => $ok, 'deleted' => $ok ? (int)$deletePaymentId : null]);
 }
 
@@ -4365,6 +5006,108 @@ if ($linesJson !== '') {
 // heavy lifting stays server-side, so a browser client gets the same «μαζική
 // εκτύπωση / εξαγωγή ZIP» the desktop has, for exactly the documents it is
 // allowed to see (the account scope is already resolved above).
+// --- Αποστολή παραστατικού / καρτέλας με email ------------------------------
+// Το PDF το κατεβάζει ο server (μία εξουσιοδοτημένη κλήση μέσα στο scope του
+// λογαριασμού) και το επισυνάπτει. Ο χρήστης μπορεί να έχει αλλάξει θέμα και
+// κείμενο πριν πατήσει αποστολή — γι' αυτό έρχονται ως παράμετροι.
+if (!empty($_POST['email_document'] ?? $_GET['email_document'] ?? '')) {
+    if (!mail_enabled()) jsonError('Δεν έχει ρυθμιστεί πάροχος email', 409);
+    $kind = trim((string)($_POST['kind'] ?? '')) === 'card' ? 'card' : 'doc';
+    // Η καρτέλα είναι προσωποποιημένο μήνυμα προς τον πελάτη και φεύγει ΜΟΝΟ
+    // από τον SMTP της εταιρείας — όχι από τον κοινό αποστελλόμενο ενός API.
+    if ($kind === 'card' && !mail_smtp_ready()) {
+        jsonError('Η αποστολή καρτέλας γίνεται μόνο με SMTP — συμπλήρωσε τα στοιχεία SMTP στις Ρυθμίσεις', 409);
+    }
+    $to = trim((string)($_POST['to'] ?? ''));
+    if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) jsonError('Άκυρη διεύθυνση παραλήπτη');
+    $subject = trim((string)($_POST['subject'] ?? '')) ?: 'Παραστατικό';
+    $bodyRaw = (string)($_POST['body'] ?? '');
+    $acctVat = defined('COMPANY_VAT') ? COMPANY_VAT : '';
+    $files = [];
+
+    $mk = trim((string)($_POST['mark'] ?? ''));
+    if ($mk !== '') {
+        $pdf = fetchInvoicePdfBytes($ch, $mk);
+        if ($pdf === null) jsonError('Το PDF του παραστατικού δεν κατέβηκε', 502);
+        $files[] = ['name' => 'ΠΑΡΑΣΤΑΤΙΚΟ-' . $mk . '.pdf', 'mime' => 'application/pdf', 'data' => $pdf];
+    }
+    // Η καρτέλα φτιάχνεται στον browser (jsPDF) και ανεβαίνει έτοιμη: ο server
+    // δεν έχει δική του γεννήτρια PDF για καρτέλες.
+    $inline = (string)($_POST['pdf_base64'] ?? '');
+    if ($inline !== '') {
+        $raw = base64_decode($inline, true);
+        if ($raw === false || strlen($raw) < 100) jsonError('Άκυρο συνημμένο');
+        if (strlen($raw) > 8 * 1024 * 1024) jsonError('Το συνημμένο είναι πολύ μεγάλο');
+        $files[] = [
+            // Οι παρενθέσεις επιτρέπονται: το όνομα της καρτέλας είναι
+            // «ΚΑΡΤΕΛΑ (ΕΠΩΝΥΜΙΑ)» και χωρίς αυτές διαβαζόταν σαν χυλός.
+            'name' => preg_replace('/[^\w\-.() ΑΆ-Ωώα-ώ]+/u', '', (string)($_POST['pdf_name'] ?? 'ΚΑΡΤΕΛΑ.pdf')),
+            'mime' => 'application/pdf', 'data' => $raw,
+        ];
+    }
+    // Το PDF με τους λογαριασμούς, όταν υπάρχει: μπαίνει μόνο σε καρτέλα με
+    // χρεωστικό υπόλοιπο — σε πιστωτικό δεν έχει τι να εξυπηρετήσει.
+    if ($kind === 'card' && $acctVat !== '' && !empty($_POST['attach_bank'])) {
+        $bankPdf = bank_pdf_get($acctVat);
+        if ($bankPdf) {
+            $rawBank = base64_decode($bankPdf['b64'], true);
+            if ($rawBank !== false && strlen($rawBank) > 100) {
+                $files[] = ['name' => $bankPdf['name'], 'mime' => 'application/pdf', 'data' => $rawBank];
+            }
+        }
+    }
+    if (!$files) jsonError('Δεν υπάρχει συνημμένο για αποστολή');
+
+    $html = mail_template($subject, nl2br(htmlspecialchars($bodyRaw, ENT_QUOTES)));
+    $ok = send_mail($to, $subject, $html, $bodyRaw, $files, $kind === 'card' ? 'smtp' : '');
+    if ($ok) {
+        // Ό,τι μάθαμε για τον παραλήπτη μένει: την επόμενη φορά η διεύθυνση
+        // συμπληρώνεται μόνη της, χωρίς ταξίδι στην ΑΑΔΕ.
+        $cvat = trim((string)($_POST['customer_vat'] ?? ''));
+        if ($acctVat !== '' && $cvat !== '') {
+            try { customer_contact_set($acctVat, $cvat, ['email' => $to]); } catch (\Throwable $e) {}
+        }
+        audit_log_add((int)($__user['id'] ?? 0), $acctVat,
+                      'email_sent', ['to' => $to, 'mark' => $mk, 'kind' => $kind, 'subject' => $subject]);
+    }
+    jsonResponse(['success' => $ok, 'error' => $ok ? '' : 'Η αποστολή απέτυχε — δες τις ρυθμίσεις email.']);
+}
+
+// --- Ποιοι πελάτες είναι υποψήφιοι για αποστολή καρτέλας --------------------
+// Μία κλήση στην ΑΑΔΕ για όλη την περίοδο, ομαδοποίηση ανά πελάτη, και το
+// email του καθενός από το τοπικό αντίγραφο. Το φίλτρο «μόνο χρεωστικά» είναι
+// ο κανονικός λόγος που στέλνει κανείς καρτέλες.
+if (!empty($_GET['ledger_targets'] ?? $_POST['ledger_targets'] ?? '')) {
+    $rows = ledgerBalancesAll($ch, $issueDateFrom, $issueDateTo);
+    $onlyDebit = !empty($_GET['only_debit'] ?? $_POST['only_debit'] ?? '');
+    $min = (float)($_GET['min'] ?? $_POST['min'] ?? 0);
+    $out = [];
+    foreach ($rows as $r) {
+        if ($onlyDebit && $r['balance'] <= 0.005) continue;
+        if ($min > 0 && abs($r['balance']) < $min) continue;
+        $out[] = $r;
+    }
+    curl_close($ch);
+    jsonResponse(['success' => true, 'rows' => $out, 'from' => $issueDateFrom, 'to' => $issueDateTo]);
+}
+
+// Το email ενός πελάτη, ζωντανά από την ΑΑΔΕ όταν δεν το ξέρουμε ήδη.
+if (!empty($_GET['customer_email'] ?? $_POST['customer_email'] ?? '')) {
+    $cv = trim((string)($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? ''));
+    if ($cv === '') { curl_close($ch); jsonError('Λείπει το ΑΦΜ πελάτη'); }
+    $email = customerEmailFor($ch, defined('COMPANY_VAT') ? COMPANY_VAT : '', $cv);
+    curl_close($ch);
+    jsonResponse(['success' => true, 'email' => $email]);
+}
+
+// --- Προγραμματισμένη αποστολή καρτελών: «τρέξε τώρα» -----------------------
+if (!empty($_POST['ledger_dispatch'] ?? $_GET['ledger_dispatch'] ?? '')) {
+    if (!defined('COMPANY_VAT')) { curl_close($ch); jsonError('Επίλεξε πρώτα εταιρεία', 409); }
+    $res = runLedgerDispatch($ch, COMPANY_VAT, $issueDateFrom, $issueDateTo, !empty($_POST['force'] ?? $_GET['force'] ?? ''));
+    curl_close($ch);
+    jsonResponse($res);
+}
+
 if (!empty($_GET['bulk_pdf'] ?? $_POST['bulk_pdf'] ?? '')) {
     $marksRaw = (string)($_POST['marks'] ?? $_GET['marks'] ?? '');
     $marks = array_values(array_filter(array_map('trim', preg_split('/[,\s]+/', $marksRaw) ?: [])));

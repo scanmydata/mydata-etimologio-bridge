@@ -1,6 +1,6 @@
 [project]
 name = "timologio-downloader"
-version = "0.4.1"
+version = "0.4.6"
 description = "Μαζική λήψη παραστατικών myDATA (ΑΑΔΕ) για πολλαπλούς πελάτες"
 readme = "README.md"
 authors = [
@@ -35,6 +35,14 @@ gui = [
 voice = [
     "vosk>=0.3.45",
     "sounddevice>=0.4.6",
+]
+# Αντίγραφα ασφαλείας στο Google Drive. Ξεχωριστό extra: το πακετάρισμα του
+# αρχείου δουλεύει ΠΑΝΤΑ (τοπικό zip με βάση + .enckey)· μόνο η μεταφόρτωση
+# χρειάζεται αυτές τις βιβλιοθήκες. Τα μυστικά έρχονται από Infisical, ποτέ από
+# αρχείο ρυθμίσεων — ίδιο μοτίβο με το ScanmyData.
+drive = [
+    "google-api-python-client>=2.100",
+    "google-auth>=2.30",
 ]
 
 [project.scripts]

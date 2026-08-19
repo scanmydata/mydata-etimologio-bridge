@@ -49,6 +49,10 @@ function mail_provider(): string {
 
 function mail_enabled(): bool { return mail_provider() !== ''; }
 
+// Υπάρχει ΔΙΚΟΣ ΜΑΣ SMTP; Η καρτέλα στέλνεται μόνο έτσι, οπότε το UI
+// πρέπει να μπορεί να το πει πριν ο χρήστης πατήσει «αποστολή».
+function mail_smtp_ready(): bool { return mail_conf('SMTP_FROM') !== ''; }
+
 // Public base URL of the app, for building links. Prefers APP_URL / APP_BASE_URL,
 // else derives from the current request.
 function app_base_url(): string {
@@ -62,22 +66,35 @@ function app_base_url(): string {
 
 // Send an email. Returns true on success. $html is the full HTML body (use
 // mail_template() to wrap content); $text is an optional plain-text alternative.
-function send_mail(string $to, string $subject, string $html, string $text = ''): bool {
+/**
+ * Στέλνει email. `$files` = [['name'=>…, 'mime'=>…, 'data'=>raw bytes], …].
+ *
+ * Τα συνημμένα προστέθηκαν για την αποστολή παραστατικού και καρτέλας: ένα
+ * email «το τιμολόγιό σας» χωρίς το PDF δεν εξυπηρετεί κανέναν.
+ */
+function send_mail(string $to, string $subject, string $html, string $text = '', array $files = [], string $via = ''): bool {
     $to = trim($to);
     if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) return false;
     $provider = mail_provider();
+    // `$via` καρφώνει τον πάροχο. Η καρτέλα π.χ. στέλνεται ΜΟΝΟ με SMTP: είναι
+    // προσωποποιημένο μήνυμα προς τον πελάτη και πρέπει να φύγει από τη
+    // διεύθυνση του γραφείου, όχι από τον κοινό αποστολέα ενός API.
+    if ($via !== '') {
+        if ($via === 'smtp') return mail_smtp_ready() ? send_mail_smtp($to, $subject, $html, $text, $files) : false;
+        if ($via === 'resend') return send_mail_resend($to, $subject, $html, $text, $files);
+    }
     if ($provider === 'resend') {
-        if (send_mail_resend($to, $subject, $html, $text)) return true;
+        if (send_mail_resend($to, $subject, $html, $text, $files)) return true;
         // fall through to SMTP if Resend failed and SMTP is available
-        if (mail_conf('SMTP_FROM') !== '') return send_mail_smtp($to, $subject, $html, $text);
+        if (mail_conf('SMTP_FROM') !== '') return send_mail_smtp($to, $subject, $html, $text, $files);
         return false;
     }
-    if ($provider === 'smtp') return send_mail_smtp($to, $subject, $html, $text);
+    if ($provider === 'smtp') return send_mail_smtp($to, $subject, $html, $text, $files);
     return false;   // nothing configured
 }
 
 // --- Resend ------------------------------------------------------------------
-function send_mail_resend(string $to, string $subject, string $html, string $text = ''): bool {
+function send_mail_resend(string $to, string $subject, string $html, string $text = '', array $files = []): bool {
     $key = mail_conf('RESEND_API_KEY');
     if ($key === '') return false;
     $from = mail_conf('RESEND_EMAIL_SENDER');
@@ -90,6 +107,12 @@ function send_mail_resend(string $to, string $subject, string $html, string $tex
         'html'    => $html,
     ];
     if ($text !== '') $payload['text'] = $text;
+    foreach ($files as $f) {
+        $payload['attachments'][] = [
+            'filename' => (string)($f['name'] ?? 'file'),
+            'content'  => base64_encode((string)($f['data'] ?? '')),
+        ];
+    }
     $ch = curl_init('https://api.resend.com/emails');
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
@@ -125,30 +148,50 @@ function mail_addr(string $value): string {
     return trim($value);
 }
 
-function mail_mime(string $subject, string $from, string $to, string $html, string $text): string {
-    $boundary = 'b' . bin2hex(random_bytes(8));
+function mail_mime(string $subject, string $from, string $to, string $html, string $text, array $files = []): string {
+    $alt = 'alt' . bin2hex(random_bytes(8));
+    $mix = 'mix' . bin2hex(random_bytes(8));
     if ($text === '') $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
     $head  = 'From: ' . $from . "\r\n";
     $head .= 'To: ' . $to . "\r\n";
     $head .= 'Subject: =?UTF-8?B?' . base64_encode($subject) . "?=\r\n";
     $head .= 'Date: ' . date('r') . "\r\n";
     $head .= 'MIME-Version: 1.0' . "\r\n";
-    $head .= 'Content-Type: multipart/alternative; boundary="' . $boundary . '"' . "\r\n";
-    $body  = "\r\n--" . $boundary . "\r\n";
-    $body .= "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
-           . chunk_split(base64_encode($text)) . "\r\n";
-    $body .= '--' . $boundary . "\r\n";
-    $body .= "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
-           . chunk_split(base64_encode($html)) . "\r\n";
-    $body .= '--' . $boundary . "--\r\n";
+    // Με συνημμένα η δομή είναι multipart/mixed → [alternative] + [αρχεία].
+    $head .= $files
+        ? 'Content-Type: multipart/mixed; boundary="' . $mix . '"' . "\r\n"
+        : 'Content-Type: multipart/alternative; boundary="' . $alt . '"' . "\r\n";
+
+    $altPart  = ($files ? '--' . $mix . "\r\n"
+                        . 'Content-Type: multipart/alternative; boundary="' . $alt . '"' . "\r\n" : '');
+    $altPart .= "\r\n--" . $alt . "\r\n";
+    $altPart .= "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+              . chunk_split(base64_encode($text)) . "\r\n";
+    $altPart .= '--' . $alt . "\r\n";
+    $altPart .= "Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+              . chunk_split(base64_encode($html)) . "\r\n";
+    $altPart .= '--' . $alt . "--\r\n";
+    if (!$files) return $head . $altPart;
+
+    $body = $altPart;
+    foreach ($files as $f) {
+        $name = preg_replace('/[\r\n"]+/', '', (string)($f['name'] ?? 'file'));
+        $body .= "\r\n--" . $mix . "\r\n";
+        $body .= 'Content-Type: ' . ($f['mime'] ?? 'application/octet-stream')
+               . '; name="' . $name . '"' . "\r\n";
+        $body .= 'Content-Disposition: attachment; filename="' . $name . '"' . "\r\n";
+        $body .= "Content-Transfer-Encoding: base64\r\n\r\n"
+               . chunk_split(base64_encode((string)($f['data'] ?? ''))) . "\r\n";
+    }
+    $body .= '--' . $mix . "--\r\n";
     return $head . $body;
 }
 
-function send_mail_smtp(string $to, string $subject, string $html, string $text = ''): bool {
+function send_mail_smtp(string $to, string $subject, string $html, string $text = '', array $files = []): bool {
     $from = mail_conf('SMTP_FROM');
     if ($from === '') return false;
     $host = mail_conf('SMTP_HOST');
-    if ($host === '') return send_mail_php($to, $subject, $html, $text);
+    if ($host === '') return send_mail_php($to, $subject, $html, $text, $files);
 
     $port   = (int)(mail_conf('SMTP_PORT') ?: '587');
     $secure = strtolower(mail_conf('SMTP_SECURE', $port === 465 ? 'ssl' : 'tls'));
@@ -195,7 +238,7 @@ function send_mail_smtp(string $to, string $subject, string $html, string $text 
        && $cmd('RCPT TO:<' . mail_addr($to) . '>', '250')
        && $cmd('DATA', '354');
     if ($ok) {
-        $message = mail_mime($subject, $from, $to, $html, $text);
+        $message = mail_mime($subject, $from, $to, $html, $text, $files);
         // Η τελεία στην αρχή γραμμής τερματίζει το DATA — διπλασιάζεται.
         $message = preg_replace('/^\./m', '..', $message);
         fwrite($sock, $message . "\r\n.\r\n");
@@ -207,7 +250,7 @@ function send_mail_smtp(string $to, string $subject, string $html, string $text 
 }
 
 /** Εφεδρεία για εγκαταστάσεις με ρυθμισμένο relay στο ίδιο το PHP. */
-function send_mail_php(string $to, string $subject, string $html, string $text = ''): bool {
+function send_mail_php(string $to, string $subject, string $html, string $text = '', array $files = []): bool {
     $from = mail_conf('SMTP_FROM');
     $boundary = 'b' . bin2hex(random_bytes(8));
     $headers  = 'From: ' . $from . "\r\n";
@@ -255,6 +298,52 @@ function mail_template(string $title, string $innerHtml, string $footer = ''): s
         . '</div>'
         . '<div style="text-align:center;margin-top:18px;color:#5b6b84;font-size:12px">' . htmlspecialchars($foot, ENT_QUOTES) . '</div>'
         . '</div></body></html>';
+}
+
+// --- Δομικά κομμάτια μηνύματος (ίδια γλώσσα σχεδίασης με το ScanmyData) -----
+// Τα transactional email τους έχουν τρία επαναλαμβανόμενα μοτίβα: ένα γαλάζιο
+// πλαίσιο «τι θα γίνει μετά», ένα κεχριμπαρένιο «πρόσεξε», και το URL σε απλό
+// κείμενο για όποιον client δεν δείχνει κουμπιά. Χωρίς αυτά, κάθε μήνυμα
+// ξαναγράφει τα ίδια inline styles και αποκλίνει.
+
+// Γαλάζιο πλαίσιο πληροφορίας. $lines = απλές γραμμές κειμένου.
+function mail_note(string $title, array $lines): string {
+    $body = '';
+    foreach ($lines as $line) $body .= htmlspecialchars((string)$line, ENT_QUOTES) . '<br>';
+    return '<div style="background:#eff6ff;border-left:4px solid #60a5fa;padding:13px 15px;'
+        . 'margin:18px 0;border-radius:6px;color:#1a2637">'
+        . '<strong>' . htmlspecialchars($title, ENT_QUOTES) . '</strong>'
+        . '<div style="margin-top:6px;font-size:14px;color:#475569">' . $body . '</div></div>';
+}
+
+// Κεχριμπαρένιο πλαίσιο προσοχής — προθεσμίες, «αν δεν το ζήτησες εσύ».
+function mail_warn(string $title, array $lines): string {
+    $body = '';
+    foreach ($lines as $line) $body .= '• ' . htmlspecialchars((string)$line, ENT_QUOTES) . '<br>';
+    return '<div style="background:#fff7ed;border:1px solid #ffedd5;padding:12px 14px;'
+        . 'margin:18px 0;border-radius:6px;color:#92400e">'
+        . '<strong>' . htmlspecialchars($title, ENT_QUOTES) . '</strong>'
+        . '<div style="margin-top:6px;font-size:14px;color:#92400e">' . $body . '</div></div>';
+}
+
+// Το ίδιο URL σε μορφή που αντιγράφεται. Κουμπιά «χάνονται» σε αρκετούς clients.
+function mail_link_fallback(string $url): string {
+    return '<p style="font-size:14px;color:#475569;margin:18px 0 6px">Αν το κουμπί δεν λειτουργεί, '
+        . 'αντιγράψτε αυτή τη διεύθυνση στον browser σας:</p>'
+        . '<p style="background:#f1f5f9;padding:10px;border-radius:6px;word-break:break-all;'
+        . 'font-size:12px;font-family:Consolas,monospace;margin:0">'
+        . htmlspecialchars($url, ENT_QUOTES) . '</p>';
+}
+
+// Πίνακας «ετικέτα → τιμή», για μηνύματα με στοιχεία παραστατικού/καρτέλας.
+function mail_kv(array $rows): string {
+    $trs = '';
+    foreach ($rows as [$k, $v]) {
+        $trs .= '<tr><td style="padding:5px 14px 5px 0;color:#5b6b84;white-space:nowrap;vertical-align:top">'
+             . htmlspecialchars((string)$k, ENT_QUOTES) . '</td>'
+             . '<td style="padding:5px 0;font-weight:600">' . htmlspecialchars((string)$v, ENT_QUOTES) . '</td></tr>';
+    }
+    return '<table style="border-collapse:collapse;font-size:14px;margin:14px 0">' . $trs . '</table>';
 }
 
 // A styled CTA button for use inside mail_template().

@@ -43,7 +43,15 @@
   <div class="brand">e-Timologio <span>Pro</span></div>
   <div class="sub" id="subtitle">Συνδεθείτε στον λογαριασμό της επιχείρησής σας</div>
 
-  <?php if ($__resetToken !== ''): ?>
+  <?php if ($__verifyToken !== ''): ?>
+  <!-- VERIFY MODE — τρέχει μόνο του μόλις φορτώσει η σελίδα -->
+  <form id="f-verify" class="on" onsubmit="return false">
+    <div class="foot" id="v-state" style="margin-top:0">Επιβεβαίωση email σε εξέλιξη…</div>
+    <input type="hidden" id="v-token" value="<?= htmlspecialchars($__verifyToken, ENT_QUOTES) ?>">
+    <button class="primary" type="button" id="v-go" onclick="location.href='app.php'" style="display:none">Συνέχεια στη σύνδεση</button>
+    <button class="primary" type="button" id="v-again" onclick="doResend()" style="display:none">Αποστολή νέου συνδέσμου</button>
+  </form>
+  <?php elseif ($__resetToken !== ''): ?>
   <!-- RESET MODE -->
   <form id="f-reset" class="on" onsubmit="return doReset(event)">
     <label>Νέος κωδικός (≥ 8 χαρακτήρες)</label>
@@ -72,7 +80,7 @@
     <label>Email</label><input type="email" id="s-email" autocomplete="email" required>
     <label>Κωδικός (≥ 8 χαρακτήρες)</label><input type="password" id="s-pass" autocomplete="new-password" required>
     <button class="primary" type="submit">Δημιουργία λογαριασμού</button>
-    <div class="foot">Η εγγραφή εγκρίνεται από τον διαχειριστή πριν την πρώτη σύνδεση.</div>
+    <div class="foot">Θα λάβετε email επιβεβαίωσης. Μετά την επιβεβαίωση, η εγγραφή εγκρίνεται από τον διαχειριστή.</div>
   </form>
 
   <form id="f-forgot" onsubmit="return doForgot(event)">
@@ -113,7 +121,22 @@ function back2fa(){g('tf-code').value='';show2fa(false);g('f-login').classList.a
 async function doLogin(e){e.preventDefault();try{const d=await post({auth:'login',email:g('l-email').value,password:g('l-pass').value});
   if(d.success){location.href='app.php';}
   else if(d.totp_required){msg('');show2fa(true);}
+  else if(d.needs_verification){msg(d.error||'Απαιτείται επιβεβαίωση email');offerResend(d.email||g('l-email').value);}
   else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+// Ένα κουμπί κάτω από το μήνυμα, φτιαγμένο μία φορά.
+function offerResend(email){
+  let b=g('resend-btn');
+  if(!b){b=document.createElement('button');b.id='resend-btn';b.type='button';b.className='link';
+    b.style.display='block';b.style.margin='10px auto 0';g('msg').after(b);}
+  b.textContent='Στείλτε μου ξανά τον σύνδεσμο επιβεβαίωσης';
+  b.onclick=()=>doResend(email);
+}
+async function doResend(email){
+  const to=((email||'').trim())||((prompt('Email λογαριασμού:')||'').trim());
+  if(!to)return;
+  try{const d=await post({auth:'resend_verification',email:to});
+    msg(d.note||'Στάλθηκε.',true);}catch(x){msg('Σφάλμα δικτύου');}
+}
 async function do2fa(e){e.preventDefault();try{const d=await post({auth:'login_totp',code:g('tf-code').value});
   if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doSignup(e){e.preventDefault();try{const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
@@ -137,6 +160,26 @@ function addEyes(root){
   });
 }
 addEyes();
+
+// --- Επιβεβαίωση email ------------------------------------------------------
+// Τρέχει αυτόματα: ο χρήστης άνοιξε τον σύνδεσμο, δεν έχει τίποτα να πατήσει.
+(async function(){
+  const t=g('v-token');
+  if(!t||!t.value)return;
+  try{
+    const d=await post({auth:'verify_email',token:t.value});
+    if(d.success){
+      g('v-state').textContent='';
+      msg(d.note||'Το email επιβεβαιώθηκε.',true);
+      g('v-go').style.display='';
+    }else{
+      g('v-state').textContent='';
+      msg(d.error||'Ο σύνδεσμος δεν ισχύει');
+      if(d.expired){const b=g('v-again');b.style.display='';b.onclick=()=>doResend(d.email||'');}
+      else g('v-go').style.display='';
+    }
+  }catch(x){g('v-state').textContent='';msg('Σφάλμα δικτύου');}
+})();
 </script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QUrl, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from PySide6.QtGui import QDesktopServices, QPixmap
 
 from ..config import APP_VERSION
 from .icons import icon, logo_pixmap
@@ -108,6 +110,29 @@ class MenuButton(QPushButton):
         self.help_text = full if collapsed else self._tip
         self.setToolTip(self.help_text)
         self.setProperty("help_text", self.help_text)
+
+
+#: Ο ιστότοπος του γραφείου — το σήμα κάτω αριστερά οδηγεί εκεί.
+BRAND_URL = "https://scanmydata.gr"
+
+
+def _brand_path(name: str):
+    """Το λογότυπο, είτε τρέχουμε από πηγαίο κώδικα είτε από το πακέτο."""
+    import sys
+    from pathlib import Path
+
+    roots = []
+    base = getattr(sys, "_MEIPASS", "")
+    if base:
+        roots.append(Path(base))
+    here = Path(__file__).resolve()
+    roots.append(here.parents[3] / "installer")           # <repo>/desktop/installer
+    roots.append(here.parents[4] / "assets" / "brand")    # <repo>/assets/brand
+    for root in roots:
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 class SideMenu(QWidget):
@@ -401,24 +426,63 @@ class SideMenu(QWidget):
         return holder
 
     def _footer(self) -> QWidget:
-        """Λογότυπο και έκδοση στο κάτω μέρος."""
+        """Το σήμα του γραφείου, κάτω αριστερά — και η έκδοση, διακριτικά.
+
+        Το εικονίδιο της εφαρμογής έφυγε από εδώ: κάθεται ήδη στην κορυφή του
+        μενού, και δίπλα στο σήμα του γραφείου διαβαζόταν σαν δεύτερο λογότυπο.
+        """
         holder = QWidget()
-        holder.setMinimumHeight(22)  # ίδιος λόγος με την κεφαλίδα
+        holder.setMinimumHeight(26)
         row = QHBoxLayout(holder)
         row.setContentsMargins(4, 0, 0, 0)
         row.setSpacing(8)
 
-        self.logo_bottom = QLabel()
-        self.logo_bottom.setPixmap(logo_pixmap(22))
-        self.logo_bottom.setFixedSize(22, 22)
-        self.logo_bottom.setScaledContents(True)
-        row.addWidget(self.logo_bottom)
+        # Σήμα του γραφείου — το ίδιο που δείχνει και η web εφαρμογή, ώστε οι
+        # δύο μισές να μοιάζουν ένα προϊόν. Ανοίγει το scanmydata.gr.
+        self.brand = QLabel()
+        self.brand.setObjectName("brandMark")
+        self.brand.setScaledContents(True)
+        # Η αναλογία του αρχείου είναι 360x176 (εικονίδιο + λεκτικός τύπος,
+        # χωρίς το σύνθημα). Ένα «λογικό» 110x22 το έλιωνε.
+        self.brand.setFixedSize(53, 26)
+        self.brand.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.brand.setToolTip(f"{BRAND_URL} — άνοιγμα στον browser")
+        self.brand.mousePressEvent = self._open_brand_site
+        row.addWidget(self.brand)
+        self._paint_brand()
 
-        self.version = QLabel(f"myDATA · έκδοση {APP_VERSION}")
+        self.version = QLabel(f"έκδοση {APP_VERSION}")
         self.version.setObjectName("menuVersion")
         row.addWidget(self.version)
         row.addStretch()
         return holder
+
+    def _open_brand_site(self, event) -> None:
+        """Το σήμα είναι σύνδεσμος. Ανοίγει στον ΚΑΝΟΝΙΚΟ browser, όχι μέσα
+        στην εφαρμογή: είναι ιστότοπος, όχι οθόνη του προγράμματος."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            QDesktopServices.openUrl(QUrl(BRAND_URL))
+
+    def _paint_brand(self) -> None:
+        """Διαλέγει την εκδοχή του λογοτύπου που ταιριάζει στο θέμα.
+
+        Το φωτεινό λογότυπο πάνω σε σκούρο μενού χάνεται — και αντίστροφα.
+        """
+        brand = getattr(self, "brand", None)
+        if brand is None:
+            return
+        light_theme = getattr(CURRENT, "name", "dark") == "light"
+        name = "scanmydata-light.png" if light_theme else "scanmydata-dark.png"
+        path = _brand_path(name)
+        if path is None:
+            brand.hide()
+            return
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            brand.hide()
+            return
+        brand.setPixmap(pix)
+        brand.show()
 
     def _add(self, layout: QVBoxLayout, name: str, text: str, tip: str) -> None:
         button = MenuButton(name, text, tip)
@@ -494,13 +558,26 @@ class SideMenu(QWidget):
             button.restyle()
         self.btn_toggle.setIcon(icon("menu", CURRENT.muted))
         self.logo.setPixmap(logo_pixmap(38))
-        self.logo_bottom.setPixmap(logo_pixmap(22))
+        self._paint_brand()
         self.chk_light.update()
         self.chk_tooltips.update()
 
+    #: Κουμπιά του e-Τιμολόγιο που ΔΕΝ είναι σελίδες: ανοίγουν κάτι και
+    #: επιστρέφουν, οπότε δεν πρέπει να μένουν «επιλεγμένα».
+    _ETIM_ACTIONS = ("etim_tour", "etim_manual", "etim_assistant", "etim_notifications")
+
     def set_active(self, name: str) -> None:
+        """Σημαδεύει πού βρίσκεται ο χρήστης.
+
+        Παλιά κοίταζε μόνο τις σελίδες του Downloader, οπότε μέσα στο
+        e-Τιμολόγιο **καμία** γραμμή δεν ήταν φωτισμένη και το μενού δεν έλεγε
+        πού είσαι.
+        """
         for key, button in self._buttons.items():
-            if key in self._pages:
+            selectable = key in self._pages or (
+                key.startswith("etim_") and key not in self._ETIM_ACTIONS
+            )
+            if selectable:
                 button.set_active(key == name)
 
     def set_enabled_action(self, name: str, enabled: bool) -> None:

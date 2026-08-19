@@ -252,8 +252,12 @@ def test_the_router_has_no_notion_of_a_live_issue() -> None:
 
     source = inspect.getsource(module)
     assert "live" not in source
+    # Το `command` είναι κανάλι ΕΦΑΡΜΟΓΗΣ (εγχειρίδιο, ξενάγηση, παλέτα,
+    # αντίγραφο, αποσύνδεση) — καμία εντολή του δεν εκδίδει. Η ουσία του
+    # φύλακα μένει ο έλεγχος «live» παραπάνω.
     assert set(module.Reply.__dataclass_fields__) == {
         "say", "navigate", "fetch", "dialog", "prefill", "draft", "choices",
+        "command",
     }
 
 

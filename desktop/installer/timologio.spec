@@ -182,6 +182,9 @@ a = Analysis(
             # εφαρμογή. Χωρίς αυτό, το πακεταρισμένο build πέφτει πίσω στη
             # μονόχρωμη γλυφή του μενού.
             os.path.join(SPECPATH, "etimologio-logo.png"),
+            # Το σήμα του γραφείου, κάτω αριστερά και στις δύο εφαρμογές.
+            os.path.join(SPECPATH, "scanmydata-light.png"),
+            os.path.join(SPECPATH, "scanmydata-dark.png"),
             os.path.join(ROOT, "docs", "manual.pdf"),
             # Και του e-Τιμολόγιο, με δικό του όνομα: ζουν στον ίδιο φάκελο του
             # bundle (etimologio/help.py:BUNDLED_NAME).
