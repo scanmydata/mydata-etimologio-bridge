@@ -363,6 +363,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   @media (max-width:760px){
     .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr;
          grid-template-areas:"side" "top" "main";height:auto;min-height:100vh}
+    /* Το πρόθεμα `body` ανεβάζει την ειδικότητα: οι γενικοί κανόνες της μπάρας
+       γράφονται ΠΙΟ ΚΑΤΩ στο φύλλο και αλλιώς θα κέρδιζαν μέσα στο media. */
+    body .app.offline{grid-template-rows:auto auto auto 1fr;
+                      grid-template-areas:"net" "side" "top" "main"}
+    body #netBar{padding:8px 12px;font-size:12.5px;flex-wrap:wrap}
     aside{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px;
           border-right:none;border-bottom:1px solid var(--line);padding:6px 10px}
     .brand{padding:6px 8px;font-size:15px}
@@ -393,6 +398,21 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   .toast{pointer-events:none;position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
   .toast.show{opacity:1;transform:none}
   .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--bad)}
+  /* Η απώλεια σύνδεσης είναι ΚΑΤΑΣΤΑΣΗ, όχι συμβάν: ένα toast που φεύγει σε
+     τρία δευτερόλεπτα αφήνει τον χρήστη να νομίζει ότι φταίει η εφαρμογή.
+     Η μπάρα μένει όσο κρατά το πρόβλημα και φεύγει μόνη της μόλις λυθεί. */
+  #netBar{grid-area:net;display:none;align-items:center;gap:12px;padding:10px 18px;
+    background:rgba(239,68,68,.14);border-bottom:1px solid var(--bad);color:var(--txt);
+    font-size:13.5px;z-index:95}
+  #netBar.on{display:flex}
+  #netBar .nb-dot{width:9px;height:9px;border-radius:50%;background:var(--bad);flex:none;
+    animation:nbPulse 1.4s ease-in-out infinite}
+  @keyframes nbPulse{0%,100%{opacity:1}50%{opacity:.25}}
+  #netBar b{color:var(--bad)}
+  #netBar .grow{flex:1}
+  /* Όταν φαίνεται η μπάρα, χρειάζεται δική της γραμμή στο πλέγμα — αλλιώς
+     καθόταν πάνω στην κεφαλίδα. */
+  .app.offline{grid-template-rows:auto auto 1fr;grid-template-areas:"side net" "side top" "side main"}
   /* Dialog */
   dialog{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);max-width:560px;width:94%;padding:0}
   dialog::backdrop{background:rgba(3,8,16,.66)}
@@ -457,6 +477,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
      κρύβουμε το δικό μας και αφήνουμε όλο το πλάτος στο περιεχόμενο. */
   body.embedded aside{display:none}
   body.embedded .app{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "main"}
+  body.embedded .app.offline{grid-template-rows:auto auto 1fr;grid-template-areas:"net" "top" "main"}
 </style>
 </head>
 <body class="<?= $__embedded ? 'embedded' : '' ?>">
@@ -505,6 +526,14 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <img src="assets/brand/scanmydata-dark.png" alt="ScanmyData" class="bm-dark">
       </a></div>
   </aside>
+
+  <div id="netBar" role="status" aria-live="polite">
+    <span class="nb-dot"></span>
+    <span><b>Δεν υπάρχει σύνδεση στο internet.</b>
+      <span id="netBarWhy">Η έκδοση παραστατικών και κάθε κλήση προς την ΑΑΔΕ θα αποτύχει. Τα τοπικά δεδομένα (πελάτες, πληρωμές, πρόχειρα) δουλεύουν κανονικά.</span></span>
+    <span class="grow"></span>
+    <button class="ghost sm" id="netBarRetry" onclick="netRecheck(true)">↻ Έλεγχος ξανά</button>
+  </div>
 
   <header>
     <div class="field" style="min-width:230px">
@@ -1728,6 +1757,64 @@ function payMethod(m){return PAYMETHODS[parseInt(m,10)]||'';}
 // browser; Αλλάζει τι μπορεί να γίνει με νέα παράθυρα και λήψεις.
 function isEmbedded(){return document.body.classList.contains('embedded');}
 function toast(m,t=''){const e=$('#toast');e.className='toast show '+t;e.textContent=m;clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',3400);}
+// --- Κατάσταση σύνδεσης -------------------------------------------------------
+// Τρεις πηγές, με αυτή τη σειρά αξιοπιστίας:
+//   1. Ο server δοκιμάζει να φτάσει την ΑΑΔΕ (`?netcheck=1`) — η μόνη απόδειξη.
+//   2. Μια κλήση που έσκασε με σφάλμα δικτύου, ή απάντηση με `offline:true`.
+//   3. Το `navigator.onLine`, που λέει μόνο αν υπάρχει *κάποιο* δίκτυο: σε
+//      router χωρίς γραμμή απαντά «ναι», γι' αυτό δεν αρκεί από μόνο του.
+let NET_OFFLINE=false, NET_TIMER=null;
+
+function netBar(on,why){
+  const bar=$('#netBar');if(!bar)return;
+  bar.classList.toggle('on',!!on);
+  const app=document.querySelector('.app');if(app)app.classList.toggle('offline',!!on);
+  if(why)$('#netBarWhy').textContent=why;
+}
+
+function netSetOffline(on,why){
+  if(on===NET_OFFLINE){if(on&&why)netBar(true,why);return;}
+  NET_OFFLINE=on;
+  netBar(on,why);
+  if(on){
+    toast('Χάθηκε η σύνδεση στο internet','err');
+    // Όσο είμαστε εκτός, ξαναδοκιμάζουμε μόνοι μας: ο χρήστης δεν χρειάζεται
+    // να θυμάται να πατήσει κουμπί για να ξαναζωντανέψει η εφαρμογή.
+    clearInterval(NET_TIMER);NET_TIMER=setInterval(()=>netRecheck(false),20000);
+  }else{
+    clearInterval(NET_TIMER);NET_TIMER=null;
+    toast('Η σύνδεση επανήλθε','ok');
+  }
+}
+
+// Αναγνωρίζει την αποτυχία ΔΙΚΤΥΟΥ του fetch. Το fetch πετά TypeError όταν δεν
+// έφυγε καν το αίτημα — διαφορετικό από «ο server απάντησε σφάλμα».
+function netIsFetchFailure(err){
+  const m=String((err&&err.message)||err||'');
+  return err instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(m);
+}
+
+async function netRecheck(loud){
+  const btn=$('#netBarRetry');
+  if(loud&&btn){btn.disabled=true;btn.textContent='Έλεγχος…';}
+  try{
+    const r=await fetch(API+'?netcheck=1',{cache:'no-store'});
+    const d=await r.json();
+    if(d.online)netSetOffline(false);
+    else netSetOffline(true,d.reason||'');
+  }catch(e){
+    netSetOffline(true,'Ο υπολογιστής δεν έχει σύνδεση στο internet.');
+  }finally{
+    if(loud&&btn){btn.disabled=false;btn.textContent='↻ Έλεγχος ξανά';}
+  }
+}
+
+// Το λειτουργικό μας λέει πότε ΣΙΓΟΥΡΑ χάθηκε το δίκτυο· η επιστροφή
+// επιβεβαιώνεται με πραγματικό έλεγχο, γιατί «online» δεν σημαίνει «internet».
+window.addEventListener('offline',()=>netSetOffline(true,'Ο υπολογιστής αποσυνδέθηκε από το δίκτυο.'));
+window.addEventListener('online',()=>netRecheck(false));
+if(navigator.onLine===false)netSetOffline(true,'Ο υπολογιστής αποσυνδέθηκε από το δίκτυο.');
+
 // --- Theme (light / dark) -----------------------------------------------------
 function applyTheme(t){const light=t==='light';document.documentElement.setAttribute('data-theme',light?'light':'dark');
   // Ο διακόπτης ακολουθεί την κατάσταση μέσω της κλάσης .on (όπως στην εφαρμογή
@@ -1748,8 +1835,21 @@ function toggleTips(){const on=!document.documentElement.classList.contains('tip
 applyTips((localStorage.getItem('etim_tips')||'1')==='1');
 
 async function api(params){const q=new URLSearchParams(params);if(ACCOUNT)q.set('account',ACCOUNT);
-  const r=await fetch(API+'?'+q.toString());const txt=await r.text();
-  try{return JSON.parse(txt);}catch(e){throw new Error(txt.slice(0,200));}}
+  let r;
+  try{r=await fetch(API+'?'+q.toString());}
+  catch(e){if(netIsFetchFailure(e))netSetOffline(true,'Ο υπολογιστής δεν έχει σύνδεση στο internet.');throw e;}
+  const txt=await r.text();
+  let d;try{d=JSON.parse(txt);}catch(e){throw new Error(txt.slice(0,200));}
+  netNoteReply(d);
+  return d;}
+
+// Ο server ξεχωρίζει «δεν βγήκαμε στο internet» από «η ΑΑΔΕ δεν απαντά». Όταν
+// το πει, ανάβει η μπάρα· όταν μια κλήση προς ΑΑΔΕ πετύχει, σβήνει.
+function netNoteReply(d){
+  if(!d||typeof d!=='object')return;
+  if(d.offline)netSetOffline(true,d.error||'');
+  else if(NET_OFFLINE&&d.success)netRecheck(false);
+}
 
 // Navigation
 function showView(v){
@@ -2823,8 +2923,13 @@ document.addEventListener('click',e=>{const p=$('#cardAcPanel');if(p&&!e.target.
 let BI_TX=[]; // parsed transactions (with .customer selection attached)
 // POST helper that carries the active account (needed to resolve COMPANY_VAT)
 async function apostAcc(params){const b=new URLSearchParams(params);if(ACCOUNT)b.set('account',ACCOUNT);
-  const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:b});
-  const t=await r.text();try{return JSON.parse(t);}catch(e){throw new Error(t.slice(0,200));}}
+  let r;
+  try{r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:b});}
+  catch(e){if(netIsFetchFailure(e))netSetOffline(true,'Ο υπολογιστής δεν έχει σύνδεση στο internet.');throw e;}
+  const t=await r.text();
+  let d;try{d=JSON.parse(t);}catch(e){throw new Error(t.slice(0,200));}
+  netNoteReply(d);
+  return d;}
 function biStrip(s){return (s||'').toString().toUpperCase()
   .replace(/[ΆΑ]/g,'Α').replace(/[ΈΕ]/g,'Ε').replace(/[ΉΗ]/g,'Η').replace(/[ΊΪΙ]/g,'Ι')
   .replace(/[ΌΟ]/g,'Ο').replace(/[ΎΫΥ]/g,'Υ').replace(/[ΏΩ]/g,'Ω').replace(/[^Α-ΩA-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();}
@@ -5197,6 +5302,12 @@ const MANUAL=[
   ['11ε. Λήψεις αρχείων','h2'],
   ['Στην εφαρμογή υπολογιστή τα PDF κατεβαίνουν κατευθείαν στον φάκελο λήψεων (ορίζεται από τον Πίνακα ελέγχου) και ανοίγουν στον αναγνώστη σου. Δεύτερη λήψη του ίδιου παραστατικού <b>αντικαθιστά</b> το αρχείο αντί να αφήνει αντίγραφα «(1)», «(2)». Αν το αρχείο είναι ανοιχτό εκείνη τη στιγμή, η λήψη παίρνει δεύτερο όνομα ώστε να μη χαθεί.','p'],
   ['Οι καρτέλες αποθηκεύονται ως <b>ΚΑΡΤΕΛΑ (ΕΠΩΝΥΜΙΑ ΠΕΛΑΤΗ).pdf</b>.','li'],
+
+  ['11στ. Όταν πέσει το internet','h2'],
+  ['Κάθε έκδοση περνά από την ΑΑΔΕ, άρα χωρίς σύνδεση δεν εκδίδεται τίποτα. Μόλις χαθεί η γραμμή εμφανίζεται <b>κόκκινη μπάρα</b> στην κορυφή που μένει όσο κρατά το πρόβλημα — δεν είναι μήνυμα που φεύγει σε τρία δευτερόλεπτα.','p'],
+  ['Ο έλεγχος δεν βασίζεται στο τι νομίζει ο browser: ο server δοκιμάζει να φτάσει <b>την ίδια την ΑΑΔΕ</b>. Ένα router χωρίς γραμμή δείχνει «συνδεδεμένος» ενώ δεν βγαίνει τίποτα έξω.','li'],
+  ['Η εφαρμογή ξαναδοκιμάζει μόνη της κάθε 20 δευτερόλεπτα και η μπάρα φεύγει μόλις επανέλθει η σύνδεση· το «↻ Έλεγχος ξανά» το κάνει αμέσως.','li'],
+  ['Τα <b>τοπικά</b> δεδομένα δεν επηρεάζονται: πελάτες, πληρωμές, καρτέλες και πρόχειρα διαβάζονται και γράφονται κανονικά.','li'],
 
   ['12. Χρήσιμα & συντομεύσεις','h2'],
   ['• Ctrl+K: αστραπιαία αναζήτηση πελάτη από παντού.  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']

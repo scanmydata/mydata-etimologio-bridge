@@ -121,8 +121,20 @@ function jsonResponse(array $data, int $status = 200): void {
     exit;
 }
 
-function jsonError(string $message, int $status = 400): void {
-    jsonResponse(['success' => false, 'error' => $message], $status);
+function jsonError(string $message, int $status = 400, array $extra = []): void {
+    jsonResponse(['success' => false, 'error' => $message] + $extra, $status);
+}
+
+/**
+ * Λέει αυτό το σφάλμα curl «ο υπολογιστής δεν έχει internet»;
+ *
+ * Ξεχωρίζει τη ΔΙΚΗ ΜΑΣ αποσύνδεση από μια βλάβη της ΑΑΔΕ, γιατί ο χρήστης
+ * κάνει τελείως διαφορετικό πράγμα στις δύο περιπτώσεις: στη μία κοιτάζει το
+ * καλώδιο ή το Wi-Fi, στην άλλη περιμένει.
+ */
+function net_is_offline_errno(int $errno): bool {
+    // 5 proxy, 6 DNS, 7 connect, 28 timeout: όλα σημαίνουν «δεν βγήκαμε έξω».
+    return in_array($errno, [5, 6, 7, 28], true);
 }
 
 // --- CURL HELPERS ------------------------------------------------------------
@@ -171,6 +183,11 @@ function loginFailureReason(\CurlHandle $ch): string {
         return 'Η σύνδεση TLS με την ΑΑΔΕ απέτυχε (' . curl_error($ch) . '). '
              . 'Λείπει CA bundle: όρισε curl.cainfo στο php.ini (π.χ. cacert.pem).';
     }
+    if (net_is_offline_errno($errno)) {
+        return 'Ο υπολογιστής δεν έχει σύνδεση στο internet — η ΑΑΔΕ δεν είναι '
+             . 'προσβάσιμη. Έλεγξε το δίκτυο και δοκίμασε ξανά. '
+             . '(' . curl_error($ch) . ')';
+    }
     if ($errno !== 0) {
         return 'Δεν υπάρχει επικοινωνία με την ΑΑΔΕ: ' . curl_error($ch) . ' (curl ' . $errno . ')';
     }
@@ -196,7 +213,11 @@ function login(): \CurlHandle {
     curl_setopt($ch, CURLOPT_USERAGENT,      'Mozilla/5.0');
 
     $token = getToken($ch, BASE_URL . '/Account/Login');
-    if (!$token) jsonError(loginFailureReason($ch), 503);
+    // Το `offline` είναι για το UI: με αυτό ανάβει η κόκκινη μπάρα αντί για ένα
+    // toast που φεύγει σε τρία δευτερόλεπτα και αφήνει τον χρήστη να νομίζει
+    // ότι φταίει η εφαρμογή.
+    if (!$token) jsonError(loginFailureReason($ch), 503,
+                           net_is_offline_errno(curl_errno($ch)) ? ['offline' => true] : []);
 
     curlPost($ch, BASE_URL . '/Account/Login', [
         'UserName'                   => USERNAME,
@@ -4162,6 +4183,44 @@ if (!empty($_GET['bank_pdf_dl'] ?? $_POST['bank_pdf_dl'] ?? '')) {
     header('Content-Length: ' . strlen($raw));
     echo $raw;
     exit;
+}
+
+// --- Υπάρχει internet; ------------------------------------------------------
+// Το `navigator.onLine` του browser λέει μόνο αν υπάρχει *κάποιο* δίκτυο: σε
+// router χωρίς γραμμή απαντά «ναι». Η μόνη αξιόπιστη απάντηση είναι να
+// δοκιμάσουμε να φτάσουμε ΕΚΕΙ που μας ενδιαφέρει — στην ΑΑΔΕ.
+if (!empty($_GET['netcheck'] ?? $_POST['netcheck'] ?? '')) {
+    $probe = curl_init();
+    curl_setopt_array($probe, [
+        CURLOPT_URL            => BASE_URL . '/Account/Login',
+        // ΟΧΙ NOBODY και ΟΧΙ ανακατευθύνσεις: η σελίδα σύνδεσης απαντά σε HEAD
+        // με αλυσίδα redirect που δεν τελειώνει, και το «Maximum redirects»
+        // φαινόταν σαν βλάβη ενώ η γραμμή δούλευε μια χαρά. Μας αρκεί ΜΙΑ
+        // απάντηση — οποιαδήποτε — για να ξέρουμε ότι βγήκαμε έξω.
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_TIMEOUT        => 8,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_USERAGENT      => 'Mozilla/5.0',
+    ]);
+    curl_exec($probe);
+    $errno  = curl_errno($probe);
+    $status = (int)curl_getinfo($probe, CURLINFO_RESPONSE_CODE);
+    $err    = curl_error($probe);
+    curl_close($probe);
+
+    if ($errno === 0 && $status > 0) {
+        jsonResponse(['success' => true, 'online' => true, 'status' => $status]);
+    }
+    $offline = net_is_offline_errno($errno);
+    jsonResponse([
+        'success' => true,
+        'online'  => false,
+        'offline' => $offline,
+        'reason'  => $offline
+            ? 'Ο υπολογιστής δεν έχει σύνδεση στο internet.'
+            : ('Η ΑΑΔΕ δεν απαντά: ' . ($err !== '' ? $err : ('HTTP ' . $status))),
+    ]);
 }
 
 // --- Τι μπορεί η φωνή σε αυτή την εγκατάσταση -------------------------------
