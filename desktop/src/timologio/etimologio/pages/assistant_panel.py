@@ -52,6 +52,9 @@ class AssistantPanel(QFrame):
     prepare_draft = Signal(object)
     #: Ασύγχρονο ερώτημα προς το backend («stats:year», «notifications»).
     fetch_requested = Signal(str)
+    #: Ενέργεια της εφαρμογής («manual», «backup», «company:094019245», …).
+    #: Ό,τι αφορά τη ΦΩΝΗ μένει εδώ και δεν φτάνει ποτέ στο κέλυφος.
+    command = Signal(str)
 
     def __init__(
         self,
@@ -193,10 +196,16 @@ class AssistantPanel(QFrame):
         self._speaker.say(text)
 
     def _toggle_speak(self) -> None:
-        self._speak_on = not self._speak_on
+        self.set_speak(not self._speak_on)
+
+    def set_speak(self, on: bool) -> None:
+        """Ανοίγει/κλείνει τη φωνή — από το κουμπί ή από εντολή («σώπα»)."""
+        self._speak_on = bool(on)
         QSettings().setValue("etimologio/assistant/speak", self._speak_on)
         self._sync_speak_button()
         if not self._speak_on and self._speaker is not None:
+            # Σιωπή σημαίνει ΤΩΡΑ: αλλιώς η μισή πρόταση συνεχίζει να ακούγεται
+            # αφού ο χρήστης έχει ήδη πει «σώπα».
             self._speaker.stop()
 
     def _sync_speak_button(self) -> None:
@@ -205,6 +214,13 @@ class AssistantPanel(QFrame):
             "Ο βοηθός απαντά και φωναχτά" if self._speak_on
             else "Ο βοηθός απαντά μόνο γραπτά"
         )
+
+    def _run_command(self, command: str) -> None:
+        """Εντολή εφαρμογής. Η φωνή είναι δική μας δουλειά· τα υπόλοιπα του host."""
+        if command in ("speak:off", "speak:on"):
+            self.set_speak(command == "speak:on")
+            return
+        self.command.emit(command)
 
     def _clear_choices(self) -> None:
         while self._choices.count():
@@ -245,6 +261,8 @@ class AssistantPanel(QFrame):
             self.fetch_requested.emit(reply.fetch)
         if reply.draft is not None:
             self.prepare_draft.emit(reply.draft)
+        if reply.command:
+            self._run_command(reply.command)
         # Το panel χάνει την εστίαση όταν αλλάζει σελίδα από κάτω· χωρίς αυτό ο
         # χρήστης έπρεπε να ξανακάνει κλικ στο πεδίο για κάθε επόμενη εντολή.
         if self.isVisible():

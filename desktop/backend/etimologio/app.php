@@ -14,14 +14,34 @@ if (function_exists('opcache_reset')) { opcache_reset(); }
  */
 require __DIR__ . '/auth.php';
 $__user = current_user();
+// Το `desktop_token` έρχεται ΜΟΝΟ στην πρώτη φόρτωση του ενσωματωμένου UI.
+// Κάθε επόμενη πλοήγηση (αποσύνδεση, νέα σύνδεση, ανανέωση) το έχανε — και τότε
+// ξαναφαινόταν το πλαϊνό μενού της web εφαρμογής ΜΕΣΑ στην εφαρμογή
+// υπολογιστή, που έχει ήδη δικό της μενού. Το κρατάμε σε cookie συνεδρίας:
+// ελέγχει μόνο εμφάνιση, κανένα δικαίωμα.
+$__embedded = isset($_GET['desktop_token']);
+if ($__embedded) {
+    setcookie('etim_shell', '1', ['expires' => 0, 'path' => '/', 'samesite' => 'Lax']);
+} elseif (!empty($_COOKIE['etim_shell'])) {
+    $__embedded = true;
+}
+
 $__resetToken = trim($_GET['reset'] ?? '');
-if (!$__user || $__resetToken !== '') {
+// Ο σύνδεσμος επιβεβαίωσης email ανοίγει ΠΑΝΤΑ την οθόνη σύνδεσης, ακόμη κι αν
+// κάποιος άλλος είναι ήδη συνδεδεμένος σε αυτόν τον browser: το token αφορά
+// άλλον λογαριασμό και δεν πρέπει να «καταναλωθεί» σιωπηλά μέσα στην εφαρμογή.
+$__verifyToken = trim($_GET['verify'] ?? '');
+if (!$__user || $__resetToken !== '' || $__verifyToken !== '') {
     require __DIR__ . '/authview.php';   // outputs the auth page and exits
     exit;
 }
 $__role = $__user['role'];
 $__email = $__user['email'];
 $__business = $__user['business_name'];
+// Η έκδοση που δείχνει το υποσέλιδο. Σε εγκατάσταση υπολογιστή τη γράφει το
+// `service.py` στο config.php· σε server μπορεί να μην οριστεί καθόλου, οπότε
+// το υποσέλιδο απλώς δεν τη δείχνει αντί να σκάσει.
+$__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 ?>
 <!DOCTYPE html>
 <html lang="el">
@@ -107,13 +127,19 @@ $__business = $__user['business_name'];
   html,body{height:100%}
   body{margin:0;font-family:system-ui,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
   a{color:var(--accent)}
-  .app{display:grid;grid-template-columns:var(--side) 1fr;grid-template-rows:auto 1fr;grid-template-areas:"side top" "side main";height:100vh}
+  /* ⚠️ `minmax(0,1fr)` και ΟΧΙ `1fr`: η στήλη του grid έχει εξ ορισμού
+     `min-width:auto`, οπότε ένας φαρδύς πίνακας μεγάλωνε ΟΛΗ τη σελίδα αντί να
+     κυλήσει μέσα της. Αποτέλεσμα: οριζόντια μπάρα κύλισης στο κάτω μέρος και —
+     χειρότερα — το κουμπί ειδοποιήσεων και η «Έξοδος» έβγαιναν εκτός οθόνης,
+     απάτητα. */
+  .app{display:grid;grid-template-columns:var(--side) minmax(0,1fr);grid-template-rows:auto 1fr;grid-template-areas:"side top" "side main";height:100vh}
   /* Sidebar */
   /* Ακολουθεί το θέμα, όπως το πλαϊνό μενού της εφαρμογής υπολογιστή: με
      καρφωμένο σκούρο φόντο, το κείμενο (var(--txt)) γινόταν σκούρο-σε-σκούρο
      στο φωτεινό θέμα και η στήλη έμοιαζε άδεια. */
   aside{grid-area:side;background:var(--menu-bg);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
-  .brand{padding:18px 18px 10px;font-size:18px;font-weight:800;letter-spacing:.3px}
+  .brand{display:flex;align-items:center;gap:9px;padding:18px 18px 10px;font-size:18px;font-weight:800;letter-spacing:.3px}
+  .brand-ic{width:28px;height:28px;border-radius:7px;flex:none}
   .brand span{color:var(--accent)}
   nav.menu{padding:8px;overflow:auto;flex:1}
   .nav-item{display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:10px;cursor:pointer;color:var(--muted);font-weight:600;margin-bottom:2px}
@@ -132,15 +158,43 @@ $__business = $__user['business_name'];
   .wiz-card b{font-size:16px}
   .wiz-card small{color:var(--muted);font-weight:500}
   .side-foot{padding:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .side-ver{display:flex;align-items:center;gap:6px;margin-top:8px;opacity:.85}
   /* Topbar */
-  header{grid-area:top;display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--header-bg);backdrop-filter:blur(6px)}
-  .search-trigger{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;color:var(--muted);cursor:text;min-width:260px}
+  header{grid-area:top;display:flex;align-items:flex-end;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--header-bg);backdrop-filter:blur(6px)}
+  /* Ό,τι είναι κείμενο στη μπάρα ΠΡΕΠΕΙ να μπορεί να στενέψει. Χωρίς αυτό, σε
+     στενό παράθυρο το όνομα χρήστη έσπρωχνε τα κουμπιά έξω από την οθόνη. */
+  header>.field{flex:0 1 auto;min-width:0}
+  header #who{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  header #who b{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom}
+  header .bell-wrap,header>button{flex:none;align-self:center}
+  /* Ο επιλογέας εταιρείας έχει από πάνω ετικέτα, η αναζήτηση όχι: με
+     `align-items:center` κάθονταν σε διαφορετικό ύψος. Ευθυγραμμίζονται στη
+     ΒΑΣΗ τους, και τα δύο πλαίσια έχουν το ίδιο ύψος. */
+  header>.field>select,.search-trigger{height:38px;box-sizing:border-box}
+  .search-trigger{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:0 12px;color:var(--muted);cursor:text;min-width:0;flex:0 1 260px;overflow:hidden;white-space:nowrap}
   .search-trigger kbd{margin-left:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:11px}
   .grow{flex:1}
   main{grid-area:main;overflow:auto;padding:20px}
+  /* Μπάρες κύλισης: μία εμφάνιση σε όλη την εφαρμογή. Οι προεπιλεγμένες του
+     browser έβγαιναν ΑΣΠΡΕΣ πάνω σε σκούρο θέμα — χτυπητές και ξένες. Το
+     `color-scheme` τις βάφει και σε Firefox· ο κανόνας webkit δίνει το ακριβές
+     σχήμα του πλαϊνού μενού. */
+  :root{color-scheme:dark}
+  :root[data-theme="light"]{color-scheme:light}
+  *{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--muted);background-clip:content-box}
+  ::-webkit-scrollbar-corner{background:transparent}
   /* Controls */
   select,input,button,textarea{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;outline:none}
   select:focus,input:focus,textarea:focus{border-color:var(--accent)}
+  /* ⚠️ Οι επιλογές ενός `<select>` ζωγραφίζονται από το ΛΕΙΤΟΥΡΓΙΚΟ: κληρονομούν
+     λευκό φόντο, ενώ το κείμενό μας είναι ανοιχτόχρωμο — αποτέλεσμα λευκό σε
+     λευκό. Στον επιλογέα γλώσσας του βοηθού φαινόταν μόνο η μία από τις δύο
+     γλώσσες. Τα χρώματα δίνονται ΡΗΤΑ. */
+  select option{background:var(--panel);color:var(--txt)}
   button{cursor:pointer;transition:.15s}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent2);border-color:var(--accent2);color:var(--on-accent);font-weight:700}
@@ -216,11 +270,36 @@ $__business = $__user['business_name'];
   .chart-legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px;font-size:12px;color:var(--txt)}
   .cl-item{display:inline-flex;align-items:center;gap:6px}
   .cl-item i{width:11px;height:11px;border-radius:3px;display:inline-block}
+  /* Η στήλη με τα κουμπιά έπαιρνε ίσο μερίδιο πλάτους σαν να ήταν κείμενο, τα
+     κουμπιά δεν χωρούσαν και ΚΑΒΑΛΟΥΣΑΝ τη διπλανή στήλη. Παίρνει όσο ακριβώς
+     χρειάζεται (`width:1%` σε auto layout = shrink-to-fit) και δεν σπάει. */
+  td.right,th.nofilter{white-space:nowrap;width:1%}
+  td.right>button,td.right>a{vertical-align:middle}
+  td.right>button+button,td.right>a+button,td.right>button+a{margin-left:4px}
+  /* Τα κελιά κειμένου κόβονται με «…» αντί να σπρώχνουν τον πίνακα. */
+  table td{overflow:hidden;text-overflow:ellipsis}
+  /* Το σήμα του γραφείου ζει ΜΕΣΑ στο υποσέλιδο του μενού. Ως fixed στοιχείο
+     καθόταν πάνω στη γραμμή της έκδοσης· εδώ είναι εξίσου «κάτω αριστερά»
+     χωρίς να σκεπάζει τίποτα. Και ποτέ δεν πιάνει κλικ (το μάθαμε από το toast). */
+  /* Σύνδεσμος πλέον — άρα ΧΡΕΙΑΖΕΤΑΙ κλικ, σε αντίθεση με το toast. Το
+     `display:block` το κρατά στο δικό του πλάτος αντί για όλη τη γραμμή. */
+  #brandMark{display:block;width:max-content;margin-top:10px;opacity:.72;transition:opacity .15s}
+  #brandMark:hover{opacity:1}
+  #brandMark img{display:none;width:74px;height:auto}
+  /* Η ειδικότητα του id νικά κάθε κανόνα με σκέτη κλάση — γι' αυτό η εναλλαγή
+     θέματος γράφεται ΚΙ ΑΥΤΗ μέσα από το id. Χωρίς αυτό το λογότυπο έμενε
+     κρυμμένο ό,τι κι αν έλεγε το θέμα. */
+  #brandMark .bm-dark{display:block}     /* σκούρο θέμα → σκούρα εκδοχή */
+  :root[data-theme="light"] #brandMark .bm-dark{display:none}
+  :root[data-theme="light"] #brandMark .bm-light{display:block}
+  th.sortable-th{cursor:pointer;user-select:none}
+  th.sortable-th:hover{color:var(--accent)}
+  .grid-sort{font-size:10px;color:var(--accent)}
   .col-grip{position:absolute;right:-3px;top:0;width:7px;height:100%;cursor:col-resize;z-index:2}
   .col-grip:hover{background:var(--accent2);opacity:.5}
   th.col-drop{box-shadow:inset 3px 0 0 var(--accent2)}
   th[draggable="true"]{cursor:grab}
-  #colFilterPop{position:absolute;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
+  #colFilterPop{position:fixed;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;box-shadow:var(--shadow);padding:14px;display:none}
   #colFilterPop.on{display:block}
   #colFilterPop h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
@@ -265,7 +344,53 @@ $__business = $__user['business_name'];
   .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
   @keyframes sp{to{transform:rotate(360deg)}}
   /* Toast */
-  .toast{position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
+  /* ⚠️ `pointer-events:none`. Το toast κάθεται ΑΚΡΙΒΩΣ πάνω από το κουδουνάκι
+     και την «Έξοδο», και ένα ορατό (ή ακόμη και διάφανο) μήνυμα κατάπινε το
+     κλικ. Επειδή μήνυμα εμφανίζεται κάθε φορά που κάτι αποτυγχάνει — π.χ. όταν
+     δεν έχει επιλεγεί πελάτης — τα δύο κουμπιά έμοιαζαν νεκρά ακριβώς τότε που
+     τα χρειαζόσουν. Το toast δεν είναι διαδραστικό: δεν έχει λόγο να δέχεται
+     κλικ ποτέ. */
+  /* --- Μικρές οθόνες ------------------------------------------------------
+     Η εφαρμογή σχεδιάστηκε για γραφείο, αλλά ο λογιστής την ανοίγει και από
+     κινητό για να δει ένα υπόλοιπο ή να στείλει ένα PDF. Δύο σκαλοπάτια: σε
+     tablet στενεύει το πλαϊνό μενού, σε κινητό γίνεται οριζόντια μπάρα πάνω
+     από το περιεχόμενο και η κεφαλίδα σπάει σε δύο σειρές. */
+  @media (max-width:1024px){
+    :root{--side:190px}
+    .search-trigger{flex:0 1 180px}
+    header #who{display:none}          /* ό,τι είναι διακοσμητικό φεύγει πρώτο */
+  }
+  @media (max-width:760px){
+    .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr;
+         grid-template-areas:"side" "top" "main";height:auto;min-height:100vh}
+    aside{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px;
+          border-right:none;border-bottom:1px solid var(--line);padding:6px 10px}
+    .brand{padding:6px 8px;font-size:15px}
+    /* ⚠️ ΜΙΑ σειρά που κυλά, όχι αναδίπλωση: με `flex-wrap` οι 14 ενότητες
+       γίνονταν μπλοκ 594px και έσπρωχναν την κεφαλίδα στο κάτω μέρος της
+       οθόνης — ακριβώς κάτω από το πλωτό κουμπί του βοηθού, που σκέπαζε την
+       «Έξοδο». */
+    .menu{display:flex;flex-wrap:nowrap;gap:4px;overflow-x:auto;padding:0 0 4px;
+          scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
+    .nav-item{padding:7px 10px;font-size:13px;white-space:nowrap;flex:none;scroll-snap-align:start}
+    .nav-item .ic{margin-right:2px}
+    /* Οι διακόπτες και το υποσέλιδο δεν χωρούν σε μπάρα — ζουν στις Ρυθμίσεις. */
+    .side-controls,.side-foot{display:none}
+    header{flex-wrap:wrap;gap:8px;padding:10px 12px}
+    header>.field{flex:1 1 100%}
+    .search-trigger{flex:1 1 100%}
+    main{padding:12px}
+    .panel{padding:12px}
+    /* Οι πίνακες κυλούν μέσα στο πλαίσιό τους, δεν σπρώχνουν τη σελίδα. */
+    .panel table{display:block;overflow-x:auto;white-space:nowrap}
+    .row{flex-wrap:wrap}
+    .field{min-width:0}
+    dialog .modal-body{max-width:96vw!important;padding:14px}
+    #cbPanel{right:8px;left:8px;width:auto;bottom:86px}
+    .toast{left:10px;right:10px;max-width:none}
+    .notif-panel{width:min(360px,92vw);right:-8px}
+  }
+  .toast{pointer-events:none;position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
   .toast.show{opacity:1;transform:none}
   .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--bad)}
   /* Dialog */
@@ -331,13 +456,13 @@ $__business = $__user['business_name'];
      του εικονίδια και συντομεύσεις). Δύο μενού δίπλα-δίπλα είναι σκέτη σύγχυση:
      κρύβουμε το δικό μας και αφήνουμε όλο το πλάτος στο περιεχόμενο. */
   body.embedded aside{display:none}
-  body.embedded .app{grid-template-columns:1fr;grid-template-areas:"top" "main"}
+  body.embedded .app{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "main"}
 </style>
 </head>
-<body class="<?= isset($_GET['desktop_token']) ? 'embedded' : '' ?>">
+<body class="<?= $__embedded ? 'embedded' : '' ?>">
 <div class="app">
   <aside>
-    <div class="brand">e-Timologio <span>Pro</span></div>
+    <div class="brand"><img src="assets/icons/app-icon-192.png" alt="" class="brand-ic">e-Timologio <span>Pro</span></div>
     <nav class="menu" id="menu">
       <div class="nav-item active" data-view="issue"><span class="ic">🧾</span> Έκδοση</div>
       <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική έκδοση</div>
@@ -367,7 +492,18 @@ $__business = $__user['business_name'];
       <div class="side-toggle on" id="tipsToggle" onclick="toggleTips()" data-tip="Εμφάνιση επεξηγήσεων όταν αφήνετε τον δείκτη πάνω από ένα κουμπί">
         <span class="tt-switch"><span class="tt-knob"></span></span><span id="tipsLbl">Βοηθητικά μηνύματα</span></div>
     </div>
-    <div class="side-foot">🔒 Τοπικά δεδομένα κρυπτογραφημένα<br>Πάτα <b>Ctrl+K</b> για γρήγορη αναζήτηση</div>
+    <div class="side-foot">🔒 Τοπικά δεδομένα κρυπτογραφημένα<br>Πάτα <b>Ctrl+K</b> για γρήγορη αναζήτηση
+      <?php /* Κάτω αριστερά στέκεται ΜΟΝΟ το σήμα του γραφείου. Το όνομα του
+               προϊόντος γράφεται ήδη στην κορυφή του μενού· εδώ μένει μόνο ο
+               αριθμός έκδοσης, που χρειάζεται όποιος ζητά υποστήριξη. */ ?>
+      <?php if ($__version !== ''): ?>
+      <div class="side-ver">έκδοση <?= htmlspecialchars($__version, ENT_QUOTES) ?></div>
+      <?php endif; ?>
+      <a id="brandMark" href="https://scanmydata.gr" target="_blank" rel="noopener noreferrer"
+         title="scanmydata.gr">
+        <img src="assets/brand/scanmydata-light.png" alt="ScanmyData" class="bm-light">
+        <img src="assets/brand/scanmydata-dark.png" alt="ScanmyData" class="bm-dark">
+      </a></div>
   </aside>
 
   <header>
@@ -451,6 +587,8 @@ $__business = $__user['business_name'];
           <button class="primary" onclick="loadCard()">Φόρτωση</button>
           <button class="ghost" onclick="openPaymentModal()">+ Πληρωμή</button>
           <button class="ghost" onclick="ledgerPdf()">📄 PDF καρτέλας</button>
+          <button class="ghost" onclick="emailLedger()" data-tip="Στέλνει την καρτέλα στον πελάτη — με προεπισκόπηση κειμένου πριν φύγει">✉️ Αποστολή καρτέλας</button>
+          <button class="ghost" onclick="openLedgerBulk()" data-tip="Καρτέλες σε πολλούς πελάτες μαζί, με φίλτρο για όσους χρωστούν">📨 Μαζική αποστολή</button>
           <button class="ghost" onclick="printCustomerInvoices()" data-tip="Προεπισκόπηση &amp; εκτύπωση όλων των παραστατικών του πελάτη">🖨️ Μαζική εκτύπωση</button>
           <button class="ghost" onclick="zipCustomerInvoices()" data-tip="Πακετάρει τα PDF της καρτέλας σε ένα ZIP">🗜️ ZIP παραστατικών</button>
         </div>
@@ -475,6 +613,7 @@ $__business = $__user['business_name'];
         <div class="row" style="align-items:center;margin-top:6px">
           <span class="hint" id="docCount"></span>
           <div class="grow"></div>
+          <button class="ghost sm cols-btn" onclick="openColumnChooser('docTable',this)" data-tip="Ποιες στήλες φαίνονται">⚙ Στήλες</button>
           <button class="ghost sm" onclick="docToggleAll(true)">Επιλογή όλων</button>
           <button class="ghost sm" onclick="docToggleAll(false)">Καμία</button>
           <button class="ghost" onclick="printSelectedDocs()" data-tip="Προεπισκόπηση &amp; εκτύπωση των επιλεγμένων">🖨️ Μαζική εκτύπωση</button>
@@ -482,7 +621,8 @@ $__business = $__user['business_name'];
         </div>
         <table id="docTable" style="margin-top:10px"><thead><tr>
           <th class="grid-check" style="width:34px"><input type="checkbox" id="docAll" onchange="docToggleAll(this.checked)"></th>
-          <th>Ημ/νία</th><th>Τύπος</th><th>Σειρά / ΑΑ</th><th>Πελάτης</th><th class="num">Καθαρή</th><th class="num">Σύνολο</th><th>ΜΑΡΚ</th><th class="nofilter"></th>
+          <th>Ημ/νία</th><th>Τύπος</th><th>Σειρά</th><th>Α/Α</th><th>Πελάτης</th>
+          <th class="num">Καθαρή</th><th class="num">ΦΠΑ</th><th class="num">Σύνολο</th><th>ΜΑΡΚ</th><th class="nofilter"></th>
         </tr></thead><tbody></tbody></table>
       </div>
     </section>
@@ -929,6 +1069,61 @@ $__business = $__user['business_name'];
         </div>
       </div>
       <?php endif; ?>
+      <?php /* Μόνο ο διαχειριστής: το κλειδί συνδέει ΟΛΟΚΛΗΡΗ εγκατάσταση με
+               τον server, δεν είναι προσωπική ρύθμιση του λογιστή. */ ?>
+      <?php if ($__role === 'master'): ?>
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🔑 Κλειδιά πρόσβασης — σύνδεση εφαρμογής υπολογιστή</strong>
+          <button class="add" onclick="createAccessKey()">➕ Νέο κλειδί</button>
+        </div>
+        <p class="sub" style="margin-top:4px">Δώσε ένα κλειδί σε κάθε υπολογιστή που θα συνδέεται σε αυτόν τον server. Στην εφαρμογή: <b>Πίνακας ελέγχου → Σύνδεση σε server</b> — επικόλληση και τέλος· τη διεύθυνση τη βρίσκει μόνη της. Το κλειδί εμφανίζεται <b>μία φορά</b>.</p>
+        <div id="akNew" style="margin:8px 0"></div>
+        <table id="akTable"><thead><tr><th>Περιγραφή</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Κατάσταση</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
+      </div>
+      <?php endif; ?>
+      <!-- Τραπεζικοί λογαριασμοί + αυτόματη αποστολή. Ανά ΕΤΑΙΡΕΙΑ, όχι ανά
+           χρήστη: το IBAN και το «στείλε το τιμολόγιο στον πελάτη» ανήκουν
+           στην επιχείρηση που εκδίδει, όχι σε όποιον έτυχε να είναι μπροστά. -->
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🏦 Λογαριασμοί & αυτόματη αποστολή <span class="muted" id="bkCompany"></span></strong>
+          <button class="add" onclick="bkAddRow()">➕ Λογαριασμός</button>
+        </div>
+        <p class="sub" style="margin-top:4px">Οι λογαριασμοί με ✓ στο «στο email» μπαίνουν ως κείμενο στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο. Αν ανεβάσεις PDF με τους λογαριασμούς, επισυνάπτεται κι αυτό.</p>
+        <table id="bkTable">
+          <thead><tr><th>Τράπεζα</th><th>IBAN</th><th>Δικαιούχος</th><th>Στο email</th><th class="nofilter"></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="row" style="margin-top:10px;align-items:center;gap:10px">
+          <div class="field grow"><label>PDF με τους λογαριασμούς <span class="muted">(προαιρετικό, έως 3 MB)</span></label>
+            <input type="file" id="bkPdfFile" accept="application/pdf" onchange="bkUploadPdf(this)"></div>
+          <span class="sub" id="bkPdfState">—</span>
+          <button class="ghost sm" id="bkPdfView" onclick="bkViewPdf()" style="display:none">👁 Προβολή</button>
+          <button class="ghost sm" id="bkPdfDel" onclick="bkDeletePdf()" style="display:none">🗑 Αφαίρεση</button>
+        </div>
+
+        <div style="border-top:1px solid var(--line);margin:14px 0 10px"></div>
+        <div class="row" style="align-items:center;gap:18px;flex-wrap:wrap">
+          <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="bkAutoSend"> Αυτόματη αποστολή παραστατικού στον πελάτη μόλις εκδοθεί</label>
+          <div class="field grow"><label>Κρυφή κοινοποίηση (BCC)</label><input id="bkAutoBcc" placeholder="π.χ. logistirio@example.gr"></div>
+        </div>
+        <p class="sub">Στέλνεται μόνο όταν ο πελάτης έχει καταχωρημένο email. Χωρίς email καταγράφεται στο ημερολόγιο ενεργειών και δεν χάνεται σιωπηλά.</p>
+
+        <div style="border-top:1px solid var(--line);margin:14px 0 10px"></div>
+        <div class="row" style="align-items:center;gap:18px;flex-wrap:wrap">
+          <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="bkSchedOn"> Προγραμματισμένη αποστολή καρτελών</label>
+          <div class="field"><label>Ημέρα μήνα</label><input id="bkSchedDay" type="number" min="1" max="28" value="1" style="width:90px"></div>
+          <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="bkSchedDebit" checked> Μόνο χρεωστικά υπόλοιπα</label>
+          <div class="field"><label>Ελάχιστο ποσό €</label><input id="bkSchedMin" type="number" step="0.01" min="0" value="0" style="width:120px"></div>
+          <button class="ghost sm" onclick="bkDispatchNow()" data-tip="Στέλνει τώρα, χωρίς να περιμένει την ημέρα του μήνα">▶️ Αποστολή τώρα</button>
+        </div>
+        <p class="sub">Η προγραμματισμένη αποστολή γράφει την καρτέλα <b>μέσα στο μήνυμα</b> (πίνακα κινήσεων): ο server δεν φτιάχνει PDF με ελληνικά — αυτό το κάνει ο browser. Από την οθόνη «Καρτέλα» η μαζική αποστολή επισυνάπτει κανονικό PDF.</p>
+        <div class="row" style="justify-content:flex-end;margin-top:10px;align-items:center">
+          <span class="sub" id="bkResult" style="margin-right:auto"></span>
+          <button class="primary" onclick="bkSave()">Αποθήκευση</button>
+        </div>
+      </div>
       <div class="panel" style="margin-top:16px">
         <strong>🏢 Συνδεδεμένοι λογαριασμοί AADE</strong>
         <p class="sub" style="margin-top:4px">Τα διαπιστευτήρια e-timologio αποθηκεύονται κρυπτογραφημένα και ρυθμίζονται από τον διαχειριστή.</p>
@@ -960,10 +1155,49 @@ $__business = $__user['business_name'];
       </div>
       <?php endif; ?>
 
+      <!-- Χρονομέτρηση: πόση ώρα δούλεψε ποιος, για ποια εταιρεία. Δεν προκύπτει
+           από τις ενέργειες — μια ώρα ελέγχου καρτελών δεν αφήνει «ενέργεια». -->
+      <div class="panel" style="margin-top:14px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>⏱️ Χρόνος εργασίας ανά εταιρεία</strong>
+          <div class="row">
+            <div class="field"><label>Από</label><input id="wtFrom" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
+            <div class="field"><label>Έως</label><input id="wtTo" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
+            <button class="ghost" onclick="loadWorkTime()">↻ Ανανέωση</button>
+          </div>
+        </div>
+        <p class="sub">Μετράει μόνο όση ώρα η εφαρμογή είναι <b>ανοιχτή και ορατή</b> με επιλεγμένη την εταιρεία. Ένα ξεχασμένο παράθυρο δεν χρεώνεται.</p>
+        <table id="wtTable"><thead><tr><th>Εταιρεία</th><th>Χρήστης</th><th class="num">Ώρες</th><th>Τελευταία δραστηριότητα</th></tr></thead><tbody></tbody></table>
+      </div>
+
+      <!-- Ημερολόγιο ενεργειών -->
+      <div class="panel" style="margin-top:14px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>📜 Ημερολόγιο ενεργειών</strong>
+          <div class="row">
+            <div class="field"><label>Ενέργεια</label>
+              <select id="alAction" onchange="loadAuditLog()">
+                <option value="">(όλες)</option>
+                <option value="login">Σύνδεση</option>
+                <option value="logout">Αποσύνδεση</option>
+                <option value="issue">Έκδοση παραστατικού</option>
+                <option value="payment_update">Αλλαγή πληρωμής</option>
+                <option value="payment_delete">Διαγραφή πληρωμής</option>
+                <option value="email_sent">Αποστολή email</option>
+              </select></div>
+            <button class="ghost" onclick="loadAuditLog()">↻ Ανανέωση</button>
+          </div>
+        </div>
+        <table id="alTable"><thead><tr><th>Πότε</th><th>Χρήστης</th><th>Εταιρεία</th><th>Ενέργεια</th><th>Λεπτομέρειες</th></tr></thead><tbody></tbody></table>
+      </div>
+
       <div class="panel" style="margin-top:14px">
         <div class="row" style="justify-content:space-between;align-items:center">
           <strong>🏢 Επιχειρήσεις (λογαριασμοί AADE)</strong>
-          <span class="hint" id="adminBizCount"></span>
+          <div class="row">
+            <span class="hint" id="adminBizCount"></span>
+            <button class="add" onclick="openNewCompany()" data-tip="Προσθήκη εταιρείας με τα διαπιστευτήρια AADE της">➕ Νέα εταιρεία</button>
+          </div>
         </div>
         <p class="sub" id="adminBizNote"></p>
         <table id="adminBiz"><thead><tr><th>Επωνυμία</th><th>ΑΦΜ</th><th>Χρήστης (κάτοχος)</th><th>Λογιστές</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
@@ -1003,6 +1237,11 @@ $__business = $__user['business_name'];
     <div class="row" style="margin-top:8px"><div class="field grow"><label>Επωνυμία</label><input id="cmName"></div></div>
     <div class="row"><div class="field grow"><label>Διεύθυνση</label><input id="cmAddress"></div>
       <div class="field"><label>Πόλη</label><input id="cmCity"></div><div class="field"><label>Τ.Κ.</label><input id="cmZip"></div></div>
+    <!-- Προαιρετικά, αλλά απαραίτητα για την αποστολή παραστατικού/καρτέλας με
+         email: αν λείπει το email, ο πελάτης δεν μπορεί να παραλάβει τίποτα. -->
+    <div class="row"><div class="field grow"><label>Email <span class="muted">(για αποστολή παραστατικών)</span></label><input id="cmEmail" type="email" placeholder="πχ. logistirio@example.gr"></div>
+      <div class="field"><label>Τηλέφωνο</label><input id="cmPhone1" style="width:150px"></div>
+      <div class="field"><label>Τηλέφωνο 2</label><input id="cmPhone2" style="width:150px"></div></div>
     <p class="hint">Αποθήκευση δημιουργεί τον πελάτη στο e-timologio (αν δεν υπάρχει).</p>
   </div>
   <div id="custTabPersonal" style="display:none">
@@ -1112,7 +1351,7 @@ $__business = $__user['business_name'];
 
 <!-- Payment modal -->
 <dialog id="payModal"><form method="dialog" class="modal-body" onsubmit="savePayment(event)">
-  <div class="modal-head">💶 Καταχώρηση πληρωμής</div>
+  <div class="modal-head" id="pmHead">💶 Καταχώρηση πληρωμής</div>
   <!-- Ο επιλογέας πελάτη φαίνεται μόνο στη μεμονωμένη καταχώρηση· από την
        Καρτέλα ο πελάτης είναι ήδη γνωστός και μένει κλειδωμένος. -->
   <div class="row" id="pmPickRow" style="position:relative;display:none">
@@ -1120,7 +1359,8 @@ $__business = $__user['business_name'];
       <input id="pmCust" placeholder="Αναζήτηση με επωνυμία ή ΑΦΜ…" autocomplete="off" oninput="pmAc(this)" onfocus="pmAc(this)">
       <div id="pmAcPanel" class="ac-panel"></div></div>
   </div>
-  <div class="row"><div class="field grow"><label>Πελάτης (ΑΦΜ)</label><input id="pmVat" readonly></div>
+  <div class="row" style="align-items:flex-end"><div class="field grow"><label>Πελάτης (ΑΦΜ)</label><input id="pmVat" readonly></div>
+    <button type="button" class="ghost" id="pmCardBtn" style="display:none" onclick="pmShowCard()" data-tip="Δείχνει τζίρο, πληρωμές και τρέχον υπόλοιπο χωρίς να κλείσει η φόρμα">📇 Καρτέλα</button>
     <div class="field"><label>Ποσό (€)</label><input id="pmAmount" type="number" step="0.01" required></div></div>
   <div class="row"><div class="field"><label>Ημ/νία</label><input id="pmDate" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)" required></div>
     <div class="field"><label>Τρόπος</label><select id="pmMethod"><option value="3">Μετρητά</option><option value="1">Τραπεζική μεταφορά</option><option value="4">Επιταγή</option></select></div></div>
@@ -1132,6 +1372,54 @@ $__business = $__user['business_name'];
     <button type="button" class="ghost" onclick="payModal.close()">Κλείσιμο</button>
     <button type="submit" class="primary">Αποθήκευση</button></div>
 </form></dialog>
+
+<!-- Αποστολή με email: ΠΑΝΤΑ με προεπισκόπηση κειμένου. Ο λογιστής γράφει
+     διαφορετικά σε κάθε πελάτη, και ένα σταθερό κείμενο δεν εξυπηρετεί. -->
+<dialog id="mailModal"><form method="dialog" class="modal-body" style="max-width:660px" onsubmit="sendMailDoc(event)">
+  <div class="modal-head">✉️ <span id="mmTitle">Αποστολή με email</span></div>
+  <div class="row"><div class="field grow"><label>Προς *</label><input id="mmTo" type="email" required placeholder="πελάτης@example.gr"></div></div>
+  <div class="row"><div class="field grow"><label>Θέμα *</label><input id="mmSubject" required></div></div>
+  <div class="field" style="margin-top:8px"><label>Μήνυμα</label>
+    <textarea id="mmBody" rows="7" style="width:100%;resize:vertical"></textarea></div>
+  <div class="hint" id="mmAttach" style="margin-top:6px"></div>
+  <div id="mmResult" class="sub" style="margin-top:8px"></div>
+  <div class="row" style="margin-top:14px;justify-content:flex-end">
+    <button type="button" class="ghost" onclick="mailModal.close()">Άκυρο</button>
+    <button type="submit" class="primary">✉️ Αποστολή</button>
+  </div>
+</form></dialog>
+
+<!-- Μαζική αποστολή καρτελών: πρώτα ΒΛΕΠΕΙΣ ποιος θα λάβει και τι χρωστά,
+     μετά στέλνεις. Μια λίστα παραληπτών που δεν φαίνεται είναι επικίνδυνη. -->
+<dialog id="ledgerBulkModal"><div class="modal-body" style="max-width:860px">
+  <div class="modal-head">📨 Μαζική αποστολή καρτελών</div>
+  <div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap">
+    <div class="field"><label>Από</label><input id="lbFrom" type="date"></div>
+    <div class="field"><label>Έως</label><input id="lbTo" type="date"></div>
+    <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="lbOnlyDebit" checked onchange="lbLoad()"> Μόνο χρεωστικά υπόλοιπα</label>
+    <div class="field"><label>Ελάχιστο ποσό €</label><input id="lbMin" type="number" step="0.01" min="0" value="0" style="width:110px"></div>
+    <button class="ghost sm" onclick="lbLoad()">🔄 Ανανέωση</button>
+    <button class="ghost sm" onclick="lbFindEmails()" data-tip="Ρωτά την ΑΑΔΕ για όσους δεν έχουν email — μία φορά ανά πελάτη">🔎 Εύρεση email</button>
+  </div>
+  <div style="max-height:340px;overflow:auto;margin-top:10px">
+    <table id="lbTable"><thead><tr><th class="nofilter"></th><th>Πελάτης</th><th>ΑΦΜ</th><th>Υπόλοιπο</th><th>Email</th></tr></thead><tbody></tbody></table>
+  </div>
+  <div class="hint" style="margin-top:6px">Κάθε καρτέλα φεύγει ως συνημμένο PDF, με το κείμενο να αναφέρει αν το υπόλοιπο είναι προς πληρωμή ή πιστωτικό. Η αποστολή γίνεται με SMTP.</div>
+  <div class="row" style="margin-top:12px;justify-content:flex-end;align-items:center">
+    <span class="sub" id="lbResult" style="margin-right:auto"></span>
+    <button type="button" class="ghost" onclick="ledgerBulkModal.close()">Κλείσιμο</button>
+    <button type="button" class="primary" onclick="lbSend()">📨 Αποστολή στους επιλεγμένους</button>
+  </div>
+</div></dialog>
+
+<!-- Καρτέλα «με μια ματιά», μέσα από την καταχώρηση πληρωμής -->
+<dialog id="pmCardModal"><div class="modal-body" style="max-width:720px">
+  <div class="modal-head">📇 Καρτέλα — <span id="pmCardTitle"></span></div>
+  <div id="pmCardBody"></div>
+  <div class="row" style="margin-top:14px;justify-content:flex-end">
+    <button class="ghost" onclick="pmCardModal.close()">Κλείσιμο</button>
+  </div>
+</div></dialog>
 
 <?php if (in_array($__role, ['master','editor'], true)): ?>
 <!-- Μία εταιρεία, ένα παράθυρο -----------------------------------------------
@@ -1160,7 +1448,7 @@ $__business = $__user['business_name'];
   <div id="coResult" class="sub" style="margin-top:10px"></div>
   <div class="row" style="margin-top:16px;justify-content:space-between">
     <?php if ($__role === 'master'): ?>
-    <button class="danger" onclick="deleteCompany()">🗑 Διαγραφή εταιρείας</button>
+    <button class="danger" id="coDelete" onclick="deleteCompany()">🗑 Διαγραφή εταιρείας</button>
     <?php else: ?><span></span><?php endif; ?>
     <span>
       <button class="ghost" onclick="companyModal.close()">Άκυρο</button>
@@ -1308,6 +1596,9 @@ $__business = $__user['business_name'];
   <div class="pal-results" id="palResults"></div>
 </div></div>
 
+<!-- Σήμα του γραφείου, σταθερά κάτω αριστερά. Δύο εκδοχές, μία ανά θέμα:
+     το φωτεινό λογότυπο πάνω σε σκούρο φόντο χάνεται (και αντίστροφα). -->
+
 <div class="toast" id="toast"></div>
 <div id="colFilterPop"></div>
 
@@ -1335,7 +1626,17 @@ $__business = $__user['business_name'];
 #cbPanel.open{display:flex}
 #cbHead{padding:12px 14px;background:linear-gradient(135deg,#0ea5e9,#6366f1);color:#fff;font-weight:700;display:flex;align-items:center;gap:8px}
 #cbHead .grow{flex:1}
-#cbHead select{background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:3px 6px;font-size:12px}
+#cbHead select{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.45);border-radius:8px;padding:3px 22px 3px 8px;font-size:12px;
+  /* Το βελάκι του συστήματος χάνεται πάνω στη γαλάζια κεφαλίδα — ζωγραφίζεται
+     εδώ, ώστε να φαίνεται ότι είναι επιλογέας και όχι ετικέτα. */
+  appearance:none;-webkit-appearance:none;cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,#fff 50%),linear-gradient(135deg,#fff 50%,transparent 50%);
+  background-position:calc(100% - 12px) 50%,calc(100% - 8px) 50%;
+  background-size:4px 4px,4px 4px;background-repeat:no-repeat}
+/* ⚠️ Η ΛΙΣΤΑ του select τη ζωγραφίζει το λειτουργικό και κληρονομεί το
+   ημιδιαφανές λευκό φόντο: λευκά γράμματα σε λευκό: φαινόταν μόνο η μία από τις
+   δύο γλώσσες. Τα χρώματα δίνονται ρητά. */
+#cbHead select option{background:var(--panel);color:var(--txt)}
 #cbHead button{background:transparent;border:none;color:#fff;cursor:pointer;font-size:16px}
 #cbLog{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:rgba(0,0,0,.15)}
 .cbMsg{max-width:82%;padding:8px 11px;border-radius:12px;font-size:13.5px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
@@ -1368,7 +1669,6 @@ $__business = $__user['business_name'];
   </div>
 </div>
 
-
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
@@ -1379,6 +1679,7 @@ const ME_ID=<?= (int)$__user['id'] ?>;
 const IS_STAFF=<?= json_encode(in_array($__role, ['master','editor'], true)) ?>;
 let ACCOUNT='';
 const $=s=>document.querySelector(s);
+const $$=s=>Array.from(document.querySelectorAll(s));
 const fmt=n=>(Number(n)||0).toLocaleString('el-GR',{minimumFractionDigits:2,maximumFractionDigits:2});
 // Parse a number that may be el-GR formatted (1.234,56) OR plain (1234.56 / 12.3456).
 // Rule: if both separators present, the LAST one is the decimal; comma-only ⇒ decimal
@@ -1397,11 +1698,35 @@ const q1=s=>String(s??'').replace(/'/g,"\\'");
 // Το PDF ενός παραστατικού: ΕΝΑ κουμπί, παντού το ίδιο (καρτέλα, παραστατικά,
 // αποτέλεσμα έκδοσης). Παλιά ήταν σκέτος σύνδεσμος «PDF» και ο χρήστης δεν
 // καταλάβαινε ότι πατιέται.
-function docUrl(mark){return API+'?account='+encodeURIComponent(ACCOUNT)+'&mark='+encodeURIComponent(mark)+'&pdf_raw=1';}
+function docUrl(mark,download){return API+'?account='+encodeURIComponent(ACCOUNT)+'&mark='+encodeURIComponent(mark)+'&pdf_raw=1'+(download?'&dl=1':'');}
 function docBtn(mark,label){if(!mark)return '';
-  return `<a class="docbtn" href="${docUrl(mark)}" target="_blank" rel="noopener" title="Άνοιγμα του παραστατικού σε PDF">📗 ${esc(label||'Παραστατικό')}</a>`;}
+  return `<button type="button" class="docbtn" onclick="event.stopPropagation();openDoc('${q1(mark)}',this)" title="Άνοιγμα του παραστατικού σε PDF">📗 ${esc(label||'Παραστατικό')}</button>`;}
+// Το PDF έρχεται από την ΑΑΔΕ και αργεί 1-3 δευτερόλεπτα. Χωρίς ανάδραση, ο
+// χρήστης πατούσε και «δεν γινόταν τίποτα» — και ξαναπατούσε.
+async function openDoc(mark,btn){
+  const old=btn?btn.innerHTML:'';
+  if(btn){btn.disabled=true;btn.innerHTML='<span class="spin"></span> Λήψη…';}
+  toast('Άνοιγμα παραστατικού… (ΜΑΡΚ '+mark+')');
+  try{
+    if(isEmbedded()){
+      // Στην εφαρμογή υπολογιστή δεν υπάρχει καρτέλα browser να δείξει το PDF:
+      // το κατεβάζουμε (ο χειριστής λήψεων το αποθηκεύει και το ανοίγει με τον
+      // προβολέα του συστήματος, όπου δουλεύει και η εκτύπωση).
+      location.href=docUrl(mark,true);
+      toast('Το παραστατικό κατεβαίνει και θα ανοίξει','ok');
+    }else{
+      const w=window.open(docUrl(mark),'_blank','noopener');
+      if(!w)toast('Επίτρεψε τα αναδυόμενα παράθυρα για να ανοίξει το PDF','warn');
+      else toast('Το παραστατικό άνοιξε σε νέα καρτέλα','ok');
+    }
+  }catch(e){toast('Παραστατικό: '+e.message,'err');}
+  finally{if(btn){setTimeout(()=>{btn.disabled=false;btn.innerHTML=old;},1200);}}
+}
 const PAYMETHODS={3:'Μετρητά',1:'Τραπεζική μεταφορά',4:'Επιταγή'};
 function payMethod(m){return PAYMETHODS[parseInt(m,10)]||'';}
+// Τρέχουμε μέσα στην εφαρμογή υπολογιστή (ενσωματωμένος browser) ή σε κανονικό
+// browser; Αλλάζει τι μπορεί να γίνει με νέα παράθυρα και λήψεις.
+function isEmbedded(){return document.body.classList.contains('embedded');}
 function toast(m,t=''){const e=$('#toast');e.className='toast show '+t;e.textContent=m;clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',3400);}
 // --- Theme (light / dark) -----------------------------------------------------
 function applyTheme(t){const light=t==='light';document.documentElement.setAttribute('data-theme',light?'light':'dark');
@@ -1451,7 +1776,7 @@ function showView(v){
   if(v==='bulk')loadBulkView();
   if(v==='schedule')loadSchedule();
   if(v==='series')loadSeriesView();
-  if(v==='settings')loadSettings();
+  if(v==='settings'){loadSettings();loadBankSettings(true);}
   if(v==='admin')loadAdmin();
 }
 function enhanceViewTables(v){
@@ -1488,7 +1813,11 @@ async function refreshAccounts(){
 }
 
 // Auth: logout, settings, admin
-async function logout(){try{await fetch(API+'?auth=logout',{method:'POST'});}catch(e){}location.href='app.php';}
+async function logout(){
+  // Η αποσύνδεση είναι δίπλα στο κουδουνάκι και πατιόταν κατά λάθος — και στην
+  // εφαρμογή υπολογιστή σημαίνει ξαναγράψιμο κωδικού που παρήγαγε η ίδια.
+  if(!confirm('Αποσύνδεση από την εφαρμογή;'))return;
+  try{await fetch(API+'?auth=logout',{method:'POST'});}catch(e){}location.href='app.php';}
 async function changePassword(){const o=$('#cpOld').value,n=$('#cpNew').value,n2=$('#cpNew2').value;
   if(n!==n2){$('#cpResult').textContent='Οι νέοι κωδικοί δεν ταιριάζουν.';return;}
   try{const b=new URLSearchParams({auth:'change_password',old_password:o,password:n});
@@ -1575,7 +1904,42 @@ async function testMailSettings(){
 async function loadSettings(){loadMailSettings();try{const d=await api({accounts:1});
   $('#settAccts tbody').innerHTML=(d.accounts||[]).map(a=>`<tr><td>${esc(a.vat)}</td><td>${esc(a.label)}</td><td class="muted">•••</td></tr>`).join('')||'<tr><td colspan="3" class="muted">Δεν έχει συνδεθεί λογαριασμός AADE.</td></tr>';
 }catch(e){}
-  load2fa();loadNotifPrefs();}
+  load2fa();loadNotifPrefs();loadAccessKeys();}
+// --- Κλειδιά πρόσβασης -------------------------------------------------------
+// Το κλειδί είναι το μόνο που χρειάζεται η εφαρμογή υπολογιστή για να στραφεί σε
+// αυτόν τον server: κουβαλά κωδικοποιημένη τη διεύθυνση, οπότε ο χρήστης δεν
+// πληκτρολογεί URL που μπορεί να γράψει λάθος.
+async function loadAccessKeys(){
+  const el=$('#akTable');if(!el)return;
+  try{const d=await apost({auth:'access_keys_list'});
+    el.querySelector('tbody').innerHTML=(d.keys||[]).map(k=>`<tr>
+      <td>${esc(k.label||'—')}</td><td>${esc((k.created_at||'').slice(0,16))}</td>
+      <td>${esc(k.last_used_at||'—')}</td>
+      <td>${k.revoked?'<span class="pill bad">ανακλήθηκε</span>':'<span class="pill ok">ενεργό</span>'}</td>
+      <td class="right">${k.revoked?'':`<button class="danger sm" onclick="revokeAccessKey(${k.id})">Ανάκληση</button>`}</td></tr>`).join('')
+      ||'<tr><td colspan="5" class="muted">Κανένα κλειδί.</td></tr>';
+  }catch(e){}}
+async function createAccessKey(){
+  const label=prompt('Περιγραφή (π.χ. «Φορητός Μαρίας»):','');
+  if(label===null)return;
+  try{const d=await apost({auth:'access_key_create',label});
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    // Δείχνεται ΜΙΑ φορά — γι' αυτό μένει στην οθόνη μέχρι να το αντιγράψει.
+    $('#akNew').innerHTML=`<div class="card" style="border-left:4px solid var(--ok)">
+      <b>Το κλειδί (αντίγραψέ το τώρα — δεν εμφανίζεται ξανά):</b>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <code id="akValue" style="flex:1;word-break:break-all;background:var(--panel2);border:1px solid var(--line);padding:8px 10px;border-radius:8px">${esc(d.key)}</code>
+        <button class="primary sm" onclick="copyAccessKey()">📋 Αντιγραφή</button>
+      </div></div>`;
+    loadAccessKeys();
+  }catch(e){toast('Κλειδί: '+e.message,'err');}}
+function copyAccessKey(){const t=($('#akValue')||{}).textContent||'';
+  navigator.clipboard.writeText(t).then(()=>toast('Αντιγράφηκε','ok'),()=>toast('Αντέγραψέ το με το ποντίκι','warn'));}
+async function revokeAccessKey(id){
+  if(!confirm('Ανάκληση του κλειδιού;\n\nΟ υπολογιστής που το χρησιμοποιεί θα χάσει τη σύνδεση.'))return;
+  try{const d=await apost({auth:'access_key_revoke',key_id:id});
+    if(!d.success)throw new Error('απέτυχε');toast('Ανακλήθηκε','ok');loadAccessKeys();
+  }catch(e){toast('Κλειδί: '+e.message,'err');}}
 // --- Email notification preferences (staff) ----------------------------------
 async function loadNotifPrefs(){if(!IS_STAFF)return;
   try{const d=await apost({auth:'notif_prefs_get'});if(!d.success)return;
@@ -1646,8 +2010,49 @@ async function loadAdmin(){
     if(ADMIN_SCOPE.is_master){
       const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);
     }
+    loadWorkTime();loadAuditLog();
     enhanceViewTables('admin');
   }catch(e){toast('Διαχείριση: '+e.message,'err');}}
+
+// --- Χρονομέτρηση ------------------------------------------------------------
+function hhmm(secs){const h=Math.floor(secs/3600),m=Math.round((secs%3600)/60);
+  return h?(h+'ω '+String(m).padStart(2,'0')+'λ'):(m+'λ');}
+async function loadWorkTime(){
+  const el=$('#wtTable');if(!el)return;
+  try{const d=await api({work_report:1,from:di('wtFrom'),to:di('wtTo')});
+    const rows=d.rows||[];
+    el.querySelector('tbody').innerHTML=rows.map(r=>`<tr>
+      <td>${esc(r.company||r.account_vat)}</td><td>${esc(r.user_label)}</td>
+      <td class="num">${esc(hhmm(r.seconds))}</td><td>${esc(r.last_at||'')}</td></tr>`).join('')
+      ||'<tr><td colspan="4" class="muted">Καμία καταγραφή στο διάστημα.</td></tr>';
+  }catch(e){}}
+// Ο παλμός: μετρά ΜΟΝΟ όταν η καρτέλα είναι ορατή. Χωρίς αυτό, ένα ανοιχτό tab
+// σε άλλη οθόνη θα χρέωνε ώρες που δεν δούλεψε κανείς.
+const WORK_PING_SEC=60;
+let WORK_ACC=0;
+setInterval(()=>{
+  if(document.hidden||!ACCOUNT){WORK_ACC=0;return;}
+  WORK_ACC+=5;
+  if(WORK_ACC>=WORK_PING_SEC){const secs=WORK_ACC;WORK_ACC=0;
+    api({work_ping:1,seconds:secs}).catch(()=>{});}
+},5000);
+
+// --- Ημερολόγιο ενεργειών ----------------------------------------------------
+const AUDIT_LABELS={login:'Σύνδεση',login_2fa:'Σύνδεση (2FA)',logout:'Αποσύνδεση',
+  issue:'Έκδοση',payment_update:'Αλλαγή πληρωμής',payment_delete:'Διαγραφή πληρωμής',
+  email_sent:'Αποστολή email'};
+async function loadAuditLog(){
+  const el=$('#alTable');if(!el)return;
+  try{const d=await api({audit_log:1,f_action:$('#alAction').value,limit:300});
+    el.querySelector('tbody').innerHTML=(d.rows||[]).map(r=>{
+      const det=Object.entries(r.detail||{}).filter(([,v])=>v!==''&&v!==null)
+        .map(([k,v])=>k+': '+v).join(' · ');
+      return `<tr><td>${esc(r.created_at)}</td><td>${esc(r.user_email||('#'+r.user_id))}</td>
+        <td>${esc(r.account_vat||'—')}</td>
+        <td><span class="pill">${esc(AUDIT_LABELS[r.action]||r.action)}</span></td>
+        <td title="${esc(det)}">${esc(det)}</td></tr>`;}).join('')
+      ||'<tr><td colspan="5" class="muted">Καμία καταγραφή.</td></tr>';
+  }catch(e){}}
 function renderScopeBanner(){
   const master=ADMIN_SCOPE.is_master,n=(ADMIN_SCOPE.accounts||[]).length;
   $('#adminIntro').textContent=master
@@ -1678,6 +2083,24 @@ function renderBiz(accs){const el=$('#adminBiz');if(!el)return;
 
 // --- Μία εταιρεία, μία φόρμα -------------------------------------------------
 let CO_ID=0;
+// Ο λογιστής ανοίγει δική του εταιρεία χωρίς να περάσει από τον διαχειριστή:
+// δημιουργείται με κάτοχο τον ίδιο και ανατίθεται αυτόματα σε αυτόν. Ο
+// διαχειριστής τη βλέπει ούτως ή άλλως — δεν φιλτράρεται ποτέ γι' αυτόν.
+function openNewCompany(){
+  CO_ID=0;
+  $('#coTitle').textContent='Νέα εταιρεία';
+  $('#coSub').innerHTML=ADMIN_SCOPE.is_master
+    ? 'Η εταιρεία θα καταχωρηθεί σε εσένα. Την ανάθεση σε λογιστές τη ρυθμίζεις πιο κάτω.'
+    : 'Η εταιρεία καταχωρείται στο γραφείο σου και σου ανατίθεται αμέσως.';
+  ['coVat','coLabel','coUser','coKey'].forEach(i=>$('#'+i).value='');
+  $('#coKey').placeholder='(υποχρεωτικό)';
+  $('#coKeyHint').textContent='Το username και το subscription key τα δίνει το e-timologio της ΑΑΔΕ για τη συγκεκριμένη επιχείρηση.';
+  $('#coResult').textContent='';
+  const box=$('#coManagers');if(box)box.innerHTML='<span class="muted">Διαθέσιμο μετά την αποθήκευση.</span>';
+  const del=$('#coDelete');if(del)del.style.display='none';
+  companyModal.showModal();
+  setTimeout(()=>$('#coVat').focus(),40);
+}
 async function openCompany(id){
   CO_ID=id;$('#coResult').textContent='';$('#coKey').value='';
   try{const d=await apost({auth:'admin_account_get',account_id:id});
@@ -1695,6 +2118,8 @@ async function openCompany(id){
       box.innerHTML=(ADMIN_SCOPE.accountants||[]).map(m=>
         `<label class="np-check"><input type="checkbox" class="co-mgr" value="${m.id}"${sel.has(m.id)?' checked':''}> ${esc(m.name||m.email)} <span class="muted">${esc(m.email)}</span></label>`
       ).join('')||'<span class="muted">Δεν υπάρχουν λογιστές. Πρόσκαλεσε έναν από τα «Μέλη».</span>';}
+    $('#coKey').placeholder='(αμετάβλητο)';
+    const del=$('#coDelete');if(del)del.style.display='';
     companyModal.showModal();
   }catch(e){toast('Εταιρεία: '+e.message,'err');}}
 let coVatT;
@@ -1704,6 +2129,16 @@ function coVatLookup(){clearTimeout(coVatT);coVatT=setTimeout(async()=>{const va
 async function saveCompany(){
   const vat=$('#coVat').value.trim();
   if(!/^\d{9}$/.test(vat)){$('#coResult').textContent='ΑΦΜ 9 ψηφίων.';return;}
+  if(!CO_ID){
+    if(!$('#coUser').value.trim()||!$('#coKey').value){$('#coResult').textContent='Συμπλήρωσε username και subscription key.';return;}
+    $('#coResult').textContent='Δημιουργία…';
+    try{const d=await apost({auth:'staff_add_company',vat,label:$('#coLabel').value.trim(),
+        username:$('#coUser').value.trim(),subkey:$('#coKey').value});
+      if(!d.success)throw new Error(d.error||'σφάλμα');
+      companyModal.close();toast('Η εταιρεία προστέθηκε','ok');loadAdmin();refreshAccounts();
+    }catch(e){$('#coResult').textContent='Εταιρεία: '+e.message;}
+    return;
+  }
   const p={auth:'admin_account_save',account_id:CO_ID,vat,label:$('#coLabel').value.trim(),
            username:$('#coUser').value.trim(),subkey:$('#coKey').value};
   const box=$('#coManagers');
@@ -1989,6 +2424,27 @@ function saveGridLayout(tableId){
   },600);
 }
 function gridLayout(tableId){return GRID_LAYOUT[tableId]||(GRID_LAYOUT[tableId]={w:{},order:null});}
+// ⚠️ Η αποθηκευμένη διάταξη δείχνει σε ΑΡΙΘΜΟΥΣ στηλών. Μόλις μια αναβάθμιση
+// προσθέσει ή αφαιρέσει στήλη, οι ίδιοι αριθμοί σημαίνουν άλλα πράγματα και ο
+// πίνακας ανοίγει με ανακατεμένες στήλες — χωρίς ο χρήστης να καταλαβαίνει
+// γιατί. Κρατάμε υπογραφή των επικεφαλίδων: αν αλλάξει, η διάταξη πετιέται.
+function gridSignature(table){
+  return [...table.tHead.rows[0].cells]
+    .map(th=>{const c=th.cloneNode(true);
+      c.querySelectorAll('.filter-btn,.col-grip').forEach(x=>x.remove());
+      return (c.textContent||'').trim();}).join('|');
+}
+function gridCheckSignature(tableId,table){
+  const L=gridLayout(tableId);
+  const sig=gridSignature(table);
+  if(L.sig===sig)return;
+  if(L.sig!==undefined&&(L.order||Object.keys(L.w||{}).length||(L.hidden||[]).length)){
+    GRID_LAYOUT[tableId]={w:{},order:null,hidden:[],sig};
+    saveGridLayout(tableId);
+    return;
+  }
+  L.sig=sig;
+}
 function gridOrder(tableId,count){
   const L=gridLayout(tableId);
   const out=(L.order||[]).map(Number).filter(i=>i>=0&&i<count);
@@ -2005,15 +2461,124 @@ function orderRow(tr,order){
 }
 function applyGridLayout(tableId){
   const table=$('#'+tableId);if(!table||!table.tHead||!table.tHead.rows.length)return;
+  gridCheckSignature(tableId,table);
   const hdr=table.tHead.rows[0];
   const order=gridOrder(tableId,hdr.cells.length);
   orderRow(hdr,order);
   if(table.tBodies[0])[...table.tBodies[0].rows].forEach(tr=>orderRow(tr,order));
-  const widths=gridLayout(tableId).w||{};
-  if(Object.keys(widths).length)table.style.tableLayout='fixed';
+  const L=gridLayout(tableId);
+  const widths=L.w||{};
+  // Σταθερή διάταξη ΜΟΝΟ όταν έχουμε πλάτος για κάθε στήλη· αλλιώς οι στήλες
+  // χωρίς τιμή μοιράζονται ό,τι περισσέψει και τα κουμπιά ξεχειλίζουν.
+  if(Object.keys(widths).length>=hdr.cells.length)table.style.tableLayout='fixed';
+  else table.style.tableLayout='';
   [...hdr.cells].forEach(th=>{
     const px=widths[th.dataset.lc];
     if(px)th.style.width=px+'px';
+  });
+  applyHidden(tableId);
+}
+// --- Ποιες στήλες φαίνονται --------------------------------------------------
+// Ζητήθηκε για το ΜΑΡΚ (χρήσιμο, αλλά πλατύ και σπάνια αναγνώσιμο), αλλά ο
+// μηχανισμός δεν έχει λόγο να ξέρει για ποια στήλη μιλάμε: ισχύει για κάθε
+// πίνακα και αποθηκεύεται μαζί με πλάτη και σειρά.
+function hiddenSet(tableId){const L=gridLayout(tableId);return new Set((L.hidden||[]).map(Number));}
+function applyHidden(tableId){
+  const table=$('#'+tableId);if(!table||!table.tHead)return;
+  const hide=hiddenSet(tableId);
+  const paint=tr=>[...tr.cells].forEach(c=>{
+    if(c.dataset.lc===undefined)return;
+    c.style.display=hide.has(+c.dataset.lc)?'none':'';});
+  paint(table.tHead.rows[0]);
+  if(table.tBodies[0])[...table.tBodies[0].rows].forEach(tr=>{
+    if(tr.cells.length>1)paint(tr);});
+}
+function setColumnHidden(tableId,logical,hidden){
+  const L=gridLayout(tableId);const set=hiddenSet(tableId);
+  hidden?set.add(logical):set.delete(logical);
+  L.hidden=[...set];
+  applyHidden(tableId);saveGridLayout(tableId);
+}
+function openColumnChooser(tableId,anchor){
+  if(window.event&&window.event.stopPropagation)window.event.stopPropagation();
+  const table=$('#'+tableId);if(!table||!table.tHead)return;
+  const pop=$('#colFilterPop');const hide=hiddenSet(tableId);
+  const cells=[...table.tHead.rows[0].cells];
+  const items=cells.map(th=>{
+    const lc=+th.dataset.lc;
+    const label=(th.textContent||'').trim()||'(χωρίς τίτλο)';
+    if(th.classList.contains('grid-check'))return '';
+    return `<label class="cf-item"><input type="checkbox" data-lc="${lc}" ${hide.has(lc)?'':'checked'}> ${esc(label)}</label>`;
+  }).join('');
+  pop.innerHTML=`<h5>Στήλες</h5><div class="cf-list">${items}</div>
+    <div class="cf-actions"><button class="ghost sm cf-clear">Όλες</button><button class="primary sm cf-close">Κλείσιμο</button></div>`;
+  pop.querySelector('.cf-list').onchange=e=>{const cb=e.target;
+    if(cb&&cb.type==='checkbox')setColumnHidden(tableId,+cb.dataset.lc,!cb.checked);};
+  pop.querySelector('.cf-clear').onclick=()=>{gridLayout(tableId).hidden=[];applyHidden(tableId);saveGridLayout(tableId);
+    pop.querySelectorAll('.cf-list input').forEach(cb=>cb.checked=true);};
+  pop.querySelector('.cf-close').onclick=closeColFilter;
+  const r=(anchor||table).getBoundingClientRect();
+  pop.style.left=Math.max(8,Math.min(r.left-120,window.innerWidth-300))+'px';
+  pop.style.top=(r.bottom+4)+'px';pop.classList.add('on');
+}
+// Κρατά το ΤΡΕΧΟΝ πλάτος κάθε στήλης, όπως το υπολόγισε ο browser από το
+// περιεχόμενο. Καλείται τη στιγμή που ο πίνακας περνά σε σταθερή διάταξη.
+// --- Ταξινόμηση με κλικ στην κεφαλίδα ----------------------------------------
+// Μόνο οι Πελάτες είχαν ταξινόμηση, γραμμένη ειδικά γι' αυτούς. Είδη, Σειρές,
+// Πρόχειρα, Ακύρωση, Προγραμματισμός και Στατιστικά δεν είχαν καθόλου. Εδώ
+// γίνεται ιδιότητα ΤΟΥ ΠΙΝΑΚΑ, όπως το πλάτος και η σειρά στηλών: ό,τι περνά
+// από το `enhanceGrid` την αποκτά.
+let GRID_SORT={};   // tableId -> {lc, dir}
+// Αριθμοί («1.234,56», «-12»), ημερομηνίες («31/12/2026») και κείμενο, με τη
+// σειρά που τα αναγνωρίζουμε. Χωρίς αυτό το «100» ερχόταν πριν το «20».
+function sortValue(text){
+  const t=(text||'').trim();
+  if(!t)return {n:null,s:''};
+  const d=/^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
+  if(d)return {n:+(d[3]+d[2].padStart(2,'0')+d[1].padStart(2,'0')),s:t};
+  const iso=/^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if(iso)return {n:+(iso[1]+iso[2]+iso[3]),s:t};
+  // Καθαρός αριθμός (επιτρέπονται € και κενά), σε ελληνική ή αγγλική μορφή.
+  if(/^[-+]?[\d.,\s]+(€|%)?$/.test(t)){
+    const n=elNum(t.replace(/[€%\s]/g,''));
+    if(!isNaN(n))return {n,s:t};
+  }
+  return {n:null,s:t};
+}
+function sortGrid(tableId,logical){
+  const table=$('#'+tableId);if(!table||!table.tBodies[0])return;
+  const cur=GRID_SORT[tableId];
+  const dir=(cur&&cur.lc===logical)?-cur.dir:1;
+  GRID_SORT[tableId]={lc:logical,dir};
+  const body=table.tBodies[0];
+  const rows=[...body.rows].filter(r=>r.cells.length>1);
+  if(rows.length<2){markSortIndicator(tableId);return;}
+  rows.sort((a,b)=>{
+    const x=sortValue((cellOf(a,logical)||{}).textContent),
+          y=sortValue((cellOf(b,logical)||{}).textContent);
+    if(x.n!==null&&y.n!==null)return (x.n-y.n)*dir;
+    if(x.s===''&&y.s!=='')return 1;      // τα κενά πάντα τελευταία
+    if(y.s===''&&x.s!=='')return -1;
+    return x.s.localeCompare(y.s,'el',{numeric:true})*dir;
+  });
+  rows.forEach(r=>body.appendChild(r));
+  markSortIndicator(tableId);
+}
+function markSortIndicator(tableId){
+  const table=$('#'+tableId);if(!table||!table.tHead)return;
+  const st=GRID_SORT[tableId];
+  [...table.tHead.rows[0].cells].forEach(th=>{
+    let ind=th.querySelector('.grid-sort');
+    if(!ind){ind=document.createElement('span');ind.className='grid-sort';th.appendChild(ind);}
+    ind.textContent=(st&&+th.dataset.lc===st.lc)?(st.dir>0?' ▲':' ▼'):'';
+  });
+}
+function freezeWidths(tableId,table){
+  const L=gridLayout(tableId);L.w=L.w||{};
+  [...table.tHead.rows[0].cells].forEach(th=>{
+    if(L.w[th.dataset.lc])return;                 // ο χρήστης το έχει ήδη ορίσει
+    const w=Math.round(th.getBoundingClientRect().width);
+    if(w>0)L.w[th.dataset.lc]=w;
   });
 }
 function enhanceGrid(tableId){
@@ -2027,6 +2592,7 @@ function enhanceGrid(tableId){
       new MutationObserver(()=>{
         const ord=gridOrder(tableId,hdr.cells.length);
         [...table.tBodies[0].rows].forEach(tr=>orderRow(tr,ord));
+        applyHidden(tableId);
       }).observe(table.tBodies[0],{childList:true});
     }
   }
@@ -2034,6 +2600,15 @@ function enhanceGrid(tableId){
     if(th.dataset.gridCol)return;
     th.dataset.gridCol='1';
     th.draggable=true;
+    // Κλικ = ταξινόμηση. Εξαιρούνται όσες κεφαλίδες έχουν ήδη δικό τους
+    // χειριστή (Πελάτες) και η στήλη με τα checkbox.
+    if(!th.getAttribute('onclick')&&!th.classList.contains('grid-check')
+       &&(th.textContent||'').trim()){
+      th.classList.add('sortable-th');
+      th.addEventListener('click',e=>{
+        if(e.target.closest('.filter-btn,.col-grip,input,button'))return;
+        sortGrid(tableId,+th.dataset.lc);});
+    }
     th.addEventListener('dragstart',e=>{GRID_DRAG={tableId,lc:+th.dataset.lc};
       try{e.dataTransfer.setData('text/plain',th.dataset.lc);e.dataTransfer.effectAllowed='move';}catch(_){}});
     th.addEventListener('dragover',e=>{if(GRID_DRAG&&GRID_DRAG.tableId===tableId){e.preventDefault();th.classList.add('col-drop');}});
@@ -2049,6 +2624,12 @@ function enhanceGrid(tableId){
     const grip=document.createElement('span');grip.className='col-grip';
     grip.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();
       const startX=e.clientX,startW=th.getBoundingClientRect().width;
+      // ⚠️ «Πάγωμα» ΟΛΩΝ των στηλών πριν το `table-layout:fixed`. Αλλιώς το
+      // fixed μοιράζει το πλάτος εξίσου και η στήλη με τα κουμπιά — που
+      // χρειάζεται όσο ακριβώς πιάνουν — στένευε, με τα κουμπιά να ΚΑΒΑΛΑΝΕ τη
+      // διπλανή. Κρατώντας το φυσικό πλάτος κάθε στήλης, μόνο αυτή που σέρνει
+      // ο χρήστης αλλάζει.
+      freezeWidths(tableId,table);
       table.style.tableLayout='fixed';
       const move=ev=>{const w=Math.max(48,Math.round(startW+ev.clientX-startX));
         th.style.width=w+'px';gridLayout(tableId).w[th.dataset.lc]=w;};
@@ -2069,8 +2650,11 @@ function openColFilter(tableId,col,th,label){
   pop.innerHTML=`<h5>Φίλτρο: ${esc(label)}</h5>
     <input class="cf-search" placeholder="Αναζήτηση τιμής…" autocomplete="off">
     <div class="cf-list"></div>
-    <div class="cf-actions"><button class="ghost sm cf-clear">Καθαρισμός</button><button class="primary sm cf-close">Κλείσιμο</button></div>`;
+    <div class="cf-actions"><button class="ghost sm cf-clear">Καθαρισμός</button>
+      <button class="ghost sm cf-hide" title="Κρύβει τη στήλη· επαναφορά από το «⚙ Στήλες»">🚫 Απόκρυψη</button>
+      <button class="primary sm cf-close">Κλείσιμο</button></div>`;
   const listEl=pop.querySelector('.cf-list');
+  pop.querySelector('.cf-hide').onclick=()=>{setColumnHidden(tableId,col,true);closeColFilter();};
   function render(term){term=(term||'').toLowerCase();
     const shown=values.filter(v=>!term||v.toLowerCase().includes(term));
     listEl.innerHTML=`<label class="cf-item" data-all="1"><input type="checkbox" ${!st[col]?'checked':''}> <b>(Όλα)</b></label>`+
@@ -2101,7 +2685,8 @@ function openColFilter(tableId,col,th,label){
 }
 function closeColFilter(){$('#colFilterPop').classList.remove('on');}
 document.addEventListener('click',e=>{const pop=$('#colFilterPop');
-  if(pop&&pop.classList.contains('on')&&!e.target.closest('#colFilterPop')&&!e.target.closest('.filter-btn'))closeColFilter();});
+  if(pop&&pop.classList.contains('on')&&!e.target.closest('#colFilterPop')
+     &&!e.target.closest('.filter-btn')&&!e.target.closest('.cols-btn'))closeColFilter();});
 function applyColumnFilters(tableId){
   const table=$('#'+tableId);if(!table||!table.tBodies.length)return;const st=gridState(tableId);
   [...table.tBodies[0].rows].forEach(tr=>{
@@ -2150,7 +2735,7 @@ async function loadCustomers(){await cachedThenSync('customers',rows=>{ALL_CUSTO
 // Customer modal (create/edit)
 let CUST_ONSAVED=null;
 function custTab(t){$('#custTabAfm').style.display=t==='afm'?'':'none';$('#custTabPersonal').style.display=t==='personal'?'':'none';document.querySelectorAll('#custTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));}
-function openCustomerModal(onSaved,prefillAfm){CUST_ONSAVED=(typeof onSaved==='function')?onSaved:null;$('#custModalTitle').textContent='Νέος πελάτης';['cmAfm','cmName','cmAddress','cmCity','cmZip','cpName','cpAddress','cpCity','cpZip','cpEmail','cpPhone'].forEach(id=>$('#'+id).value='');$('#cpJob').value='ΙΔΙΩΤΗΣ';custTab('afm');if(prefillAfm)$('#cmAfm').value=prefillAfm;$('#custModal').showModal();}
+function openCustomerModal(onSaved,prefillAfm){CUST_ONSAVED=(typeof onSaved==='function')?onSaved:null;$('#custModalTitle').textContent='Νέος πελάτης';['cmAfm','cmName','cmAddress','cmCity','cmZip','cmEmail','cmPhone1','cmPhone2','cpName','cpAddress','cpCity','cpZip','cpEmail','cpPhone'].forEach(id=>$('#'+id).value='');$('#cpJob').value='ΙΔΙΩΤΗΣ';custTab('afm');if(prefillAfm)$('#cmAfm').value=prefillAfm;$('#custModal').showModal();}
 // Επεξεργασία = δική της φόρμα, με ό,τι κρατά η ΑΑΔΕ για τον πελάτη.
 let CE_VAT='';
 function editCustomer(vat){
@@ -2197,7 +2782,16 @@ async function saveCustomer(){
       d=await api({create_personal_customer:1,cust_name:$('#cpName').value,cust_address:$('#cpAddress').value,cust_city:$('#cpCity').value,cust_zip:$('#cpZip').value,cust_job_description:$('#cpJob').value,cust_email:$('#cpEmail').value,cust_phone1:$('#cpPhone').value});
       saved={vat:'',name:$('#cpName').value,address:$('#cpAddress').value,city:$('#cpCity').value,zip:$('#cpZip').value};
     }else{const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}d=await api({afm});
-      const c=(d&&(d.info||d.customer))||{};saved={vat:afm,name:c.name||$('#cmName').value||'',address:c.address||'',city:c.city||'',zip:c.zip||''};}
+      const c=(d&&(d.info||d.customer))||{};saved={vat:afm,name:c.name||$('#cmName').value||'',address:c.address||'',city:c.city||'',zip:c.zip||''};
+      // Το `?afm` δημιουργεί τον πελάτη από το Taxisnet αλλά ΔΕΝ ξέρει email ή
+      // τηλέφωνο. Αν τα συμπλήρωσε ο χρήστης, τα γράφουμε αμέσως μετά —
+      // αλλιώς θα έπρεπε να ανοίξει ξανά την καρτέλα για να τα βάλει.
+      const extra={email:$('#cmEmail').value.trim(),p1:$('#cmPhone1').value.trim(),p2:$('#cmPhone2').value.trim()};
+      if(extra.email||extra.p1||extra.p2){
+        try{await api({update_customer:1,update_customer_vat:afm,update_name:saved.name,
+          update_email:extra.email,update_phone1:extra.p1,update_phone2:extra.p2});}catch(e){}
+        saved.email=extra.email;
+      }}
     if(d.success===false)throw new Error(d.error||'σφάλμα');
     $('#custModal').close();toast('Αποθηκεύτηκε','ok');loadCustomers(true);
     if(CUST_ONSAVED){const cb=CUST_ONSAVED;CUST_ONSAVED=null;cb(saved);}
@@ -2321,7 +2915,9 @@ async function loadCard(){const vat=$('#cardVat').value.trim();if(!vat){toast('�
     $('#cardTable tbody').innerHTML=d.entries.map(e=>{
       if(e.kind==='invoice')return `<tr><td>${esc(e.date)}</td><td><span class="pill" title="${esc(invName(e.type))}">${esc(e.type||'')}</span> ${esc(invName(e.type))}</td><td>ΜΑΡΚ ${esc(e.mark)}</td><td class="num">${fmt(e.debit)}</td><td class="num"></td><td class="num">${fmt(e.balance)}</td>
         <td class="right">${e.mark?`${docBtn(e.mark)} <button class="danger sm" title="Ακύρωση με πιστωτικό" onclick="cancelFromCard('${q1(e.mark)}')">↩ Ακύρωση</button>`:''}</td></tr>`;
-      return `<tr><td>${esc(e.date)}</td><td><span class="pill ok">Πληρωμή</span> ${esc(payMethod(e.method))}</td><td>${esc(e.notes||'')}</td><td class="num"></td><td class="num">${fmt(e.credit)}</td><td class="num">${fmt(e.balance)}</td><td class="right"><button class="danger sm" onclick="delPayment(${e.payment_id})">✕</button></td></tr>`;
+      // Διπλό κλικ = επεξεργασία, όπως στην εφαρμογή υπολογιστή. Μέχρι τώρα ο
+      // μόνος δρόμος για μια λάθος πληρωμή ήταν διαγραφή και ξαναγράψιμο.
+      return `<tr class="clickable" title="Διπλό κλικ για επεξεργασία" ondblclick="editPayment(${e.payment_id})"><td>${esc(e.date)}</td><td><span class="pill ok">Πληρωμή</span> ${esc(payMethod(e.method))}</td><td>${esc(e.notes||'')}</td><td class="num"></td><td class="num">${fmt(e.credit)}</td><td class="num">${fmt(e.balance)}</td><td class="right"><button class="ghost sm" title="Επεξεργασία" onclick="event.stopPropagation();editPayment(${e.payment_id})">✎</button><button class="danger sm" onclick="event.stopPropagation();delPayment(${e.payment_id})">✕</button></td></tr>`;
     }).join('')||'<tr><td colspan="7" class="muted">Καμία κίνηση.</td></tr>';
   }catch(e){$('#cardCards').innerHTML='';toast('Καρτέλα: '+e.message,'err');}
 }
@@ -2332,9 +2928,33 @@ async function cancelFromCard(mark){showView('cancel');$('#cxVat').value=CARD.cu
 // Δύο δρόμοι για την ίδια φόρμα: από την Καρτέλα (ο πελάτης είναι δεδομένος) και
 // μεμονωμένα από την Εισαγωγή πληρωμών (τον διαλέγεις). Το `PM_MODE` κρατά ποιος
 // από τους δύο, ώστε η αποθήκευση να ξέρει τι να ανανεώσει.
-let PM_MODE='card', PM_NAME='';
+let PM_MODE='card', PM_NAME='', PM_EDIT=null;
 function pmReset(){['pmAmount','pmNotes'].forEach(i=>$('#'+i).value='');$('#pmResult').textContent='';
-  dset('pmDate',new Date().toISOString().slice(0,10));}
+  PM_EDIT=null;$('#pmHead').textContent='💶 Καταχώρηση πληρωμής';
+  dset('pmDate',new Date().toISOString().slice(0,10));pmCardBtn();}
+// Επεξεργασία υπάρχουσας πληρωμής — ίδια φόρμα, άλλη κατάληξη.
+function editPayment(id){
+  const e=(CARD.entries||[]).find(x=>x.payment_id===id);
+  if(!e){toast('Η πληρωμή δεν βρέθηκε','err');return;}
+  PM_MODE='card';PM_NAME=CARD.customer_name||'';
+  $('#pmPickRow').style.display='none';$('#pmRepeatWrap').style.display='none';$('#pmRepeat').checked=false;
+  pmReset();
+  PM_EDIT=id;$('#pmHead').textContent='✎ Επεξεργασία πληρωμής';
+  $('#pmVat').value=$('#cardVat').value.trim();
+  $('#pmAmount').value=(Number(e.credit)||0).toFixed(2);
+  $('#pmMethod').value=String(e.method||3);
+  $('#pmNotes').value=e.notes||'';
+  dset('pmDate',e.date_iso||e.date||'');
+  $('#payModal').showModal();
+}
+// Το κουμπί «καρτέλα» εμφανίζεται μόλις υπάρχει πελάτης: στη μεμονωμένη
+// καταχώρηση ο χρήστης θέλει να δει το υπόλοιπο ΠΡΙΝ γράψει ποσό, χωρίς να
+// χάσει τη φόρμα.
+function pmCardBtn(){
+  const btn=$('#pmCardBtn');if(!btn)return;
+  const vat=($('#pmVat').value||'').trim();
+  btn.style.display=(PM_MODE==='manual'&&vat)?'':'none';
+}
 function openPaymentModal(){const vat=$('#cardVat').value.trim();if(!vat){toast('Φόρτωσε πρώτα καρτέλα','err');return;}
   PM_MODE='card';PM_NAME=CARD.customer_name||'';
   $('#pmPickRow').style.display='none';$('#pmRepeatWrap').style.display='none';$('#pmRepeat').checked=false;
@@ -2359,14 +2979,42 @@ function pmAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=$
   panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="pmPick('${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
   panel.classList.add('open');}
 function pmPick(vat,name){$('#pmVat').value=vat;$('#pmCust').value=name||vat;PM_NAME=name||'';
-  $('#pmAcPanel').classList.remove('open');$('#pmAmount').focus();}
+  $('#pmAcPanel').classList.remove('open');pmCardBtn();$('#pmAmount').focus();}
+// Η τρέχουσα καρτέλα του επιλεγμένου πελάτη, σε αναδυόμενο — χωρίς να φύγει ο
+// χρήστης από την καταχώρηση.
+async function pmShowCard(){
+  const vat=($('#pmVat').value||'').trim();if(!vat)return;
+  const box=$('#pmCardBody');
+  $('#pmCardTitle').textContent=PM_NAME||vat;
+  box.innerHTML='<span class="spin"></span> Φόρτωση…';
+  pmCardModal.showModal();
+  const y=new Date().getFullYear();
+  try{const d=await api({ledger:1,buyer_vat:vat,issue_date_from:y+'-01-01',issue_date_to:y+'-12-31'});
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    const rows=(d.entries||[]).slice(-12).reverse();
+    box.innerHTML=`<div class="cards">
+        <div class="card"><div class="k">Τζίρος</div><div class="v">${fmt(d.total_invoiced)} €</div></div>
+        <div class="card"><div class="k">Πληρωμές</div><div class="v" style="color:#86efac">${fmt(d.total_paid)} €</div></div>
+        <div class="card"><div class="k">Υπόλοιπο</div><div class="v balance ${d.balance>0.005?'pos':'zero'}">${fmt(d.balance)} €</div></div>
+      </div>
+      <table style="margin-top:10px"><thead><tr><th>Ημ/νία</th><th>Κίνηση</th><th class="num">Χρέωση</th><th class="num">Πίστωση</th></tr></thead><tbody>`+
+      (rows.map(e=>`<tr><td>${esc(e.date)}</td><td>${e.kind==='invoice'?('ΜΑΡΚ '+esc(e.mark||'')):('Πληρωμή '+esc(payMethod(e.method)))}</td><td class="num">${e.debit?fmt(e.debit):''}</td><td class="num">${e.credit?fmt(e.credit):''}</td></tr>`).join('')
+        ||'<tr><td colspan="4" class="muted">Καμία κίνηση φέτος.</td></tr>')+'</tbody></table>';
+    // Το ποσό του υπολοίπου είναι σχεδόν πάντα αυτό που θα εισπραχθεί.
+    if(d.balance>0.005&&!$('#pmAmount').value)$('#pmAmount').value=d.balance.toFixed(2);
+  }catch(e){box.innerHTML='<span class="pill bad">'+esc(e.message)+'</span>';}
+}
 document.addEventListener('click',e=>{const p=$('#pmAcPanel');if(p&&!e.target.closest('#pmAcPanel')&&e.target!==$('#pmCust'))p.classList.remove('open');});
 async function savePayment(ev){ev.preventDefault();
   const vat=($('#pmVat').value||'').trim();
   if(!vat){$('#pmResult').textContent='Διάλεξε πελάτη.';return;}
   const name=PM_MODE==='card'?(CARD.customer_name||''):PM_NAME;
-  try{const d=await api({add_payment:1,buyer_vat:vat,customer_name:name,pay_amount:$('#pmAmount').value,pay_method:$('#pmMethod').value,pay_date:di('pmDate'),pay_notes:$('#pmNotes').value});
+  const p={buyer_vat:vat,customer_name:name,pay_amount:$('#pmAmount').value,
+           pay_method:$('#pmMethod').value,pay_date:di('pmDate'),pay_notes:$('#pmNotes').value};
+  if(PM_EDIT){p.update_payment=1;p.payment_id=PM_EDIT;}else{p.add_payment=1;}
+  try{const d=await api(p);
     if(!d.success)throw new Error(d.error||'σφάλμα');
+    if(PM_EDIT){$('#payModal').close();toast('Η πληρωμή ενημερώθηκε','ok');loadCard();return;}
     toast('Πληρωμή καταχωρήθηκε','ok');
     pmRecent(name||vat,$('#pmAmount').value);
     if(PM_MODE==='card'){$('#payModal').close();loadCard();return;}
@@ -3270,7 +3918,7 @@ function docsInit(){if(!$('#docFrom').value||!$('#docTo').value){docsYear();retu
   if(!ALL_DOCS.length)loadDocs();}
 async function loadDocs(){
   if(!$('#docFrom').value||!$('#docTo').value){const y=new Date().getFullYear();dset('docFrom',y+'-01-01');dset('docTo',y+'-12-31');}
-  $('#docTable tbody').innerHTML='<tr><td colspan="9"><span class="spin"></span></td></tr>';
+  $('#docTable tbody').innerHTML='<tr><td colspan="11"><span class="spin"></span></td></tr>';
   try{const d=await api({search_invoices:1,issue_date_from:di('docFrom'),issue_date_to:di('docTo')});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
     ALL_DOCS=(d.invoices||[]).filter(i=>i.mark);
@@ -3289,16 +3937,20 @@ function renderDocs(){
     fmt(rows.reduce((s,i)=>s+elNum(i.total||0),0))+' € σύνολο';
   $('#docTable tbody').innerHTML=rows.map(i=>{
     const who=i.counterpart_name||i.counterpart||i.counterpart_vat||i.buyer_vat||'—';
+    // Ο τύπος έρχεται από την ΑΑΔΕ ήδη σαν «11.2 - ΑΠΥ (…)»: δεύτερη φορά το
+    // ίδιο κείμενο δίπλα του ήταν σκέτη επανάληψη που φάρδαινε τη στήλη.
     return `<tr><td class="grid-check"><input type="checkbox" class="doc-cb" value="${esc(i.mark)}" onchange="docSelChanged()"></td>
       <td>${esc(i.issue_date||'')}</td>
-      <td><span class="pill" title="${esc(invName(i.type))}">${esc(i.type||'')}</span> ${esc(invName(i.type))}</td>
-      <td>${esc(((i.series||'')+' '+(i.aa||'')).trim())}</td>
-      <td>${esc(who)}</td>
+      <td title="${esc(i.type||'')}">${esc(i.type||'')}</td>
+      <td>${esc(i.series||'')}</td>
+      <td>${esc(i.aa||'')}</td>
+      <td title="${esc(who)}">${esc(who)}</td>
       <td class="num">${esc(i.net_value||'')}</td>
+      <td class="num">${esc(i.vat_value||'')}</td>
       <td class="num">${esc(i.total||'')}</td>
       <td>${esc(i.mark)}</td>
-      <td class="right">${docBtn(i.mark)}</td></tr>`;}).join('')
-    ||'<tr><td colspan="9" class="muted">Κανένα παραστατικό στο διάστημα.</td></tr>';
+      <td class="right">${docBtn(i.mark)}<button class="ghost sm" title="Αποστολή με email" onclick="event.stopPropagation();emailDocument('${q1(i.mark)}')">✉️</button></td></tr>`;}).join('')
+    ||'<tr><td colspan="11" class="muted">Κανένα παραστατικό στο διάστημα.</td></tr>';
   applyColumnFilters('docTable');
   docSelChanged();
 }
@@ -3334,6 +3986,85 @@ function postDownload(params){
   const all=Object.assign({},params);if(ACCOUNT)all.account=ACCOUNT;
   Object.entries(all).forEach(([k,v])=>{const i=document.createElement('input');i.type='hidden';i.name=k;i.value=v;f.appendChild(i);});
   document.body.appendChild(f);f.submit();setTimeout(()=>f.remove(),2000);
+}
+
+// --- Αποστολή παραστατικού / καρτέλας με email -------------------------------
+// Δύο αφετηρίες, ένας διάλογος. Το συνημμένο είτε το κατεβάζει ο server (ΜΑΡΚ)
+// είτε ανεβαίνει έτοιμο από εδώ (καρτέλα, φτιαγμένη με jsPDF).
+let MM_CTX=null;
+function mailDefaults(kind,info){
+  const company=($('#account option:checked')||{}).textContent||'';
+  const who=(info.name||'').trim();
+  const sign='\n\nΜε εκτίμηση,\n'+company;
+  const hello=who?(who+','):'Αγαπητέ συνεργάτη,';
+  if(kind==='doc'){
+    const ref=((info.series||'')+' '+(info.aa||'')).trim();
+    return {subject:('Παραστατικό '+ref).trim(),
+      body:hello+'\n\nσας αποστέλλουμε συνημμένο το παραστατικό '+ref+
+        (info.date?(' με ημερομηνία '+info.date):'')+
+        (info.total?(', συνολικής αξίας '+info.total+' €'):'')+'.'+sign};
+  }
+  // Η καρτέλα έχει δικό της κείμενο: μιλά στην επωνυμία του πελάτη και λέει με
+  // λέξεις τι είναι το υπόλοιπο. Το ίδιο κείμενο φτιάχνει και ο server για την
+  // προγραμματισμένη αποστολή — μία διατύπωση, τρεις δρόμοι.
+  return {subject:'Καρτέλα πελάτη'+(who?(' — '+who):''),
+    body:cardMailBody({name:who,period:info.period,balance:info.balance})};
+}
+function openMailDialog(kind,info,attach){
+  MM_CTX={kind,info,attach};
+  // Τα IBAN μπαίνουν στο κείμενο, οπότε πρέπει να τα ξέρουμε πριν το γράψουμε.
+  if(BANK_VAT!==ACCOUNT)loadBankSettings().then(()=>{if(MM_CTX&&MM_CTX.kind===kind)$('#mmBody').value=mailDefaults(kind,info||{}).body;});
+  const d=mailDefaults(kind,info||{});
+  $('#mmTitle').textContent=kind==='doc'?'Αποστολή παραστατικού':'Αποστολή καρτέλας';
+  $('#mmTo').value=(info&&info.email)||'';
+  $('#mmSubject').value=d.subject;
+  $('#mmBody').value=d.body;
+  // Ο χρήστης πρέπει να βλέπει ΟΛΑ όσα θα φύγουν, όχι μόνο το πρώτο.
+  const files=[attach&&attach.name?attach.name:('ΠΑΡΑΣΤΑΤΙΚΟ-'+(info.mark||'')+'.pdf')];
+  if(kind==='card'&&(+info.balance||0)>0.005&&BANK_CFG.pdf)files.push(BANK_CFG.pdf.name);
+  $('#mmAttach').textContent='📎 '+files.join('  ·  ');
+  $('#mmResult').textContent='';
+  mailModal.showModal();
+  // Το email του πελάτη ζει στην ΑΑΔΕ, όχι στη λίστα πελατών. Αν δεν το ξέρουμε
+  // ήδη, το ζητάμε — ο server κρατά αντίγραφο, οπότε γίνεται μία φορά.
+  if(!$('#mmTo').value&&info&&info.vat){
+    $('#mmResult').innerHTML='<span class="spin"></span> Αναζήτηση email πελάτη…';
+    api({customer_email:1,buyer_vat:info.vat}).then(d=>{
+      if(d&&d.email&&!$('#mmTo').value)$('#mmTo').value=d.email;
+      $('#mmResult').textContent=(d&&d.email)?'':'Ο πελάτης δεν έχει καταχωρημένο email — γράψε τη διεύθυνση.';
+      if(!$('#mmTo').value)$('#mmTo').focus();
+    }).catch(()=>{$('#mmResult').textContent='';});
+  }
+  if(!$('#mmTo').value)setTimeout(()=>$('#mmTo').focus(),40);
+}
+async function sendMailDoc(ev){
+  ev.preventDefault();
+  if(!MM_CTX)return;
+  const p={email_document:1,to:$('#mmTo').value.trim(),
+           subject:$('#mmSubject').value.trim(),body:$('#mmBody').value};
+  p.kind=MM_CTX.kind;
+  if(MM_CTX.info&&MM_CTX.info.vat)p.customer_vat=MM_CTX.info.vat;
+  if(MM_CTX.kind==='doc')p.mark=MM_CTX.info.mark;
+  else{p.pdf_base64=MM_CTX.attach.base64;p.pdf_name=MM_CTX.attach.name;
+    // Το PDF των λογαριασμών μόνο όταν υπάρχει κάτι να πληρωθεί.
+    if((+MM_CTX.info.balance||0)>0.005)p.attach_bank=1;}
+  $('#mmResult').innerHTML='<span class="spin"></span> Αποστολή…';
+  try{const d=await apostAcc(p);
+    if(!d.success)throw new Error(d.error||'απέτυχε');
+    mailModal.close();toast('Το email στάλθηκε','ok');
+  }catch(e){$('#mmResult').textContent='Αποστολή: '+e.message;}
+}
+// Το email του πελάτη, από ό,τι ξέρουμε ήδη γι' αυτόν.
+function customerEmail(vat){
+  const c=(ALL_CUSTOMERS||[]).find(x=>(x.vat||x.customer_vat)===String(vat));
+  return (c&&(c.email||c.customer_email))||'';
+}
+function emailDocument(mark){
+  const row=(ALL_DOCS||[]).find(i=>i.mark===mark)||{};
+  const vat=row.counterpart_vat||row.buyer_vat||'';
+  openMailDialog('doc',{mark,series:row.series,aa:row.aa,date:row.issue_date,
+    total:row.total,name:row.counterpart_name||row.counterpart||'',
+    vat,email:customerEmail(vat)});
 }
 
 // ZIP downloads (browser handles the file)
@@ -3390,6 +4121,19 @@ async function printMarks(marks,meta){
 }
 function openPdfBlob(bytes,name,print){
   const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));
+  // ⚠️ Στην εφαρμογή υπολογιστή το `window.open` δεν ανοίγει τίποτα: το
+  // QtWebEngine δεν φτιάχνει νέο παράθυρο από μόνο του και η κλήση γυρίζει
+  // null. Η προεπισκόπηση εκτύπωσης «δεν λειτουργούσε» ακριβώς γι' αυτό.
+  // Κατεβάζουμε το αρχείο — ο χειριστής λήψεων το ανοίγει με τον προβολέα του
+  // συστήματος, που τυπώνει κανονικά.
+  if(isEmbedded()){
+    const a=document.createElement('a');
+    a.href=url;a.download=name||'ΠΑΡΑΣΤΑΤΙΚΑ.pdf';
+    document.body.appendChild(a);a.click();a.remove();
+    toast('Το αρχείο κατεβαίνει και θα ανοίξει για εκτύπωση','ok');
+    setTimeout(()=>URL.revokeObjectURL(url),120000);
+    return;
+  }
   const w=window.open(url,'_blank');
   if(!w){toast('Επίτρεψε τα αναδυόμενα παράθυρα για την εκτύπωση','warn');return;}
   // Ο προβολέας χρειάζεται λίγο για να φορτώσει πριν δεχτεί εντολή εκτύπωσης.
@@ -3409,64 +4153,372 @@ function zipAllInvoices(){const y=new Date().getFullYear();toast('Λήψη ZIP (
 let FONT_B64=null;
 function abToB64(buf){let bin='';const b=new Uint8Array(buf),c=0x8000;for(let i=0;i<b.length;i+=c)bin+=String.fromCharCode.apply(null,b.subarray(i,i+c));return btoa(bin);}
 async function ensureFont(){if(FONT_B64)return;const r=await fetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans.ttf');FONT_B64=abToB64(await r.arrayBuffer());}
-async function ledgerPdf(){
+// --- PDF καρτέλας ------------------------------------------------------------
+// Ένας κατασκευαστής, τρεις χρήσεις: αποθήκευση, μεμονωμένη αποστολή, και
+// μαζική αποστολή. Παλιά ήταν δεμένος με τα πεδία της οθόνης, οπότε η μαζική
+// αποστολή δεν είχε πώς να τον καλέσει.
+async function ledgerDoc(card,periodLabel,cust){
+  await ensureFont();await loadInvTypes();
+  const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'pt',format:'a4'});
+  doc.addFileToVFS('DejaVuSans.ttf',FONT_B64);doc.addFont('DejaVuSans.ttf','DejaVu','normal');doc.setFont('DejaVu');
+  const W=doc.internal.pageSize.getWidth();const AC=[14,165,233],DK=[35,45,60],MUT=[120,130,145];const L=40,R=W-40;
+  // ---- Header band ----
+  doc.setFillColor(...AC);doc.rect(0,0,W,6,'F');
+  doc.setTextColor(...DK);doc.setFontSize(17);doc.text('ΚΑΡΤΕΛΑ ΠΕΛΑΤΗ',L,44);
+  doc.setFontSize(9);doc.setTextColor(...MUT);
+  doc.text('Περίοδος: '+(periodLabel||''),R,44,{align:'right'});
+  doc.text('Ημ/νία έκδοσης: '+new Date().toLocaleDateString('el-GR'),R,60,{align:'right'});
+  // ---- Customer details block ----
+  cust=cust||{};
+  doc.setDrawColor(...AC);doc.setLineWidth(0.8);doc.roundedRect(L,74,R-L,58,4,4,'S');
+  doc.setTextColor(...DK);doc.setFontSize(12);doc.text(card.customer_name||cust.name||'—',L+12,94);
+  doc.setFontSize(9);doc.setTextColor(...MUT);
+  const addr=[cust.address,cust.city,cust.zip].filter(Boolean).join(', ');
+  doc.text('ΑΦΜ: '+(card.customer_vat||'')+(cust.code?('   ·   Κωδ.: '+cust.code):''),L+12,110);
+  doc.text('Διεύθυνση: '+(addr||'—'),L+12,124);
+  // ---- Movements table (Χρέωση / Πίστωση / Υπόλοιπο) ----
+  let totD=0,totC=0;
+  const body=(card.entries||[]).map(e=>{totD+=(+e.debit||0);totC+=(+e.credit||0);
+    let docLbl;
+    if(e.kind==='invoice'){
+      const parts=[invLabel(e.type)!==e.type?invLabel(e.type):(e.type||'Παραστατικό')];
+      if(e.series)parts.push('Σειρά '+e.series);
+      if(e.aa)parts.push('Αρ. '+e.aa);
+      if(e.mark)parts.push('ΜΑΡΚ '+e.mark);
+      docLbl=parts.join('  ·  ');
+    }else docLbl='Πληρωμή'+(e.method?('  ·  '+payMethod(e.method)):'')+(e.notes?('  ·  '+e.notes):'');
+    return [e.date||'',docLbl,e.debit?fmt(e.debit):'',e.credit?fmt(e.credit):'',fmt(e.balance)];});
+  doc.autoTable({startY:146,
+    head:[['Ημ/νία','Παραστατικό','Χρέωση','Πίστωση','Υπόλοιπο']],
+    body,
+    foot:[['','Σύνολα',fmt(totD),fmt(totC),fmt(card.balance)]],
+    styles:{font:'DejaVu',fontSize:8.5,cellPadding:5,textColor:DK,lineColor:[225,230,238],lineWidth:0.5},
+    headStyles:{font:'DejaVu',fillColor:AC,textColor:[255,255,255],halign:'left',fontSize:9},
+    footStyles:{font:'DejaVu',fillColor:[240,244,249],textColor:DK,fontStyle:'normal',fontSize:9.5},
+    columnStyles:{0:{cellWidth:70},2:{halign:'right',cellWidth:75},3:{halign:'right',cellWidth:75},4:{halign:'right',cellWidth:80}},
+    alternateRowStyles:{fillColor:[248,250,252]},
+    didParseCell:d=>{if(d.section==='foot'||d.column.index>=2)d.cell.styles.halign=d.column.index>=2?'right':'left';},
+    didDrawPage:data=>{doc.setFontSize(8);doc.setTextColor(...MUT);
+      doc.text('e-Timologio Pro',L,doc.internal.pageSize.getHeight()-24);
+      doc.text('Σελίδα '+doc.internal.getNumberOfPages(),R,doc.internal.pageSize.getHeight()-24,{align:'right'});}
+  });
+  // ---- Summary line ----
+  let y=doc.lastAutoTable.finalY+22;doc.setFontSize(10);doc.setTextColor(...DK);
+  doc.text('Σύνολο χρεώσεων: '+fmt(totD)+' €',L,y);
+  doc.text('Σύνολο πιστώσεων: '+fmt(totC)+' €',L+180,y);
+  const bpos=card.balance>0.005;doc.setTextColor(...(bpos?[190,40,40]:[22,120,60]));
+  doc.setFontSize(12);doc.text('Υπόλοιπο: '+fmt(card.balance)+' €',R,y,{align:'right'});
+  return doc;
+}
+
+async function ledgerPdf(forEmail){
   if(!CARD||!CARD.entries){toast('Φόρτωσε πρώτα καρτέλα','err');return;}
   if(!window.jspdf){toast('Η βιβλιοθήκη PDF δεν φόρτωσε','err');return;}
   toast('Δημιουργία PDF…','ok');
   try{
-    await ensureFont();await loadInvTypes();
-    const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'pt',format:'a4'});
-    doc.addFileToVFS('DejaVuSans.ttf',FONT_B64);doc.addFont('DejaVuSans.ttf','DejaVu','normal');doc.setFont('DejaVu');
-    const W=doc.internal.pageSize.getWidth();const AC=[14,165,233],DK=[35,45,60],MUT=[120,130,145];const L=40,R=W-40;
-    // ---- Header band ----
-    doc.setFillColor(...AC);doc.rect(0,0,W,6,'F');
-    doc.setTextColor(...DK);doc.setFontSize(17);doc.text('ΚΑΡΤΕΛΑ ΠΕΛΑΤΗ',L,44);
-    doc.setFontSize(9);doc.setTextColor(...MUT);
-    doc.text('Περίοδος: '+$('#cardFrom').value+' έως '+$('#cardTo').value,R,44,{align:'right'});
-    doc.text('Ημ/νία έκδοσης: '+new Date().toLocaleDateString('el-GR'),R,60,{align:'right'});
-    // ---- Customer details block ----
+    const period=$('#cardFrom').value+' έως '+$('#cardTo').value;
     const cust=(ALL_CUSTOMERS.map(custFields).find(c=>c.vat===CARD.customer_vat))||{};
-    doc.setDrawColor(...AC);doc.setLineWidth(0.8);doc.roundedRect(L,74,R-L,58,4,4,'S');
-    doc.setTextColor(...DK);doc.setFontSize(12);doc.text(CARD.customer_name||cust.name||'—',L+12,94);
-    doc.setFontSize(9);doc.setTextColor(...MUT);
-    const addr=[cust.address,cust.city,cust.zip].filter(Boolean).join(', ');
-    doc.text('ΑΦΜ: '+(CARD.customer_vat||'')+(cust.code?('   ·   Κωδ.: '+cust.code):''),L+12,110);
-    doc.text('Διεύθυνση: '+(addr||'—'),L+12,124);
-    // ---- Movements table (Χρέωση / Πίστωση / Υπόλοιπο) ----
-    let totD=0,totC=0;
-    const body=CARD.entries.map(e=>{totD+=(+e.debit||0);totC+=(+e.credit||0);
-      let docLbl;
-      if(e.kind==='invoice'){
-        const parts=[invLabel(e.type)!==e.type?invLabel(e.type):(e.type||'Παραστατικό')];
-        if(e.series)parts.push('Σειρά '+e.series);
-        if(e.aa)parts.push('Αρ. '+e.aa);
-        if(e.mark)parts.push('ΜΑΡΚ '+e.mark);
-        docLbl=parts.join('  ·  ');
-      }else docLbl='Πληρωμή'+(e.method?('  ·  '+payMethod(e.method)):'')+(e.notes?('  ·  '+e.notes):'');
-      return [e.date||'',docLbl,e.debit?fmt(e.debit):'',e.credit?fmt(e.credit):'',fmt(e.balance)];});
-    doc.autoTable({startY:146,
-      head:[['Ημ/νία','Παραστατικό','Χρέωση','Πίστωση','Υπόλοιπο']],
-      body,
-      foot:[['','Σύνολα',fmt(totD),fmt(totC),fmt(CARD.balance)]],
-      styles:{font:'DejaVu',fontSize:8.5,cellPadding:5,textColor:DK,lineColor:[225,230,238],lineWidth:0.5},
-      headStyles:{font:'DejaVu',fillColor:AC,textColor:[255,255,255],halign:'left',fontSize:9},
-      footStyles:{font:'DejaVu',fillColor:[240,244,249],textColor:DK,fontStyle:'normal',fontSize:9.5},
-      columnStyles:{0:{cellWidth:70},2:{halign:'right',cellWidth:75},3:{halign:'right',cellWidth:75},4:{halign:'right',cellWidth:80}},
-      alternateRowStyles:{fillColor:[248,250,252]},
-      didParseCell:d=>{if(d.section==='foot'||d.column.index>=2)d.cell.styles.halign=d.column.index>=2?'right':'left';},
-      didDrawPage:data=>{doc.setFontSize(8);doc.setTextColor(...MUT);
-        doc.text('e-Timologio Pro',L,doc.internal.pageSize.getHeight()-24);
-        doc.text('Σελίδα '+doc.internal.getNumberOfPages(),R,doc.internal.pageSize.getHeight()-24,{align:'right'});}
-    });
-    // ---- Summary line ----
-    let y=doc.lastAutoTable.finalY+22;doc.setFontSize(10);doc.setTextColor(...DK);
-    doc.text('Σύνολο χρεώσεων: '+fmt(totD)+' €',L,y);
-    doc.text('Σύνολο πιστώσεων: '+fmt(totC)+' €',L+180,y);
-    const bpos=CARD.balance>0.005;doc.setTextColor(...(bpos?[190,40,40]:[22,120,60]));
-    doc.setFontSize(12);doc.text('Υπόλοιπο: '+fmt(CARD.balance)+' €',R,y,{align:'right'});
-    doc.save('kartela-'+CARD.customer_vat+'.pdf');
+    const doc=await ledgerDoc(CARD,period,cust);
+    const name=ledgerFileName(CARD.customer_name,CARD.customer_vat);
+    if(forEmail){
+      // Ίδιο PDF, άλλη κατάληξη: αντί να αποθηκευτεί, ταξιδεύει συνημμένο.
+      const b64=doc.output('datauristring').split(',')[1];
+      openMailDialog('card',{
+        vat:CARD.customer_vat,
+        name:CARD.customer_name||CARD.customer_vat,
+        email:customerEmail(CARD.customer_vat),
+        period:isoToDmy(di('cardFrom'))+' – '+isoToDmy(di('cardTo')),
+        balance:CARD.balance,
+      },{name,base64:b64});
+      return;
+    }
+    doc.save(name);
     toast('PDF καρτέλας έτοιμο','ok');
   }catch(e){toast('PDF: '+e.message,'err');}
+}
+
+// Το PDF ενός πελάτη από τα δεδομένα της μαζικής λίστας — χωρίς νέα κλήση στην
+// ΑΑΔΕ: οι κινήσεις ήρθαν ήδη μαζί με τα υπόλοιπα.
+async function ledgerPdfB64(row,periodLabel){
+  let running=+row.opening||0;
+  const entries=(row.entries||[]).map(e=>{
+    running+=(+e.debit||0)-(+e.credit||0);
+    return Object.assign({},e,{balance:Math.round(running*100)/100});
+  });
+  const cust=((ALL_CUSTOMERS||[]).map(custFields).find(c=>c.vat===row.vat))||{};
+  const doc=await ledgerDoc({customer_vat:row.vat,customer_name:row.name,entries,balance:+row.balance||0},periodLabel,cust);
+  return doc.output('datauristring').split(',')[1];
+}
+
+function emailLedger(){
+  if(!CARD||!CARD.customer_vat){toast('Φόρτωσε πρώτα καρτέλα','err');return;}
+  ledgerPdf(true);
+}
+
+// --- Τραπεζικοί λογαριασμοί & ρυθμίσεις αποστολής -----------------------------
+// Ένα αντίγραφο στη μνήμη ανά εταιρεία: το χρειάζονται και οι Ρυθμίσεις (για
+// επεξεργασία) και ο διάλογος email (για να γράψει τα IBAN μέσα στο μήνυμα).
+let BANK_CFG={banks:[],accounts:[],prefs:{},pdf:null,mail_ready:false,smtp_ready:false},BANK_VAT='';
+
+// Έλεγχος IBAN mod-97, ίδιος με τον server. Εδώ σταματά το λάθος όσο ο χρήστης
+// κοιτάζει την οθόνη, αντί να το ανακαλύψει από μήνυμα αποτυχίας.
+function ibanNorm(v){return String(v||'').toUpperCase().replace(/[^0-9A-Z]/g,'');}
+function ibanPretty(v){return ibanNorm(v).replace(/(.{4})/g,'$1 ').trim();}
+function ibanValid(v){
+  const s=ibanNorm(v);
+  if(s.length<15||s.length>34)return false;
+  if(!/^[A-Z]{2}[0-9]{2}[0-9A-Z]+$/.test(s))return false;
+  if(s.startsWith('GR')&&s.length!==27)return false;
+  const moved=s.slice(4)+s.slice(0,4);
+  let digits='';
+  for(const c of moved)digits+=(c>='0'&&c<='9')?c:String(c.charCodeAt(0)-55);
+  let rem=0;
+  for(let i=0;i<digits.length;i+=7)rem=Number(String(rem)+digits.substr(i,7))%97;
+  return rem===1;
+}
+function ibanBank(v){
+  const s=ibanNorm(v);
+  if(!s.startsWith('GR')||s.length<7)return '';
+  const code=s.substr(4,3);
+  const hit=(BANK_CFG.banks||[]).find(b=>b.code&&b.code===code);
+  return hit?hit.name:'';
+}
+
+async function loadBankSettings(force){
+  if(!ACCOUNT)return;
+  if(!force&&BANK_VAT===ACCOUNT)return;
+  try{
+    const d=await apostAcc({bank_get:1});
+    if(!d.success)return;
+    BANK_CFG=d;BANK_VAT=ACCOUNT;
+    if($('#bkTable'))bkRender();
+  }catch(e){}
+}
+
+function bkRender(){
+  const co=($('#account option:checked')||{}).textContent||'';
+  $('#bkCompany').textContent=co?('— '+co):'';
+  const tb=$('#bkTable tbody');
+  tb.innerHTML=(BANK_CFG.accounts||[]).map((a,i)=>{
+    const opts=(BANK_CFG.banks||[]).map(b=>`<option value="${esc(b.name)}"${b.name===a.bank?' selected':''}>${esc(b.name)}</option>`).join('');
+    return `<tr>
+      <td><select class="bk-bank" data-i="${i}"><option value="">— επιλογή —</option>${opts}</select></td>
+      <td><input class="bk-iban" data-i="${i}" value="${esc(ibanPretty(a.iban))}" style="min-width:230px;font-family:Consolas,monospace" oninput="bkIbanTouch(this)"></td>
+      <td><input class="bk-holder" data-i="${i}" value="${esc(a.holder||'')}" style="min-width:160px"></td>
+      <td style="text-align:center"><input type="checkbox" class="bk-inmail" data-i="${i}"${a.in_email?' checked':''}></td>
+      <td class="right"><button class="ghost sm" onclick="bkDelRow(${i})" title="Αφαίρεση">🗑</button></td>
+    </tr>`;}).join('')
+    ||'<tr><td colspan="5" class="muted">Κανένας λογαριασμός. Πάτα «➕ Λογαριασμός».</td></tr>';
+  const p=BANK_CFG.prefs||{};
+  $('#bkAutoSend').checked=!!p.auto_send_doc;
+  $('#bkAutoBcc').value=p.auto_send_bcc||'';
+  $('#bkSchedOn').checked=!!p.sched_enabled;
+  $('#bkSchedDay').value=p.sched_day||1;
+  $('#bkSchedDebit').checked=p.sched_only_debit!==false;
+  $('#bkSchedMin').value=p.sched_min||0;
+  const has=!!BANK_CFG.pdf;
+  $('#bkPdfState').textContent=has?(BANK_CFG.pdf.name+' ('+Math.round(BANK_CFG.pdf.size/1024)+' KB)'):'δεν έχει ανέβει αρχείο';
+  $('#bkPdfView').style.display=has?'':'none';
+  $('#bkPdfDel').style.display=has?'':'none';
+  // Η προειδοποίηση δεν πατά πάνω σε μήνυμα που μόλις έγραψε μια ενέργεια
+  // (π.χ. «Αποθηκεύτηκε») — αλλιώς ο χρήστης δεν βλέπει ποτέ την επιβεβαίωση.
+  if(!BANK_CFG.smtp_ready&&$('#bkResult').textContent==='')
+    $('#bkResult').textContent='⚠️ Χωρίς SMTP δεν στέλνονται καρτέλες — συμπλήρωσε τον πάροχο email παραπάνω.';
+}
+
+// Καθώς πληκτρολογεί: πράσινο/κόκκινο περίγραμμα και αυτόματη επιλογή τράπεζας
+// όταν ο κωδικός του IBAN την αναγνωρίζει με βεβαιότητα.
+function bkIbanTouch(inp){
+  const ok=ibanValid(inp.value);
+  inp.style.borderColor=inp.value.trim()===''?'':(ok?'var(--ok)':'var(--bad)');
+  if(!ok)return;
+  const name=ibanBank(inp.value);
+  if(!name)return;
+  const sel=$(`.bk-bank[data-i="${inp.dataset.i}"]`);
+  if(sel&&!sel.value)sel.value=name;
+}
+
+function bkCollect(){
+  const rows=[];
+  $$('#bkTable tbody tr').forEach(tr=>{
+    const iban=tr.querySelector('.bk-iban');if(!iban)return;
+    const i=iban.dataset.i;
+    rows.push({bank:($(`.bk-bank[data-i="${i}"]`)||{}).value||'',
+               iban:ibanNorm(iban.value),
+               holder:($(`.bk-holder[data-i="${i}"]`)||{}).value||'',
+               in_email:!!($(`.bk-inmail[data-i="${i}"]`)||{}).checked});
+  });
+  return rows.filter(r=>r.iban!=='');
+}
+
+function bkAddRow(){
+  BANK_CFG.accounts=bkCollect();
+  BANK_CFG.accounts.push({bank:'',iban:'',holder:'',in_email:true});
+  bkRender();
+}
+function bkDelRow(i){
+  const rows=bkCollect();rows.splice(i,1);BANK_CFG.accounts=rows;bkRender();
+}
+
+async function bkSave(){
+  const rows=bkCollect();
+  const bad=rows.filter(r=>!ibanValid(r.iban)).map(r=>ibanPretty(r.iban));
+  if(bad.length){$('#bkResult').textContent='Άκυρο IBAN: '+bad.join(', ');toast('Έλεγξε τα IBAN','err');return;}
+  const prefs={auto_send_doc:$('#bkAutoSend').checked,auto_send_bcc:$('#bkAutoBcc').value.trim(),
+    sched_enabled:$('#bkSchedOn').checked,sched_day:+$('#bkSchedDay').value||1,
+    sched_only_debit:$('#bkSchedDebit').checked,sched_min:+$('#bkSchedMin').value||0};
+  $('#bkResult').innerHTML='<span class="spin"></span> Αποθήκευση…';
+  try{
+    const d=await apostAcc({bank_save:1,accounts:JSON.stringify(rows),prefs:JSON.stringify(prefs)});
+    if(!d.success)throw new Error(d.error||'απέτυχε');
+    BANK_CFG.accounts=d.accounts;BANK_CFG.prefs=d.prefs;
+    $('#bkResult').textContent='Αποθηκεύτηκε.';toast('Οι ρυθμίσεις αποθηκεύτηκαν','ok');bkRender();
+  }catch(e){$('#bkResult').textContent='Αποθήκευση: '+e.message;toast('Αποθήκευση: '+e.message,'err');}
+}
+
+async function bkUploadPdf(inp){
+  const f=inp.files&&inp.files[0];if(!f)return;
+  if(f.size>3*1024*1024){toast('Το PDF ξεπερνά τα 3 MB','err');inp.value='';return;}
+  $('#bkPdfState').innerHTML='<span class="spin"></span> Ανέβασμα…';
+  try{
+    const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=rej;r.readAsDataURL(f);});
+    const d=await apostAcc({bank_pdf_up:1,file_b64:b64,filename:f.name});
+    if(!d.success)throw new Error(d.error||'απέτυχε');
+    BANK_CFG.pdf={name:d.name,size:d.size};bkRender();toast('Το PDF ανέβηκε','ok');
+  }catch(e){$('#bkPdfState').textContent='Ανέβασμα: '+e.message;toast('Ανέβασμα: '+e.message,'err');}
+  inp.value='';
+}
+function bkViewPdf(){window.open(zipUrl({bank_pdf_dl:1}),'_blank');}
+async function bkDeletePdf(){
+  if(!confirm('Να αφαιρεθεί το PDF με τους λογαριασμούς;'))return;
+  try{await apostAcc({bank_pdf_del:1});BANK_CFG.pdf=null;bkRender();toast('Αφαιρέθηκε','ok');}
+  catch(e){toast('Αφαίρεση: '+e.message,'err');}
+}
+
+async function bkDispatchNow(){
+  if(!confirm('Να σταλούν τώρα οι καρτέλες με βάση τα παραπάνω φίλτρα;'))return;
+  $('#bkResult').innerHTML='<span class="spin"></span> Αποστολή…';
+  try{
+    const d=await apostAcc({ledger_dispatch:1,force:1,issue_date_from:yearStart(),issue_date_to:todayDmy()});
+    if(!d.success)throw new Error(d.error||'απέτυχε');
+    const extra=(d.no_email&&d.no_email.length)?(' · χωρίς email: '+d.no_email.length):'';
+    $('#bkResult').textContent='Στάλθηκαν '+d.sent+' καρτέλες'+extra+'.';
+    toast('Στάλθηκαν '+d.sent+' καρτέλες','ok');
+  }catch(e){$('#bkResult').textContent='Αποστολή: '+e.message;toast('Αποστολή: '+e.message,'err');}
+}
+
+// Οι λογαριασμοί σε απλό κείμενο — ό,τι βλέπει ο πελάτης μέσα στο μήνυμα.
+function bankLinesText(){
+  const rows=(BANK_CFG.accounts||[]).filter(a=>a.in_email);
+  if(!rows.length)return '';
+  return '\n\nτραπεζικοί λογαριασμοί για την εξόφληση:\n'+
+    rows.map(a=>'• '+(a.bank||'τράπεζα')+': '+ibanPretty(a.iban)+(a.holder?(' (δικαιούχος: '+a.holder+')'):'')).join('\n');
+}
+
+// --- Μαζική αποστολή καρτελών ------------------------------------------------
+// Τα υπόλοιπα ΚΑΙ οι κινήσεις έρχονται με μία κλήση, οπότε τα PDF φτιάχνονται
+// εδώ χωρίς επιπλέον ταξίδι στην ΑΑΔΕ ανά πελάτη.
+let LB_ROWS=[];
+function todayDmy(){const d=new Date();return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();}
+function yearStart(){return '01/01/'+new Date().getFullYear();}
+
+async function openLedgerBulk(){
+  if(!BANK_CFG.smtp_ready)await loadBankSettings(true);
+  $('#lbFrom').value=di('cardFrom')||'';
+  $('#lbTo').value=di('cardTo')||'';
+  $('#lbResult').textContent='';
+  $('#lbTable tbody').innerHTML='';
+  ledgerBulkModal.showModal();
+  lbLoad();
+}
+
+async function lbLoad(){
+  $('#lbResult').innerHTML='<span class="spin"></span> Υπολογισμός υπολοίπων…';
+  try{
+    const d=await api({ledger_targets:1,only_debit:$('#lbOnlyDebit').checked?1:'',
+      min:$('#lbMin').value||0,
+      issue_date_from:isoToDmy($('#lbFrom').value)||yearStart(),
+      issue_date_to:isoToDmy($('#lbTo').value)||todayDmy()});
+    if(!d.success)throw new Error(d.error||'απέτυχε');
+    LB_ROWS=d.rows||[];
+    lbRender();
+    const withMail=LB_ROWS.filter(r=>r.email).length;
+    $('#lbResult').textContent=LB_ROWS.length+' πελάτες · '+withMail+' με email';
+  }catch(e){$('#lbResult').textContent='Φόρτωση: '+e.message;}
+}
+
+// Οι διευθύνσεις που λείπουν, μία-μία από την ΑΑΔΕ. Είναι αργό (ένα αίτημα ανά
+// πελάτη) γι' αυτό γίνεται με ρητό πάτημα και όχι αυτόματα στο άνοιγμα.
+async function lbFindEmails(){
+  const missing=LB_ROWS.map((r,i)=>({r,i})).filter(x=>!x.r.email);
+  if(!missing.length){toast('Όλοι έχουν ήδη email','ok');return;}
+  for(let k=0;k<missing.length;k++){
+    const {r,i}=missing[k];
+    $('#lbResult').innerHTML='<span class="spin"></span> Εύρεση '+(k+1)+'/'+missing.length+' — '+esc(r.name||r.vat);
+    try{const d=await api({customer_email:1,buyer_vat:r.vat});if(d&&d.email)LB_ROWS[i].email=d.email;}catch(e){}
+  }
+  lbRender();
+  const withMail=LB_ROWS.filter(r=>r.email).length;
+  $('#lbResult').textContent=LB_ROWS.length+' πελάτες · '+withMail+' με email';
+}
+
+function lbRender(){
+  $('#lbTable tbody').innerHTML=LB_ROWS.map((r,i)=>`<tr>
+      <td style="text-align:center"><input type="checkbox" class="lb-pick" data-i="${i}"${r.email?' checked':''}></td>
+      <td>${esc(r.name||r.vat)}</td><td>${esc(r.vat)}</td>
+      <td class="right">${fmt(r.balance)}</td>
+      <td>${r.email?esc(r.email):'<span class="muted">— χωρίς email —</span>'}</td>
+    </tr>`).join('')||'<tr><td colspan="5" class="muted">Κανένας πελάτης με αυτά τα κριτήρια.</td></tr>';
+}
+
+async function lbSend(){
+  const picks=$$('#lbTable .lb-pick:checked').map(c=>LB_ROWS[+c.dataset.i]).filter(r=>r&&r.email);
+  if(!picks.length){toast('Δεν επιλέχθηκε κανείς με email','err');return;}
+  if(!confirm('Να σταλούν '+picks.length+' καρτέλες;'))return;
+  const period=(isoToDmy($('#lbFrom').value)||yearStart())+' – '+(isoToDmy($('#lbTo').value)||todayDmy());
+  let ok=0,fail=0;
+  for(let i=0;i<picks.length;i++){
+    const r=picks[i];
+    $('#lbResult').innerHTML='<span class="spin"></span> '+(i+1)+'/'+picks.length+' — '+esc(r.name||r.vat);
+    try{
+      const b64=await ledgerPdfB64(r,period);
+      const body=cardMailBody({name:r.name||r.vat,period,balance:r.balance});
+      const d=await apostAcc({email_document:1,kind:'card',to:r.email,customer_vat:r.vat,
+        subject:'Καρτέλα πελάτη — '+(r.name||r.vat),body,
+        pdf_base64:b64,pdf_name:ledgerFileName(r.name,r.vat),
+        attach_bank:r.balance>0.005?1:''});
+      if(d.success)ok++;else fail++;
+    }catch(e){fail++;}
+  }
+  $('#lbResult').textContent='Στάλθηκαν '+ok+(fail?(' · απέτυχαν '+fail):'')+'.';
+  toast('Στάλθηκαν '+ok+' καρτέλες'+(fail?(', απέτυχαν '+fail):''),fail?'err':'ok');
+}
+
+// Το κείμενο της καρτέλας, με τις ίδιες λέξεις που χρησιμοποιεί ο server:
+// «προς πληρωμή» ή «πιστωτικό», ποτέ σκέτο πρόσημο.
+function cardMailBody(info){
+  const bal=+info.balance||0;
+  const label=bal>0.005?'υπόλοιπο προς πληρωμή':bal<-0.005?'πιστωτικό υπόλοιπο':'μηδενικό υπόλοιπο';
+  const company=($('#account option:checked')||{}).textContent||'';
+  let t=(info.name||'αγαπητέ συνεργάτη')+',\n\nσας αποστέλλουμε συνημμένη την καρτέλα κινήσεων'+
+    (info.period?(' για το διάστημα '+info.period):'')+'.'+
+    '\n\n'+(Math.abs(bal)<0.005?'το υπόλοιπό σας είναι μηδενικό — δεν εκκρεμεί πληρωμή.':('το τρέχον '+label+' είναι '+fmt(Math.abs(bal))+' €.'));
+  if(bal>0.005)t+=bankLinesText();
+  if(company)t+='\n\nμε εκτίμηση,\n'+company;
+  return t;
+}
+
+// Όνομα αρχείου από επωνυμία: ό,τι δεν επιτρέπει το σύστημα αρχείων φεύγει.
+// Τα Windows απορρίπτουν \ / : * ? " < > | και τα κενά στο τέλος.
+function safeFileName(text,fallback){
+  const t=String(text||'').replace(/[\\/:*?"<>|]/g,' ').replace(/\s+/g,' ').trim();
+  return t?t.slice(0,80):(fallback||'');
+}
+// «ΚΑΡΤΕΛΑ (ΕΠΩΝΥΜΙΑ ΠΕΛΑΤΗ).pdf» — το ΑΦΜ δεν λέει σε κανέναν ποιανού είναι
+// η καρτέλα όταν κοιτάς τον φάκελο λήψεων.
+function ledgerFileName(name,vat){
+  const who=safeFileName(name,'')||String(vat||'');
+  return 'ΚΑΡΤΕΛΑ ('+(who||'ΠΕΛΑΤΗΣ')+').pdf';
 }
 
 // Command palette
@@ -3494,8 +4546,22 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 // creating a customer, or creating a product — and ALWAYS produces a preview /
 // draft for manual review (never auto-issues live). Also answers navigation/help.
 let cbRec=null,cbRecOn=false;
+function cbPanelOpen(){const p=$('#cbPanel');return !!(p&&p.classList.contains('open'));}
+// Κλείνοντας το παράθυρο, ο βοηθός σωπαίνει ΑΜΕΣΩΣ: ήχος που συνεχίζει αφού
+// έφυγες από τη συνομιλία ακούγεται σαν να μιλά μόνος του.
+function cbSilence(){
+  try{if(CB_AUDIO){CB_AUDIO.pause();CB_AUDIO.currentTime=0;CB_AUDIO=null;}}catch(e){}
+  try{if(window.speechSynthesis)speechSynthesis.cancel();}catch(e){}
+}
 function cbTogglePanel(){const p=$('#cbPanel');p.classList.toggle('open');
-  if(p.classList.contains('open')){$('#cbInput').focus();cbWarmVoice();if(!$('#cbLog').children.length)cbBot('Γεια! Πες μου π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμ κωδ 10 ευρώ», «νέος πελάτης», «νέο είδος», «νέα σειρά», ή «πήγαινε στην καρτέλα». Αποθηκεύω πάντα ΠΡΟΧΕΙΡΟ — ΜΑΡΚ παίρνει το παραστατικό μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');}}
+  if(!p.classList.contains('open')){
+    cbSilence();
+    // Και το μικρόφωνο: μια ηχογράφηση που συνεχίζει με κλειστό παράθυρο δεν
+    // έχει πού να καταλήξει, και ανάβει το λαμπάκι της κάμερας/μικροφώνου.
+    if(cbRecOn){try{cbStopLocalRec();}catch(e){}try{if(cbRec)cbRec.stop();}catch(e){}}
+    return;
+  }
+  {$('#cbInput').focus();cbWarmVoice();if(!$('#cbLog').children.length)cbBot('Γεια! Πες μου π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμ κωδ 10 ευρώ», «νέος πελάτης», «νέο είδος», «νέα σειρά», ή «πήγαινε στην καρτέλα». Αποθηκεύω πάντα ΠΡΟΧΕΙΡΟ — ΜΑΡΚ παίρνει το παραστατικό μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');}}
 function cbClear(){$('#cbLog').innerHTML='';}
 function cbAdd(text,who,actionsHtml){const log=$('#cbLog');const d=document.createElement('div');d.className='cbMsg '+who;d.innerHTML=esc(text).replace(/\n/g,'<br>')+(actionsHtml||'');log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
 function cbMe(t){cbAdd(t,'me');}
@@ -3513,17 +4579,43 @@ function cbPickVoice(lang){
 // έχουν ελληνική φωνή από προεπιλογή, οπότε το `speechSynthesis` είτε σωπαίνει
 // είτε συλλαβίζει τα ελληνικά με αγγλική φωνή. Ο browser μένει ως εφεδρεία για
 // εγκαταστάσεις server χωρίς τη μηχανή (τότε το endpoint απαντά 501).
-let CB_AUDIO=null, CB_TTS_OFF=false, CB_WARMED=false;
+// `CB_TTS_OFF` σημαίνει «δεν υπάρχει φωνή σε αυτή την εγκατάσταση»· το
+// `CB_MUTED` σημαίνει «υπάρχει, αλλά ο χρήστης είπε σώπα». Δύο διαφορετικά
+// πράγματα: το πρώτο δεν ξεκλειδώνει ποτέ, το δεύτερο με μία λέξη.
+let CB_AUDIO=null, CB_TTS_OFF=false, CB_WARMED=false, CB_MUTED=false;
 // Προθέρμανση: η πρώτη σύνθεση φορτώνει το μοντέλο και «τρώει» τις πρώτες
 // λέξεις — ο χρήστης το ακούει σαν να μπερδεύεται ο βοηθός. Μία άφωνη κλήση
 // μόλις ανοίξει το panel και το πρόβλημα φεύγει.
 function cbWarmVoice(){
-  if(CB_WARMED||CB_TTS_OFF)return;CB_WARMED=true;
+  if(CB_WARMED)return;CB_WARMED=true;
   const lang=($('#cbLang').value||'el-GR').slice(0,2);
-  fetch(API+'?tts=1&warmup=1&lang='+encodeURIComponent(lang)+(ACCOUNT?('&account='+encodeURIComponent(ACCOUNT)):''))
-    .catch(()=>{});
+  // Πρώτα ΤΙ υπάρχει, μετά προθέρμανση. Χωρίς αυτό, ο χρήστης του web
+  // ηχογραφούσε ολόκληρη πρόταση για να πάρει 501 στο τέλος.
+  fetch(API+'?voice_caps=1'+(ACCOUNT?('&account='+encodeURIComponent(ACCOUNT)):''))
+    .then(r=>r.json()).then(d=>{
+      CB_TTS_OFF=!d.tts;CB_STT_OFF=!d.stt;
+      cbMicHint();
+      if(d.tts)fetch(API+'?tts=1&warmup=1&lang='+encodeURIComponent(lang)+(ACCOUNT?('&account='+encodeURIComponent(ACCOUNT)):'')).catch(()=>{});
+    }).catch(()=>{CB_TTS_OFF=true;CB_STT_OFF=true;cbMicHint();});
+}
+// Το κουμπί του μικροφώνου λέει ΤΙ θα γίνει αν το πατήσεις.
+function cbMicHint(){
+  const mic=$('#cbMic');if(!mic)return;
+  const browserSR=!cbEmbedded()&&!!(window.SpeechRecognition||window.webkitSpeechRecognition);
+  const ok=!CB_STT_OFF||browserSR;
+  mic.disabled=!ok;
+  mic.style.opacity=ok?'':'.45';
+  mic.title=!CB_STT_OFF
+    ? 'Φωνητική εντολή — αναγνώριση σε αυτόν τον υπολογιστή, εκτός δικτύου'
+    : browserSR
+      ? 'Φωνητική εντολή μέσω του browser (χρειάζεται σύνδεση στο internet)'
+      : 'Δεν υπάρχει φωνητική αναγνώριση σε αυτή την εγκατάσταση — γράψε την εντολή';
 }
 function cbSpeak(t){
+  // Ο βοηθός μιλά ΜΟΝΟ με ανοιχτό παράθυρο. Μια απάντηση που άργησε (π.χ.
+  // αναγνώριση φωνής) δεν πρέπει να ξεκινήσει να μιλά αφού έκλεισες.
+  if(!cbPanelOpen())return;
+  if(CB_MUTED)return;
   const lang=($('#cbLang').value||'el-GR').slice(0,2);
   const text=t.replace(/[•✔🔇➕📤💾👁⏰💶🧾🚚🏢👤]/gu,'').trim();
   if(!text)return;
@@ -3569,7 +4661,7 @@ function cbSubmitText(){const t=$('#cbInput').value.trim();if(!t)return;$('#cbIn
 // whisper.cpp τοπικά. Ίδιος δρόμος για browser και για εφαρμογή υπολογιστή·
 // όπου δεν υπάρχει μηχανή, το endpoint απαντά 501 και πέφτουμε στον browser.
 let CB_MEDIA=null,CB_CHUNKS=[],CB_CTXA=null,CB_STT_OFF=false;
-function cbEmbedded(){return document.body.classList.contains('embedded');}
+const cbEmbedded=isEmbedded;   // ίδιος έλεγχος, παλιό όνομα στον βοηθό
 function cbInitRec(){
   if(cbEmbedded())return null;                 // βλ. παραπάνω — παγώνει
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return null;
@@ -3581,7 +4673,11 @@ function cbToggleMic(){
   if(cbRecOn){cbStopLocalRec();if(cbRec){try{cbRec.stop();}catch(e){}}return;}
   if(!CB_STT_OFF){cbStartLocalRec();return;}
   if(!cbRec)cbRec=cbInitRec();
-  if(!cbRec){cbBot('Δεν υπάρχει φωνητική αναγνώριση σε αυτή την εγκατάσταση — γράψε την εντολή εδώ.');return;}
+  if(!cbRec){
+    cbBot(cbEmbedded()
+      ? 'Η αναγνώριση φωνής δεν είναι εγκατεστημένη σε αυτόν τον υπολογιστή. Γράψε την εντολή εδώ.'
+      : 'Αυτός ο browser δεν έχει φωνητική αναγνώριση. Δοκίμασε Chrome ή Edge, ή γράψε την εντολή εδώ.');
+    return;}
   cbRec.lang=$('#cbLang').value;try{cbRec.start();cbRecOn=true;$('#cbMic').classList.add('rec');}catch(e){}}
 async function cbStartLocalRec(){
   let stream;
@@ -3617,7 +4713,8 @@ async function cbStopLocalRec(){
     if(ACCOUNT)fd.append('account',ACCOUNT);
     const r=await fetch(API,{method:'POST',body:fd});
     const d=await r.json();
-    if(r.status===501){CB_STT_OFF=true;cbBot('Η τοπική αναγνώριση φωνής δεν είναι εγκατεστημένη. Γράψε την εντολή εδώ.');return;}
+    if(r.status===501){CB_STT_OFF=true;cbMicHint();
+      cbBot('Η τοπική αναγνώριση φωνής δεν είναι εγκατεστημένη. Δοκίμασε ξανά το μικρόφωνο — θα χρησιμοποιήσω τον browser.');return;}
     if(!d.success||!(d.text||'').trim()){cbBot('Δεν κατάλαβα τι είπες — δοκίμασε ξανά ή γράψε το.');return;}
     $('#cbInput').value=d.text.trim();cbSubmitText();
   }catch(e){cbBot('Η αναγνώριση απέτυχε: '+e.message);}
@@ -3729,6 +4826,54 @@ async function cbHandle(t){const s=cbNorm(t);
     if(CB_CTX){CB_CTX=null;cbBot('Εντάξει, το ακύρωσα.');}else cbBot('Δεν εκκρεμεί κάτι.');return;}
   if(CB_CTX)return cbContinue(t);              // we're mid-conversation
 
+  // --- Διευρυμένος χειρισμός: εντολές που αλλάζουν την ΕΦΑΡΜΟΓΗ, όχι τη σελίδα -
+  // Ίδιες λέξεις με την εφαρμογή υπολογιστή (`assistant.COMMANDS`): ο λογιστής
+  // που έμαθε «σώπα» ή «άλλαξε εταιρεία» στο ένα, το λέει και στο άλλο.
+  // ΠΡΙΝ την πλοήγηση: το «καρτέλα του 802576637» δεν είναι «άνοιξε την Καρτέλα»
+  // — ο αριθμός είναι όλη η εντολή, και αλλιώς χανόταν.
+  const vatSaid=(s.match(/\b(\d{9})\b/)||[])[1]||'';
+  // «φτιάξε καρτέλα για τον Χ» είναι ΝΕΟΣ πελάτης, όχι άνοιγμα καρτέλας: ίδια
+  // λέξη, αντίθετη ενέργεια — το ρήμα αποφασίζει.
+  const makesNew=/\bνεοσ?\b|\bνεα\b|\bνεο\b|φτιαξε|δημιουργησε|καταχωρησε|προσθεσε/.test(s);
+  if(vatSaid&&!makesNew&&(/καρτελ/.test(s)||/χρωσταει|υπολοιπο/.test(s))){
+    if(!ALL_CUSTOMERS.length)await loadCustomers();
+    const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===vatSaid);
+    openCard(vatSaid,c&&c.name);cbBot('Άνοιξα την καρτέλα του πελάτη.');return;}
+  if(vatSaid&&/εταιρει|επιχειρησ/.test(s)){
+    const sel=$('#account');
+    if(sel&&Array.from(sel.options).some(o=>o.value===vatSaid)){
+      sel.value=vatSaid;ACCOUNT=vatSaid;loadProductList();
+      const nav=document.querySelector('.nav-item.active');if(nav)showView(nav.dataset.view);
+      cbBot('Άλλαξα ενεργή εταιρεία.');
+    }else cbBot('Δεν βρήκα εταιρεία με αυτό το ΑΦΜ στη λίστα σου.');
+    return;}
+  if(/σωπα|μη μιλασ|σταματα να μιλασ|\bmute\b/.test(s)){
+    CB_MUTED=true;
+    // Σιωπή σημαίνει ΤΩΡΑ — όχι «μετά την πρόταση που ήδη ακούγεται».
+    if(CB_AUDIO){CB_AUDIO.pause();CB_AUDIO=null;}
+    if(window.speechSynthesis)speechSynthesis.cancel();
+    cbAdd('Εντάξει, απαντώ μόνο γραπτά.','bot');return;}
+  if(/μιλα μου|ξαναμιλα|ενεργοποιησε τη φωνη|\bunmute\b/.test(s)){
+    CB_MUTED=false;cbBot('Εντάξει, ξαναμιλάω.');return;}
+  if(/εγχειριδι|manual|οδηγιεσ χρησ/.test(s)){
+    cbBot('Ετοιμάζω το εγχειρίδιο χρήσης σε PDF.');downloadManual();return;}
+  if(/αντιγραφο ασφαλει|backup|κρατα αντιγραφο/.test(s)){
+    cbBot('Το αντίγραφο ασφαλείας γίνεται από την εφαρμογή υπολογιστή '+
+      '(Πίνακας ελέγχου → «Αντίγραφο τώρα»), όχι από τον browser.');return;}
+  if(/ανανεωσ|ξαναφορτωσ|refresh|φρεσκαρε/.test(s)){
+    const nav=document.querySelector('.nav-item.active');
+    if(nav)showView(nav.dataset.view);
+    cbBot('Ανανέωσα τη σελίδα.');return;}
+  if(/αποσυνδεσ|logout/.test(s)){cbBot('Σε αποσυνδέω.');logout();return;}
+  // Πλήθη: τα έχουμε ήδη στη μνήμη — καμία ερώτηση στο backend, και ΠΡΙΝ τα
+  // στατιστικά, που μετρούν παραστατικά και όχι πελάτες.
+  if(/ποσ\S*\s+πελατ/.test(s)){
+    if(!ALL_CUSTOMERS.length)await loadCustomers();
+    cbBot('Έχεις '+ALL_CUSTOMERS.length+' πελάτες στο πελατολόγιο.');return;}
+  if(/ποσ\S*\s+(?:ειδ|προιοντ)/.test(s)){
+    if(!PRODUCTS.length)await loadProducts();
+    cbBot('Έχεις '+PRODUCTS.length+' είδη στον κατάλογο.');return;}
+
   // Ρητή πλοήγηση ΠΡΩΤΑ: το «πήγαινε στα παραστατικά» περιέχει «παραστατ» και
   // αλλιώς θα περνούσε λανθασμένα για εντολή έκδοσης.
   const isNav=/πηγαινε|ανοιξε|go to|open|δειξε|εμφανισε|παμε/.test(s);
@@ -3746,7 +4891,8 @@ async function cbHandle(t){const s=cbNorm(t);
       '💶 Ταμείο: «εισαγωγή πληρωμών από τράπεζα» · «πληρωμές»\n'+
       '⏰ Αυτοματισμοί: «προγραμματισμός» · «ειδοποιήσεις» · «πόσες αδιάβαστες»\n'+
       '⚙️ Λογαριασμός: «ρυθμίσεις» · «ενεργοποίηση 2FA» · «αλλαγή κωδικού» · «διαχείριση χρηστών»\n'+
-      '📊 Ερωτήσεις: «πόσα τιμολόγια φέτος» · «τζίρος μήνα»\n'+
+      '🛠️ Εφαρμογή: «εγχειρίδιο» · «άλλαξε εταιρεία <ΑΦΜ>» · «καρτέλα του <ΑΦΜ>» · «ανανέωσε» · «σώπα» · «αποσύνδεση»\n'+
+      '📊 Ερωτήσεις: «πόσα τιμολόγια φέτος» · «τζίρος μήνα» · «πόσους πελάτες έχω»\n'+
       '🧭 Πλοήγηση: «πήγαινε στην καρτέλα / πελάτες / είδη / σειρές / πρόχειρα…»\n\n'+
       'ℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
   // New series
@@ -3780,14 +4926,14 @@ async function cbHandle(t){const s=cbNorm(t);
       cbBot((period==='year'?'Φέτος':'Αυτόν τον μήνα')+': '+(d.total_count??'—')+' παραστατικά, καθαρή αξία '+fmt(d.total_value||0)+' €.');}
     catch(e){cbBot('Δεν μπόρεσα να φέρω στατιστικά τώρα.');}return;}
   // New customer
-  if(/νεοσ? πελατ|new customer|create customer|δημιουργησε πελατ|φτιαξε πελατ/.test(s)){
+  if(/νεοσ? πελατ|new customer|create customer|δημιουργησε πελατ|φτιαξε πελατ|καταχωρησε πελατ|προσθεσε πελατ|φτιαξε καρτελα|νεα καρτελα/.test(s)){
     const afm=(t.match(/\b(\d{9})\b/)||[])[1]||'';
     cbBot('Ανοίγω φόρμα νέου πελάτη'+(afm?(' για ΑΦΜ '+afm):'')+'. Έλεγξε τα στοιχεία και πάτα Αποθήκευση.');
     openCustomerModal(c=>{if(c)cbBot('✔ Ο πελάτης «'+(c.name||c.vat||'')+'» αποθηκεύτηκε.');},afm);return;}
   // New product / item
-  if(/νεο ειδ|νεο προι|new item|new product|create item|δημιουργησε ειδ|φτιαξε ειδ/.test(s)){
+  if(/νεο ειδ|νεο προι|new item|new product|create item|δημιουργησε ειδ|φτιαξε ειδ|καταχωρησε ειδ|καταχωρησε προι|προσθεσε ειδ|προσθεσε προι/.test(s)){
     const price=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur)/i,t);
-    let desc=t.replace(/^.*?(νέο είδ\S*|νεο ειδ\S*|νέο προϊ\S*|νεο προι\S*|new (?:item|product)|δημιούργησε είδ\S*|φτιάξε είδ\S*)/i,'').replace(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur).*/i,'').replace(/\bτιμή\b|\bτιμη\b/gi,'').trim();
+    let desc=t.replace(/^.*?(νέο είδ\S*|νεο ειδ\S*|νέο προϊ\S*|νεο προι\S*|new (?:item|product)|καταχώρησε είδ\S*|καταχώρησε προϊ\S*|πρόσθεσε είδ\S*|πρόσθεσε προϊ\S*|δημιούργησε είδ\S*|φτιάξε είδ\S*)/i,'').replace(/(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur).*/i,'').replace(/\bτιμή\b|\bτιμη\b/gi,'').trim();
     cbBot('Ανοίγω φόρμα νέου είδους'+(desc?(' «'+desc+'»'):'')+(price?(' τιμή '+price+'€'):'')+'. Έλεγξε και πάτα Αποθήκευση.');
     openProductModal('',c=>{if(c)cbBot('✔ Το είδος αποθηκεύτηκε.');});
     setTimeout(()=>{if(desc&&$('#pdDesc'))$('#pdDesc').value=desc;if(price&&$('#pdPrice'))$('#pdPrice').value=price;},180);return;}
@@ -3929,19 +5075,25 @@ const TOUR=[
   {sel:'[data-view="issue"]',view:'issue',title:'🧾 Έκδοση',text:'Ξεκίνα εδώ. Ένας οδηγός σε ρωτά τι θέλεις να εκδώσεις (Τιμολόγιο/Απόδειξη ή Δελτίο) και αν ο πελάτης είναι επαγγελματίας ή ιδιώτης, και προσαρμόζει τη φόρμα.'},
   {sel:'[data-view="bulk"]',title:'📚 Μαζική έκδοση',text:'Έκδοση πολλών παραστατικών μαζί: μία γραμμή ανά παραστατικό με picker πελάτη & είδους — χωρίς πληκτρολόγηση ΑΦΜ/κωδικών.'},
   {sel:'[data-view="customers"]',title:'👥 Πελάτες',text:'Το πελατολόγιό σου με φίλτρα ανά στήλη. Από κάθε γραμμή εκδίδεις κατευθείαν ή ανοίγεις την καρτέλα.'},
-  {sel:'[data-view="card"]',title:'📇 Καρτέλα πελάτη',text:'Τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + τρέχον υπόλοιπο. Από τα κουμπιά της καρτέλας βγάζεις PDF καρτέλας, κάνεις <b>μαζική εκτύπωση</b> όλων των παραστατικών του πελάτη (με προεπισκόπηση) ή τα κατεβάζεις όλα σε <b>ZIP</b>.'},
+  {sel:'[data-view="card"]',title:'📇 Καρτέλα πελάτη',text:'Τιμολόγια ΑΑΔΕ + τοπικές πληρωμές + τρέχον υπόλοιπο. Από τα κουμπιά της καρτέλας βγάζεις PDF καρτέλας, κάνεις <b>μαζική εκτύπωση</b> όλων των παραστατικών του πελάτη (με προεπισκόπηση) ή τα κατεβάζεις όλα σε <b>ZIP</b>. <b>Διπλό κλικ σε πληρωμή</b> την ανοίγει για διόρθωση.'},
+  {sel:'[data-view="card"]',title:'✉️ Στείλε την καρτέλα',text:'Το «✉️ Αποστολή καρτέλας» στέλνει το PDF στον πελάτη — πάντα με προεπισκόπηση κειμένου, που απευθύνεται στην <b>επωνυμία</b> του και λέει αν το υπόλοιπο είναι «προς πληρωμή» ή «πιστωτικό», μαζί με τα IBAN σου. Το «📨 Μαζική αποστολή» κάνει το ίδιο για πολλούς μαζί, με φίλτρο σε όσους χρωστούν.'},
+  {sel:'[data-view="documents"]',title:'📄 Παραστατικά',text:'Όλα τα εκδοθέντα της περιόδου σε μία λίστα. Τσέκαρε όσα θέλεις και τύπωσέ τα μαζί ή κατέβασέ τα σε <b>ZIP</b>. Με το «⚙ Στήλες» διαλέγεις τι φαίνεται — π.χ. κρύβεις το ΜΑΡΚ που πιάνει πλάτος.'},
   {sel:'[data-view="cancel"]',title:'↩️ Ακύρωση / Πιστωτικό',text:'Στο myDATA δεν διαγράφεις παραστατικό — το ακυρώνεις με συσχετιζόμενο πιστωτικό. Διάλεξε το αρχικό ΜΑΡΚ· πλήρης αξία = ακύρωση, μικρότερη = μερική πίστωση.'},
-  {sel:'[data-view="bankimp"]',title:'🏦 Εισαγωγή πληρωμών',text:'Ανέβασε extrait τράπεζας (CSV/XLSX). Η εφαρμογή αντιστοιχίζει κάθε κατάθεση σε πελάτη και καταχωρεί μαζικά τις εισπράξεις.'},
+  {sel:'[data-view="bankimp"]',title:'🏦 Εισαγωγή πληρωμών',text:'Ανέβασε extrait τράπεζας (CSV/XLSX) για μαζική καταχώρηση — ή πάτα «+ Νέα πληρωμή» για μία-μία. Με την <b>επαναλαμβανόμενη εισαγωγή</b> το παράθυρο μένει ανοιχτό και κρατά τον ίδιο πελάτη, και το «📇 Καρτέλα» δείχνει το υπόλοιπό του χωρίς να φύγεις από τη φόρμα.'},
   {sel:'[data-view="series"]',title:'🔢 Σειρές',text:'Κάθε τύπος παραστατικού χρειάζεται μία σειρά για να εκδοθεί. Δημιούργησέ τες με το πράσινο κουμπί «➕ Νέα σειρά».'},
   {sel:'[data-view="drafts"]',title:'📝 Πρόχειρα',text:'Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ): προεπισκόπηση PDF και μαζική διαγραφή με τα checkboxes.'},
   {sel:'[data-view="schedule"]',title:'⏰ Προγραμματισμός',text:'Προγραμμάτισε την αυτόματη έκδοση παραστατικών (μεμονωμένων ή μαζικών) σε μελλοντική ώρα, με προαιρετική επανάληψη. Εδώ βλέπεις κατάσταση & ιστορικό.'},
-  {sel:'#account',title:'🏢 Επιλογή εταιρίας',text:'Διάλεξε εδώ την επιχείρηση με την οποία δουλεύεις. Ως λογιστής/διαχειριστής βλέπεις ΟΛΕΣ τις εταιρίες-πελάτες και εργάζεσαι για οποιαδήποτε.'},
+  {sel:'#account',title:'🏢 Επιλογή εταιρίας',text:'Διάλεξε εδώ την επιχείρηση με την οποία δουλεύεις. Ο <b>διαχειριστής</b> βλέπει κάθε εταιρία· ο <b>λογιστής</b> μόνο τις δικές του — και τις ανοίγει μόνος του από τη Διαχείριση, χωρίς να περιμένει ανάθεση.'},
+  {sel:'[data-view="admin"]',title:'🛡️ Διαχείριση',text:'Πάνω-πάνω γράφει τι ακριβώς βλέπεις. Κάθε εταιρία έχει <b>δική της καρτέλα</b>: ΑΦΜ, ετικέτα, διαπιστευτήρια ΑΑΔΕ και ποιοι λογιστές έχουν πρόσβαση. Το «➕ Νέα εταιρία» την προσθέτει αμέσως στο γραφείο σου.'},
   {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.'},
   {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις & προτιμήσεις email',text:'Αλλαγή κωδικού, ενεργοποίηση 2FA με authenticator, και — για λογιστή/διαχειριστή — επιλογή για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις email ειδοποιήσεων.'},
+  {sel:'#bkTable',view:'settings',title:'🏦 Λογαριασμοί & αυτόματη αποστολή',text:'Καταχώρησε τα IBAN της επιχείρησης — η τράπεζα βγαίνει από λίστα και το IBAN ελέγχεται πραγματικά (mod-97), οπότε λάθος ψηφίο δεν περνά. Όσα έχουν ✓ «στο email» γράφονται στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο· μπορείς και να ανεβάσεις PDF με τους λογαριασμούς.'},
+  {sel:'#bkAutoSend',view:'settings',title:'📤 Να φεύγει μόνο του',text:'Με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ στέλνεται αμέσως στον πελάτη με το PDF συνημμένο. Παρακάτω ορίζεις και <b>προγραμματισμένη αποστολή καρτελών</b>: ημέρα του μήνα, μόνο σε όσους χρωστούν, πάνω από ένα ποσό.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα Ctrl+K οποιαδήποτε στιγμή για να βρεις πελάτη αστραπιαία.'},
-  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή μίλα και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ», «μαζική εκτύπωση», «ZIP παραστατικών», «πόσες αδιάβαστες», «ενεργοποίηση 2FA», «πήγαινε στην καρτέλα». Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.'},
+  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή <b>μίλα</b> και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ», «μαζική εκτύπωση», «παραστατικά», «πόσες αδιάβαστες», «πήγαινε στην καρτέλα». Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.<br><br>Στην εφαρμογή υπολογιστή ακούει και μιλά <b>εκτός δικτύου</b>: τίποτα δεν φεύγει από το μηχάνημα. Οι φωνητικές εντολές είναι αξιόπιστες για πλοήγηση και ερωτήσεις — τα ΑΦΜ γράψε τα.'},
   {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τους διακόπτες, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
-  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'}
+  {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'},
+  {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'}
 ];
 let tourI=0;
 function startTour(){tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
@@ -4030,6 +5182,21 @@ const MANUAL=[
   ['Λογαριασμός & αυτοματισμοί: «ειδοποιήσεις», «πόσες αδιάβαστες», «προγραμματισμός», «ενεργοποίηση 2FA», «αλλαγή κωδικού», «διαχείριση χρηστών».','li'],
   ['Ερωτήσεις: «πόσα τιμολόγια φέτος», «τζίρος μήνα». Πλοήγηση: «πήγαινε στην καρτέλα/πελάτες/είδη/σειρές/πρόχειρα…».','li'],
   ['<b>Ασφάλεια:</b> ό,τι ετοιμάζει ο βοηθός μένει ΠΡΟΧΕΙΡΟ. Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση». Πες «βοήθεια» για την πλήρη λίστα.','p'],
+
+  ['11γ. Λογαριασμοί, IBAN και αποστολή με email','h2'],
+  ['Στις «Ρυθμίσεις → 🏦 Λογαριασμοί & αυτόματη αποστολή» καταχωρείς τους τραπεζικούς λογαριασμούς της επιχείρησης. Η τράπεζα επιλέγεται από λίστα και το IBAN ελέγχεται με το διεθνές πρότυπο mod-97 — λάθος ψηφίο δεν αποθηκεύεται. Όσοι λογαριασμοί έχουν ✓ στο «στο email» γράφονται μέσα στο μήνυμα της καρτέλας.','p'],
+  ['Αν προτιμάς έτοιμο έντυπο, ανέβασε PDF με τους λογαριασμούς (έως 3 MB): επισυνάπτεται αντί για — ή μαζί με — το κείμενο. Οι λογαριασμοί μπαίνουν ΜΟΝΟ όταν το υπόλοιπο είναι χρεωστικό· σε πιστωτικό δεν έχουν τι να εξυπηρετήσουν.','li'],
+  ['<b>Αυτόματη αποστολή παραστατικού:</b> με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ φεύγει αμέσως στον πελάτη με το PDF συνημμένο. Αν ο πελάτης δεν έχει email, η παράλειψη καταγράφεται στο ημερολόγιο ενεργειών — δεν χάνεται σιωπηλά. Το πεδίο BCC κρατά αντίγραφο στο γραφείο.','li'],
+  ['<b>Αποστολή καρτέλας:</b> από την Καρτέλα, το «✉️ Αποστολή καρτέλας» ανοίγει το μήνυμα για να το διορθώσεις πριν φύγει. Το κείμενο απευθύνεται στην επωνυμία του πελάτη και λέει με λέξεις αν το υπόλοιπο είναι «προς πληρωμή» ή «πιστωτικό». Η καρτέλα στέλνεται πάντα με SMTP, από τη διεύθυνση της επιχείρησης.','li'],
+  ['<b>Μαζική αποστολή:</b> το «📨 Μαζική αποστολή» δείχνει όλους τους πελάτες με τα υπόλοιπά τους, με φίλτρο «μόνο χρεωστικά» και ελάχιστο ποσό. Βλέπεις ποιος θα λάβει τι πριν στείλεις. Το «🔎 Εύρεση email» συμπληρώνει όσες διευθύνσεις λείπουν, ρωτώντας την ΑΑΔΕ μία φορά ανά πελάτη.','li'],
+  ['<b>Προγραμματισμένη αποστολή:</b> ορίζεις ημέρα του μήνα και φίλτρο, και οι καρτέλες φεύγουν μόνες τους — το πολύ μία φορά τον μήνα. Επειδή τρέχει χωρίς browser, η καρτέλα γράφεται ως πίνακας κινήσεων ΜΕΣΑ στο μήνυμα (το PDF το φτιάχνει ο browser). Το «▶️ Αποστολή τώρα» την τρέχει αμέσως.','li'],
+
+  ['11δ. Επιβεβαίωση email στην εγγραφή','h2'],
+  ['Μια νέα εγγραφή λαμβάνει πρώτα σύνδεσμο επιβεβαίωσης (ισχύει 24 ώρες). Ο διαχειριστής ειδοποιείται μόνο αφού επιβεβαιωθεί το email — έτσι η ουρά εγκρίσεων δεν γεμίζει με τυπογραφικά λάθη. Αν ο σύνδεσμος λήξει, από την οθόνη σύνδεσης ζητάς νέον.','p'],
+
+  ['11ε. Λήψεις αρχείων','h2'],
+  ['Στην εφαρμογή υπολογιστή τα PDF κατεβαίνουν κατευθείαν στον φάκελο λήψεων (ορίζεται από τον Πίνακα ελέγχου) και ανοίγουν στον αναγνώστη σου. Δεύτερη λήψη του ίδιου παραστατικού <b>αντικαθιστά</b> το αρχείο αντί να αφήνει αντίγραφα «(1)», «(2)». Αν το αρχείο είναι ανοιχτό εκείνη τη στιγμή, η λήψη παίρνει δεύτερο όνομα ώστε να μη χαθεί.','p'],
+  ['Οι καρτέλες αποθηκεύονται ως <b>ΚΑΡΤΕΛΑ (ΕΠΩΝΥΜΙΑ ΠΕΛΑΤΗ).pdf</b>.','li'],
 
   ['12. Χρήσιμα & συντομεύσεις','h2'],
   ['• Ctrl+K: αστραπιαία αναζήτηση πελάτη από παντού.  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']
