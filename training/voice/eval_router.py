@@ -81,6 +81,14 @@ def matches(expected: dict, reply) -> bool:
 
 def main() -> int:
     data = json.loads((Path(__file__).with_name("intents_el.json")).read_text("utf-8"))
+    # `--el` / `--en`: το σύνολο έχει πια και τις δύο γλώσσες, και ένα ενιαίο
+    # ποσοστό κρύβει ποια από τις δύο υστερεί.
+    import re as _re
+    greek = _re.compile(r"[Ά-ώ]")
+    if "--el" in sys.argv:
+        data = [r for r in data if greek.search(r["input"])]
+    elif "--en" in sys.argv:
+        data = [r for r in data if not greek.search(r["input"])]
     hits: Counter[str] = Counter()
     total: Counter[str] = Counter()
     misses: list[tuple[str, str]] = []
