@@ -31,8 +31,17 @@ RUN set -eux; \
     savedAptMark="$(apt-mark showmanual)"; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        libpq-dev libzip-dev libonig-dev libsodium-dev ca-certificates; \
-    docker-php-ext-install -j"$(nproc)" pdo_pgsql pdo_sqlite mbstring zip; \
+        libpq-dev \
+        libsqlite3-dev \
+        libzip-dev \
+        libonig-dev \
+        libsodium-dev \
+        ca-certificates; \
+    docker-php-ext-install -j"$(nproc)" \
+        pdo_pgsql \
+        pdo_sqlite \
+        mbstring \
+        zip; \
     php -m | grep -qi '^sodium$' || docker-php-ext-install -j"$(nproc)" sodium; \
     apt-mark auto '.*' > /dev/null; \
     apt-mark manual $savedAptMark > /dev/null; \
@@ -85,14 +94,18 @@ ENV ETIM_DATA_DIR=/data \
     TZ=Europe/Athens
 
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+
 # Ο μεταφραστής του connection string (DATABASE_URL → DSN/χρήστης/κωδικός) ζει
 # δίπλα στο entrypoint, ώστε να μη χρειάζεται το web root για να ξεκινήσει.
 COPY deploy/dburl.php /usr/local/bin/dburl.php
+
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8080
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD php -r 'exit(@file_get_contents("http://127.0.0.1:8080/healthz.php")==="ok"?0:1);'
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 CMD ["apache2-foreground"]
