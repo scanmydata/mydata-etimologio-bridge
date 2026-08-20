@@ -295,3 +295,25 @@ Coolify και τη **σύνδεση εταιρειών με τα κλειδιά
 - [x] **`DEPLOY.md §11`** ξαναγράφτηκε: ένας δρόμος σύνδεσης (Ρυθμίσεις), πίνακας
       με το τι ταξιδεύει και τι όχι στον συγχρονισμό.
 
+### Κυκλοφορία 0.4.7
+
+- [x] **Installer**: `TimologioDownloader-0.4.7-setup.exe` — **442,4 MB**, χτίστηκε
+      με `installer/build.ps1`. Το Inno Setup 6 ήταν εγκατεστημένο **ανά χρήστη**
+      (`%LOCALAPPDATA%\Programs`), γι' αυτό ένας πρόχειρος έλεγχος μόνο στο
+      `Program Files` το είχε βγάλει «απόν».
+      Επαληθεύτηκε μέσα στο παγωμένο bundle: `backend/etimologio/serverlink.php`
+      υπάρχει, και η φορητή PHP φορτώνει **sodium** + pdo_sqlite + pdo_pgsql +
+      curl + mbstring.
+- [x] **Και οι δύο γραμμές στην 0.4.7**: `planning/etimologio-merge` πήρε όλη την
+      εφαρμογή (χωρίς `DEPLOY.md`, `CLOUDFLARED.md`, `docker-compose.yml`,
+      `.env.example` — μένουν στο branch του server). Οι δύο κλάδοι διαφέρουν
+      πλέον **μόνο** σε αυτά τα 4 αρχεία.
+- [x] **Ενσωματώθηκαν 3 commits του χρήστη** που είχαν πάει στο remote όσο
+      δούλευα (`libsqlite3-dev` για το `pdo_sqlite`, μορφοποίηση Dockerfile) —
+      rebase, όχι force-push· η διόρθωση πέρασε και στην κύρια γραμμή.
+- [x] **Tag `v0.4.7`** μετακινήθηκε στο commit που όντως χτίστηκε.
+- [x] **Release** στο repo του bridge, με τον installer συνημμένο. **Δεν** μπήκε
+      στο `MyData-Invoice-Downloader`, δηλαδή **δεν** ενεργοποιεί αυτόματη
+      ενημέρωση στις εγκατεστημένες εφαρμογές — απόφαση του χρήστη, ώστε να
+      δοκιμάσει πρώτος.
+
