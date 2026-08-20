@@ -238,6 +238,7 @@ class EtimologioShell(QWidget):
         self._assistant.open_dialog.connect(self._assistant_dialog)
         self._assistant.prepare_draft.connect(self._assistant_draft)
         self._assistant.fetch_requested.connect(self._assistant_fetch)
+        self._assistant.command.connect(self._assistant_command)
         self._issue.assistant_said.connect(self._assistant.say)
         shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -712,6 +713,77 @@ class EtimologioShell(QWidget):
                 lambda data: self._assistant.report(kind, data),
                 lambda msg: self._assistant.say(f"Δεν μπόρεσα να φέρω στατιστικά: {msg}"),
             )
+
+    def _assistant_command(self, command: str) -> None:
+        """Εντολές που αλλάζουν την ΕΦΑΡΜΟΓΗ, όχι μόνο τη σελίδα.
+
+        Ο βοηθός δεν ξέρει από παράθυρα, αρχεία και συνδέσεις — τα ονόματα των
+        εντολών ζουν στο :data:`assistant.COMMANDS` και η εκτέλεση εδώ. Ό,τι δεν
+        αναγνωρίζεται λέγεται δυνατά αντί να χαθεί σιωπηλά: μια εντολή που
+        «δεν κάνει τίποτα» είναι χειρότερη από ένα «δεν το ξέρω αυτό».
+        """
+        if self._client is None:
+            self._assistant.say("Χρειάζεται πρώτα σύνδεση.")
+            return
+        name, _, payload = command.partition(":")
+        if name == "manual":
+            self.open_manual()
+        elif name == "tour":
+            self.start_tour()
+        elif name == "palette":
+            self.open_palette()
+        elif name == "back":
+            self.go_back()
+        elif name == "home":
+            self.open_section("home")
+        elif name == "logout":
+            self._do_logout()
+        elif name == "refresh":
+            page = self._pages.get(self._current_key())
+            if page is not None and hasattr(page, "refresh"):
+                page.refresh()
+            else:
+                self._refresh_home_kpis()
+        elif name == "backup":
+            self._assistant_backup()
+        elif name == "card":
+            self._pending_focus_vat = payload
+            self._apply_pending_focus()
+        elif name == "company":
+            # Το `_switch_company` αγνοεί σιωπηλά ό,τι δεν είναι στη λίστα — για
+            # τη φωνή αυτό μοιάζει με «η εντολή χάθηκε».
+            if self._accounts.findData(payload) < 0:
+                self._assistant.say("Δεν βρήκα εταιρεία με αυτό το ΑΦΜ στη λίστα σου.")
+            else:
+                self._switch_company(payload)
+        else:
+            self._assistant.say(f"Δεν ξέρω την εντολή «{command}».")
+
+    def _assistant_backup(self) -> None:
+        """Αντίγραφο ασφαλείας με φωνητική εντολή.
+
+        Ίδιος κύκλος με το κουμπί του πίνακα ελέγχου, αλλά **σε νήμα**: το
+        πακετάρισμα κρατά δευτερόλεπτα και στο νήμα του UI θα πάγωνε το
+        παράθυρο τη στιγμή που ο χρήστης μιλά στον βοηθό.
+        """
+        from . import backup_drive
+
+        data_dir = self._service.data_dir
+
+        def work() -> dict:
+            backup_drive.bootstrap_secrets()
+            return backup_drive.run_backup(data_dir, to_drive=backup_drive.status().ready)
+
+        def done(result: dict) -> None:
+            size_mb = round(int(result.get("size", 0)) / (1024 * 1024), 1)
+            said = f"Το αντίγραφο είναι έτοιμο — {size_mb} MB."
+            if result.get("uploaded"):
+                said += " Ανέβηκε και στο Google Drive."
+            elif result.get("error"):
+                said += " Δεν ανέβηκε στο Drive: " + str(result["error"])
+            self._assistant.say(said)
+
+        _run(work, done, lambda msg: self._assistant.say(f"Το αντίγραφο απέτυχε: {msg}"))
 
     # --- βοήθεια ------------------------------------------------------------
     def page(self, key: str):

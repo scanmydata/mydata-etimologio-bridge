@@ -139,7 +139,8 @@ New-Item -ItemType Directory -Force $voiceDir | Out-Null
 # Ίδιο μέγεθος (~63 MB), αισθητά καλύτερη ποιότητα.
 # Η ΕΠΙΛΕΓΜΕΝΗ ελληνική φωνή είναι η joy-medium: πιο αργή, με καθαρότερη άρθρωση
 # στους αριθμούς και στα ΑΦΜ, που είναι το μισό περιεχόμενο των απαντήσεων.
-# Η rapunzelina μένει ως εφεδρεία (το speech.py προτιμά ρητά την joy).
+# ΜΟΝΟ όσες είναι εδώ ταξιδεύουν — μια δεύτερη ελληνική φωνή «για εφεδρεία» δεν
+# παίζει ποτέ (το speech.py προτιμά ρητά την joy) και κοστίζει 63 MB.
 $voices = @(
     @{ name = "el_GR-joy-medium";         url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/el/el_GR/joy/medium/el_GR-joy-medium" },
     @{ name = "en_US-lessac-medium";      url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium" }
@@ -156,7 +157,15 @@ foreach ($v in $voices) {
     }
 }
 if (-not (Test-Path $piperExe)) { throw "Piper engine missing" }
-Write-Host ("   OK: " + (Get-ChildItem $voiceDir -Filter *.onnx).Count + " voices") -ForegroundColor DarkGray
+# ΜΟΝΟ οι φωνες της λιστας ταξιδευουν. Ενα build απο παλιοτερο checkout ειχε
+# αφησει και τη rapunzelina-medium: 63 MB για εφεδρεια που δεν παιζει ποτε,
+# αφου το speech.py προτιμα ρητα την joy.
+$keepVoices = $voices | ForEach-Object { $_.name }
+Get-ChildItem $voiceDir -File | Where-Object {
+    ($_.Name -replace '\.onnx(\.json)?$', '') -notin $keepVoices
+} | Remove-Item -Force -ErrorAction SilentlyContinue
+$voiceSize = [math]::Round(((Get-ChildItem $piperDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB), 1)
+Write-Host ("   OK: " + (Get-ChildItem $voiceDir -Filter *.onnx).Count + " voices (" + $voiceSize + " MB)") -ForegroundColor DarkGray
 
 # --- whisper.cpp: η ΑΝΑΓΝΩΡΙΣΗ φωνής του βοηθου -----------------------------
 # Το Web Speech API θελει υπηρεσια της Google. Μεσα στο QtWebEngine δεν υπαρχει
@@ -167,6 +176,11 @@ Write-Host "== 3.7/5  whisper.cpp STT (installer\whisper) ==" -ForegroundColor C
 $sttDir = Join-Path $PSScriptRoot "whisper"
 $sttExe = Join-Path $sttDir "whisper-cli.exe"
 New-Item -ItemType Directory -Force $sttDir | Out-Null
+# Ο,τι χρειαζεται ΜΟΝΟ για `whisper-cli -m <model> -f <wav>`. Τα ggml-cpu-*.dll
+# τα φορτωνει το ggml στην εκτελεση, αναλογα με τον επεξεργαστη -- μενουν ολα.
+$sttKeep = @("whisper-cli.exe", "whisper.dll", "ggml.dll", "ggml-base.dll")
+# ΠΡΟΣΟΧΗ: "ggml-base.dll" ειναι backend του ggml -- ΔΕΝ ειναι το μοντελο.
+$sttModelName = "ggml-small-q5_1.bin"
 if (-not (Test-Path $sttExe)) {
     $sttZip = Join-Path $env:TEMP "whisper-bin-x64.zip"
     $sttUrl = "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip"
@@ -180,16 +194,28 @@ if (-not (Test-Path $sttExe)) {
         # ο,τι ειναι exe/dll, οπου κι αν βρισκεται.
         Get-ChildItem $sttTmp -Recurse -Include *.exe, *.dll |
             ForEach-Object { Copy-Item $_.FullName $sttDir -Force }
+        # ...και μετα ΠΕΤΑΜΕ ο,τι δεν τρεχει η εφαρμογη. Το zip κουβαλα ολα τα
+        # παραδειγματα του whisper.cpp: talk-llama, wchess, parakeet, server,
+        # stream, benchmarks, tests, SDL2. Χωρις αυτο το κλαδεμα ο installer
+        # φουσκωσε κατα ~10 MB σε σκουπιδια που δεν καλει κανεις.
+        Get-ChildItem $sttDir -File | Where-Object {
+            $_.Name -notin $sttKeep -and $_.Name -notlike "ggml-cpu-*.dll" -and $_.Name -notlike "ggml-*.bin"
+        } | Remove-Item -Force
         Remove-Item $sttZip -Force -ErrorAction SilentlyContinue
         Remove-Item $sttTmp -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Host "   WARNING: speech-recognition engine not downloaded" -ForegroundColor Yellow
     }
 }
-$sttModel = Join-Path $sttDir "ggml-base.bin"
+# Μοντελο: small κβαντισμενο (q5_1), ΟΧΙ base. Μετρημενο με ιδιες προτασεις --
+# το base εβγαζε "Αν εξετας τα τυστικα" για "ανοιξε τα στατιστικα" και "Νεος
+# πελατις" για "νεος πελατης": αχρηστο για εντολες. Το small-q5_1 τα πιανει,
+# με +34 MB. (Δοκιμαστηκε και --prompt με λεξιλογιο τιμολογησης: ΧΕΙΡΟΤΕΡΕΥΕΙ
+# τα αποτελεσματα, εβγαζε "???" -- μην το ξαναβαλεις.)
+$sttModel = Join-Path $sttDir $sttModelName
 if (-not (Test-Path $sttModel)) {
-    $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-    Write-Host "   downloading speech model (~142 MB)..." -ForegroundColor DarkGray
+    $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$sttModelName"
+    Write-Host "   downloading speech model (~182 MB)..." -ForegroundColor DarkGray
     try {
         Invoke-WebRequest -Uri $modelUrl -OutFile $sttModel -UseBasicParsing
     } catch {
@@ -198,8 +224,14 @@ if (-not (Test-Path $sttModel)) {
 }
 # Η φωνητικη εντολη ειναι προαιρετικη: αν λειψει, το backend απανται 501 και το
 # UI ζηταει γραπτη εντολη. Δεν ριχνουμε το build γι' αυτο.
+# Το κλαδεμα ξανατρεχει και σε ηδη κατεβασμενο φακελο: ενα build απο παλιοτερο
+# checkout ειχε αφησει ολα τα παραδειγματα μεσα.
+Get-ChildItem $sttDir -File | Where-Object {
+    $_.Name -notin $sttKeep -and $_.Name -notlike "ggml-cpu-*.dll" -and $_.Name -ne $sttModelName
+} | Remove-Item -Force -ErrorAction SilentlyContinue
 if ((Test-Path $sttExe) -and (Test-Path $sttModel)) {
-    Write-Host "   OK: speech recognition bundled" -ForegroundColor DarkGray
+    $sttSize = [math]::Round(((Get-ChildItem $sttDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB), 1)
+    Write-Host ("   OK: speech recognition bundled (" + $sttSize + " MB)") -ForegroundColor DarkGray
 } else {
     Write-Host "   NOTE: building WITHOUT speech recognition" -ForegroundColor Yellow
 }

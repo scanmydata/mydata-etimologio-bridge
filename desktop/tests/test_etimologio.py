@@ -2204,11 +2204,16 @@ def test_speaker_uses_the_bundled_engine(app, tmp_path: Path) -> None:
     assert speech.voice_path("el", tmp_path) is None
 
 
-def test_speakable_text_drops_icons(app) -> None:
-    """Τα εικονίδια διαβάζονταν ένα-ένα μέσα στην πρόταση."""
+def test_speakable_text_drops_icons_and_uppercase(app) -> None:
+    """Τα εικονίδια διαβάζονταν ένα-ένα — και τα κεφαλαία τονίζονταν λάθος.
+
+    Τα ελληνικά κεφαλαία γράφονται χωρίς τόνο («ΜΑΡΚ», «ΕΚΔΟΘΗΚΕ»), οπότε η
+    μηχανή δεν ξέρει πού πέφτει η έμφαση: προφέρει λάθος τη λέξη ή τη
+    συλλαβίζει σαν ακρωνύμιο.
+    """
     from timologio.etimologio.speech import _speakable
 
-    assert _speakable("✅ Εκδόθηκε · ΜΑΡΚ 4000") == "Εκδόθηκε  ΜΑΡΚ 4000"
+    assert _speakable("✅ Εκδόθηκε · ΜΑΡΚ 4000") == "εκδόθηκε  μαρκ 4000"
     assert _speakable("   ") == ""
 
 
@@ -2479,3 +2484,78 @@ def test_menu_actions_are_not_treated_as_pages() -> None:
     assert "toggleNotifPanel" in EtimologioWebShell._ACTIONS["notifications"]
     # Τα παραστατικά έχουν πλέον δική τους ενότητα στο web.
     assert EtimologioWebShell._VIEWS["documents"] == "documents"
+
+
+def test_access_key_carries_its_own_address() -> None:
+    """Το κλειδί λέει ΚΑΙ πού να επαληθευτεί.
+
+    Χωρίς αυτό, ο χρήστης θα έπρεπε να ξέρει και να πληκτρολογεί τη διεύθυνση
+    του server — ακριβώς αυτό που το κλειδί υποτίθεται ότι γλιτώνει.
+    """
+    import base64
+
+    from timologio.gui.control_panel import _decode_key
+
+    host = "timologio.example.gr"
+    blob = base64.urlsafe_b64encode(host.encode()).decode().rstrip("=")
+    host_out, secret = _decode_key(f"etim1_{blob}_abc123")
+    assert host_out == host
+    assert secret == "abc123"
+
+    for bad in ("", "σκουπίδια", "etim2_x_y", "etim1_x", f"etim1_{blob}_"):
+        with pytest.raises(ValueError):
+            _decode_key(bad)
+
+
+def test_downloads_have_a_folder_without_asking(tmp_path: Path, monkeypatch) -> None:
+    """Ο διάλογος «πού να το βάλω;» ακύρωνε τη λήψη όταν τον έκλεινες."""
+    from timologio import config
+
+    monkeypatch.delenv("TIMOLOGIO_DOWNLOAD_DIR", raising=False)
+    monkeypatch.setattr(config, "load_download_dir", lambda: None)
+    resolved = config.resolve_download_dir(tmp_path)
+    assert resolved == tmp_path / config.DOWNLOADS_DIRNAME
+    # Ρητή επιλογή του χρήστη κερδίζει.
+    chosen = tmp_path / "αλλού"
+    monkeypatch.setattr(config, "load_download_dir", lambda: chosen)
+    assert config.resolve_download_dir(tmp_path) == chosen
+
+
+def test_backup_archive_carries_the_key(tmp_path: Path) -> None:
+    """Βάση χωρίς `.enckey` είναι θόρυβος — μπαίνουν ΜΑΖΙ ή δεν αξίζει."""
+    import zipfile
+
+    from timologio.etimologio import backup_drive
+
+    data = tmp_path / "etimologio"
+    data.mkdir()
+    (data / "local.sqlite").write_bytes(b"db" * 100)
+    (data / ".enckey").write_bytes(b"k" * 32)
+    (data / "service.json").write_text("{}", encoding="utf-8")
+
+    archive = backup_drive.build_archive(data)
+    with zipfile.ZipFile(archive) as bundle:
+        names = set(bundle.namelist())
+    assert {"local.sqlite", ".enckey", "service.json"} <= names
+
+
+def test_backup_says_what_is_missing_instead_of_failing_silently(monkeypatch) -> None:
+    """Ένα backup που «νομίζεις ότι έγινε» είναι χειρότερο από κανένα."""
+    from timologio.etimologio import backup_drive
+
+    for name in backup_drive.REQUIRED_SECRETS:
+        monkeypatch.delenv(name, raising=False)
+    state = backup_drive.status()
+    assert not state.ready
+    assert state.problem
+
+
+def test_backup_prunes_but_keeps_the_recent_ones(tmp_path: Path) -> None:
+    from timologio.etimologio import backup_drive
+
+    for n in range(6):
+        path = tmp_path / f"etimologio-2026010{n}-000000.zip"
+        path.write_bytes(b"x")
+        os.utime(path, (1000 + n, 1000 + n))
+    assert backup_drive.prune_old(tmp_path, keep=3) == 3
+    assert len(list(tmp_path.glob("etimologio-*.zip"))) == 3

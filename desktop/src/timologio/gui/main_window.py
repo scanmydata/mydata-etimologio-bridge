@@ -422,6 +422,7 @@ class MainWindow(QMainWindow):
         self.control.set_start_minimized(load_start_minimized())
         self.control.start_minimized_changed.connect(self._on_start_minimized)
         self.control.reconnect_requested.connect(self.reload_clients)
+        self.control.etim_backend_changed.connect(self._switch_etim_backend)
         self.stack.addWidget(self.control)
 
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
@@ -1156,6 +1157,15 @@ class MainWindow(QMainWindow):
         chooser = name == "launcher"
         self.menu.setVisible(not chooser)
         self.active_client.setVisible(not chooser and name != "etimologio")
+        # Η γραμμή κατάστασης μετρά ΠΕΛΑΤΕΣ ΤΗΣ ΛΗΨΗΣ («155 πελάτες · 40
+        # διαθέσιμοι · …»). Μέσα στο e-Τιμολόγιο δεν σημαίνει τίποτα και έμενε
+        # εκεί σαν υπόλειμμα άλλης εφαρμογής — τη σβήνουμε και την επαναφέρουμε
+        # στην επιστροφή.
+        if name in ("etimologio", "launcher"):
+            self._status_saved = self.status.currentMessage() or getattr(self, "_status_saved", "")
+            self.status.clearMessage()
+        elif getattr(self, "_status_saved", ""):
+            self.status.showMessage(self._status_saved)
 
     def _current_page(self) -> str:
         return _PAGES[self.stack.currentIndex()]
@@ -1176,6 +1186,29 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
         self._set_mode_icon(etimologio=True)
         self._show_page("etimologio")
+
+    def _switch_etim_backend(self, server_url: str) -> None:
+        """Τοπικά ή σε server, ζωντανά.
+
+        Ο χρήστης το αλλάζει από τον Πίνακα ελέγχου· εδώ σταματά ό,τι τρέχει,
+        γράφεται η νέα λειτουργία και το κέλυφος ξαναξεκινά. Χωρίς επανεκκίνηση
+        της εφαρμογής: το e-Τιμολόγιο είναι σελίδα, όχι δεύτερο πρόγραμμα.
+        """
+        shell = getattr(self, "etimologio", None)
+        if shell is None:
+            return
+        try:
+            shell.shutdown()
+        except Exception:  # noqa: BLE001 — ίσως δεν είχε ξεκινήσει ποτέ
+            log.debug("Το e-Τιμολόγιο δεν χρειαζόταν τερματισμό")
+        service = getattr(shell, "_service", None)
+        if service is not None:
+            service.set_mode("thin" if server_url else "offline", server_url)
+        shell._started = False
+        shell._base = ""
+        log.info("e-Τιμολόγιο → %s", server_url or "τοπικά")
+        if self._current_page() == "etimologio":
+            shell.start()
 
     def _leave_etimologio(self) -> None:
         """Επιστροφή στη Λήψη Παραστατικών."""
@@ -1280,6 +1313,9 @@ class MainWindow(QMainWindow):
                 self.etimologio.toggle_assistant()
             else:
                 self.etimologio.open_section(key)
+                # Το μενού πρέπει να δείχνει πού βρίσκεται ο χρήστης· οι
+                # ενότητες του e-Τιμολόγιο δεν περνούν από το `_show_page`.
+                self.menu.set_active(action)
             return
         handler = handlers.get(action)
         if handler:

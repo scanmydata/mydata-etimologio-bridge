@@ -26,6 +26,8 @@ from pathlib import Path
 
 import requests
 
+from ..config import APP_VERSION
+
 log = logging.getLogger(__name__)
 
 _CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -207,6 +209,7 @@ const PIPER_VOICE_EL = '{piper_el}';
 const PIPER_VOICE_EN = '{piper_en}';
 const WHISPER_EXE = '{whisper_exe}';
 const WHISPER_MODEL = '{whisper_model}';
+const APP_VERSION_LABEL = '{APP_VERSION}';
 const NOTIFY_ADMIN_EMAIL = '';
 """
         (root / "config.php").write_text(config, "utf-8")

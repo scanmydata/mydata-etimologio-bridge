@@ -117,6 +117,42 @@ def test_navigation_wins_over_the_issue_verb() -> None:
     assert bot().handle("έκδοση").navigate == "issue"
 
 
+def test_application_commands_reach_the_shell() -> None:
+    """Ο διευρυμένος χειρισμός: ό,τι δεν είναι σελίδα βγαίνει ως `command`."""
+    assert bot().handle("άνοιξε το εγχειρίδιο").command == "manual"
+    assert bot().handle("κράτα αντίγραφο ασφαλείας").command == "backup"
+    assert bot().handle("ξενάγηση").command == "tour"
+    assert bot().handle("αποσύνδεση").command == "logout"
+    assert bot().handle("ανανέωσε").command == "refresh"
+    assert bot().handle("πήγαινε στην αρχική").command == "home"
+    assert bot().handle("σώπα").command == "speak:off"
+    assert bot().handle("μίλα μου").command == "speak:on"
+
+
+def test_backup_is_not_read_as_the_back_button() -> None:
+    """«backup» περιέχει «back» — η σειρά στο COMMANDS το κρατά αντίγραφο."""
+    assert bot().handle("backup").command == "backup"
+    assert bot().handle("πίσω").command == "back"
+
+
+def test_vat_targeted_commands_keep_the_number() -> None:
+    """«καρτέλα του Χ» δεν είναι «άνοιξε τους πελάτες»: ο αριθμός είναι η εντολή."""
+    assert bot().handle("άνοιξε την καρτέλα του 094039270").command == "card:094039270"
+    assert bot().handle("άλλαξε εταιρεία 094019245").command == "company:094019245"
+    # Χωρίς ΑΦΜ μένει πλοήγηση — οι Εταιρείες είναι πια δική τους ενότητα.
+    assert bot().handle("πήγαινε στις εταιρείες").navigate == "companies"
+
+
+def test_counts_are_answered_from_memory() -> None:
+    """Πελάτες και είδη είναι ήδη φορτωμένα — καμία κλήση στο backend."""
+    reply = bot().handle("πόσους πελάτες έχω")
+    assert str(len(CUSTOMERS)) in reply.say and reply.fetch == ""
+    reply = bot().handle("πόσα είδη έχω")
+    assert str(len(PRODUCTS)) in reply.say and reply.fetch == ""
+    # Η ερώτηση για παραστατικά συνεχίζει να πηγαίνει στα στατιστικά.
+    assert bot().handle("πόσα τιμολόγια φέτος").fetch == "stats:year"
+
+
 def test_parses_a_full_issue_command() -> None:
     spec = parse_issue(
         "έκδοση τιμολογίου στον 094039270 καθαρή αξία 100 με παρακράτηση 20% "
@@ -216,8 +252,12 @@ def test_the_router_has_no_notion_of_a_live_issue() -> None:
 
     source = inspect.getsource(module)
     assert "live" not in source
+    # Το `command` είναι κανάλι ΕΦΑΡΜΟΓΗΣ (εγχειρίδιο, ξενάγηση, παλέτα,
+    # αντίγραφο, αποσύνδεση) — καμία εντολή του δεν εκδίδει. Η ουσία του
+    # φύλακα μένει ο έλεγχος «live» παραπάνω.
     assert set(module.Reply.__dataclass_fields__) == {
         "say", "navigate", "fetch", "dialog", "prefill", "draft", "choices",
+        "command",
     }
 
 

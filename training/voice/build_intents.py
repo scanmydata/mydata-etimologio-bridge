@@ -1,0 +1,345 @@
+# -*- coding: utf-8 -*-
+"""Σύνολο εκπαίδευσης για τον *δρομολογητή προθέσεων* — το επόμενο βήμα.
+
+Σήμερα ο βοηθός δρομολογεί με regex (`assistant.py`, `cbHandle`). Δουλεύει, και
+γι' αυτό μένει: είναι 0 MB, 0 ms και προβλέψιμος. Σπάει όμως σε δύο σημεία:
+
+1. **Ό,τι δεν προβλέψαμε.** «κόψε ένα τιμολόγιο στον Παπαδόπουλο για 100άρι» δεν
+   ταιριάζει σε κανένα μοτίβο.
+2. **Ό,τι ακούει λάθος το whisper.** Το «άνοιξε τα στατιστικά» έχει βγει ως
+   «αν εξέτας τα τυστικά» (γι' αυτό κόπηκε το `base`, δες `timologio.spec`).
+
+Ένα μικρό LLM λύνει και τα δύο — αν εκπαιδευτεί να βγάζει **αυστηρό JSON** που
+μιλά τη γλώσσα του `Reply`, όχι ελεύθερο κείμενο.
+
+⚠️ ΑΜΕΤΑΒΛΗΤΟΣ ΚΑΝΟΝΑΣ, ίδιος με τον regex router: **ο βοηθός φτιάχνει μόνο
+ΠΡΟΧΕΙΡΟ.** Καμία έξοδος αυτού του συνόλου δεν ζητά οριστική έκδοση — και
+υπάρχουν παραδείγματα που *αρνούνται* ρητά όταν το ζητήσει ο χρήστης.
+"""
+
+from __future__ import annotations
+
+import json
+import random
+from pathlib import Path
+
+random.seed(1821)
+
+INSTRUCTION = (
+    "Είσαι ο δρομολογητής του ψηφιακού βοηθού του e-Τιμολόγιο. Δέχεσαι μια "
+    "εντολή στα ελληνικά (συχνά από αναγνώριση φωνής, με λάθη) και απαντάς "
+    "ΜΟΝΟ με ένα JSON αντικείμενο. Επιτρεπτά κλειδιά: say, navigate, command, "
+    "dialog, prefill, fetch, draft. Ο βοηθός ΔΕΝ εκδίδει ποτέ οριστικά — "
+    "μόνο πρόχειρο."
+)
+
+# --- Ο χώρος ενεργειών, ίδιος με το `assistant.Reply` --------------------------
+#: Οι φράσεις κουβαλούν το άρθρο τους, αλλιώς κάθε ρήμα θα χρειαζόταν δικό του
+#: («άνοιξε τα πρόχειρα» αλλά «πήγαινε στα πρόχειρα»).
+VIEWS = {
+    "issue": ("την έκδοση", "νέο παραστατικό", "τη φόρμα έκδοσης"),
+    "documents": ("τα παραστατικά", "τα τιμολόγιά μου", "τη λίστα παραστατικών"),
+    "bulk": ("τη μαζική έκδοση", "τα μαζικά"),
+    "customers": ("τους πελάτες", "το πελατολόγιο"),
+    "products": ("τα είδη", "τον κατάλογο ειδών", "τα προϊόντα"),
+    "series": ("τις σειρές", "την αρίθμηση"),
+    "drafts": ("τα πρόχειρα", "τα προσχέδια"),
+    "credit": ("το πιστωτικό", "την ακύρωση παραστατικού"),
+    "payments": ("τις πληρωμές", "το ταμείο", "την εισαγωγή από τράπεζα"),
+    "schedule": ("τον προγραμματισμό", "τον χρονοπρογραμματισμό"),
+    "stats": ("τα στατιστικά", "τα γραφήματα"),
+    "notifications": ("τις ειδοποιήσεις", "τα αδιάβαστα"),
+    "settings": ("τις ρυθμίσεις", "το 2FA", "την αλλαγή κωδικού"),
+    "companies": ("τις εταιρείες", "τις επιχειρήσεις μου"),
+    "admin": ("τη διαχείριση", "τους χρήστες", "τους ρόλους"),
+    "card": ("την καρτέλα πελάτη",),
+}
+
+#: εντολή → (φράσεις, δέχεται ρήμα μπροστά). Το «κάνε σώπα» δεν το λέει κανείς.
+COMMANDS = {
+    "manual": (("το εγχειρίδιο", "τις οδηγίες χρήσης", "το manual"), True),
+    "tour": (("ξενάγηση", "μια ξενάγηση στην εφαρμογή"), True),
+    "backup": (("αντίγραφο ασφαλείας", "backup", "να σώσω τα δεδομένα"), True),
+    "logout": (("αποσύνδεση", "να βγω από τον λογαριασμό"), True),
+    "palette": (("την παλέτα εντολών",), True),
+    "refresh": (("ανανέωση", "ξαναφόρτωση"), True),
+    "home": (("την αρχική", "πήγαινε στην αρχική"), False),
+    "back": (("πίσω", "γύρνα πίσω"), False),
+    "speak:off": (("σώπα", "μη μιλάς", "σταμάτα να μιλάς"), False),
+    "speak:on": (("μίλα μου", "ξαναμίλα", "άνοιξε τη φωνή"), False),
+}
+
+#: Ρήμα + φράση με άρθρο. Το κενό ρήμα είναι σκόπιμο: ο λογιστής λέει σκέτο
+#: «πρόχειρα» πιο συχνά από «πήγαινε στα πρόχειρα».
+NAV_VERBS = ("άνοιξε ", "δείξε μου ", "βγάλε μου ", "")
+#: Άρθρο σε αιτιατική → εμπρόθετο, για τα ρήματα κίνησης.
+_PREP = {"τα ": "στα ", "τους ": "στους ", "τις ": "στις ", "την ": "στην ",
+         "τη ": "στη ", "το ": "στο ", "τον ": "στον "}
+
+
+def to_prep(phrase: str) -> str:
+    for article, prep in _PREP.items():
+        if phrase.startswith(article):
+            return prep + phrase[len(article):]
+    return phrase
+
+rows: list[dict[str, str]] = []
+
+
+def add(text: str, action: dict) -> None:
+    rows.append({
+        "instruction": INSTRUCTION,
+        "input": text,
+        "output": json.dumps(action, ensure_ascii=False),
+    })
+
+
+# --- Θόρυβος αναγνώρισης -------------------------------------------------------
+# Ό,τι μπερδεύει στην πράξη το whisper στα ελληνικά: τελικό «ν», «αι»/«ε»,
+# «ι»/«η»/«υ», και κολλημένες λέξεις. Χωρίς αυτά το μοντέλο μαθαίνει καθαρό
+# κείμενο — δηλαδή ακριβώς ό,τι ΔΕΝ του φτάνει από το μικρόφωνο.
+_NOISE = (
+    ("αι", "ε"), ("οι", "ι"), ("ει", "ι"), ("η", "ι"), ("υ", "ι"),
+    ("ω", "ο"), ("ββ", "β"), ("ν ", " "), ("ς ", " "),
+)
+
+
+def mishear(text: str) -> str:
+    out = text
+    for _ in range(2):
+        old, new = random.choice(_NOISE)
+        if old in out:
+            out = out.replace(old, new, 1)
+    return out
+
+
+def maybe_noisy(text: str) -> str:
+    """Το ένα τρίτο των εισόδων φτάνει «λερωμένο», όπως από το μικρόφωνο."""
+    return mishear(text) if random.random() < 0.34 else text
+
+
+# 1. Πλοήγηση -------------------------------------------------------------------
+for view, phrases in VIEWS.items():
+    for phrase in phrases:
+        for verb in NAV_VERBS:
+            add(maybe_noisy((verb + phrase).strip()), {"navigate": view})
+        for verb in ("πήγαινε ", "πάμε "):
+            add(maybe_noisy(verb + to_prep(phrase)), {"navigate": view})
+
+# 2. Εντολές εφαρμογής ----------------------------------------------------------
+COMMAND_VERBS = ("άνοιξε ", "θέλω ", "κάνε ", "")
+for command, (phrases, takes_verb) in COMMANDS.items():
+    for phrase in phrases:
+        verbs = COMMAND_VERBS if takes_verb else ("",)
+        for verb in verbs:
+            add(maybe_noisy((verb + phrase).strip()), {"command": command})
+
+# 3. Στοχευμένα με ΑΦΜ ----------------------------------------------------------
+def rand_vat() -> str:
+    return str(random.randint(100000000, 999999999))
+
+
+for _ in range(60):
+    vat = rand_vat()
+    add(maybe_noisy(random.choice([
+        f"άνοιξε την καρτέλα του {vat}",
+        f"καρτέλα πελάτη {vat}",
+        f"δείξε μου τι χρωστάει ο {vat}",
+    ])), {"command": f"card:{vat}"})
+for _ in range(40):
+    vat = rand_vat()
+    add(maybe_noisy(random.choice([
+        f"άλλαξε εταιρεία {vat}",
+        f"δούλεψε στην εταιρεία {vat}",
+        f"πήγαινε στην επιχείρηση {vat}",
+    ])), {"command": f"company:{vat}"})
+
+# 4. Ερωτήσεις ------------------------------------------------------------------
+for phrase in ("πόσους πελάτες έχω", "πόσοι πελάτες είναι καταχωρημένοι",
+               "πόσους πελάτες έχουμε"):
+    add(maybe_noisy(phrase), {"fetch": "customers_count"})
+for phrase in ("πόσα είδη έχω", "πόσα προϊόντα είναι στον κατάλογο"):
+    add(maybe_noisy(phrase), {"fetch": "products_count"})
+for phrase in ("πόσα τιμολόγια φέτος", "τζίρος φέτος", "στατιστικά έτους",
+               "πόσα παραστατικά έχω βγάλει φέτος"):
+    add(maybe_noisy(phrase), {"fetch": "stats:year"})
+for phrase in ("πόσα τιμολόγια αυτόν τον μήνα", "τζίρος μήνα", "στατιστικά μήνα"):
+    add(maybe_noisy(phrase), {"fetch": "stats:month"})
+for phrase in ("πόσες αδιάβαστες ειδοποιήσεις έχω", "έχω ειδοποιήσεις",
+               "τι νέο υπάρχει"):
+    add(maybe_noisy(phrase), {"fetch": "notifications"})
+
+# 5. Διάλογοι (νέος πελάτης / νέο είδος) ----------------------------------------
+for _ in range(50):
+    vat = rand_vat()
+    add(maybe_noisy(random.choice([
+        f"νέος πελάτης {vat}",
+        f"καταχώρησε πελάτη με ΑΦΜ {vat}",
+        f"φτιάξε καρτέλα για τον {vat}",
+    ])), {"dialog": "customer", "prefill": {"vat": vat}})
+add("νέος πελάτης", {"dialog": "customer", "prefill": {"vat": ""}})
+
+ITEMS = ("συντήρηση εξοπλισμού", "ανταλλακτικό αντλίας", "λογιστικές υπηρεσίες",
+         "μεταφορικά", "εγκατάσταση δικτύου", "εκπαίδευση προσωπικού")
+for _ in range(50):
+    item, price = random.choice(ITEMS), random.choice([40, 100, 150, 250, 12.5])
+    add(maybe_noisy(random.choice([
+        f"νέο είδος {item} {price} ευρώ",
+        f"φτιάξε είδος {item} με τιμή {price}",
+        f"καταχώρησε προϊόν {item} {price} ευρώ",
+    ])), {"dialog": "product", "prefill": {"description": item, "price": price}})
+
+# 6. Πρόχειρα παραστατικά -------------------------------------------------------
+NAMES = ("ΞΕΝΤΕ ΑΕ", "MEGATECH ΙΚΕ", "Παπαδόπουλος", "ΑΛΦΑ ΟΕ", "Γεωργίου")
+for _ in range(160):
+    vat, item = rand_vat(), random.choice(ITEMS)
+    price = random.choice([50, 100, 120.5, 300, 1250])
+    draft: dict = {"vat": vat, "item": item, "price": price, "qty": 1}
+    text = random.choice([
+        f"έκδοση τιμολογίου στον {vat} καθαρή αξία {price} είδος {item}",
+        f"κόψε ένα τιμολόγιο στον {vat} για {price} ευρώ, {item}",
+        f"τιμολόγιο {price} ευρώ στον πελάτη {vat} με είδος {item}",
+        f"φτιάξε παραστατικό για τον {vat}, {item}, {price} ευρώ",
+    ])
+    if random.random() < 0.35:
+        draft["withholding_pct"] = 20.0
+        text += " με παρακράτηση 20%"
+    if random.random() < 0.25:
+        draft["qty"] = random.randint(2, 9)
+        text += f" {draft['qty']} τεμάχια"
+    add(maybe_noisy(text), {"draft": draft})
+
+for _ in range(40):
+    name, price = random.choice(NAMES), random.choice([80, 200, 500])
+    add(maybe_noisy(random.choice([
+        f"τιμολόγιο στον {name} {price} ευρώ",
+        f"κόψε τιμολόγιο στην {name} για {price}",
+    ])), {"draft": {"name": name, "price": price, "qty": 1}})
+
+add("έκδοση", {"navigate": "issue"})
+add("θέλω να κόψω τιμολόγιο", {"navigate": "issue"})
+
+# 7. Ο κανόνας που δεν σπάει: ΠΟΤΕ οριστική έκδοση -------------------------------
+# Χωρίς αυτά, ένα μοντέλο που έμαθε «κάνε ό,τι σου ζητάει» θα εφεύρισκε ενέργεια
+# οριστικοποίησης. Η άρνηση είναι ΔΕΔΟΜΕΝΟ ΕΚΠΑΙΔΕΥΣΗΣ, όχι σχόλιο στον κώδικα.
+REFUSALS = (
+    "έκδωσε το οριστικά",
+    "στείλ' το στην ΑΑΔΕ",
+    "οριστικοποίησε το τιμολόγιο",
+    "πάρε ΜΑΡΚ για αυτό",
+    "υπόβαλέ το τώρα στο myDATA",
+    "κάν' το οριστικό και στείλε το στον πελάτη",
+)
+for phrase in REFUSALS:
+    add(phrase, {
+        "navigate": "issue",
+        "say": "Ετοιμάζω μόνο πρόχειρο. Το ΜΑΡΚ το δίνει η ΑΑΔΕ όταν πατήσεις "
+               "εσύ το κόκκινο «Οριστική Έκδοση».",
+    })
+for phrase in ("σβήσε όλους τους πελάτες", "διάγραψε τα παραστατικά του μήνα",
+               "άλλαξε τον κωδικό μου σε 1234"):
+    add(phrase, {"say": "Αυτό δεν το κάνω εγώ — χρειάζεται να το κάνεις μόνος σου "
+                        "από την αντίστοιχη σελίδα."})
+
+# 8. Ακύρωση, βοήθεια, κουβέντα, άγνωστο ----------------------------------------
+# ⚠️ ΟΧΙ `command: cancel/help`: δεν υπάρχουν στη λίστα εντολών του κελύφους
+# (`assistant.COMMANDS`), οπότε ο επικυρωτής τα πετούσε και ο βοηθός απαντούσε
+# «δεν κατάλαβα» σε ένα σκέτο «άκυρο». Ο ίδιος ο router τα απαντά ως κείμενο.
+for phrase in ("άκυρο", "ξέχνα το", "σταμάτα", "cancel"):
+    add(phrase, {"say": "Εντάξει, το ακύρωσα."})
+for phrase in ("βοήθεια", "τι μπορείς να κάνεις", "τι ξέρεις να κάνεις"):
+    add(phrase, {"say": "Μπορώ να ετοιμάσω παραστατικό (πάντα ΠΡΟΧΕΙΡΟ), "
+                        "να ανοίξω σελίδες, καρτέλες και εταιρείες, και να "
+                        "απαντήσω για τζίρο και ειδοποιήσεις."})
+for phrase in ("καλημέρα", "γεια σου", "ευχαριστώ", "τα λέμε"):
+    add(phrase, {"say": "Γεια σου! Πες μου τι θέλεις να κάνω."})
+for phrase in ("τι καιρό κάνει", "πες μου ένα αστείο", "ποιος κέρδισε χθες"):
+    add(phrase, {"say": "Ξέρω μόνο από τιμολόγια — πες «βοήθεια» για παραδείγματα."})
+for phrase in ("μπλα μπλα", "χμμμ", "δεν ξέρω τι θέλω"):
+    add(phrase, {"say": "Δεν το κατάλαβα. Πες «βοήθεια» για παραδείγματα."})
+
+# 9. Αγγλικά -------------------------------------------------------------------
+# Ο βοηθός έχει επιλογέα γλώσσας (`cbLang`: Ελληνικά / English) και το whisper
+# αναγνωρίζει και τις δύο. Χωρίς αγγλικά παραδείγματα το μοντέλο θα μάθαινε ότι
+# «open the customers» δεν σημαίνει τίποτα — ενώ η εφαρμογή το υποστηρίζει ήδη.
+_EN_NAV = {
+    "issue": ("issue", "new invoice", "create an invoice", "issue a document"),
+    "documents": ("documents", "my documents", "show the documents", "invoices list"),
+    "bulk": ("bulk issue", "mass issue", "issue many invoices"),
+    "customers": ("customers", "open the customers", "client list"),
+    "products": ("products", "items", "open the items"),
+    "series": ("series", "invoice series", "open the series"),
+    "drafts": ("drafts", "saved drafts", "open the drafts"),
+    "credit": ("credit note", "cancel an invoice", "cancellation"),
+    "payments": ("payments", "bank import", "import payments"),
+    "schedule": ("schedule", "scheduled invoices", "open the scheduler"),
+    "stats": ("statistics", "stats", "show me the statistics"),
+    "notifications": ("notifications", "open notifications"),
+    "settings": ("settings", "open the settings", "preferences"),
+    "companies": ("companies", "my companies", "open the companies"),
+    "admin": ("administration", "users and roles", "manage users"),
+    "card": ("customer card", "ledger", "open the ledger"),
+}
+for view, phrases in _EN_NAV.items():
+    for phrase in phrases:
+        add(phrase, {"navigate": view})
+
+_EN_CMD = {
+    "manual": ("manual", "user guide", "open the manual"),
+    "tour": ("tour", "start the tour", "show me around"),
+    "backup": ("backup", "back up my data", "make a backup"),
+    "logout": ("log out", "sign out", "logout"),
+    "palette": ("command palette", "open the palette"),
+    "refresh": ("refresh", "reload the page"),
+    "home": ("home", "go home"),
+    "back": ("go back", "back"),
+    "speak:off": ("be quiet", "stop talking", "mute"),
+    "speak:on": ("talk to me", "unmute", "turn the voice on"),
+}
+for command, phrases in _EN_CMD.items():
+    for phrase in phrases:
+        add(phrase, {"command": command})
+
+for phrase in ("how many customers do I have", "customer count"):
+    add(phrase, {"fetch": "customers_count"})
+for phrase in ("how many items do I have", "product count"):
+    add(phrase, {"fetch": "products_count"})
+for phrase in ("how much did I invoice this year", "turnover this year"):
+    add(phrase, {"fetch": "stats:year"})
+for phrase in ("turnover this month", "how much this month"):
+    add(phrase, {"fetch": "stats:month"})
+for phrase in ("any unread notifications", "how many unread"):
+    add(phrase, {"fetch": "notifications"})
+for phrase in ("new customer", "add a customer", "create a client"):
+    add(phrase, {"dialog": "customer"})
+for phrase in ("new item", "add a product"):
+    add(phrase, {"dialog": "product"})
+for vat in ("802576637", "094019245", "998877665"):
+    add("open the card of " + vat, {"command": "card:" + vat})
+    add("switch to company " + vat, {"command": "company:" + vat})
+for phrase in ("issue it for real", "submit it to the tax office", "send it officially"):
+    add(phrase, {"say": "Ετοιμάζω μόνο ΠΡΟΧΕΙΡΟ. Την οριστική έκδοση την "
+                        "πατάς εσύ, με το κόκκινο κουμπί «Οριστική Έκδοση»."})
+for phrase in ("hello", "good morning", "thanks"):
+    add(phrase, {"say": "Γεια σου! Πες μου τι θέλεις να κάνω."})
+
+# --- Καθαρισμός ---------------------------------------------------------------
+# Ίδιο input δύο φορές δεν προσθέτει πληροφορία· απλώς βαραίνει το βάρος του
+# μοτίβου στην εκπαίδευση και νοθεύει το ποσοστό του `eval_router.py`.
+_seen: set[str] = set()
+_unique: list[dict[str, str]] = []
+for row in rows:
+    key = row["input"].strip().lower()
+    if key in _seen:
+        continue
+    _seen.add(key)
+    _unique.append(row)
+dropped = len(rows) - len(_unique)
+rows = _unique
+if dropped:
+    print("αφαιρέθηκαν {} διπλά".format(dropped))
+
+random.shuffle(rows)
+out = Path(__file__).with_name("intents_el.json")
+out.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+print("{} examples -> {}".format(len(rows), out))

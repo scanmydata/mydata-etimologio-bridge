@@ -116,6 +116,10 @@ function localdb(): \PDO {
     ");
     // Upgrade path for DBs created before deliv_meta existed.
     try { $tr("ALTER TABLE customer_meta ADD COLUMN deliv_meta TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
+    // Τα στοιχεία επικοινωνίας του πελάτη ζουν στην ΑΑΔΕ, ένα αίτημα ανά πελάτη.
+    // Εδώ κρατάμε αντίγραφο ό,τι μαθαίνουμε, ώστε η αυτόματη αποστολή και η
+    // μαζική αποστολή καρτελών να μη χρειάζονται δεκάδες κλήσεις.
+    try { $tr("ALTER TABLE customer_meta ADD COLUMN contact_meta TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
 
     // Θεραπεία παλιών πληρωμών: γράφονταν «dd/MM/yyyy» ενώ κάθε φίλτρο συγκρίνει
     // ISO, οπότε δεν εμφανίζονταν ποτέ σε καρτέλα με διάστημα. Μετατρέπονται μία
@@ -163,7 +167,17 @@ function localdb(): \PDO {
         "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN invited_by INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN notify_prefs TEXT NOT NULL DEFAULT ''",   // encrypted JSON
+        "ALTER TABLE users ADD COLUMN verify_token TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN verify_expires INTEGER NOT NULL DEFAULT 0",
     ] as $ddl) { try { $tr($ddl); } catch (\Throwable $e) {} }
+
+    // Η επαλήθευση email μπήκε αφού υπήρχαν ήδη λογαριασμοί σε χρήση. Αν η
+    // στήλη ΜΟΛΙΣ δημιουργήθηκε, όσοι υπάρχουν θεωρούνται επαληθευμένοι —
+    // αλλιώς μια αναβάθμιση θα κλείδωνε έξω ολόκληρο το γραφείο.
+    try {
+        $tr("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0");
+        $tr("UPDATE users SET email_verified = 1");
+    } catch (\Throwable $e) {}
 
     // AADE (e-timologio) credentials per business user. vat/label plaintext (used
     // for scoping local data + cookie file + account switching); the e-timologio
@@ -181,6 +195,56 @@ function localdb(): \PDO {
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_acc_user ON aade_accounts(user_id)");
 
+    // --- Ημερολόγιο ενεργειών + χρονομέτρηση ---------------------------------
+    // Δύο πίνακες, δύο ερωτήσεις: «τι έγινε;» (audit_log) και «πόση ώρα
+    // δουλέψαμε για αυτόν τον πελάτη;» (work_time). Το δεύτερο δεν προκύπτει
+    // από το πρώτο: μια ώρα ελέγχου καρτελών δεν αφήνει καμία «ενέργεια».
+    $tr("
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL DEFAULT 0,
+            user_email  TEXT NOT NULL DEFAULT '',
+            account_vat TEXT NOT NULL DEFAULT '',
+            action      TEXT NOT NULL DEFAULT '',
+            detail      TEXT NOT NULL DEFAULT '',   -- encrypted JSON
+            ip          TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+    $tr("CREATE INDEX IF NOT EXISTS idx_audit_when ON audit_log(created_at)");
+    $tr("CREATE INDEX IF NOT EXISTS idx_audit_acc ON audit_log(account_vat)");
+
+    // Ένα άθροισμα δευτερολέπτων ανά (χρήστη, εταιρεία, ημέρα). Δεν κρατάμε
+    // κάθε παλμό: θα ήταν εκατοντάδες γραμμές την ώρα για μηδενική επιπλέον
+    // πληροφορία.
+    $tr("
+        CREATE TABLE IF NOT EXISTS work_time (
+            user_id     INTEGER NOT NULL,
+            account_vat TEXT NOT NULL,
+            day         TEXT NOT NULL,
+            seconds     INTEGER NOT NULL DEFAULT 0,
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, account_vat, day)
+        )
+    ");
+
+    // --- Κλειδιά πρόσβασης (σύνδεση εφαρμογής υπολογιστή σε server) ----------
+    // Ο λογιστής παίρνει ΕΝΑ κλειδί και το επικολλά στην εφαρμογή του· εκείνη
+    // βρίσκει μόνη της τη διεύθυνση και συνδέεται. Αποθηκεύεται **hashed**:
+    // αν διαρρεύσει η βάση, τα κλειδιά δεν ξαναχρησιμοποιούνται.
+    $tr("
+        CREATE TABLE IF NOT EXISTS access_keys (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER NOT NULL,
+            key_hash     TEXT NOT NULL,
+            label        TEXT NOT NULL DEFAULT '',
+            revoked      INTEGER NOT NULL DEFAULT 0,
+            last_used_at TEXT NOT NULL DEFAULT '',
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ");
+    $tr("CREATE INDEX IF NOT EXISTS idx_akey_user ON access_keys(user_id)");
+
     // --- Ανάθεση εταιρειών σε λογιστές ---------------------------------------
     // Ο διαχειριστής βλέπει τα πάντα· ο λογιστής μόνο ό,τι του έχει ανατεθεί.
     // Η ανάθεση ζει εδώ και ΟΧΙ σε στήλη του `aade_accounts`, γιατί μία εταιρεία
@@ -194,6 +258,14 @@ function localdb(): \PDO {
         )
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_mgr_acc ON account_managers(account_id)");
+    // Ορφανές αναθέσεις από διαγραμμένους χρήστες/εταιρείες. Καθαρίζονται σε
+    // κάθε άνοιγμα γιατί είναι φθηνό και επειδή τα ids επαναχρησιμοποιούνται:
+    // μια ξεχασμένη γραμμή θα έδινε στον επόμενο χρήστη με το ίδιο id τις
+    // εταιρείες του προηγούμενου.
+    try {
+        $pdo->exec("DELETE FROM account_managers WHERE user_id NOT IN (SELECT id FROM users)");
+        $pdo->exec("DELETE FROM account_managers WHERE account_id NOT IN (SELECT id FROM aade_accounts)");
+    } catch (\Throwable $e) { /* δεν είναι λόγος να μη σηκωθεί η βάση */ }
     manager_seed_existing_editors();
 
     // --- Scheduled issuance (χρονοπρογραμματισμός) ---------------------------
@@ -249,24 +321,6 @@ function localdb(): \PDO {
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_notif_acc ON issue_notifications(account_vat, is_read)");
 
-    // --- Κλειδιά σύνδεσης (τοπική εγκατάσταση ↔ web server) ------------------
-    // Ο server δίνει ένα κλειδί ανά εταιρεία· η εφαρμογή υπολογιστή το βάζει
-    // στις Ρυθμίσεις της και από εκεί και πέρα μιλά με τον server χωρίς να
-    // ζητά email/κωδικό σε κάθε βήμα. Αποθηκεύεται ΜΟΝΟ ως sha256: ένα κλειδί
-    // που διέρρευσε από τη βάση θα ήταν κλειδί εισόδου στα δεδομένα.
-    $tr("
-        CREATE TABLE IF NOT EXISTS api_keys (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id      INTEGER NOT NULL,
-            account_vat  TEXT NOT NULL DEFAULT '',
-            label        TEXT NOT NULL DEFAULT '',
-            key_hash     TEXT NOT NULL,
-            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-            last_used_at TEXT NOT NULL DEFAULT '',
-            revoked      INTEGER NOT NULL DEFAULT 0
-        )
-    ");
-    $tr("CREATE INDEX IF NOT EXISTS idx_apikey_hash ON api_keys(key_hash)");
 
     crypto_backfill_plaintext();
 
@@ -373,7 +427,9 @@ function user_create(string $email, string $passwordHash, string $role, string $
 }
 
 function user_update(int $id, array $fields): void {
-    $allowed = ['password_hash', 'role', 'status', 'business_name', 'reset_token', 'reset_expires', 'email', 'totp_secret', 'totp_enabled', 'invited_by'];
+    $allowed = ['password_hash', 'role', 'status', 'business_name', 'reset_token', 'reset_expires',
+                'email', 'totp_secret', 'totp_enabled', 'invited_by',
+                'verify_token', 'verify_expires', 'email_verified'];
     $sets = []; $args = [':id' => $id];
     foreach ($fields as $k => $v) {
         if (!in_array($k, $allowed, true)) continue;
@@ -394,14 +450,16 @@ function users_all(): array {
 /**
  * Ολες οι ρυθμίσεις, αποκρυπτογραφημένες, με cache μέσα στο ίδιο request.
  *
- * Το `$reset` το καλεί το setting_set(): χωρίς αυτό, «γράψε και μετά διάβασε»
- * μέσα στο ίδιο request επέστρεφε την ΠΑΛΙΑ τιμή (π.χ. αποθήκευση στοιχείων
- * email και αμέσως δοκιμαστική αποστολή με τον προηγούμενο server).
+ * Χωρίς ακύρωση της cache, το «γράψε και μετά διάβασε» μέσα στο ίδιο request
+ * επέστρεφε την ΠΑΛΙΑ τιμή — π.χ. αποθήκευση στοιχείων email και αμέσως
+ * δοκιμαστική αποστολή με τον προηγούμενο server.
  */
-function settings_all(bool $reset = false): array {
+function settings_all(): array {
     static $cache = null;
-    if ($reset) { $cache = null; return []; }
-    if ($cache === null) {
+    // Το `setting_set()` σηκώνει τη σημαία: χωρίς αυτό, «γράψε και μετά διάβασε»
+    // μέσα στο ίδιο request επέστρεφε την παλιά τιμή από τη μνήμη.
+    if ($cache === null || !empty($GLOBALS['__settings_dirty'])) {
+        $GLOBALS['__settings_dirty'] = false;
         $cache = [];
         try {
             foreach (localdb()->query("SELECT key, value FROM app_settings") as $r) {
@@ -428,7 +486,210 @@ function setting_set(string $key, string $value): void {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     ");
     $st->execute([':k' => $key, ':v' => enc(trim($value))]);
-    settings_all(true);   // η cache του request δεν επιτρέπεται να μείνει παλιά
+    $GLOBALS['__settings_dirty'] = true;
+}
+
+// ===========================================================================
+// ΤΡΑΠΕΖΙΚΟΙ ΛΟΓΑΡΙΑΣΜΟΙ & ΡΥΘΜΙΣΕΙΣ ΑΠΟΣΤΟΛΗΣ (ανά εταιρεία)
+// ---------------------------------------------------------------------------
+// Ζουν στο `app_settings` με κλειδί ανά ΑΦΜ αντί για δικό τους πίνακα: είναι
+// λίγες γραμμές ανά εταιρεία, τις θέλουμε κρυπτογραφημένες, και η ίδια
+// διαδρομή δουλεύει και σε SQLite και σε Postgres χωρίς νέο DDL.
+// ===========================================================================
+
+/**
+ * Οι ελληνικές τράπεζες: τα τακτικά μέλη της Ελληνικής Ένωσης Τραπεζών μαζί με
+ * τα συνεταιριστικά ιδρύματα και τους ξένους παρόχους που συναντάμε σε IBAN.
+ *
+ * Το `code` είναι ο τριψήφιος κωδικός ΔΙΑΣ, δηλαδή οι θέσεις 5–7 του IBAN.
+ * Συμπληρώνεται **μόνο** όπου είναι βέβαιος, ώστε η αυτόματη αναγνώριση
+ * τράπεζας από το IBAN να μη μαντεύει: κενό `code` σημαίνει «δεν αναγνωρίζεται
+ * αυτόματα», που είναι πολύ καλύτερο από «λάθος τράπεζα».
+ */
+function bank_list(): array {
+    return [
+        ['code' => '011', 'name' => 'Εθνική Τράπεζα της Ελλάδος'],
+        ['code' => '014', 'name' => 'Alpha Bank'],
+        ['code' => '026', 'name' => 'Τράπεζα Eurobank'],
+        ['code' => '017', 'name' => 'Τράπεζα Πειραιώς'],
+        ['code' => '016', 'name' => 'CrediaBank (πρώην Attica Bank)'],
+        ['code' => '',    'name' => 'Optima bank'],
+        ['code' => '',    'name' => 'Viva.com (VivaBank)'],
+        ['code' => '',    'name' => 'Aegean Baltic Bank'],
+        ['code' => '072', 'name' => 'Citibank Europe'],
+        ['code' => '',    'name' => 'Τράπεζα Ηπείρου'],
+        ['code' => '073', 'name' => 'Συνεταιριστική Τράπεζα Χανίων'],
+        ['code' => '089', 'name' => 'Συνεταιριστική Τράπεζα Καρδίτσας'],
+        ['code' => '091', 'name' => 'Συνεταιριστική Τράπεζα Θεσσαλίας'],
+        ['code' => '',    'name' => 'Revolut Bank'],
+        ['code' => '',    'name' => 'Wise'],
+        ['code' => '',    'name' => 'Τράπεζα Κύπρου'],
+        ['code' => '',    'name' => 'Ελληνική Τράπεζα (Hellenic Bank)'],
+        ['code' => '010', 'name' => 'Τράπεζα της Ελλάδος'],
+        ['code' => '',    'name' => 'Άλλη τράπεζα'],
+    ];
+}
+
+/** Κανονικοποίηση IBAN: κεφαλαία, χωρίς κενά ή παύλες. */
+function iban_normalize(string $iban): string {
+    return strtoupper(preg_replace('/[^0-9A-Za-z]/', '', $iban) ?? '');
+}
+
+/** Τυπωμένο IBAN σε τετράδες — έτσι το διαβάζει ο πελάτης χωρίς να χαθεί. */
+function iban_pretty(string $iban): string {
+    return trim(chunk_split(iban_normalize($iban), 4, ' '));
+}
+
+/**
+ * Έλεγχος IBAN με το πρότυπο mod-97 (ISO 13616).
+ *
+ * Ένα λάθος ψηφίο σε IBAN μέσα σε email σημαίνει χαμένο έμβασμα. Ο έλεγχος
+ * γίνεται στον server ώστε να μη γλιστράει από άλλον δρόμο (API, εισαγωγή).
+ */
+function iban_valid(string $iban): bool {
+    $v = iban_normalize($iban);
+    if (strlen($v) < 15 || strlen($v) > 34) return false;
+    if (!preg_match('/^[A-Z]{2}[0-9]{2}[0-9A-Z]+$/', $v)) return false;
+    if (strncmp($v, 'GR', 2) === 0 && strlen($v) !== 27) return false;
+    $moved = substr($v, 4) . substr($v, 0, 4);
+    $digits = '';
+    for ($i = 0, $n = strlen($moved); $i < $n; $i++) {
+        $c = $moved[$i];
+        $digits .= ctype_digit($c) ? $c : (string)(ord($c) - 55);
+    }
+    // Το υπόλοιπο βγαίνει σε κομμάτια: ο ακέραιος δεν χωράει σε 64 bit.
+    $rem = 0;
+    for ($i = 0, $n = strlen($digits); $i < $n; $i += 7) {
+        $rem = (int)(((string)$rem . substr($digits, $i, 7)) % 97);
+    }
+    return $rem === 1;
+}
+
+/** Η τράπεζα που υπονοεί ένα ελληνικό IBAN, ή '' όταν δεν είμαστε βέβαιοι. */
+function iban_bank_name(string $iban): string {
+    $v = iban_normalize($iban);
+    if (strncmp($v, 'GR', 2) !== 0 || strlen($v) < 7) return '';
+    $code = substr($v, 4, 3);
+    foreach (bank_list() as $b) {
+        if ($b['code'] !== '' && $b['code'] === $code) return $b['name'];
+    }
+    return '';
+}
+
+/** Οι λογαριασμοί μιας εταιρείας. Κάθε γραμμή: bank, iban, holder, in_email. */
+function bank_accounts_get(string $accountVat): array {
+    $raw = setting_get('bank.accounts.' . $accountVat);
+    $d = $raw !== '' ? json_decode($raw, true) : null;
+    if (!is_array($d)) return [];
+    $out = [];
+    foreach ($d as $row) {
+        if (!is_array($row)) continue;
+        $iban = iban_normalize((string)($row['iban'] ?? ''));
+        if ($iban === '') continue;
+        $out[] = [
+            'bank'     => trim((string)($row['bank'] ?? '')),
+            'iban'     => $iban,
+            'holder'   => trim((string)($row['holder'] ?? '')),
+            'in_email' => !empty($row['in_email']),
+        ];
+    }
+    return $out;
+}
+
+function bank_accounts_set(string $accountVat, array $rows): void {
+    $clean = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) continue;
+        $iban = iban_normalize((string)($row['iban'] ?? ''));
+        if ($iban === '') continue;
+        $clean[] = [
+            'bank'     => trim((string)($row['bank'] ?? '')),
+            'iban'     => $iban,
+            'holder'   => trim((string)($row['holder'] ?? '')),
+            'in_email' => !empty($row['in_email']),
+        ];
+    }
+    setting_set('bank.accounts.' . $accountVat, json_encode($clean, JSON_UNESCAPED_UNICODE));
+}
+
+/**
+ * Το PDF με τους λογαριασμούς, αν το ανέβασε ο χρήστης.
+ *
+ * Μπαίνει στη βάση και όχι στον δίσκο επίτηδες: πρέπει να ακολουθεί τη βάση
+ * στο αντίγραφο ασφαλείας, και στον server ο τοπικός δίσκος είναι εφήμερος.
+ */
+function bank_pdf_get(string $accountVat): ?array {
+    $raw = setting_get('bank.pdf.' . $accountVat);
+    $d = $raw !== '' ? json_decode($raw, true) : null;
+    if (!is_array($d) || empty($d['b64'])) return null;
+    return ['name' => (string)($d['name'] ?? 'ΛΟΓΑΡΙΑΣΜΟΙ.pdf'), 'b64' => (string)$d['b64']];
+}
+
+function bank_pdf_set(string $accountVat, string $name, string $b64): void {
+    if ($b64 === '') { setting_set('bank.pdf.' . $accountVat, ''); return; }
+    setting_set('bank.pdf.' . $accountVat, json_encode(['name' => $name, 'b64' => $b64], JSON_UNESCAPED_UNICODE));
+}
+
+/** Προεπιλογές αποστολής ανά εταιρεία. */
+function mail_prefs_default(): array {
+    return [
+        'auto_send_doc'    => false,  // αυτόματη αποστολή παραστατικού μόλις εκδοθεί
+        'auto_send_bcc'    => '',     // κρυφή κοινοποίηση στο γραφείο
+        'sched_enabled'    => false,  // προγραμματισμένη αποστολή καρτελών
+        'sched_day'        => 1,      // ημέρα του μήνα (1–28)
+        'sched_only_debit' => true,   // μόνο όσοι χρωστούν
+        'sched_min'        => 0.0,    // κατώφλι ποσού
+        'sched_last'       => '',     // YYYY-MM της τελευταίας αποστολής
+    ];
+}
+
+function mail_prefs_get(string $accountVat): array {
+    $raw = setting_get('mailprefs.' . $accountVat);
+    $d = $raw !== '' ? json_decode($raw, true) : null;
+    $out = mail_prefs_default();
+    if (is_array($d)) foreach ($out as $k => $v) {
+        if (!array_key_exists($k, $d)) continue;
+        if (is_bool($v))      $out[$k] = (bool)$d[$k];
+        elseif (is_int($v))   $out[$k] = (int)$d[$k];
+        elseif (is_float($v)) $out[$k] = (float)$d[$k];
+        else                  $out[$k] = trim((string)$d[$k]);
+    }
+    $out['sched_day'] = max(1, min(28, (int)$out['sched_day']));
+    return $out;
+}
+
+/**
+ * Τα ΑΦΜ που έχουν ρυθμίσει προγραμματισμένη αποστολή καρτελών.
+ *
+ * Τα κλειδιά του `app_settings` είναι σε καθαρό κείμενο (μόνο η τιμή είναι
+ * κρυπτογραφημένη), οπότε ο χρονοπρογραμματιστής μπορεί να βρει ποιες
+ * εταιρείες τον αφορούν χωρίς να ξεκλειδώσει τίποτα.
+ */
+function mail_prefs_accounts(): array {
+    $out = [];
+    try {
+        $st = localdb()->query("SELECT key FROM app_settings WHERE key LIKE 'mailprefs.%'");
+        foreach ($st->fetchAll() as $r) {
+            $vat = substr((string)$r['key'], strlen('mailprefs.'));
+            if ($vat === '') continue;
+            $prefs = mail_prefs_get($vat);
+            if (!empty($prefs['sched_enabled'])) $out[] = $vat;
+        }
+    } catch (\Throwable $e) { return []; }
+    return $out;
+}
+
+function mail_prefs_set(string $accountVat, array $prefs): void {
+    $out = mail_prefs_get($accountVat);
+    foreach ($out as $k => $v) {
+        if (!array_key_exists($k, $prefs)) continue;
+        if (is_bool($v))      $out[$k] = (bool)$prefs[$k];
+        elseif (is_int($v))   $out[$k] = (int)$prefs[$k];
+        elseif (is_float($v)) $out[$k] = (float)$prefs[$k];
+        else                  $out[$k] = trim((string)$prefs[$k]);
+    }
+    $out['sched_day'] = max(1, min(28, (int)$out['sched_day']));
+    setting_set('mailprefs.' . $accountVat, json_encode($out, JSON_UNESCAPED_UNICODE));
 }
 
 function users_count_master(): int {
@@ -446,6 +707,11 @@ function users_count_master(): int {
 function user_delete(int $id): bool {
     $db = localdb();
     $db->prepare("DELETE FROM aade_accounts WHERE user_id = :u")->execute([':u' => $id]);
+    // ⚠️ ΚΑΙ οι αναθέσεις του. Χωρίς αυτό, η διαγραφή ενός λογιστή άφηνε πίσω
+    // γραμμές `account_managers` που δείχνουν σε ανύπαρκτο χρήστη — και επειδή
+    // τα ids επαναχρησιμοποιούνται, ο ΕΠΟΜΕΝΟΣ χρήστης με το ίδιο id θα
+    // κληρονομούσε τις εταιρείες του προηγούμενου.
+    $db->prepare("DELETE FROM account_managers WHERE user_id = :u")->execute([':u' => $id]);
     $st = $db->prepare("DELETE FROM users WHERE id = :id");
     $st->execute([':id' => $id]);
     return $st->rowCount() > 0;
@@ -633,6 +899,130 @@ function manager_seed_existing_editors(): void {
             }
         }
     } catch (\Throwable $e) { /* η ανάθεση δεν είναι λόγος να μη σηκωθεί η βάση */ }
+}
+
+// --- Ημερολόγιο ενεργειών ---------------------------------------------------
+
+/** Καταγράφει μια ενέργεια. Ποτέ δεν ρίχνει: το log δεν ακυρώνει τη δουλειά. */
+function audit_log_add(int $userId, string $accountVat, string $action, array $detail = []): void {
+    try {
+        $u = $userId > 0 ? user_by_id($userId) : null;
+        db_insert("
+            INSERT INTO audit_log (user_id, user_email, account_vat, action, detail, ip)
+            VALUES (:u, :e, :a, :act, :d, :ip)
+        ", [
+            ':u' => $userId,
+            ':e' => (string)($u['email'] ?? ''),
+            ':a' => $accountVat,
+            ':act' => substr($action, 0, 40),
+            ':d' => enc(json_encode($detail, JSON_UNESCAPED_UNICODE)),
+            ':ip' => substr((string)($_SERVER['REMOTE_ADDR'] ?? ''), 0, 45),
+        ]);
+    } catch (\Throwable $e) { /* σιωπηλά: δεν χαλάμε αίτημα για μια γραμμή log */ }
+}
+
+function audit_log_list($scope = '', array $filter = [], int $limit = 300): array {
+    [$where, $args] = db_scope_clause($scope);
+    $conds = []; 
+    if ($where !== '') $conds[] = $where;
+    if (!empty($filter['user_id'])) { $conds[] = 'user_id = :fu'; $args[':fu'] = (int)$filter['user_id']; }
+    if (!empty($filter['action']))  { $conds[] = 'action = :fa';  $args[':fa'] = (string)$filter['action']; }
+    if (!empty($filter['from']))    { $conds[] = 'created_at >= :ff'; $args[':ff'] = (string)$filter['from']; }
+    $sql = "SELECT * FROM audit_log" . ($conds ? ' WHERE ' . implode(' AND ', $conds) : '')
+         . " ORDER BY id DESC LIMIT :l";
+    $st = localdb()->prepare($sql);
+    foreach ($args as $k => $v) $st->bindValue($k, $v);
+    $st->bindValue(':l', $limit, \PDO::PARAM_INT);
+    $st->execute();
+    return array_map(fn($r) => [
+        'id' => (int)$r['id'], 'user_id' => (int)$r['user_id'], 'user_email' => $r['user_email'],
+        'account_vat' => $r['account_vat'], 'action' => $r['action'],
+        'detail' => $r['detail'] !== '' ? (json_decode(dec($r['detail']), true) ?: []) : [],
+        'ip' => $r['ip'], 'created_at' => $r['created_at'],
+    ], $st->fetchAll());
+}
+
+// --- Χρονομέτρηση ------------------------------------------------------------
+
+/** Προσθέτει χρόνο εργασίας στη σημερινή γραμμή (χρήστης × εταιρεία). */
+function work_time_add(int $userId, string $accountVat, int $seconds): void {
+    if ($userId <= 0 || $accountVat === '' || $seconds <= 0) return;
+    // Ένας παλμός δεν μπορεί να μετρά περισσότερο από λίγα λεπτά: αλλιώς ένα
+    // ξεχασμένο ανοιχτό παράθυρο θα χρέωνε ολόκληρη νύχτα.
+    $seconds = min($seconds, 300);
+    $day = date('Y-m-d');
+    $now = db_now_sql();
+    try {
+        $st = localdb()->prepare("
+            INSERT INTO work_time (user_id, account_vat, day, seconds, updated_at)
+            VALUES (:u, :a, :d, :s, $now)
+            ON CONFLICT(user_id, account_vat, day)
+            DO UPDATE SET seconds = work_time.seconds + excluded.seconds,
+                          updated_at = excluded.updated_at
+        ");
+        $st->execute([':u' => $userId, ':a' => $accountVat, ':d' => $day, ':s' => $seconds]);
+    } catch (\Throwable $e) {}
+}
+
+/** Σύνολα χρόνου ανά εταιρεία και χρήστη για ένα διάστημα. */
+function work_time_report(string $from = '', string $to = '', $scope = ''): array {
+    [$where, $args] = db_scope_clause($scope);
+    $conds = [];
+    if ($where !== '') $conds[] = $where;
+    if ($from !== '') { $conds[] = 'day >= :f'; $args[':f'] = $from; }
+    if ($to !== '')   { $conds[] = 'day <= :t'; $args[':t'] = $to; }
+    $sql = "SELECT user_id, account_vat, SUM(seconds) AS secs, MAX(updated_at) AS last_at
+              FROM work_time" . ($conds ? ' WHERE ' . implode(' AND ', $conds) : '') . "
+             GROUP BY user_id, account_vat ORDER BY secs DESC";
+    $st = localdb()->prepare($sql);
+    $st->execute($args);
+    return array_map(fn($r) => [
+        'user_id' => (int)$r['user_id'], 'account_vat' => $r['account_vat'],
+        'seconds' => (int)$r['secs'], 'last_at' => $r['last_at'],
+    ], $st->fetchAll());
+}
+
+// --- Κλειδιά πρόσβασης ------------------------------------------------------
+// Το κλειδί που βλέπει ο χρήστης δείχνεται **μία φορά**· η βάση κρατά μόνο
+// hash. Δεν υπάρχει «δες ξανά το κλειδί» — υπάρχει «φτιάξε καινούριο».
+
+function access_key_create(int $userId, string $label = ''): string {
+    $secret = bin2hex(random_bytes(24));
+    db_insert("INSERT INTO access_keys (user_id, key_hash, label) VALUES (:u, :h, :l)", [
+        ':u' => $userId, ':h' => hash('sha256', $secret), ':l' => trim($label),
+    ]);
+    return $secret;
+}
+
+function access_keys_for_user(int $userId): array {
+    $st = localdb()->prepare("SELECT id, label, revoked, last_used_at, created_at FROM access_keys WHERE user_id = :u ORDER BY id DESC");
+    $st->execute([':u' => $userId]);
+    return array_map(fn($r) => [
+        'id' => (int)$r['id'], 'label' => $r['label'], 'revoked' => (int)$r['revoked'],
+        'last_used_at' => $r['last_used_at'], 'created_at' => $r['created_at'],
+    ], $st->fetchAll());
+}
+
+function access_key_revoke(int $id, int $userId = 0): bool {
+    $sql = "UPDATE access_keys SET revoked = 1 WHERE id = :id";
+    $args = [':id' => $id];
+    if ($userId > 0) { $sql .= " AND user_id = :u"; $args[':u'] = $userId; }
+    $st = localdb()->prepare($sql);
+    $st->execute($args);
+    return $st->rowCount() > 0;
+}
+
+/** Ο χρήστης πίσω από ένα κλειδί, ή `null`. Σημειώνει τη χρήση. */
+function access_key_user(string $secret): ?array {
+    $secret = trim($secret);
+    if ($secret === '') return null;
+    $st = localdb()->prepare("SELECT * FROM access_keys WHERE key_hash = :h AND revoked = 0 LIMIT 1");
+    $st->execute([':h' => hash('sha256', $secret)]);
+    $row = $st->fetch();
+    if (!$row) return null;
+    $up = localdb()->prepare("UPDATE access_keys SET last_used_at = :t WHERE id = :id");
+    $up->execute([':t' => date('Y-m-d H:i:s'), ':id' => (int)$row['id']]);
+    return user_by_id((int)$row['user_id']);
 }
 
 // --- Προτιμήσεις UI ανά χρήστη ----------------------------------------------
@@ -850,6 +1240,63 @@ function customer_deliv_set(string $accountVat, string $customerVat, array $d): 
     ]);
 }
 
+// --- Στοιχεία επικοινωνίας πελάτη (τοπικό αντίγραφο) ------------------------
+// Πηγή αλήθειας παραμένει η ΑΑΔΕ· αυτό είναι κρυφή μνήμη για να ξέρουμε πού να
+// στείλουμε χωρίς να ανοίξουμε την καρτέλα του πελάτη στο myDATA.
+
+function customer_contact_get(string $accountVat, string $customerVat): array {
+    $st = localdb()->prepare("SELECT contact_meta FROM customer_meta WHERE account_vat = :acc AND customer_vat = :cv");
+    $st->execute([':acc' => $accountVat, ':cv' => $customerVat]);
+    $raw = $st->fetchColumn();
+    if ($raw === false || $raw === null || $raw === '') return ['email' => '', 'phone1' => '', 'phone2' => '', 'name' => ''];
+    $json = dec($raw);
+    $d = $json !== '' ? json_decode($json, true) : null;
+    if (!is_array($d)) return ['email' => '', 'phone1' => '', 'phone2' => '', 'name' => ''];
+    return [
+        'email'  => trim((string)($d['email'] ?? '')),
+        'phone1' => trim((string)($d['phone1'] ?? '')),
+        'phone2' => trim((string)($d['phone2'] ?? '')),
+        'name'   => trim((string)($d['name'] ?? '')),
+    ];
+}
+
+/** Γράφει ΜΟΝΟ ό,τι ήρθε συμπληρωμένο: ένα κενό πεδίο δεν σβήνει το παλιό. */
+function customer_contact_set(string $accountVat, string $customerVat, array $d): void {
+    if ($customerVat === '') return;
+    $cur = customer_contact_get($accountVat, $customerVat);
+    foreach (['email', 'phone1', 'phone2', 'name'] as $k) {
+        $v = trim((string)($d[$k] ?? ''));
+        if ($v !== '') $cur[$k] = $v;
+    }
+    $now = db_now_sql();
+    $st = localdb()->prepare("
+        INSERT INTO customer_meta (account_vat, customer_vat, contact_meta, updated_at)
+        VALUES (:acc, :cv, :cm, $now)
+        ON CONFLICT(account_vat, customer_vat) DO UPDATE SET
+            contact_meta = excluded.contact_meta,
+            updated_at   = $now
+    ");
+    $st->execute([
+        ':acc' => $accountVat,
+        ':cv'  => $customerVat,
+        ':cm'  => enc(json_encode($cur, JSON_UNESCAPED_UNICODE)),
+    ]);
+}
+
+/** Όλα τα γνωστά email μιας εταιρείας: ΑΦΜ πελάτη → email. */
+function customer_emails_all(string $accountVat): array {
+    $st = localdb()->prepare("SELECT customer_vat, contact_meta FROM customer_meta WHERE account_vat = :acc AND contact_meta <> ''");
+    $st->execute([':acc' => $accountVat]);
+    $out = [];
+    foreach ($st->fetchAll() as $r) {
+        $json = dec($r['contact_meta']);
+        $d = $json !== '' ? json_decode($json, true) : null;
+        $email = is_array($d) ? trim((string)($d['email'] ?? '')) : '';
+        if ($email !== '') $out[(string)$r['customer_vat']] = $email;
+    }
+    return $out;
+}
+
 // --- Scheduled issuance jobs -------------------------------------------------
 
 function sched_row(array $r): array {
@@ -1053,73 +1500,6 @@ function notification_add(string $accountVat, array $d): int {
 
 // Master (scope === '') sees all accounts; a business sees its own account; an
 // accountant sees exactly the companies assigned to them (array).
-// --- Κλειδιά σύνδεσης --------------------------------------------------------
-
-/** Το ορατό κομμάτι ενός κλειδιού — αρκετό για να το αναγνωρίσει ο χειριστής. */
-function api_key_mask(string $key): string {
-    return strlen($key) > 12 ? (substr($key, 0, 8) . '…' . substr($key, -4)) : '…';
-}
-
-/**
- * Νέο κλειδί για έναν χρήστη (και προαιρετικά μία συγκεκριμένη εταιρεία).
- *
- * Επιστρέφει το κλειδί σε ΚΑΘΑΡΗ μορφή — τη μοναδική φορά που υπάρχει. Στη βάση
- * μπαίνει μόνο το sha256 του, οπότε ούτε ο διαχειριστής μπορεί να το ξαναδεί:
- * αν χαθεί, βγάζει καινούριο και ανακαλεί το παλιό.
- */
-function api_key_create(int $userId, string $accountVat, string $label): array {
-    $key  = 'etk_' . bin2hex(random_bytes(24));
-    $id   = db_insert("
-        INSERT INTO api_keys (user_id, account_vat, label, key_hash)
-        VALUES (:u, :v, :l, :h)
-    ", [':u' => $userId, ':v' => preg_replace('/\D/', '', $accountVat),
-        ':l' => trim($label), ':h' => hash('sha256', $key)]);
-    return ['id' => $id, 'key' => $key, 'masked' => api_key_mask($key)];
-}
-
-function api_key_row(array $r): array {
-    return [
-        'id'           => (int)$r['id'],
-        'user_id'      => (int)$r['user_id'],
-        'account_vat'  => (string)$r['account_vat'],
-        'label'        => (string)$r['label'],
-        'created_at'   => (string)$r['created_at'],
-        'last_used_at' => (string)$r['last_used_at'],
-        'revoked'      => (int)$r['revoked'] === 1,
-    ];
-}
-
-function api_keys_all(int $userId = 0): array {
-    $sql = "SELECT * FROM api_keys";
-    $args = [];
-    if ($userId > 0) { $sql .= " WHERE user_id = :u"; $args[':u'] = $userId; }
-    $sql .= " ORDER BY id DESC";
-    $st = localdb()->prepare($sql);
-    $st->execute($args);
-    return array_map('api_key_row', $st->fetchAll());
-}
-
-function api_key_revoke(int $id): bool {
-    $st = localdb()->prepare("UPDATE api_keys SET revoked = 1 WHERE id = :id");
-    $st->execute([':id' => $id]);
-    return $st->rowCount() > 0;
-}
-
-/** Το κλειδί → η εγγραφή του, ή null. Ενημερώνει και το «τελευταία χρήση». */
-function api_key_resolve(string $key): ?array {
-    $key = trim($key);
-    if ($key === '') return null;
-    $st = localdb()->prepare(
-        "SELECT * FROM api_keys WHERE key_hash = :h AND revoked = 0 LIMIT 1");
-    $st->execute([':h' => hash('sha256', $key)]);
-    $r = $st->fetch();
-    if (!$r) return null;
-    $now = db_now_sql();
-    localdb()->prepare("UPDATE api_keys SET last_used_at = $now WHERE id = :id")
-             ->execute([':id' => (int)$r['id']]);
-    return api_key_row($r);
-}
-
 /**
  * Υπάρχει ήδη ειδοποίηση για αυτό το ΜΑΡΚ;
  *

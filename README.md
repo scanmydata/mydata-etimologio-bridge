@@ -105,6 +105,24 @@ reset works via the admin panel (token/link) and, if `SMTP_FROM` is configured, 
 | `admin_users` / `admin_create_user` / `admin_approve` / `admin_set_status` / `admin_reset_pw` | master | Manage users, approve signups, issue reset links |
 | `admin_add_account` / `admin_update_account` / `admin_delete_account` / `admin_user_accounts` | master | Link/unlink a business's encrypted AADE credentials |
 
+### Desktop install: accountant by default, admin on demand
+
+The Windows app signs itself in as an **accountant** (`logistis@localhost`, role
+`editor`) — day-to-day invoicing never needs the rights that delete users and read
+AADE keys. The **master admin** (`admin@localhost`) is reached explicitly:
+
+1. Click **Έξοδος** (top right) — the login screen appears.
+2. Sign in as `admin@localhost`.
+3. The password is generated on first run and stored in
+   `<data folder>\etimologio\service.json` under `bootstrap_password`
+   (default data folder: `Documents\Παραστατικά myDATA\`). It is **per
+   installation** — there is no shared password, and it is never committed.
+
+Restarting the app signs you back in as the accountant. Full walkthrough,
+including the 2FA setup whose authenticator entry is labelled per machine
+(`e-Timologio Pro (HOSTNAME)`), is in
+[`docs/ΟΔΗΓΙΕΣ-ΔΟΚΙΜΩΝ.md`](docs/%CE%9F%CE%94%CE%97%CE%93%CE%99%CE%95%CE%A3-%CE%94%CE%9F%CE%9A%CE%99%CE%9C%CE%A9%CE%9D.md) §3.1.
+
 ### New bridge endpoints (used by the UI)
 | Call | Description |
 |------|-------------|

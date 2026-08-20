@@ -127,18 +127,34 @@ def consume_show_once() -> bool:
     return False
 
 
-def load_download_dir() -> Path | None:
-    """Ο φάκελος όπου πέφτουν τα κατεβασμένα PDF/ZIP, αν έχει οριστεί.
+#: Υποφάκελος για τα κατεβασμένα PDF/ZIP, μέσα στον φάκελο δεδομένων που
+#: επέλεξε ο χρήστης στην εγκατάσταση. Δίπλα στα παραστατικά της Λήψης, όχι
+#: χαμένος στα «Λήψεις» των Windows.
+DOWNLOADS_DIRNAME = "Λήψεις e-Τιμολόγιο"
 
-    Χωρίς αυτόν, κάθε «PDF καρτέλας» ή «ZIP παραστατικών» άνοιγε διάλογο
-    «πού να το βάλω;» — για ένα αρχείο που ο χρήστης κατεβάζει δεκάδες φορές
-    την ημέρα, πάντα στον ίδιο φάκελο.
-    """
+
+def load_download_dir() -> Path | None:
+    """Ο φάκελος λήψεων **που όρισε ρητά ο χρήστης** (αλλιώς ``None``)."""
     raw = os.environ.get("TIMOLOGIO_DOWNLOAD_DIR") or _registry_value("DownloadDir")
     if not raw:
         return None
     path = Path(str(raw)).expanduser()
     return path if str(path).strip() else None
+
+
+def default_download_dir(data_dir: Path | str) -> Path:
+    """Πού πέφτουν τα αρχεία όταν δεν έχει επιλέξει κάτι ο χρήστης."""
+    return Path(data_dir) / DOWNLOADS_DIRNAME
+
+
+def resolve_download_dir(data_dir: Path | str) -> Path:
+    """Ο φάκελος λήψεων που ισχύει τώρα — ΠΑΝΤΑ κάποιος.
+
+    Χωρίς προεπιλογή, κάθε «PDF καρτέλας» ή «ZIP παραστατικών» άνοιγε διάλογο
+    «πού να το βάλω;». Χειρότερα: αν ο χρήστης τον έκλεινε, η λήψη ακυρωνόταν
+    και **δεν άνοιγε τίποτα** — έμοιαζε με χαλασμένο κουμπί, όχι με ακύρωση.
+    """
+    return load_download_dir() or default_download_dir(data_dir)
 
 
 def save_download_dir(path: Path | str | None) -> None:
