@@ -36,7 +36,7 @@ RUN set -eux; \
     libzip-dev \
     libonig-dev \
     libsodium-dev \
-    ca-certificates;
+    ca-certificates\
     docker-php-ext-install -j"$(nproc)" pdo_pgsql pdo_sqlite mbstring zip; \
     php -m | grep -qi '^sodium$' || docker-php-ext-install -j"$(nproc)" sodium; \
     apt-mark auto '.*' > /dev/null; \
