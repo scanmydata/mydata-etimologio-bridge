@@ -31,7 +31,12 @@ RUN set -eux; \
     savedAptMark="$(apt-mark showmanual)"; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        libpq-dev libzip-dev libonig-dev libsodium-dev ca-certificates; \
+    libpq-dev \
+    libsqlite3-dev \
+    libzip-dev \
+    libonig-dev \
+    libsodium-dev \
+    ca-certificates;
     docker-php-ext-install -j"$(nproc)" pdo_pgsql pdo_sqlite mbstring zip; \
     php -m | grep -qi '^sodium$' || docker-php-ext-install -j"$(nproc)" sodium; \
     apt-mark auto '.*' > /dev/null; \
