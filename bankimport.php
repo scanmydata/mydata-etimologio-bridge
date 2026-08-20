@@ -114,6 +114,12 @@ function bi_col_to_idx(string $ref): int {
 }
 
 function bi_parse_xlsx(string $raw): array {
+    // Το .xlsx είναι ZIP: χωρίς την επέκταση `zip` δεν διαβάζεται. Υπάρχει στο
+    // image του server· λείπει από τη φορητή PHP της εφαρμογής υπολογιστή, όπου
+    // ο χρήστης πρέπει να δει τι να κάνει αντί για λευκή οθόνη.
+    if (!class_exists('ZipArchive')) {
+        throw new RuntimeException('Τα αρχεία .xlsx δεν διαβάζονται σε αυτή την εγκατάσταση — αποθηκεύστε το αντίγραφο κίνησης ως CSV και ανεβάστε το ξανά.');
+    }
     $tmp = tempnam(sys_get_temp_dir(), 'bix');
     file_put_contents($tmp, $raw);
     $zip = new ZipArchive();

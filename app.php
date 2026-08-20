@@ -1,6 +1,11 @@
 <?php
-// Clear OPcache on every request so file changes take effect immediately.
-if (function_exists('opcache_reset')) { opcache_reset(); }
+// Clear OPcache on every request so file changes take effect immediately — but
+// ONLY for a local/offline install. Στον server αυτό θα άδειαζε την cache
+// ΟΛΟΚΛΗΡΗΣ της εφαρμογής σε κάθε άνοιγμα σελίδας, αναγκάζοντας κάθε επόμενη
+// κλήση του API να ξαναμεταγλωττίσει το etimologio.php από την αρχή.
+if (function_exists('opcache_reset')
+    && in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1', ''], true)
+    && empty($_SERVER['HTTP_X_FORWARDED_FOR'])) { opcache_reset(); }
 
 /**
  * e-Timologio Pro — fast, multi-tenant UI on top of etimologio.php
@@ -220,18 +225,25 @@ $__business = $__user['business_name'];
   .col-grip:hover{background:var(--accent2);opacity:.5}
   th.col-drop{box-shadow:inset 3px 0 0 var(--accent2)}
   th[draggable="true"]{cursor:grab}
-  #colFilterPop{position:absolute;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
+  /* Μπάρα εργαλείων πίνακα: μπαίνει ΜΟΝΗ της πάνω από κάθε πίνακα με
+     επικεφαλίδες (attachColumnFilters), ώστε κάθε νέος πίνακας να αποκτά το
+     κουμπί «Στήλες» χωρίς να το θυμηθεί κανείς στο markup. */
+  .grid-tools{display:flex;justify-content:flex-end;margin:2px 0 -4px}
+  .grid-tools .cols-btn{padding:3px 9px;font-size:12px;opacity:.75}
+  .grid-tools .cols-btn:hover{opacity:1}
+  .grid-tools .cols-btn.active{opacity:1;color:var(--accent);border-color:var(--accent)}
+  #colFilterPop,#colsPop{position:absolute;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;box-shadow:var(--shadow);padding:14px;display:none}
-  #colFilterPop.on{display:block}
-  #colFilterPop h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
-  #colFilterPop .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px}
-  #colFilterPop .cf-search:focus{outline:none;border-color:var(--accent)}
-  #colFilterPop .cf-list{max-height:230px;overflow:auto;display:flex;flex-direction:column;gap:1px}
-  #colFilterPop .cf-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #colFilterPop .cf-item:hover{background:var(--hover)}
-  #colFilterPop .cf-item input{accent-color:var(--accent);flex:0 0 auto}
-  #colFilterPop .cf-actions{display:flex;gap:8px;margin-top:12px}
-  #colFilterPop .cf-actions button{flex:1}
+  #colFilterPop.on,#colsPop.on{display:block}
+  #colFilterPop h5,#colsPop h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
+  #colFilterPop .cf-search,#colsPop .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px}
+  #colFilterPop .cf-search:focus,#colsPop .cf-search:focus{outline:none;border-color:var(--accent)}
+  #colFilterPop .cf-list,#colsPop .cf-list{max-height:230px;overflow:auto;display:flex;flex-direction:column;gap:1px}
+  #colFilterPop .cf-item,#colsPop .cf-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #colFilterPop .cf-item:hover,#colsPop .cf-item:hover{background:var(--hover)}
+  #colFilterPop .cf-item input,#colsPop .cf-item input{accent-color:var(--accent);flex:0 0 auto}
+  #colFilterPop .cf-actions,#colsPop .cf-actions{display:flex;gap:8px;margin-top:12px}
+  #colFilterPop .cf-actions button,#colsPop .cf-actions button{flex:1}
   th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
   /* Guided page tour */
   #tourOverlay{position:fixed;inset:0;z-index:200;display:none}
@@ -386,6 +398,7 @@ $__business = $__user['business_name'];
       <div id="notifPanel" class="notif-panel" hidden>
         <div class="notif-head"><b>Ειδοποιήσεις</b><span class="grow"></span>
           <button class="ghost sm" onclick="notifMarkAll()" title="Σήμανση όλων ως αναγνωσμένων">✓ Όλα</button>
+          <button class="ghost sm" onclick="checkAadeNewDocs(false).then(loadNotifications)" title="Σύγκριση με την πλατφόρμα της ΑΑΔΕ: ειδοποίηση για κάθε παραστατικό που δεν εκδόθηκε από εδώ">🛰️ Έλεγχος ΑΑΔΕ</button>
           <button class="ghost sm" onclick="loadNotifications()" title="Ανανέωση">↻</button></div>
         <div id="notifList" class="notif-list"><div class="notif-empty">—</div></div>
       </div>
@@ -929,6 +942,32 @@ $__business = $__user['business_name'];
         </div>
       </div>
       <?php endif; ?>
+      <?php if (defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== ''): ?>
+      <!-- Μόνο στην εγκατάσταση γραφείου: στον server τα δεδομένα ΕΙΝΑΙ ήδη εδώ. -->
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>☁️ Σύνδεση με web server (προαιρετική)</strong>
+          <span class="pill" id="lkState">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">
+          Δουλεύεις κανονικά χωρίς αυτήν. Αν όμως έχεις στημένο τον web server, κάθε
+          εταιρεία μπορεί να <b>δεθεί</b> με ένα <b>κλειδί σύνδεσης</b> που δίνει ο
+          διαχειριστής του server (Διαχείριση → Κλειδιά σύνδεσης). Τότε: τα δεδομένα
+          της ζουν <b>και</b> στον server, και ο πελάτης μπορεί να δουλέψει από
+          browser με τον σύνδεσμο της web εφαρμογής — χωρίς να εγκαταστήσει τίποτα.
+        </p>
+        <div class="row" style="margin-top:8px">
+          <div class="field grow"><label>Διεύθυνση web server</label>
+            <input id="lkUrl" placeholder="https://timologio.to-domain-sou.gr" autocomplete="off"></div>
+          <button class="ghost" onclick="linkSaveUrl()">Αποθήκευση διεύθυνσης</button>
+          <button class="ghost" onclick="linkOpenWeb()" data-tip="Άνοιγμα της web εφαρμογής σε browser">🌐 Άνοιγμα web εφαρμογής</button>
+        </div>
+        <table id="lkTable"><thead><tr>
+          <th>Εταιρεία</th><th>ΑΦΜ</th><th>Κατάσταση</th><th>Κλειδί σύνδεσης</th><th class="nofilter"></th>
+        </tr></thead><tbody></tbody></table>
+        <div class="hint" id="lkHint" style="margin-top:8px"></div>
+      </div>
+      <?php endif; ?>
       <div class="panel" style="margin-top:16px">
         <strong>🏢 Συνδεδεμένοι λογαριασμοί AADE</strong>
         <p class="sub" style="margin-top:4px">Τα διαπιστευτήρια e-timologio αποθηκεύονται κρυπτογραφημένα και ρυθμίζονται από τον διαχειριστή.</p>
@@ -968,6 +1007,28 @@ $__business = $__user['business_name'];
         <p class="sub" id="adminBizNote"></p>
         <table id="adminBiz"><thead><tr><th>Επωνυμία</th><th>ΑΦΜ</th><th>Χρήστης (κάτοχος)</th><th>Λογιστές</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
+
+      <?php if ($__role === 'master'): ?>
+      <!-- Η άλλη άκρη της σύνδεσης: εδώ γεννιούνται τα κλειδιά που επικολλά ο
+           λογιστής στην εφαρμογή υπολογιστή του. -->
+      <div class="panel" style="margin-top:14px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🔑 Κλειδιά σύνδεσης (εγκαταστάσεις γραφείου)</strong>
+          <span class="hint" id="keyCount"></span>
+        </div>
+        <p class="sub" style="margin-top:4px">Ένα κλειδί ανά εταιρεία. Δώσ' το στον λογιστή· εκείνος το βάζει στις <b>Ρυθμίσεις → Σύνδεση με web server</b> της εφαρμογής υπολογιστή. Το κλειδί φαίνεται <b>μία μόνο φορά</b> — αν χαθεί, ανακαλείς και βγάζεις καινούριο.</p>
+        <div class="row" style="margin-top:6px">
+          <div class="field"><label>Χρήστης</label><select id="nkUser" onchange="nkSyncCompanies()"></select></div>
+          <div class="field"><label>Εταιρεία</label><select id="nkVat"></select></div>
+          <div class="field grow"><label>Σημείωση (π.χ. «Γραφείο Παπαδόπουλου»)</label><input id="nkLabel" placeholder="προαιρετικό"></div>
+          <button class="primary" onclick="createApiKey()">Δημιουργία κλειδιού</button>
+        </div>
+        <div id="keyNew" style="display:none;margin-top:10px"></div>
+        <table id="adminKeys"><thead><tr>
+          <th>Χρήστης</th><th>Εταιρεία</th><th>Σημείωση</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Κατάσταση</th><th class="nofilter"></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <?php endif; ?>
     </section>
     <?php endif; ?>
 
@@ -1310,6 +1371,7 @@ $__business = $__user['business_name'];
 
 <div class="toast" id="toast"></div>
 <div id="colFilterPop"></div>
+<div id="colsPop"></div>
 
 <!-- Guided page tour -->
 <div id="tourOverlay"><div id="tourBackdrop" onclick="endTour()"></div><div id="tourRing"></div>
@@ -1572,7 +1634,12 @@ async function testMailSettings(){
   }catch(e){$('#mpResult').textContent='Σφάλμα δικτύου';}
 }
 
-async function loadSettings(){loadMailSettings();try{const d=await api({accounts:1});
+async function loadSettings(){
+  // Πρώτα η κάρτα σύνδεσης: είναι τοπική και ακαριαία, ενώ η λίστα
+  // λογαριασμών ΑΑΔΕ πιο κάτω περιμένει το δίκτυο — χωρίς αυτή τη σειρά, σε
+  // υπολογιστή χωρίς σύνδεση η κάρτα έμενε άδεια για δευτερόλεπτα.
+  loadLink();
+  loadMailSettings();try{const d=await api({accounts:1});
   $('#settAccts tbody').innerHTML=(d.accounts||[]).map(a=>`<tr><td>${esc(a.vat)}</td><td>${esc(a.label)}</td><td class="muted">•••</td></tr>`).join('')||'<tr><td colspan="3" class="muted">Δεν έχει συνδεθεί λογαριασμός AADE.</td></tr>';
 }catch(e){}
   load2fa();loadNotifPrefs();}
@@ -1645,6 +1712,7 @@ async function loadAdmin(){
     renderBiz(ADMIN_SCOPE.accounts||[]);
     if(ADMIN_SCOPE.is_master){
       const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);
+      await loadApiKeys();
     }
     enhanceViewTables('admin');
   }catch(e){toast('Διαχείριση: '+e.message,'err');}}
@@ -1743,7 +1811,8 @@ async function saveAssign(){
   }catch(e){$('#asResult').textContent='Ανάθεση: '+e.message;}}
 const ROLE_LABELS={master:'Διαχειριστής',editor:'Λογιστής',business:'Επιχείρηση'};
 let ADMIN_ME=ME_ID;
-function renderAdmin(users){$('#adminUsers tbody').innerHTML=users.map(u=>{
+let ADMIN_USERS=[];        // η τελευταία λίστα χρηστών — τη θέλουν και οι επιλογείς των κλειδιών
+function renderAdmin(users){ADMIN_USERS=users||[];$('#adminUsers tbody').innerHTML=users.map(u=>{
   const st=u.status==='active'?'<span class="pill ok">ενεργός</span>':u.status==='pending'?'<span class="pill warn">εκκρεμεί</span>':u.status==='invited'?'<span class="pill">προσκεκλημένος</span>':'<span class="pill bad">ανενεργός</span>';
   const staff=u.role==='master'||u.role==='editor';
   const self=u.id===ADMIN_ME;
@@ -1950,8 +2019,84 @@ function attachColumnFilters(tableId){
     th.appendChild(b);
     if(gridState(tableId)[logical])b.classList.add('active');
   });
+  ensureColsButton(tableId);
   enhanceGrid(tableId);
 }
+
+// --- Εμφάνιση / απόκρυψη στηλών ----------------------------------------------
+// Ίδια λογική με τα φίλτρα: το κουμπί μπαίνει ΜΟΝΟ του σε κάθε πίνακα που
+// περνά από το attachColumnFilters(), οπότε όλες οι ενότητες το αποκτούν —
+// παλιά κάθε πίνακας θα έπρεπε να το ζητήσει ρητά στο markup και ξεχνιόταν.
+// Οι κρυμμένες στήλες ζουν στο ίδιο `cols.<table>` pref με πλάτη/σειρά, άρα
+// ταξιδεύουν με τον χρήστη (και στο web και στην εφαρμογή υπολογιστή).
+function colLabel(th){
+  const t=th.cloneNode(true);
+  t.querySelectorAll('.filter-btn,.col-grip,.sort-ind').forEach(x=>x.remove());
+  return (t.textContent||'').replace(/\s+/g,' ').trim();
+}
+function hiddenCols(tableId){const L=gridLayout(tableId);if(!Array.isArray(L.hidden))L.hidden=[];return L.hidden;}
+function ensureLc(tr){[...tr.cells].forEach((c,i)=>{if(c.dataset.lc===undefined)c.dataset.lc=i;});}
+function applyColVisibility(tableId){
+  const table=$('#'+tableId);if(!table||!table.tHead||!table.tHead.rows.length)return;
+  const hdr=table.tHead.rows[0],hid=hiddenCols(tableId).map(Number);
+  ensureLc(hdr);
+  [...hdr.cells].forEach(th=>{th.style.display=hid.includes(+th.dataset.lc)?'none':'';});
+  const visible=Math.max(1,hdr.cells.length-hid.length);
+  if(table.tBodies[0])[...table.tBodies[0].rows].forEach(tr=>{
+    // Η γραμμή-μήνυμα («Κανένα…») έχει ένα κελί με colspan: πρέπει να μικρύνει
+    // μαζί με τις στήλες, αλλιώς σπρώχνει τον πίνακα πιο φαρδύ απ' όσο δείχνει.
+    if(tr.cells.length===1){tr.cells[0].colSpan=visible;return;}
+    if(tr.cells.length!==hdr.cells.length)return;
+    ensureLc(tr);
+    [...tr.cells].forEach(td=>{td.style.display=hid.includes(+td.dataset.lc)?'none':'';});
+  });
+  const bar=table.previousElementSibling;
+  const btn=bar&&bar.classList&&bar.classList.contains('grid-tools')?bar.querySelector('.cols-btn'):null;
+  if(btn){btn.classList.toggle('active',hid.length>0);
+    btn.title=hid.length?(hid.length===1?'1 κρυμμένη στήλη':hid.length+' κρυμμένες στήλες'):'Επιλογή ορατών στηλών';}
+}
+function ensureColsButton(tableId){
+  const table=$('#'+tableId);if(!table||table.dataset.colsBtn)return;
+  const hdr=table.tHead&&table.tHead.rows[0];if(!hdr)return;
+  if(![...hdr.cells].some(th=>colLabel(th)))return;      // πίνακας χωρίς επικεφαλίδες
+  table.dataset.colsBtn='1';
+  const bar=document.createElement('div');bar.className='grid-tools';
+  const b=document.createElement('button');b.type='button';b.className='ghost sm cols-btn';
+  b.textContent='▦ Στήλες';b.title='Επιλογή ορατών στηλών';
+  b.onclick=e=>{e.stopPropagation();openColsPop(tableId,b);};
+  bar.appendChild(b);table.parentNode.insertBefore(bar,table);
+}
+function openColsPop(tableId,anchor){
+  const table=$('#'+tableId),pop=$('#colsPop');if(!table||!pop)return;
+  const hdr=table.tHead.rows[0];ensureLc(hdr);
+  const cols=[...hdr.cells].map(th=>({lc:+th.dataset.lc,label:colLabel(th)})).filter(c=>c.label);
+  const hid=hiddenCols(tableId).map(Number);
+  pop.innerHTML='<h5>Στήλες</h5><div class="cf-list"></div>'+
+    '<div class="cf-actions"><button class="ghost sm cs-all">Όλες</button>'+
+    '<button class="primary sm cs-close">Κλείσιμο</button></div>';
+  const list=pop.querySelector('.cf-list');
+  const render=()=>{const h=hiddenCols(tableId).map(Number);
+    list.innerHTML=cols.map(c=>`<label class="cf-item"><input type="checkbox" data-lc="${c.lc}" ${h.includes(c.lc)?'':'checked'}> ${esc(c.label)}</label>`).join('');};
+  render();
+  list.onchange=e=>{const cb=e.target;if(!cb||cb.type!=='checkbox')return;
+    const lc=+cb.dataset.lc,h=hiddenCols(tableId);
+    const i=h.indexOf(lc);
+    if(cb.checked){if(i>=0)h.splice(i,1);} else if(i<0){
+      // Η τελευταία ορατή στήλη δεν κρύβεται: ένας πίνακας χωρίς καμία στήλη
+      // δεν είναι «καθαρός», είναι χαλασμένος.
+      if(h.length>=cols.length-1){cb.checked=true;toast('Πρέπει να μείνει τουλάχιστον μία στήλη','err');return;}
+      h.push(lc);
+    }
+    applyColVisibility(tableId);saveGridLayout(tableId);render();};
+  pop.querySelector('.cs-all').onclick=()=>{gridLayout(tableId).hidden=[];applyColVisibility(tableId);saveGridLayout(tableId);render();};
+  pop.querySelector('.cs-close').onclick=closeColsPop;
+  const r=anchor.getBoundingClientRect();
+  pop.style.left=Math.max(8,Math.min(r.left-200,window.innerWidth-300))+'px';
+  pop.style.top=(r.bottom+4)+'px';pop.classList.add('on');
+}
+function closeColsPop(){$('#colsPop').classList.remove('on');}
+document.addEventListener('click',e=>{const pop=$('#colsPop');
+  if(pop&&pop.classList.contains('on')&&!e.target.closest('#colsPop')&&!e.target.closest('.cols-btn'))closeColsPop();});
 // Το κελί μιας ΛΟΓΙΚΗΣ στήλης — όχι το `cells[i]`, που αλλάζει μόλις ο χρήστης
 // μετακινήσει στήλη. Κάθε κελί κρατά τον αρχικό του αριθμό στο `data-lc`.
 function cellOf(tr,logical){
@@ -2015,6 +2160,7 @@ function applyGridLayout(tableId){
     const px=widths[th.dataset.lc];
     if(px)th.style.width=px+'px';
   });
+  applyColVisibility(tableId);
 }
 function enhanceGrid(tableId){
   const table=$('#'+tableId);if(!table||!table.tHead||!table.tHead.rows.length)return;
@@ -2027,6 +2173,7 @@ function enhanceGrid(tableId){
       new MutationObserver(()=>{
         const ord=gridOrder(tableId,hdr.cells.length);
         [...table.tBodies[0].rows].forEach(tr=>orderRow(tr,ord));
+        applyColVisibility(tableId);
       }).observe(table.tBodies[0],{childList:true});
     }
   }
@@ -4053,8 +4200,172 @@ async function downloadManual(){
     doc.save('e-timologio-egheiridio.pdf');
   }catch(e){toast('Εγχειρίδιο: '+e.message,'err');}
 }
+// ===== Σύνδεση με web server (μόνο στην εφαρμογή υπολογιστή) =================
+// Η μία πλευρά: εδώ ο λογιστής επικολλά το κλειδί που του έδωσε ο διαχειριστής
+// του server, ανά εταιρεία. Η άλλη πλευρά (δημιουργία κλειδιών) είναι πιο κάτω,
+// στη Διαχείριση — τρέχει ΣΤΟΝ server, όχι εδώ.
+let LINK_STATE={url:'',items:[]};
+async function loadLink(){
+  if(!$('#lkTable'))return;                       // εγκατάσταση server: δεν υπάρχει η κάρτα
+  try{
+    const d=await apost({auth:'link_get'});
+    if(!d.success)return;
+    LINK_STATE=d;
+    $('#lkUrl').value=d.url||'';
+    const linked=(d.items||[]).filter(i=>i.linked).length;
+    const st=$('#lkState');
+    st.textContent=!d.url?'χωρίς server':(linked?(linked+' από '+d.items.length+' συνδεδεμένες'):'μη συνδεδεμένη');
+    st.className='pill'+(linked?' ok':'');
+    $('#lkTable tbody').innerHTML=(d.items||[]).map(i=>{
+      const cell=i.linked
+        ? `<span class="muted">•••••••• αποθηκευμένο</span>`
+        : `<input id="lkKey-${esc(i.vat)}" type="password" placeholder="etk_…" style="min-width:200px" autocomplete="off">`;
+      const acts=i.linked
+        ? `<button class="ghost sm" onclick="linkPush('${q1(i.vat)}')" title="Στέλνει πελάτες/καρτέλες/πληρωμές αυτής της εταιρείας στον server">⬆️ Ανέβασμα δεδομένων</button>
+           <button class="ghost sm" onclick="linkCopy('${q1(i.web_link)}')" title="Αντιγραφή του συνδέσμου που θα δώσεις στον πελάτη">🔗 Σύνδεσμος πελάτη</button>
+           <button class="danger sm" onclick="linkDisconnect('${q1(i.vat)}')">Αποσύνδεση</button>`
+        : `<button class="primary sm" onclick="linkConnect('${q1(i.vat)}')">Σύνδεση</button>`;
+      const state=i.linked
+        ? `<span class="pill ok">συνδεδεμένη</span>${i.remote_user?`<div class="muted">${esc(i.remote_user)}</div>`:''}${i.last_push?`<div class="muted">ανέβασμα: ${esc(i.last_push)}</div>`:''}`
+        : `<span class="pill">εκτός</span>`;
+      return `<tr><td>${esc(i.label||'—')}</td><td>${esc(i.vat)}</td><td>${state}</td><td>${cell}</td><td class="right">${acts}</td></tr>`;
+    }).join('')||'<tr><td colspan="5" class="muted">Καμία εταιρεία σε αυτή την εγκατάσταση.</td></tr>';
+    $('#lkHint').innerHTML=d.url
+      ? `Web εφαρμογή: <b>${esc(d.url)}/app.php</b> — δώσε τον σύνδεσμο στον πελάτη και τα στοιχεία εισόδου του από τη Διαχείριση του server.`
+      : 'Βάλε πρώτα τη διεύθυνση του server και μετά σύνδεσε τις εταιρείες.';
+  }catch(e){}
+}
+async function linkSaveUrl(){
+  try{const d=await apost({auth:'link_save_url',url:$('#lkUrl').value.trim()});
+    if(d.success){toast('Η διεύθυνση αποθηκεύτηκε','ok');loadLink();}
+  }catch(e){toast(e.message,'err');}
+}
+function linkOpenWeb(){
+  const u=($('#lkUrl').value||'').trim();
+  if(!u){toast('Βάλε πρώτα τη διεύθυνση του server','err');return;}
+  window.open((/^https?:\/\//i.test(u)?u:'https://'+u)+'/app.php','_blank');
+}
+async function linkConnect(vat){
+  const inp=$('#lkKey-'+vat);const key=inp?inp.value.trim():'';
+  if(!key){toast('Επικόλλησε το κλειδί σύνδεσης','err');return;}
+  try{
+    const d=await apost({auth:'link_connect',vat,key,url:$('#lkUrl').value.trim()});
+    if(d.success){toast('Συνδέθηκε ('+(d.remote_user||'')+')','ok');loadLink();}
+  }catch(e){toast(e.message,'err');}
+}
+async function linkDisconnect(vat){
+  if(!confirm('Αποσύνδεση της εταιρείας από τον server; Τα δεδομένα που έχουν ήδη ανέβει μένουν εκεί.'))return;
+  try{const d=await apost({auth:'link_disconnect',vat});if(d.success){toast('Αποσυνδέθηκε','ok');loadLink();}}
+  catch(e){toast(e.message,'err');}
+}
+async function linkPush(vat){
+  toast('Ανεβάζω δεδομένα…','ok');
+  try{
+    const d=await apost({auth:'link_push',vat});
+    const r=d.result||{};
+    toast(`Ανέβηκαν: ${r.payments_added||0} πληρωμές, ${r.customer_meta||0} καρτέλες (εταιρεία: ${r.account||'—'})`,'ok');
+    loadLink();
+  }catch(e){toast(e.message,'err');}
+}
+function linkCopy(url){
+  if(!url){toast('Δεν έχει οριστεί διεύθυνση server','err');return;}
+  try{navigator.clipboard.writeText(url);toast('Ο σύνδεσμος αντιγράφηκε','ok');}
+  catch(e){prompt('Αντίγραψε τον σύνδεσμο:',url);}
+}
+
+// ===== Κλειδιά σύνδεσης — η πλευρά του server (Διαχείριση) ===================
+let API_KEYS=[];
+async function loadApiKeys(){
+  if(!$('#adminKeys'))return;                     // δεν είναι master
+  try{
+    const d=await apost({auth:'admin_key_list'});
+    if(!d.success)return;
+    API_KEYS=d.keys||[];
+    $('#keyCount').textContent=API_KEYS.length?(API_KEYS.length+' κλειδιά'):'';
+    $('#adminKeys tbody').innerHTML=API_KEYS.map(k=>`<tr>
+      <td>${esc(k.user_name||k.user_email)}<div class="muted">${esc(k.user_email)}</div></td>
+      <td>${k.account_vat?esc((k.account_label?k.account_label+' · ':'')+k.account_vat):'<span class="muted">όλες του χρήστη</span>'}</td>
+      <td>${esc(k.label||'')}</td>
+      <td class="muted">${esc(k.created_at||'')}</td>
+      <td class="muted">${esc(k.last_used_at||'—')}</td>
+      <td>${k.revoked?'<span class="pill bad">ανακλήθηκε</span>':'<span class="pill ok">ενεργό</span>'}</td>
+      <td class="right">${k.revoked?'':`<button class="danger sm" onclick="revokeApiKey(${k.id})">Ανάκληση</button>`}</td>
+    </tr>`).join('')||'<tr><td colspan="7" class="muted">Κανένα κλειδί ακόμη.</td></tr>';
+    nkFillUsers();
+  }catch(e){}
+}
+// Οι επιλογείς γεμίζουν από ό,τι ήδη ξέρει η οθόνη Διαχείρισης — χωρίς δεύτερη κλήση.
+function nkFillUsers(){
+  const sel=$('#nkUser');if(!sel)return;
+  const users=(ADMIN_USERS||[]).filter(u=>u.role!=='master'||true);
+  sel.innerHTML=users.map(u=>`<option value="${u.id}">${esc(u.business_name||u.email)} (${esc(u.role)})</option>`).join('');
+  nkSyncCompanies();
+}
+function nkSyncCompanies(){
+  const sel=$('#nkVat');if(!sel)return;
+  const uid=+($('#nkUser').value||0);
+  const accs=(ADMIN_SCOPE.accounts||[]).filter(a=>{
+    const u=(ADMIN_USERS||[]).find(x=>+x.id===uid);
+    if(!u)return false;
+    if(u.role==='master')return true;
+    if(u.role==='editor')return (u.account_ids||[]).includes(+a.id);
+    return +a.user_id===uid;
+  });
+  sel.innerHTML=accs.map(a=>`<option value="${esc(a.vat)}">${esc(a.label||a.vat)} (${esc(a.vat)})</option>`).join('')
+    ||'<option value="">— καμία εταιρεία —</option>';
+}
+async function createApiKey(){
+  const uid=+($('#nkUser').value||0),vat=$('#nkVat').value||'';
+  if(!uid){toast('Διάλεξε χρήστη','err');return;}
+  if(!vat){toast('Ο χρήστης δεν έχει εταιρεία — ανάθεσέ του πρώτα μία','err');return;}
+  try{
+    const d=await apost({auth:'admin_key_create',user_id:uid,account_vat:vat,label:$('#nkLabel').value.trim()});
+    if(!d.success)return;
+    // Το κλειδί δεν ξαναφαίνεται: το δείχνουμε μεγάλο, με κουμπί αντιγραφής.
+    $('#keyNew').style.display='';
+    $('#keyNew').innerHTML=`<div class="card" style="border-color:var(--ok)">
+      <b>Το κλειδί σύνδεσης — αντίγραψέ το τώρα, δεν εμφανίζεται ξανά:</b>
+      <code style="display:block;background:var(--panel2);border:1px solid var(--line);padding:10px;border-radius:8px;margin-top:8px;word-break:break-all;letter-spacing:.5px">${esc(d.key)}</code>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost sm" onclick="linkCopy('${q1(d.key)}')">📋 Αντιγραφή</button>
+        <button class="ghost sm" onclick="$('#keyNew').style.display='none'">Έγινε</button>
+      </div></div>`;
+    $('#nkLabel').value='';
+    loadApiKeys();
+  }catch(e){toast(e.message,'err');}
+}
+async function revokeApiKey(id){
+  if(!confirm('Ανάκληση του κλειδιού; Η εγκατάσταση που το χρησιμοποιεί θα αποσυνδεθεί αμέσως.'))return;
+  try{await apost({auth:'admin_key_revoke',id});loadApiKeys();}catch(e){toast(e.message,'err');}
+}
+
 // ===== Issuance notifications (TODO 91) ======================================
 async function pollNotifCount(){try{const d=await api({notif_count:1});setBell(d.unread||0);}catch(e){}}
+
+// --- Έλεγχος ΑΑΔΕ: ειδοποιήσεις και για ό,τι ΔΕΝ εκδόθηκε από εδώ ------------
+// Η καμπάνα γέμιζε μόνο από εκδόσεις αυτής της εγκατάστασης. Ένα παραστατικό
+// που έβγαλε ο λογιστής από αλλού, ή που εκδόθηκε απευθείας στο e-Τιμολόγιο της
+// ΑΑΔΕ, δεν εμφανιζόταν ποτέ. Εδώ η εφαρμογή, κάθε φορά που έχει internet,
+// συγκρίνει την τοπική cache με την πλατφόρμα (`?sync=newdocs`) και ο server
+// γράφει ειδοποίηση για κάθε νέο ΜΑΡΚ. Σιωπηλό όταν δεν υπάρχει δίκτυο ή
+// σύνδεση ΑΑΔΕ — ο έλεγχος δεν είναι λόγος να δει ο χρήστης σφάλμα.
+let AADE_CHECK_BUSY=false;
+async function checkAadeNewDocs(silent=true){
+  if(AADE_CHECK_BUSY)return;
+  if(navigator.onLine===false)return;
+  AADE_CHECK_BUSY=true;
+  try{
+    const d=await api({sync:'newdocs'});
+    if(d&&d.success){
+      await pollNotifCount();
+      if(d.discovered>0)toast(d.discovered+' νέο/α παραστατικό/ά από την ΑΑΔΕ','ok');
+      else if(!silent)toast('Κανένα νέο παραστατικό στην ΑΑΔΕ','ok');
+    }else if(!silent)toast('Ο έλεγχος δεν ολοκληρώθηκε','err');
+  }catch(e){if(!silent)toast('Ο έλεγχος δεν ολοκληρώθηκε: '+e.message,'err');}
+  finally{AADE_CHECK_BUSY=false;}
+}
+// Ξαναδοκίμασε μόλις επιστρέψει το δίκτυο — αυτή είναι η «σύνδεση στο internet».
+window.addEventListener('online',()=>setTimeout(()=>checkAadeNewDocs(),4000));
 function setBell(n){const b=$('#bellBadge');if(!b)return;n=+n||0;if(n>0){b.hidden=false;b.textContent=n>99?'99+':n;}else b.hidden=true;}
 async function toggleNotifPanel(){const p=$('#notifPanel');const willOpen=p.hidden;p.hidden=!willOpen;if(willOpen)await loadNotifications();}
 document.addEventListener('click',e=>{const w=document.querySelector('.bell-wrap');const p=$('#notifPanel');if(w&&p&&!w.contains(e.target))p.hidden=true;});
@@ -4067,7 +4378,7 @@ function renderNotifications(items){const list=$('#notifList');
     const amt=n.amount_total!=null?fmt(n.amount_total)+' €':'';
     const who=esc(n.actor_name||n.actor_email||'');
     const buyer=esc(n.buyer_name||n.buyer_vat||'');
-    const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':'');
+    const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':(n.source==='aade'?' 🛰️':''));
     const acct=(IS_STAFF&&n.account_vat)?(' · ΑΦΜ '+esc(n.account_vat)):'';
     const seri=n.series?(' · Σειρά '+esc(n.series)+(n.aa?('/'+esc(n.aa)):'')):'';
     return `<div class="notif-item ${n.is_read?'':'unread'}" onclick="notifRead(${n.id},this)">
@@ -4196,6 +4507,10 @@ function addEyes(root){
 
 (async()=>{addEyes();loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
+  // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
+  // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε μισή ώρα.
+  setTimeout(()=>checkAadeNewDocs(),9000);
+  setInterval(()=>checkAadeNewDocs(),1800000);
   // First-time visitors: gently offer the tour once.
   if(!localStorage.getItem('etim_tour_done'))setTimeout(()=>{try{if(confirm('Καλωσήρθες! Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;'))startTour();else localStorage.setItem('etim_tour_done','1');}catch(e){}},900);
 })();

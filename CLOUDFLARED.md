@@ -13,7 +13,7 @@
 |---|---|
 | Πρωτόκολλο origin | `http` (όχι https — το TLS το κάνει η Cloudflare) |
 | Θύρα | `8080` |
-| Health endpoint | `GET /healthz.php` → `ok` |
+| Health endpoint | `GET /healthz.php` → `ok` (και `?db=1` για «απαντά και η βάση») |
 | Προτεινόμενο hostname | π.χ. `timologio.<το-domain-σου>` |
 
 Ποιος το χρησιμοποιεί: οι πελάτες‑επιχειρήσεις από browser (`/app.php`) **και**
@@ -86,7 +86,7 @@ Zero Trust → **Networks → Tunnels** → το tunnel σου → **Public Host
 | σε container **στο ίδιο docker network** με την εφαρμογή | `http://etimologio:8080` |
 | σε container σε **άλλο** network | βάλε το στο ίδιο network, ή `http://<ip-του-host>:8080` |
 | ως **systemd service στον host** | `http://127.0.0.1:8080` |
-| με **Coolify** | συνήθως ο proxy του Coolify — δείξε στο service name που δίνει το Coolify |
+| με **Coolify** | ο proxy του Coolify (Traefik). Στο ingress βάλε το URL που δείχνει το Coolify για την εφαρμογή· εναλλακτικά, βάλε το cloudflared στο δίκτυο του Coolify και δείξε απευθείας `http://<service>:8080` |
 
 Αν το compose του repo τρέχει αυτούσιο, το service ονομάζεται **`etimologio`**
 και το network **`etimologio_net`**. Για να μπει το cloudflared εκεί:
@@ -132,6 +132,16 @@ curl -sI https://timologio.example.gr/app.php | head -3          # → 200/302
   τα default της Cloudflare· μη βάλεις επιθετικό caching σε `/etimologio.php`
   (είναι δυναμικό API — ιδανικά `Cache-Control: no-store` ή Page Rule bypass).
 - **Το `/healthz.php` είναι δημόσιο και ανώνυμο** — σκόπιμα, ώστε να απαντά
-  ακόμη κι όταν η βάση ή η ΑΑΔΕ είναι εκτός. Δεν αποκαλύπτει τίποτα.
+  ακόμη κι όταν η βάση ή η ΑΑΔΕ είναι εκτός. Δεν αποκαλύπτει τίποτα: το `?db=1`
+  λέει μόνο `ok` ή `db-down`, ποτέ DSN, χρήστη ή μήνυμα σφάλματος.
+- **Rate limiting αντί για Access.** Το login είναι απλό POST στο
+  `/etimologio.php` με `auth=login`. Ένα Rate Limiting rule της Cloudflare
+  (π.χ. 10 αιτήματα/λεπτό ανά IP σε αυτό το path) κόβει τις επαναλαμβανόμενες
+  απόπειρες χωρίς να ενοχλεί κανέναν πραγματικό χρήστη — η εφαρμογή δεν έχει
+  δικό της throttling.
+- **Μην ενεργοποιήσεις «restore original IP» στο origin** (mod_remoteip ή
+  παρόμοιο) χωρίς λόγο. Η εφαρμογή εμπιστεύεται το loopback για τον
+  χρονοπρογραμματιστή· κρατά και δεύτερο έλεγχο (απουσία κεφαλίδων proxy), αλλά
+  ο απλούστερος δρόμος είναι να μένει η `REMOTE_ADDR` αυτή του proxy.
 - Μετά το στήσιμο, γράψε το τελικό hostname στο `APP_URL` της εφαρμογής και
   κάνε redeploy — χρησιμοποιείται στους συνδέσμους των email.

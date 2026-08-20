@@ -249,7 +249,91 @@ function localdb(): \PDO {
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_notif_acc ON issue_notifications(account_vat, is_read)");
 
+    // --- Κλειδιά σύνδεσης (τοπική εγκατάσταση ↔ web server) ------------------
+    // Ο server δίνει ένα κλειδί ανά εταιρεία· η εφαρμογή υπολογιστή το βάζει
+    // στις Ρυθμίσεις της και από εκεί και πέρα μιλά με τον server χωρίς να
+    // ζητά email/κωδικό σε κάθε βήμα. Αποθηκεύεται ΜΟΝΟ ως sha256: ένα κλειδί
+    // που διέρρευσε από τη βάση θα ήταν κλειδί εισόδου στα δεδομένα.
+    $tr("
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER NOT NULL,
+            account_vat  TEXT NOT NULL DEFAULT '',
+            label        TEXT NOT NULL DEFAULT '',
+            key_hash     TEXT NOT NULL,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT NOT NULL DEFAULT '',
+            revoked      INTEGER NOT NULL DEFAULT 0
+        )
+    ");
+    $tr("CREATE INDEX IF NOT EXISTS idx_apikey_hash ON api_keys(key_hash)");
+
+    crypto_backfill_plaintext();
+
     return $pdo;
+}
+
+// --- Εφάπαξ: κρυπτογράφησε ό,τι έμεινε καθαρό -------------------------------
+//
+// Η enc() έχει «ήπια υποχώρηση»: χωρίς την επέκταση `sodium` επιστρέφει το
+// καθαρό κείμενο, ώστε η εφαρμογή να δουλεύει και σε PHP χωρίς αυτήν. Το τίμημα
+// είναι ότι μια τέτοια εγκατάσταση έγραφε ΚΑΘΑΡΑ τα διαπιστευτήρια ΑΑΔΕ, τα
+// ονόματα πελατών, τα ποσά και τα payload του χρονοπρογραμματιστή — και τα
+// δεδομένα αυτά **μένουν** καθαρά όταν αργότερα προστεθεί το sodium, γιατί η
+// dec() επιστρέφει αυτούσιο ό,τι δεν αρχίζει με `enc:1:`.
+//
+// Εδώ κλείνει αυτό το κενό: την πρώτη φορά που η βάση ανοίγει με sodium
+// διαθέσιμο, κάθε κρυπτογραφούμενη στήλη που έμεινε καθαρή ξαναγράφεται
+// κρυπτογραφημένη. Τρέχει μία φορά (σημαία `crypto.backfilled`), μέσα σε
+// συναλλαγή, και **δεν** σημαδεύεται ως ολοκληρωμένη αν κάτι απέτυχε.
+function crypto_backfill_plaintext(): void {
+    // Χωρίς sodium η enc() θα ξανάγραφε τα ίδια καθαρά δεδομένα: καμία δουλειά,
+    // και καμία σημαία — ώστε να τρέξει όταν κάποτε υπάρξει.
+    if (!extension_loaded('sodium')) return;
+    if (setting_get('crypto.backfilled') === '1') return;
+
+    // πίνακας => [στήλες-κλειδί, στήλες που είναι κρυπτογραφημένες]
+    $map = [
+        'payments'            => [['id'], ['customer_name', 'amount', 'notes']],
+        'app_cache'           => [['account_vat', 'kind'], ['payload']],
+        'customer_meta'       => [['account_vat', 'customer_vat'],
+                                  ['customer_name', 'opening_balance', 'notes', 'deliv_meta']],
+        'app_settings'        => [['key'], ['value']],
+        'users'               => [['id'], ['totp_secret', 'notify_prefs']],
+        'aade_accounts'       => [['id'], ['username_enc', 'subkey_enc']],
+        'scheduled_jobs'      => [['id'], ['title', 'payload', 'last_result']],
+        'issue_notifications' => [['id'], ['buyer_name', 'amount_total']],
+    ];
+
+    $db = localdb();
+    $rewritten = 0;
+    try {
+        $db->beginTransaction();
+        foreach ($map as $table => [$keys, $cols]) {
+            foreach ($cols as $col) {
+                $sel = $db->prepare('SELECT ' . implode(', ', array_merge($keys, [$col]))
+                    . " FROM $table WHERE $col <> '' AND $col NOT LIKE 'enc:1:%'");
+                $sel->execute();
+                $rows = $sel->fetchAll();
+                if (!$rows) continue;
+                $where = implode(' AND ', array_map(fn($k) => "$k = :k_$k", $keys));
+                $upd = $db->prepare("UPDATE $table SET $col = :v WHERE $where");
+                foreach ($rows as $r) {
+                    $args = [':v' => enc((string)$r[$col])];
+                    foreach ($keys as $k) $args[":k_$k"] = $r[$k];
+                    $upd->execute($args);
+                    $rewritten++;
+                }
+            }
+        }
+        $db->commit();
+    } catch (\Throwable $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        error_log('[etimologio] crypto backfill failed: ' . $e->getMessage());
+        return;                       // χωρίς σημαία — ξαναπροσπαθεί στο επόμενο άνοιγμα
+    }
+    if ($rewritten > 0) error_log('[etimologio] crypto backfill: ' . $rewritten . ' πεδία κρυπτογραφήθηκαν');
+    setting_set('crypto.backfilled', '1');
 }
 
 // --- Auth: users ------------------------------------------------------------
@@ -307,9 +391,16 @@ function users_all(): array {
 
 // --- Ρυθμίσεις εφαρμογής -----------------------------------------------------
 
-/** Μια ρύθμιση, ή `$default` αν δεν έχει οριστεί ποτέ. */
-function setting_get(string $key, string $default = ''): string {
+/**
+ * Ολες οι ρυθμίσεις, αποκρυπτογραφημένες, με cache μέσα στο ίδιο request.
+ *
+ * Το `$reset` το καλεί το setting_set(): χωρίς αυτό, «γράψε και μετά διάβασε»
+ * μέσα στο ίδιο request επέστρεφε την ΠΑΛΙΑ τιμή (π.χ. αποθήκευση στοιχείων
+ * email και αμέσως δοκιμαστική αποστολή με τον προηγούμενο server).
+ */
+function settings_all(bool $reset = false): array {
     static $cache = null;
+    if ($reset) { $cache = null; return []; }
     if ($cache === null) {
         $cache = [];
         try {
@@ -320,7 +411,12 @@ function setting_get(string $key, string $default = ''): string {
             $cache = [];
         }
     }
-    $value = $cache[$key] ?? '';
+    return $cache;
+}
+
+/** Μια ρύθμιση, ή `$default` αν δεν έχει οριστεί ποτέ. */
+function setting_get(string $key, string $default = ''): string {
+    $value = settings_all()[$key] ?? '';
     return $value !== '' ? $value : $default;
 }
 
@@ -332,6 +428,7 @@ function setting_set(string $key, string $value): void {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     ");
     $st->execute([':k' => $key, ':v' => enc(trim($value))]);
+    settings_all(true);   // η cache του request δεν επιτρέπεται να μείνει παλιά
 }
 
 function users_count_master(): int {
@@ -554,12 +651,10 @@ function user_pref_set(int $userId, string $key, string $value): void {
 function user_prefs_all(int $userId): array {
     $prefix = 'uipref.' . $userId . '.';
     $out = [];
-    try {
-        foreach (localdb()->query("SELECT key, value FROM app_settings") as $r) {
-            if (strncmp($r['key'], $prefix, strlen($prefix)) !== 0) continue;
-            $out[substr($r['key'], strlen($prefix))] = dec($r['value']);
-        }
-    } catch (\Throwable $e) {}
+    foreach (settings_all() as $key => $value) {
+        if (strncmp($key, $prefix, strlen($prefix)) !== 0) continue;
+        $out[substr($key, strlen($prefix))] = $value;
+    }
     return $out;
 }
 
@@ -958,6 +1053,88 @@ function notification_add(string $accountVat, array $d): int {
 
 // Master (scope === '') sees all accounts; a business sees its own account; an
 // accountant sees exactly the companies assigned to them (array).
+// --- Κλειδιά σύνδεσης --------------------------------------------------------
+
+/** Το ορατό κομμάτι ενός κλειδιού — αρκετό για να το αναγνωρίσει ο χειριστής. */
+function api_key_mask(string $key): string {
+    return strlen($key) > 12 ? (substr($key, 0, 8) . '…' . substr($key, -4)) : '…';
+}
+
+/**
+ * Νέο κλειδί για έναν χρήστη (και προαιρετικά μία συγκεκριμένη εταιρεία).
+ *
+ * Επιστρέφει το κλειδί σε ΚΑΘΑΡΗ μορφή — τη μοναδική φορά που υπάρχει. Στη βάση
+ * μπαίνει μόνο το sha256 του, οπότε ούτε ο διαχειριστής μπορεί να το ξαναδεί:
+ * αν χαθεί, βγάζει καινούριο και ανακαλεί το παλιό.
+ */
+function api_key_create(int $userId, string $accountVat, string $label): array {
+    $key  = 'etk_' . bin2hex(random_bytes(24));
+    $id   = db_insert("
+        INSERT INTO api_keys (user_id, account_vat, label, key_hash)
+        VALUES (:u, :v, :l, :h)
+    ", [':u' => $userId, ':v' => preg_replace('/\D/', '', $accountVat),
+        ':l' => trim($label), ':h' => hash('sha256', $key)]);
+    return ['id' => $id, 'key' => $key, 'masked' => api_key_mask($key)];
+}
+
+function api_key_row(array $r): array {
+    return [
+        'id'           => (int)$r['id'],
+        'user_id'      => (int)$r['user_id'],
+        'account_vat'  => (string)$r['account_vat'],
+        'label'        => (string)$r['label'],
+        'created_at'   => (string)$r['created_at'],
+        'last_used_at' => (string)$r['last_used_at'],
+        'revoked'      => (int)$r['revoked'] === 1,
+    ];
+}
+
+function api_keys_all(int $userId = 0): array {
+    $sql = "SELECT * FROM api_keys";
+    $args = [];
+    if ($userId > 0) { $sql .= " WHERE user_id = :u"; $args[':u'] = $userId; }
+    $sql .= " ORDER BY id DESC";
+    $st = localdb()->prepare($sql);
+    $st->execute($args);
+    return array_map('api_key_row', $st->fetchAll());
+}
+
+function api_key_revoke(int $id): bool {
+    $st = localdb()->prepare("UPDATE api_keys SET revoked = 1 WHERE id = :id");
+    $st->execute([':id' => $id]);
+    return $st->rowCount() > 0;
+}
+
+/** Το κλειδί → η εγγραφή του, ή null. Ενημερώνει και το «τελευταία χρήση». */
+function api_key_resolve(string $key): ?array {
+    $key = trim($key);
+    if ($key === '') return null;
+    $st = localdb()->prepare(
+        "SELECT * FROM api_keys WHERE key_hash = :h AND revoked = 0 LIMIT 1");
+    $st->execute([':h' => hash('sha256', $key)]);
+    $r = $st->fetch();
+    if (!$r) return null;
+    $now = db_now_sql();
+    localdb()->prepare("UPDATE api_keys SET last_used_at = $now WHERE id = :id")
+             ->execute([':id' => (int)$r['id']]);
+    return api_key_row($r);
+}
+
+/**
+ * Υπάρχει ήδη ειδοποίηση για αυτό το ΜΑΡΚ;
+ *
+ * Ο έλεγχος «τι νέο έχει η ΑΑΔΕ» τρέχει σε κάθε σύνδεση: χωρίς αυτό, κάθε
+ * σάρωση θα ξαναειδοποιούσε για τα ίδια παραστατικά — και θα ειδοποιούσε ΞΑΝΑ
+ * για όσα εκδόθηκαν από την ίδια την εφαρμογή (που έχουν ήδη γραμμή).
+ */
+function notification_exists(string $accountVat, string $mark): bool {
+    if ($mark === '') return false;
+    $st = localdb()->prepare(
+        "SELECT 1 FROM issue_notifications WHERE account_vat = :a AND mark = :m LIMIT 1");
+    $st->execute([':a' => $accountVat, ':m' => $mark]);
+    return (bool)$st->fetchColumn();
+}
+
 function notifications_list($scope = '', bool $unreadOnly = false, int $limit = 200): array {
     $sql = "SELECT * FROM issue_notifications";
     [$scopeSql, $args] = db_scope_clause($scope);

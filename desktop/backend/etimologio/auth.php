@@ -24,8 +24,77 @@ require_once __DIR__ . '/localdb.php';  // DB + crypto + user/account helpers
 require_once __DIR__ . '/mail.php';     // Resend/SMTP transactional email
 require_once __DIR__ . '/totp.php';     // authenticator 2FA (RFC 6238)
 
+// --- Όταν η βάση δεν απαντά --------------------------------------------------
+// Στον server η βάση είναι χωριστή υπηρεσία: μπορεί να είναι σε restart ή σε
+// backup. Χωρίς αυτό, ένα PDOException βγαίνει ως γυμνό «500» — λευκή σελίδα
+// για τον πελάτη και, αν κάποιος έχει αφήσει display_errors ανοιχτό, το DSN και
+// ο χρήστης της βάσης μέσα στη σελίδα. Το μήνυμα του σφάλματος πάει στο log του
+// container, στον χρήστη πάει μόνο «ξαναδοκίμασε».
+set_exception_handler(static function (\Throwable $e): void {
+    $isDb = $e instanceof \PDOException;
+    error_log('[etimologio] ' . get_class($e) . ': ' . $e->getMessage()
+              . ' @ ' . $e->getFile() . ':' . $e->getLine());
+    if (headers_sent()) return;
+    http_response_code($isDb ? 503 : 500);
+    header('Retry-After: 15');
+    $msg = $isDb
+        ? 'Η βάση δεδομένων δεν είναι διαθέσιμη αυτή τη στιγμή. Δοκιμάστε ξανά σε λίγο.'
+        : 'Παρουσιάστηκε σφάλμα. Δοκιμάστε ξανά σε λίγο.';
+    if (strpos((string)($_SERVER['SCRIPT_NAME'] ?? ''), 'etimologio.php') !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['success' => false, 'error' => $msg], JSON_UNESCAPED_UNICODE);
+        return;
+    }
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!doctype html><meta charset="utf-8"><title>e-Τιμολόγιο Pro</title>'
+       . '<div style="font:16px/1.6 system-ui,sans-serif;max-width:520px;margin:18vh auto;'
+       . 'padding:24px;border-radius:14px;background:#131f33;color:#e6edf7">'
+       . '<h1 style="font-size:19px;margin:0 0 8px">Προσωρινά εκτός λειτουργίας</h1>'
+       . '<p style="margin:0;color:#9fb3cd">' . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . '</p></div>';
+});
+
+// --- Πίσω από proxy (cloudflared/Coolify) -----------------------------------
+// Ο container μιλά καθαρό HTTP στη 8080· το TLS το τερματίζει η Cloudflare. Ό,τι
+// ρωτά «είναι HTTPS;» πρέπει να κοιτά και την κεφαλίδα του proxy, αλλιώς το
+// cookie μένει χωρίς Secure και οι σύνδεσμοι των email βγαίνουν http://.
+function req_is_https(): bool {
+    if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') return true;
+    $proto = strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
+    if ($proto !== '') return explode(',', $proto)[0] === 'https';
+    if (stripos((string)($_SERVER['HTTP_CF_VISITOR'] ?? ''), 'https') !== false) return true;
+    return false;
+}
+
+/**
+ * Ήρθε το αίτημα από τον ΙΔΙΟ τον υπολογιστή (loopback) και ΟΧΙ μέσα από proxy;
+ *
+ * Δύο δρόμοι εμπιστεύονται το loopback: το service-auth του χρονοπρογραμματιστή
+ * και το αυτόματο login της εφαρμογής υπολογιστή. Η IP από μόνη της δεν αρκεί —
+ * αν κάποια στιγμή μπει mod_remoteip ή παρόμοιο, ένα `X-Forwarded-For:
+ * 127.0.0.1` από το internet θα έμοιαζε με loopback. Η παρουσία οποιασδήποτε
+ * κεφαλίδας proxy σημαίνει «ήρθε από έξω».
+ */
+function req_is_loopback(): bool {
+    $remote = $_SERVER['REMOTE_ADDR'] ?? '';
+    if (!in_array($remote, ['127.0.0.1', '::1', ''], true)) return false;
+    foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_FORWARDED_PROTO', 'HTTP_X_REAL_IP',
+              'HTTP_CF_CONNECTING_IP', 'HTTP_FORWARDED'] as $h) {
+        if (!empty($_SERVER[$h])) return false;
+    }
+    return true;
+}
+
 if (session_status() === PHP_SESSION_NONE) {
     session_name('ETIM_SID');
+    // Secure μόνο όταν το αίτημα ΕΙΝΑΙ https: σταθερό «1» θα έσπαγε την τοπική
+    // λειτουργία της εφαρμογής υπολογιστή σε http://127.0.0.1.
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'httponly' => true,
+        'samesite' => 'Lax',
+        'secure'   => req_is_https(),
+    ]);
     session_start();
 }
 
@@ -197,9 +266,11 @@ function auth_reset(string $token, string $newPassword): array {
 }
 
 function auth_reset_link(string $token): string {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    return $scheme . '://' . $host . dirname($_SERVER['SCRIPT_NAME'] ?? '/') . '/app.php?reset=' . urlencode($token);
+    // Μέσω app_base_url(): προτιμά το APP_URL της εγκατάστασης και πέφτει στο
+    // τρέχον αίτημα μόνο αν λείπει. Το προηγούμενο «φτιάξ' το από το Host»
+    // σήμαινε ότι ένας πλαστός Host σε αίτημα «ξέχασα τον κωδικό» έστελνε στο
+    // θύμα σύνδεσμο επαναφοράς προς ξένο domain.
+    return app_base_url() . '/app.php?reset=' . urlencode($token);
 }
 
 function auth_send_reset_email(string $to, string $token): bool {
@@ -412,14 +483,44 @@ function auth_desktop_autologin(): void {
     if (!empty($_SESSION['uid'])) return;
     $token = (string)($_GET['desktop_token'] ?? $_POST['desktop_token'] ?? '');
     if ($token === '' || !hash_equals((string)DESKTOP_TOKEN, $token)) return;
-    $remote = $_SERVER['REMOTE_ADDR'] ?? '';
-    if (!in_array($remote, ['127.0.0.1', '::1', ''], true)) return;
+    if (!req_is_loopback()) return;
     $uid = (int)localdb()->query("SELECT id FROM users WHERE role='master' ORDER BY id ASC LIMIT 1")->fetchColumn();
     if ($uid > 0) $_SESSION['uid'] = $uid;
 }
+
+/**
+ * Σύνδεση με **κλειδί σύνδεσης** (εφαρμογή υπολογιστή → web server).
+ *
+ * Η εγκατάσταση γραφείου δεν έχει browser session με τον server: παίρνει από τον
+ * διαχειριστή ένα κλειδί ανά εταιρεία και το στέλνει σε κάθε κλήση (κεφαλίδα
+ * `Authorization: Bearer …`, ή `api_key=` για απλότητα). Το κλειδί ταυτίζει
+ * χρήστη ΚΑΙ — όταν είναι δεμένο σε εταιρεία — κλειδώνει το `?account`: ένα
+ * κλειδί που δόθηκε για μία επιχείρηση δεν μπορεί να διαβάσει άλλη.
+ */
+function auth_api_key_login(): void {
+    $key = '';
+    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    if (stripos($hdr, 'bearer ') === 0) $key = trim(substr($hdr, 7));
+    if ($key === '') $key = trim((string)($_GET['api_key'] ?? $_POST['api_key'] ?? ''));
+    if ($key === '') return;
+
+    $row = api_key_resolve($key);
+    if (!$row) return;
+    $u = user_by_id($row['user_id']);
+    if (!$u || $u['status'] === 'disabled') return;
+
+    $_SESSION['uid'] = (int)$u['id'];
+    $GLOBALS['__api_key'] = $row;
+    // Κλειδί δεμένο σε εταιρεία: το `?account` δεν είναι πια επιλογή του καλούντος.
+    if ($row['account_vat'] !== '') $_GET['account'] = $_POST['account'] = $row['account_vat'];
+}
+
+/** Η εγγραφή του κλειδιού που ταυτοποίησε αυτό το αίτημα (ή null). */
+function auth_api_key(): ?array { return $GLOBALS['__api_key'] ?? null; }
 
 // Run bootstrap + migration + account resolution on include (safe, no output).
 auth_bootstrap();
 auth_migrate_legacy_accounts();
 auth_desktop_autologin();
+auth_api_key_login();
 auth_resolve_account();

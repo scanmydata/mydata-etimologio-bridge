@@ -45,9 +45,15 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-tls}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       NOTIFY_ADMIN_EMAIL: ${NOTIFY_ADMIN_EMAIL:-}
+      # Προαιρετικό: το κλειδί κρυπτογράφησης ως μυστικό αντί για αρχείο στο
+      # volume. Αν οριστεί, κερδίζει του /data/.enckey — και ΔΕΝ αλλάζει ποτέ σε
+      # βάση που έχει ήδη δεδομένα.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      TZ: ${TZ:-Europe/Athens}
     volumes:
       # ΚΡΙΣΙΜΟ: εδώ ζει το .enckey. Αν χαθεί, τα αποθηκευμένα στοιχεία ΑΑΔΕ
       # δεν ξανα-αποκρυπτογραφούνται ποτέ.

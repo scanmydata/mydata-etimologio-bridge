@@ -55,7 +55,12 @@ function app_base_url(): string {
     $u = mail_conf('APP_URL');
     if ($u === '') $u = mail_conf('APP_BASE_URL');
     if ($u !== '') return rtrim($u, '/');
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    // Πίσω από cloudflared το αίτημα φτάνει ως http· το πρωτόκολλο του κόσμου
+    // το λέει μόνο η κεφαλίδα του proxy (req_is_https(), auth.php).
+    $https  = function_exists('req_is_https')
+        ? req_is_https()
+        : (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+    $scheme = $https ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
     return $scheme . '://' . $host . rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
 }

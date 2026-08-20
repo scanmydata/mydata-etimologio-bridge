@@ -90,3 +90,158 @@ Snapshot of the working task list across the recent sessions. See
   - Light theme contrast: hardcoded `#04222f` on active nav items and primary buttons, a permanently dark sidebar/header under theme‑switching text, and `--muted` at 3.46:1. **Automated contrast audit now reports 0 failures in both themes** (was 7 in light)
 - [ ] **Packaging:** bundle a portable `php.exe` into PyInstaller `datas`; scheduler via Task Scheduler (standalone) / container cron (server).
   - ⚠️ **CA bundle required:** the bundled PHP must ship a `cacert.pem` with `curl.cainfo`/`openssl.cafile` set in its `php.ini`, or outbound TLS to `mydata.aade.gr` fails with OpenSSL error 60. Reuse certifi's bundle (same as the Downloader's Python side). Discovered during the Phase‑1 live test.
+
+## Session C — Ο server έτοιμος για Coolify + cloudflared (branch `deploy/server`)
+
+Στόχος: το image να μπορεί να σταθεί σε δημόσιο hostname (θύρα **8080** πίσω από
+υπάρχον cloudflared tunnel), με τη βάση να δένει από το connection string του
+Coolify και τη **σύνδεση εταιρειών με τα κλειδιά ΑΑΔΕ** αποδεδειγμένα λειτουργική
+πάνω σε Postgres.
+
+- [x] **Σύνδεση βάσης με ένα URL** — `deploy/dburl.php`: το `DATABASE_URL` /
+      `POSTGRES_URL` του Coolify σπάει σε `DB_DSN`/`DB_USER`/`DB_PASS` στο boot
+      (υποστηρίζει `sslmode`, percent‑encoded κωδικούς). Το entrypoint **περιμένει**
+      τη βάση ως 60s πριν σηκώσει τον Apache, αντί να σκάει το πρώτο request.
+- [x] **`ENCRYPTION_KEY` από το περιβάλλον** — το κλειδί μπορεί πλέον να ζει στα
+      μυστικά του Coolify αντί για το volume· αν λείπει, ισχύει το `/data/.enckey`
+      όπως πριν.
+- [x] 🐞 **Το image δεν φόρτωνε `pdo_pgsql`** — το `apt-get purge --auto-remove
+      libpq-dev` έπαιρνε μαζί και το `libpq5`. Το build ακολουθεί πλέον το επίσημο
+      μοτίβο (`savedAptMark` + `ldd`), προσθέτει `zip` (ανάγνωση .xlsx) και
+      `sodium` όπου λείπει, και **αποτυγχάνει** αν λείπει `pdo_pgsql`/`sodium`.
+- [x] **`deploy/php.ini`** — το base image δεν έχει καθόλου php.ini, άρα έτρεχε με
+      `display_errors=On` (DSN και χρήστης βάσης στη σελίδα), 128M μνήμη και 30s
+      όριο, λίγα για μαζική εξαγωγή PDF/ZIP. Τώρα: σφάλματα μόνο στα logs, 512M /
+      300s / 32M upload (ρυθμιζόμενα από env), ώρα Ελλάδας, opcache.
+- [x] **`deploy/apache-etimologio.conf`** — σερβίρονται μόνο `app.php`,
+      `etimologio.php`, `healthz.php`, `assets/`· κόβονται `config.php`, `tools/`,
+      `deploy/`, `.md`, dotfiles, βάσεις και αρχεία βιβλιοθήκης· κεφαλίδες
+      ασφαλείας· `no-store` στο API· `/` → `/app.php`. Το web root έγινε **μη
+      εγγράψιμο** από τον χρήστη του Apache (το lock του scheduler πήγε στο `/data`).
+- [x] **Σωστή συμπεριφορά πίσω από proxy** — `req_is_https()` (X‑Forwarded‑Proto /
+      CF‑Visitor): cookie συνεδρίας `Secure` μόνο σε HTTPS (χωρίς να σπάει το
+      offline 127.0.0.1), `HttpOnly` + `SameSite=Lax` παντού.
+- [x] 🐞 **Σύνδεσμος επαναφοράς κωδικού από `Host`** — φτιαχνόταν από την κεφαλίδα
+      του αιτήματος· πλαστό `Host` σε «ξέχασα τον κωδικό» έστελνε στο θύμα
+      σύνδεσμο προς ξένο domain. Πλέον βγαίνει από το `APP_URL` (`app_base_url()`).
+- [x] **Σκλήρυνση των «loopback» μονοπατιών** — service‑auth του scheduler και
+      desktop autologin απαιτούν και **απουσία** κεφαλίδων proxy (`req_is_loopback()`).
+- [x] 🐞 **Stale cache ρυθμίσεων** — το `setting_get()` κρατούσε στατική cache που
+      το `setting_set()` δεν ακύρωνε: «αποθήκευσε και διάβασε» μέσα στο ίδιο
+      request γύριζε την παλιά τιμή (π.χ. αλλαγή SMTP και αμέσως δοκιμαστική
+      αποστολή). Νέο `settings_all(reset:)` — και το `user_prefs_all()` το
+      χρησιμοποιεί αντί για δεύτερο query.
+- [x] 🐞 **`.xlsx` χωρίς την επέκταση `zip`** — `new ZipArchive()` χωρίς έλεγχο
+      έριχνε fatal (λευκή οθόνη). Τώρα: καθαρό μήνυμα «σώσ' το ως CSV», και το
+      `bank_preview` πιάνει κάθε σφάλμα ανάλυσης αρχείου.
+- [x] **Χωρίς λευκές οθόνες όταν πέφτει η βάση** — global handler: 503 με
+      ελληνικό μήνυμα (ή JSON για το API), λεπτομέρειες μόνο στο log.
+- [x] **`opcache_reset()` μόνο τοπικά** — στον server άδειαζε την cache όλης της
+      εφαρμογής σε κάθε άνοιγμα σελίδας.
+- [x] **`healthz.php?db=1`** — «απαντά και η βάση», χωρίς να αποκαλύπτει τίποτα.
+- [x] **`tools/pg_smoke.php`** — ένα τρέξιμο ελέγχει επεκτάσεις, σύνδεση, όλους
+      τους πίνακες, κρυπτογράφηση, **καταχώριση εταιρείας + κλειδιών ΑΑΔΕ και
+      επανανάγνωσή τους**, ανάθεση σε λογιστή, πληρωμές, cache/upserts,
+      ειδοποιήσεις, χρονοπρογραμματισμό και TLS προς ΑΑΔΕ — και καθαρίζει μόνο του.
+      Τρέχει ίδιο σε SQLite και Postgres· **επαληθεύτηκε τοπικά σε SQLite** (42
+      έλεγχοι· αποτυγχάνουν μόνο οι 3 της κρυπτογράφησης, γιατί η φορητή PHP των
+      Windows δεν έχει `sodium` — στο image είναι υποχρεωτικό).
+- [x] **Τεκμηρίωση** — `DEPLOY.md` (Coolify με `DATABASE_URL`, νέες μεταβλητές,
+      **§5 σύνδεση εταιρειών με τα κλειδιά ΑΑΔΕ**, §6 έλεγχος με `pg_smoke`, §10 τι
+      κάνει το image για την έκθεση), `CLOUDFLARED.md` (rate limiting αντί για
+      Access, γιατί να μη μπει mod_remoteip), `deploy/README.md` → δείκτης στα δύο.
+- [ ] **Απομένει (στον server):** `docker compose up -d` ή deploy από Coolify,
+      `php tools/pg_smoke.php` μέσα στον container (πρώτη πραγματική επαλήθευση
+      Postgres), προσθήκη hostname στο υπάρχον tunnel, `APP_URL` + redeploy.
+- [x] ⚠️ **Ξεχωριστό εύρημα (εφαρμογή υπολογιστή) — ΛΥΘΗΚΕ:** η φορητή PHP που
+      πακεταριζόταν **δεν είχε `sodium`**, και το `crypto.php` σε αυτή την
+      περίπτωση αποθηκεύει **καθαρό κείμενο** (graceful fallback): σε τοπική
+      εγκατάσταση τα subscription keys, τα ονόματα πελατών και τα ποσά ήταν
+      ασφράγιστα μέσα στο SQLite. Δες Session D.
+
+## Session D — Κρυπτογράφηση και στην τοπική εγκατάσταση
+
+- [x] **`sodium` στη φορητή PHP** (`desktop/installer/build.ps1`): `php_sodium.dll`
+      στο `$keep`, `extension=sodium` στο παραγόμενο `php.ini`, και «sodium» στην
+      επαλήθευση με `php -m` — το build **σκάει** αν λείπει.
+- [x] **Ο έλεγχος φρεσκάδας που έλειπε:** το βήμα παρέκαμπτε τη λήψη αν υπήρχε
+      `php.exe`, οπότε ένα κλαδεμένο δέντρο από παλιότερο build δεν θα έπαιρνε
+      ΠΟΤΕ τη νέα επέκταση (και το build θα έσκαγε στην επαλήθευση χωρίς να λέει
+      γιατί). Τώρα ελέγχει ότι υπάρχουν όλα τα DLL του `$keep` και, αν λείπει
+      κάποιο, ξαναφέρνει τη φορητή PHP.
+- [x] **Εφάπαξ κρυπτογράφηση όσων γράφτηκαν καθαρά** — `crypto_backfill_plaintext()`
+      στο `localdb.php`, στο τέλος του `localdb()`: την πρώτη φορά που η βάση
+      ανοίγει με sodium διαθέσιμο, κάθε κρυπτογραφούμενη στήλη που έμεινε καθαρή
+      ξαναγράφεται (8 πίνακες / 16 στήλες), μέσα σε συναλλαγή, με σημαία
+      `crypto.backfilled` στο `app_settings`. Χωρίς sodium **δεν** μπαίνει σημαία,
+      ώστε να τρέξει όταν κάποτε υπάρξει· σε αποτυχία γίνεται rollback και
+      ξαναπροσπαθεί στο επόμενο άνοιγμα.
+- [x] **Η σιωπηλή υποχώρηση έγινε θορυβώδης** — `crypto_warn_no_sodium()`: μία
+      γραμμή στο `php-server.log` ανά διεργασία, αντί για τίποτα.
+- [x] **Επαληθεύτηκε τοπικά** με τη φορητή PHP του installer (8.3.33 + sodium):
+      `tools/pg_smoke.php` **42/42** (ήταν 39/42 — έπεφταν ακριβώς οι τρεις της
+      κρυπτογράφησης)· βάση «παλιάς εγκατάστασης» με 16 καθαρά πεδία →
+      **16 κρυπτογραφήθηκαν, 0 έμειναν καθαρά**, όλα διαβάζονται σωστά μέσα από το
+      API, δεύτερο τρέξιμο δεν ξαναγράφει τίποτα· end-to-end μέσω HTTP, το
+      `SUBKEY-SECRET` **δεν** υπάρχει πια καθαρό μέσα στο αρχείο SQLite.
+- [x] **Συγχρονίστηκε το vendored αντίγραφο** `desktop/backend/etimologio/` (9
+      αρχεία PHP + `tools/pg_smoke.php`), ώστε ο installer να πακετάρει τις ίδιες
+      διορθώσεις — μαζί και όσες έγιναν στη Session C.
+- [ ] **Απομένει:** τρέξιμο του `build.ps1` και δοκιμή του installer σε καθαρό
+      μηχάνημα. Σε **αυτό** το μηχάνημα το `php_sodium.dll` + `libsodium.dll`
+      μπήκαν ήδη με το χέρι στο `desktop/installer/php/` (gitignored), οπότε το
+      build δεν θα ξανακατεβάσει τίποτα· σε καθαρό checkout θα το κατεβάσει μόνο
+      του.
+
+## Session E — 0.4.7: σύνδεση local ↔ web, ειδοποιήσεις από την ΑΑΔΕ, στήλες
+
+- [x] **Κλειδιά σύνδεσης (local ↔ web server)** — νέος πίνακας `api_keys`
+      (μόνο sha256 του κλειδιού), `auth_api_key_login()` που δέχεται
+      `Authorization: Bearer` / `api_key=` και **κλειδώνει** το `?account` όταν το
+      κλειδί είναι δεμένο σε εταιρεία.
+  - **Server:** Διαχείριση → «🔑 Κλειδιά σύνδεσης» (δημιουργία ανά χρήστη+εταιρεία,
+    εμφάνιση **μία φορά**, ανάκληση, «τελευταία χρήση»). Endpoints
+    `admin_key_list/create/revoke`.
+  - **Τοπικά:** Ρυθμίσεις → «☁️ Σύνδεση με web server» — διεύθυνση server, κλειδί
+    ανά εταιρεία, «Σύνδεση», «⬆️ Ανέβασμα δεδομένων», «🔗 Σύνδεσμος πελάτη».
+    Endpoints `link_get/link_save_url/link_connect/link_disconnect/link_push`,
+    ορατά **μόνο** όταν υπάρχει `DESKTOP_TOKEN` (δηλαδή σε εγκατάσταση γραφείου).
+  - **`?api=import`** στον server: δέχεται εταιρεία + διαπιστευτήρια ΑΑΔΕ +
+    καρτέλες + πληρωμές. Τα δεδομένα ταξιδεύουν **αποκρυπτογραφημένα μέσα από
+    HTTPS** (ο server έχει άλλο κλειδί) και ξανακρυπτογραφούνται εκεί. Οι
+    πληρωμές έχουν αποτύπωμα, οπότε δεύτερο ανέβασμα δεν διπλογράφει.
+  - **Επαληθεύτηκε ζωντανά** με δύο instances (τοπικό 8390 ↔ «server» 8391):
+    κλειδί → σύνδεση → ανέβασμα → η πληρωμή και η εταιρεία βρέθηκαν στη βάση του
+    server **κρυπτογραφημένες με το δικό του κλειδί**· δεύτερο ανέβασμα
+    `added=0, skipped=1`· λάθος κλειδί δεν ταυτοποιεί· τα `link_*` απαντούν 404
+    στον server και 401 χωρίς σύνδεση.
+- [x] **Ειδοποιήσεις και για ό,τι ΔΕΝ εκδόθηκε από εδώ** — νέο `?sync=newdocs`
+      (δική του cache, ώστε να μην «κουρεύει» τη λίστα των Παραστατικών):
+      συγκρίνει την αποθηκευμένη cache με την πλατφόρμα και γράφει ειδοποίηση για
+      κάθε νέο ΜΑΡΚ (`source='aade'`, σήμανση 🛰️ στη λίστα). Τρέχει 9 δευτ. μετά
+      το άνοιγμα, κάθε 30 λεπτά, και στο event `online`· χειροκίνητα από το
+      «🛰️ Έλεγχος ΑΑΔΕ» στην καμπάνα. `notification_exists()` κόβει τα διπλά —
+      και όσα εκδόθηκαν από την εφαρμογή έχουν ήδη γραμμή.
+- [x] **Εμφάνιση/απόκρυψη στηλών σε ΟΛΟΥΣ τους πίνακες** — κουμπί «▦ Στήλες» που
+      μπαίνει μόνο του από το `attachColumnFilters()`, άρα κάθε νέος πίνακας το
+      αποκτά χωρίς να το θυμηθεί κανείς. Οι κρυμμένες στήλες ζουν στο ίδιο
+      `cols.<table>` pref με πλάτη/σειρά (ανά χρήστη, στη βάση). Η τελευταία
+      ορατή στήλη δεν κρύβεται· η γραμμή «Κανένα…» μικραίνει μαζί (colspan).
+      Επαληθεύτηκε σε 11 ενότητες/13 πίνακες + επιβίωση σε reload.
+- [x] **Εικονίδιο installer** — νέο `installer-icon.ico` από το
+      `etimologio-logo.png` (το σήμα που δείχνει το μενού κάτω αριστερά)·
+      `SetupIconFile=installer-icon.ico`. Η εφαρμογή κρατά το δικό της `icon.ico`.
+- [x] **Έκδοση 0.4.7** στα τρία σημεία (`config.py`, `pyproject.toml`,
+      `timologio.iss`) + συγχρονισμός του vendored `desktop/backend/etimologio/`.
+      Σουίτα: **468 passed, 13 skipped**.
+- [x] **`DEPLOY.md §11`** — βήμα-βήμα live δοκιμή σύνδεσης γραφείου ↔ server.
+- [ ] **Δεν έγιναν** (σκόπιμα, εκτός αιτήματος): αμφίδρομος συγχρονισμός,
+      αυτόματο ανέβασμα, και ενημέρωση εγχειριδίου/ξενάγησης για τα νέα κουμπιά.
+- ⚠️ **Λάθος της συνεδρίας:** ένα `cp *.php` σε φάκελο δοκιμών πήρε μαζί και το
+      πραγματικό `config.php`, και ένα poll της ανοιχτής καρτέλας έτρεξε το
+      `crypto_backfill_plaintext()` πάνω στην **πραγματική** τοπική βάση (51
+      πεδία κρυπτογραφήθηκαν με νέο `.enckey`). Αντιστράφηκε πλήρως (52 πεδία
+      ξανά καθαρά, η σημαία `crypto.backfilled` διαγράφηκε, αντίγραφο
+      `local.sqlite.bak-*` δίπλα). **Κανόνας:** ποτέ `cp $REPO/*.php` σε φάκελο
+      δοκιμών — το `config.php` δείχνει στα αληθινά δεδομένα.
+

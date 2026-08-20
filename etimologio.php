@@ -3115,6 +3115,136 @@ function notifyIssueEmail(string $accountVat, array $d): void {
     foreach ($recipients as $to) { try { send_mail($to, $subject, $html); } catch (\Throwable $e) {} }
 }
 
+// ===========================================================================
+// ΣΥΝΔΕΣΗ ΕΓΚΑΤΑΣΤΑΣΗΣ ΓΡΑΦΕΙΟΥ ↔ WEB SERVER (κλειδιά σύνδεσης)
+// ---------------------------------------------------------------------------
+// Το γραφείο δουλεύει τοπικά (SQLite, δικό του PHP). Ο web server είναι
+// ΠΡΟΑΙΡΕΤΙΚΟΣ και δίνει δύο πράγματα: έναν σύνδεσμο που μπορεί να δώσει ο
+// λογιστής στον πελάτη του (web εφαρμογή, χωρίς εγκατάσταση) και ένα αντίγραφο
+// των δεδομένων που ζει έξω από τον υπολογιστή του γραφείου.
+//
+// Η σύνδεση γίνεται με **κλειδί ανά εταιρεία**, όχι με email/κωδικό: ο
+// διαχειριστής του server το φτιάχνει (Διαχείριση → Κλειδιά σύνδεσης) και ο
+// λογιστής το επικολλά στις Ρυθμίσεις. Έτσι μια εγκατάσταση δεν χρειάζεται να
+// κρατά κωδικό χρήστη, και ένα κλειδί ανακαλείται χωρίς να πειραχθεί κανείς
+// λογαριασμός.
+//
+// Οι ρυθμίσεις ζουν στο `app_settings` (κρυπτογραφημένα, όπως τα στοιχεία email):
+//   link.url          — το δημόσιο URL του server
+//   link.key.<ΑΦΜ>    — το κλειδί εκείνης της εταιρείας
+//   link.info.<ΑΦΜ>   — JSON: ποιος απάντησε, πότε δέθηκε, πότε ανέβηκαν δεδομένα
+// ---------------------------------------------------------------------------
+
+/** Τρέχει σε εγκατάσταση γραφείου (όχι στον server); */
+function link_is_local(): bool {
+    return defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== '';
+}
+
+function link_url(): string { return rtrim(setting_get('link.url'), '/'); }
+function link_key(string $vat): string { return setting_get('link.key.' . $vat); }
+function link_info(string $vat): array {
+    $d = json_decode(setting_get('link.info.' . $vat), true);
+    return is_array($d) ? $d : [];
+}
+function link_info_set(string $vat, array $info): void {
+    setting_set('link.info.' . $vat, json_encode($info, JSON_UNESCAPED_UNICODE));
+}
+
+/**
+ * Μία κλήση προς τον web server με το κλειδί σύνδεσης.
+ *
+ * Επιστρέφει πάντα πίνακα: `['ok'=>bool, 'data'=>?array, 'error'=>string]`. Ο
+ * καλών δεν πρέπει ποτέ να δει HTML σφάλματος ή γυμνό timeout — η σύνδεση με
+ * τον server είναι προαιρετική και η αποτυχία της δεν σταματά τη δουλειά.
+ */
+function link_call(string $url, string $key, array $params, array $post = [], int $timeout = 90): array {
+    $url = rtrim($url, '/');
+    if ($url === '') return ['ok' => false, 'data' => null, 'error' => 'Δεν έχει οριστεί διεύθυνση server'];
+    if (!preg_match('#^https?://#i', $url)) $url = 'https://' . $url;
+    $endpoint = $url . '/etimologio.php?' . http_build_query($params);
+
+    $ch = curl_init($endpoint);
+    $opts = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $key, 'Accept: application/json'],
+    ];
+    if ($post) {
+        $opts[CURLOPT_POST] = true;
+        $opts[CURLOPT_POSTFIELDS] = http_build_query($post);
+    }
+    curl_setopt_array($ch, $opts);
+    $body = curl_exec($ch);
+    $err  = curl_error($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    if ($body === false || $err !== '') return ['ok' => false, 'data' => null, 'error' => 'Δεν απαντά ο server: ' . $err];
+    $data = json_decode((string)$body, true);
+    if (!is_array($data)) {
+        return ['ok' => false, 'data' => null,
+                'error' => 'Ο server απάντησε κάτι που δεν είναι JSON (HTTP ' . $code . ')'];
+    }
+    if (empty($data['success'])) {
+        return ['ok' => false, 'data' => $data, 'error' => (string)($data['error'] ?? ('HTTP ' . $code))];
+    }
+    return ['ok' => true, 'data' => $data, 'error' => ''];
+}
+
+/**
+ * Τα δεδομένα μιας εταιρείας, έτοιμα να ταξιδέψουν.
+ *
+ * ΑΠΟΚΡΥΠΤΟΓΡΑΦΗΜΕΝΑ: ο server έχει ΔΙΚΟ του κλειδί κρυπτογράφησης, οπότε δεν
+ * θα μπορούσε ποτέ να διαβάσει τα δικά μας κρυπτογραφήματα. Ταξιδεύουν πάνω από
+ * HTTPS και ο server τα ξανακρυπτογραφεί με το δικό του κλειδί.
+ */
+function link_export(string $vat): array {
+    $acc = account_by_vat($vat);
+    $payments = array_map(static fn($p) => [
+        'customer_vat'  => (string)($p['customer_vat'] ?? ''),
+        'customer_code' => (string)($p['customer_code'] ?? ''),
+        'customer_name' => (string)($p['customer_name'] ?? ''),
+        'amount'        => (float)($p['amount'] ?? 0),
+        'method'        => (int)($p['method'] ?? 3),
+        'pay_date'      => (string)($p['pay_date'] ?? ''),
+        'mark'          => (string)($p['mark'] ?? ''),
+        'notes'         => (string)($p['notes'] ?? ''),
+    ], payments_list($vat));
+
+    // Οι καρτέλες: υπόλοιπα ανοίγματος και σημειώσεις ανά πελάτη.
+    $meta = [];
+    $st = localdb()->prepare("SELECT * FROM customer_meta WHERE account_vat = :a");
+    $st->execute([':a' => $vat]);
+    foreach ($st->fetchAll() as $r) {
+        $meta[] = [
+            'customer_vat'    => (string)$r['customer_vat'],
+            'customer_name'   => dec($r['customer_name']),
+            'opening_balance' => dec_num($r['opening_balance']),
+            'notes'           => dec($r['notes']),
+        ];
+    }
+
+    return [
+        'vat'           => $vat,
+        'label'         => (string)($acc['label'] ?? ''),
+        'username'      => (string)($acc['username'] ?? ''),
+        'subkey'        => (string)($acc['subkey'] ?? ''),
+        'payments'      => $payments,
+        'customer_meta' => $meta,
+    ];
+}
+
+/** Το αποτύπωμα μιας πληρωμής — για να μην ανέβει δύο φορές η ίδια. */
+function link_pay_fingerprint(array $p): string {
+    return sha1(implode('|', [
+        (string)($p['customer_vat'] ?? ''), (string)($p['pay_date'] ?? ''),
+        number_format((float)($p['amount'] ?? 0), 2, '.', ''),
+        (string)($p['mark'] ?? ''), (string)($p['notes'] ?? ''),
+    ]));
+}
+
 // --- API ENTRY POINT ---------------------------------------------------------
 
 // ===========================================================================
@@ -3298,6 +3428,131 @@ if ($authAction !== '') {
             jsonResponse(['success' => true, 'account_ids' => manager_account_ids($uid)]);
         }
 
+        // ---- Σύνδεση με web server (μόνο σε εγκατάσταση γραφείου) ----
+        // Ο server δεν χρειάζεται αυτά τα endpoints: εκεί τα δεδομένα ΕΙΝΑΙ ήδη
+        // στον server. Σε εγκατάσταση χωρίς DESKTOP_TOKEN απαντούν 404, ώστε να
+        // μην υπάρχει καν επιφάνεια για κατάχρηση.
+        case 'link_get': case 'link_save_url': case 'link_connect':
+        case 'link_disconnect': case 'link_push': {
+            if (!link_is_local()) jsonError('Διαθέσιμο μόνο στην εφαρμογή υπολογιστή', 404);
+            // Ο διακόπτης `?auth=` τρέχει ΠΡΙΝ την πύλη σύνδεσης (εκεί ζουν και
+            // τα login/signup), οπότε η σύνδεση ελέγχεται εδώ ρητά.
+            $me = current_user();
+            if (!$me) jsonError('Απαιτείται σύνδεση', 401);
+            switch ($authAction) {
+                case 'link_get': {
+                    $url = link_url();
+                    $items = [];
+                    foreach (auth_visible_accounts($me) as $a) {
+                        $vat  = (string)$a['vat'];
+                        $info = link_info($vat);
+                        $items[] = [
+                            'vat'         => $vat,
+                            'label'       => (string)$a['label'],
+                            'linked'      => link_key($vat) !== '',
+                            'remote_user' => (string)($info['remote_user'] ?? ''),
+                            'linked_at'   => (string)($info['linked_at'] ?? ''),
+                            'last_push'   => (string)($info['last_push'] ?? ''),
+                            'web_link'    => $url !== '' ? ($url . '/app.php') : '',
+                        ];
+                    }
+                    jsonResponse(['success' => true, 'url' => $url, 'items' => $items]);
+                }
+                case 'link_save_url': {
+                    $url = trim((string)($_POST['url'] ?? ''));
+                    if ($url !== '' && !preg_match('#^https?://#i', $url)) $url = 'https://' . $url;
+                    setting_set('link.url', rtrim($url, '/'));
+                    jsonResponse(['success' => true, 'url' => link_url()]);
+                }
+                case 'link_connect': {
+                    $vat = preg_replace('/\D/', '', (string)($_POST['vat'] ?? ''));
+                    $key = trim((string)($_POST['key'] ?? ''));
+                    $url = trim((string)($_POST['url'] ?? '')) ?: link_url();
+                    if ($url !== '' && !preg_match('#^https?://#i', $url)) $url = 'https://' . $url;
+                    if ($vat === '' || $key === '') jsonError('Χρειάζονται ΑΦΜ και κλειδί σύνδεσης');
+                    if (!auth_may_access_vat($me, $vat)) jsonError('Δεν έχετε πρόσβαση σε αυτή την εταιρεία', 403);
+
+                    // Η δοκιμή ΕΙΝΑΙ η σύνδεση: αν ο server δεν αναγνωρίσει το
+                    // κλειδί, δεν αποθηκεύεται τίποτα — αλλιώς ο χρήστης θα
+                    // νόμιζε ότι δέθηκε και θα το ανακάλυπτε στο πρώτο ανέβασμα.
+                    $r = link_call($url, $key, ['auth' => 'me']);
+                    if (!$r['ok']) jsonError('Η σύνδεση απέτυχε: ' . $r['error']);
+                    $d = $r['data'];
+                    if (empty($d['authenticated'])) jsonError('Ο server δεν αναγνώρισε το κλειδί σύνδεσης');
+                    $remote = (string)($d['user']['email'] ?? '');
+
+                    setting_set('link.url', rtrim($url, '/'));
+                    setting_set('link.key.' . $vat, $key);
+                    link_info_set($vat, [
+                        'remote_user' => $remote,
+                        'remote_role' => (string)($d['user']['role'] ?? ''),
+                        'linked_at'   => date('Y-m-d H:i'),
+                        'last_push'   => (string)(link_info($vat)['last_push'] ?? ''),
+                    ]);
+                    jsonResponse(['success' => true, 'remote_user' => $remote,
+                                  'web_link' => rtrim($url, '/') . '/app.php']);
+                }
+                case 'link_disconnect': {
+                    $vat = preg_replace('/\D/', '', (string)($_POST['vat'] ?? ''));
+                    if (!auth_may_access_vat($me, $vat)) jsonError('Δεν έχετε πρόσβαση σε αυτή την εταιρεία', 403);
+                    setting_set('link.key.' . $vat, '');
+                    setting_set('link.info.' . $vat, '');
+                    jsonResponse(['success' => true]);
+                }
+                case 'link_push': {
+                    $vat = preg_replace('/\D/', '', (string)($_POST['vat'] ?? ''));
+                    if (!auth_may_access_vat($me, $vat)) jsonError('Δεν έχετε πρόσβαση σε αυτή την εταιρεία', 403);
+                    $key = link_key($vat);
+                    if ($key === '') jsonError('Η εταιρεία δεν είναι συνδεδεμένη με τον server');
+                    $payload = link_export($vat);
+                    $r = link_call(link_url(), $key, ['api' => 'import'],
+                                   ['payload' => json_encode($payload, JSON_UNESCAPED_UNICODE)]);
+                    if (!$r['ok']) jsonError('Το ανέβασμα απέτυχε: ' . $r['error']);
+                    $info = link_info($vat);
+                    $info['last_push'] = date('Y-m-d H:i');
+                    link_info_set($vat, $info);
+                    jsonResponse(['success' => true, 'result' => $r['data']]);
+                }
+            }
+        }
+
+        // ---- Κλειδιά σύνδεσης (server → εγκαταστάσεις γραφείου) ----
+        // Ο διαχειριστής του server φτιάχνει ένα κλειδί ανά εταιρεία και το
+        // δίνει στον λογιστή· εκείνος το επικολλά στις Ρυθμίσεις της εφαρμογής
+        // υπολογιστή. Το ίδιο το κλειδί επιστρέφεται ΜΟΝΟ τη στιγμή που γεννιέται.
+        case 'admin_key_list': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $keys = array_map(function ($k) {
+                $u = user_by_id((int)$k['user_id']);
+                $k['user_email'] = $u['email'] ?? '—';
+                $k['user_name']  = $u['business_name'] ?? '';
+                $acc = $k['account_vat'] !== '' ? account_by_vat($k['account_vat']) : null;
+                $k['account_label'] = $acc['label'] ?? '';
+                return $k;
+            }, api_keys_all());
+            jsonResponse(['success' => true, 'keys' => $keys, 'app_url' => app_base_url()]);
+        }
+        case 'admin_key_create': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $uid = (int)($_POST['user_id'] ?? 0);
+            $vat = preg_replace('/\D/', '', (string)($_POST['account_vat'] ?? ''));
+            $target = user_by_id($uid);
+            if (!$target) jsonError('Ο χρήστης δεν βρέθηκε', 404);
+            // Το κλειδί δεν επιτρέπεται να δείχνει σε εταιρεία που ο χρήστης δεν
+            // βλέπει — αλλιώς θα ήταν πλάγιος δρόμος γύρω από τις αναθέσεις.
+            if ($vat !== '' && !auth_may_access_vat($target, $vat)) {
+                jsonError('Ο χρήστης δεν έχει πρόσβαση σε αυτή την εταιρεία', 403);
+            }
+            $new = api_key_create($uid, $vat, (string)($_POST['label'] ?? ''));
+            jsonResponse(['success' => true, 'key' => $new['key'], 'id' => $new['id'],
+                          'app_url' => app_base_url(),
+                          'note' => 'Κράτησέ το τώρα — δεν εμφανίζεται ξανά.']);
+        }
+        case 'admin_key_revoke': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            jsonResponse(['success' => api_key_revoke((int)($_POST['id'] ?? 0))]);
+        }
+
         // ---- Master-admin only ----
         case 'admin_users': case 'admin_approve': case 'admin_set_status':
         case 'admin_reset_pw': case 'admin_add_account': case 'admin_update_account':
@@ -3447,8 +3702,10 @@ if ($authAction !== '') {
 // dispatch below. Strictly limited to loopback callers.
 $schedTok = (string)($_POST['sched_token'] ?? $_GET['sched_token'] ?? '');
 if ($schedTok !== '' && defined('SCHED_TOKEN') && SCHED_TOKEN !== '' && hash_equals((string)SCHED_TOKEN, $schedTok)) {
-    $remote     = $_SERVER['REMOTE_ADDR'] ?? '';
-    $isLoopback = in_array($remote, ['127.0.0.1', '::1', ''], true);
+    // req_is_loopback(): loopback IP ΚΑΙ καμία κεφαλίδα proxy — ο runner τρέχει
+    // μέσα στον container και χτυπά το 127.0.0.1:8080 απευθείας, ποτέ μέσω
+    // cloudflared/Coolify.
+    $isLoopback = req_is_loopback();
     $sUid       = (int)($_POST['sched_uid'] ?? $_GET['sched_uid'] ?? 0);
     if ($isLoopback && $sUid > 0) {
         $su = user_by_id($sUid);
@@ -3476,6 +3733,105 @@ $__isStaff    = user_is_staff($__user);      // master|editor → διαχείρ
 // ειδοποιήσεις και τον προγραμματισμό εταιρειών που δεν του ανήκουν.
 $__acctScope  = auth_data_scope($__user);
 if (is_array($__acctScope) && !$__acctScope) $__acctScope = ['__none__'];
+
+// ===========================================================================
+// ?api=… — ΜΗΧΑΝΙΚΟ API ΓΙΑ ΤΙΣ ΕΓΚΑΤΑΣΤΑΣΕΙΣ ΓΡΑΦΕΙΟΥ
+// ---------------------------------------------------------------------------
+// Απαιτεί **κλειδί σύνδεσης** (Authorization: Bearer …) — όχι browser session.
+// Σήμερα μία ενέργεια: `import`, το ανέβασμα των τοπικών δεδομένων μιας
+// εταιρείας. Τα δεδομένα έρχονται ΑΚΡΥΠΤΟΓΡΑΦΗΤΑ μέσα από HTTPS (το κλειδί
+// κρυπτογράφησης του γραφείου δεν υπάρχει εδώ) και ξανακρυπτογραφούνται με το
+// κλειδί ΑΥΤΟΥ του server μόλις γραφτούν.
+// ===========================================================================
+$apiAction = trim((string)($_GET['api'] ?? $_POST['api'] ?? ''));
+if ($apiAction !== '') {
+    $keyRow = auth_api_key();
+    if (!$keyRow) jsonError('Χρειάζεται κλειδί σύνδεσης (Authorization: Bearer …)', 401);
+    if ($apiAction !== 'import') jsonError('Άγνωστη ενέργεια API: ' . $apiAction, 400);
+
+    $payload = json_decode((string)($_POST['payload'] ?? $_GET['payload'] ?? ''), true);
+    if (!is_array($payload)) jsonError('Λείπει ή είναι άκυρο το payload');
+    $vat = preg_replace('/\D/', '', (string)($payload['vat'] ?? ''));
+    if ($vat === '') jsonError('Λείπει το ΑΦΜ της εταιρείας');
+    if ($keyRow['account_vat'] !== '' && $keyRow['account_vat'] !== $vat) {
+        jsonError('Το κλειδί σύνδεσης ανήκει σε άλλη εταιρεία', 403);
+    }
+
+    // --- 1. Η εταιρεία ------------------------------------------------------
+    // Πρώτο ανέβασμα: η εταιρεία δεν υπάρχει καν στον server, οπότε δημιουργείται
+    // μαζί με τα διαπιστευτήρια ΑΑΔΕ — αυτό είναι το νόημα του «τα δεδομένα ζουν
+    // και στον server». Αν υπάρχει, δεν αλλάζει ιδιοκτήτη: ένα κλειδί δεν
+    // μεταφέρει εταιρείες από χρήστη σε χρήστη.
+    $acc = account_by_vat($vat);
+    $accountState = 'kept';
+    if (!$acc) {
+        $newId = account_add((int)$__user['id'], $vat,
+                             (string)($payload['label'] ?? $vat),
+                             (string)($payload['username'] ?? ''),
+                             (string)($payload['subkey'] ?? ''));
+        $acc = account_get($newId);
+        $accountState = 'created';
+    } else {
+        if (!auth_may_access_vat($__user, $vat)) jsonError('Δεν έχετε πρόσβαση σε αυτή την εταιρεία', 403);
+        // Τα κλειδιά ΑΑΔΕ ενημερώνονται μόνο όταν στάλθηκαν και όντως διαφέρουν.
+        $newUser = (string)($payload['username'] ?? '');
+        $newKey  = (string)($payload['subkey'] ?? '');
+        if (($newUser !== '' && $newUser !== $acc['username'])
+            || ($newKey !== '' && $newKey !== $acc['subkey'])) {
+            account_update((int)$acc['id'], [
+                'vat'      => $vat,
+                'label'    => (string)($payload['label'] ?? $acc['label']),
+                'username' => $newUser !== '' ? $newUser : $acc['username'],
+                'subkey'   => $newKey !== '' ? $newKey : $acc['subkey'],
+            ]);
+            $accountState = 'updated';
+        }
+    }
+
+    // --- 2. Καρτέλες πελατών (upsert) ---------------------------------------
+    $metaCount = 0;
+    foreach ((array)($payload['customer_meta'] ?? []) as $m) {
+        $cv = preg_replace('/\D/', '', (string)($m['customer_vat'] ?? ''));
+        if ($cv === '') continue;
+        customer_meta_set($vat, $cv, [
+            'customer_name'   => (string)($m['customer_name'] ?? ''),
+            'opening_balance' => (float)($m['opening_balance'] ?? 0),
+            'notes'           => (string)($m['notes'] ?? ''),
+        ]);
+        $metaCount++;
+    }
+
+    // --- 3. Πληρωμές (μόνο ό,τι λείπει) -------------------------------------
+    // Δεν υπάρχει φυσικό κλειδί σε μια πληρωμή, οπότε το ίδιο ανέβασμα δύο φορές
+    // θα δημιουργούσε διπλές εισπράξεις — και λάθος υπόλοιπα σε κάθε καρτέλα.
+    // Το αποτύπωμα (πελάτης+ημερομηνία+ποσό+ΜΑΡΚ+σημείωση) κάνει την πράξη
+    // επαναλήψιμη χωρίς ζημιά.
+    $seen = [];
+    foreach (payments_list($vat) as $p) $seen[link_pay_fingerprint($p)] = true;
+    $added = $dupes = 0;
+    foreach ((array)($payload['payments'] ?? []) as $p) {
+        $row = [
+            'customer_vat'  => (string)($p['customer_vat'] ?? ''),
+            'customer_code' => (string)($p['customer_code'] ?? ''),
+            'customer_name' => (string)($p['customer_name'] ?? ''),
+            'amount'        => (float)($p['amount'] ?? 0),
+            'method'        => (int)($p['method'] ?? 3),
+            'pay_date'      => (string)($p['pay_date'] ?? ''),
+            'mark'          => (string)($p['mark'] ?? ''),
+            'notes'         => (string)($p['notes'] ?? ''),
+        ];
+        $fp = link_pay_fingerprint($row);
+        if (isset($seen[$fp])) { $dupes++; continue; }
+        payment_add($vat, $row);
+        $seen[$fp] = true;
+        $added++;
+    }
+
+    jsonResponse(['success' => true, 'vat' => $vat, 'account' => $accountState,
+                  'customer_meta' => $metaCount, 'payments_added' => $added,
+                  'payments_skipped' => $dupes,
+                  'app_url' => app_base_url()]);
+}
 
 // --- Φωνή του βοηθού (Piper, εκτός δικτύου) ---------------------------------
 // `?tts=1&lang=el&text=…` → audio/wav.
@@ -3881,7 +4237,13 @@ if (!empty($_GET['bank_preview'] ?? $_POST['bank_preview'] ?? '')) {
     if ($raw === '') jsonError('Λείπει το αρχείο (file_b64)');
     $fn   = trim($_POST['filename'] ?? $_GET['filename'] ?? '');
     $bank = trim($_POST['bank'] ?? $_GET['bank'] ?? '');
-    $res  = bank_parse($raw, $fn, $bank);
+    // Ένα κατεστραμμένο ή μη υποστηριζόμενο αρχείο δεν πρέπει να γίνεται λευκή
+    // οθόνη 500: ο χρήστης ανεβάζει ό,τι του δίνει η τράπεζα.
+    try {
+        $res = bank_parse($raw, $fn, $bank);
+    } catch (\Throwable $e) {
+        jsonError($e->getMessage());
+    }
     // Attach the account's known customers so the UI can auto-suggest matches.
     $custCache = cache_get(COMPANY_VAT, 'customers');
     $customers = [];
@@ -4074,6 +4436,19 @@ if ($syncKind !== '') {
                 $rows[] = ['period' => $sp, 'total_count' => $s['total_count'], 'total_value' => $s['total_value']];
             }
         }
+    } elseif ($syncKind === 'newdocs') {
+        // «Τι νέο έχει η ΑΑΔΕ»: ο τρέχων μήνας. Ξεχωριστό είδος (και ξεχωριστή
+        // cache) από το `invoices`, γιατί εκείνο κρατά ΟΛΟ το έτος για την οθόνη
+        // Παραστατικά — αν μοιράζονταν κλειδί, κάθε έλεγχος θα «κούρευε» τη
+        // λίστα σε έναν μήνα και ο επόμενος θα έβλεπε ολόκληρο το έτος ως νέο.
+        $r = searchInvoices($ch, $issueDateFrom, $issueDateTo, '', '', '', '', '0');
+        $found = $r['invoices'] ?? [];
+        // Στην cache μένουν μόνο τα αναγνωριστικά: αυτό συγκρίνεται.
+        $rows = array_map(static fn($i) => [
+            'mark'   => (string)($i['mark'] ?? ''),
+            'series' => (string)($i['series'] ?? ''),
+            'aa'     => (string)($i['aa'] ?? ''),
+        ], $found);
     } elseif ($syncKind === 'invtypes') {
         // invoice types with code/name split out (same shape the UI expects)
         $rows = getClassificationInvoiceTypes($ch);
@@ -4085,6 +4460,55 @@ if ($syncKind !== '') {
     } else {
         curl_close($ch); jsonError('Unknown sync kind: ' . $syncKind);
     }
+    // --- Ο ΕΛΕΓΧΟΣ: τι εμφανίστηκε στην ΑΑΔΕ που δεν το ξέραμε ---------------
+    // Οι ειδοποιήσεις δεν έρχονται μόνο από εκδόσεις που έγιναν ΕΔΩ: κάθε φορά
+    // που η εφαρμογή συγχρονίζεται (δηλαδή κάθε φορά που βρίσκει internet),
+    // συγκρίνει την αποθηκευμένη cache με ό,τι δείχνει η πλατφόρμα και γράφει
+    // ειδοποίηση για κάθε ΝΕΟ παραστατικό — π.χ. εκδόθηκε από άλλον υπολογιστή,
+    // από τον λογιστή, ή απευθείας στο e-Τιμολόγιο της ΑΑΔΕ.
+    //
+    // ΜΟΝΟ όταν υπάρχει προηγούμενη cache: στον πρώτο συγχρονισμό τα «νέα» είναι
+    // ολόκληρο το έτος, και η καμπάνα θα γέμιζε με εκατοντάδες παλιές εγγραφές.
+    $discovered = 0;
+    if ($syncKind === 'newdocs' && $prev) {
+        $known = [];
+        foreach (($prev['rows'] ?? []) as $pr) {
+            $pm = (string)($pr['mark'] ?? '');
+            if ($pm !== '') $known[$pm] = true;
+        }
+        // Επωνυμίες από την cache πελατών: η γραμμή της αναζήτησης δίνει μόνο ΑΦΜ.
+        $custNames = [];
+        $cc = cache_get(COMPANY_VAT, 'customers');
+        foreach (($cc['rows'] ?? []) as $c) {
+            $cv = (string)($c['vat'] ?? $c['customer_vat'] ?? '');
+            if ($cv !== '') $custNames[$cv] = (string)($c['name'] ?? $c['customer_name'] ?? '');
+        }
+        foreach ($found as $inv) {
+            $mk = (string)($inv['mark'] ?? '');
+            if ($mk === '' || isset($known[$mk])) continue;
+            // Ό,τι εκδόθηκε από την εφαρμογή έχει ήδη ειδοποίηση με το ίδιο ΜΑΡΚ.
+            if (notification_exists(COMPANY_VAT, $mk)) continue;
+            $bv = trim((string)($inv['buyer_vat'] ?? ''));
+            notification_add(COMPANY_VAT, [
+                'actor_user_id' => 0,
+                'actor_email'   => '',
+                'actor_name'    => 'Έλεγχος ΑΑΔΕ',
+                'doc_type'      => (string)($inv['type'] ?? ''),
+                'doc_label'     => 'Νέο παραστατικό στην ΑΑΔΕ',
+                'series'        => (string)($inv['series'] ?? ''),
+                'aa'            => (string)($inv['aa'] ?? ''),
+                'mark'          => $mk,
+                'buyer_vat'     => $bv,
+                'buyer_name'    => $custNames[$bv] ?? '',
+                'amount_total'  => (float)str_replace([',', ' '], ['.', ''], (string)($inv['total'] ?? 0)),
+                'source'        => 'aade',
+            ]);
+            // Όριο ανά σάρωση: μια εβδομάδα εκτός σύνδεσης δεν πρέπει να ρίξει
+            // 300 ειδοποιήσεις μαζί (και 300 INSERT σε ένα request).
+            if (++$discovered >= 25) break;
+        }
+    }
+
     $newHash  = md5(json_encode($rows, JSON_UNESCAPED_UNICODE));
     $changed  = !$prev || $prev['hash'] !== $newHash;
     if ($changed) cache_set(COMPANY_VAT, $syncKind, $rows);
@@ -4092,6 +4516,7 @@ if ($syncKind !== '') {
     curl_close($ch);
     jsonResponse(['success' => true, 'kind' => $syncKind, 'changed' => $changed,
         'count' => count($rows), 'prev_count' => $prev ? count($prev['rows']) : 0,
+        'discovered' => $discovered,
         'synced_at' => $meta['synced_at'] ?? '', 'rows' => $rows]);
 }
 
