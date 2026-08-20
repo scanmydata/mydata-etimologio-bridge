@@ -641,8 +641,34 @@ function auth_desktop_workspace_user(): int {
     return (int)$u['id'];
 }
 
+/**
+ * Σύνδεση με **κλειδί πρόσβασης** (μηχανή προς μηχανή, χωρίς cookie).
+ *
+ * Το ίδιο κλειδί που δίνει ο διαχειριστής για να δεθεί μια εγκατάσταση γραφείου
+ * (`access_keys`) χρησιμεύει και ως διαπιστευτήριο στις κλήσεις συγχρονισμού:
+ * εκεί δεν υπάρχει browser για να κρατήσει συνεδρία. Δεν αντικαθιστά τη
+ * σύνδεση χρήστη — απλώς ταυτίζει τον ίδιο λογαριασμό.
+ */
+function auth_access_key_login(): void {
+    if (!empty($_SESSION['uid'])) return;                 // ήδη συνδεδεμένος
+    $key = '';
+    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    if (stripos($hdr, 'bearer ') === 0) $key = trim(substr($hdr, 7));
+    if ($key === '') $key = trim((string)($_POST['access_key'] ?? $_GET['access_key'] ?? ''));
+    if ($key === '') return;
+
+    $u = access_key_user($key);
+    if (!$u || ($u['status'] ?? '') !== 'active') return;
+    $_SESSION['uid'] = (int)$u['id'];
+    $GLOBALS['__access_key_user'] = (int)$u['id'];
+}
+
+/** Ταυτοποιήθηκε αυτό το αίτημα με κλειδί πρόσβασης; */
+function auth_by_access_key(): bool { return !empty($GLOBALS['__access_key_user']); }
+
 // Run bootstrap + migration + account resolution on include (safe, no output).
 auth_bootstrap();
 auth_migrate_legacy_accounts();
 auth_desktop_autologin();
+auth_access_key_login();
 auth_resolve_account();

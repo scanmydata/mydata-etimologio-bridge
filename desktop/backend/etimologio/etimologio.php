@@ -108,7 +108,8 @@
 
 require __DIR__ . '/auth.php';   // session + config + localdb + account resolution
 require __DIR__ . '/bankimport.php'; // bank statement (extrait) parsing → local payments
-require __DIR__ . '/zipwriter.php';  // ZIP builder (no ZipArchive dependency)
+require __DIR__ . '/zipwriter.php';   // ZIP builder (no ZipArchive dependency)
+require __DIR__ . '/serverlink.php';  // σύνδεση/συγχρονισμός με web server + αντίγραφα
 
 // --- RESPONSE HELPERS --------------------------------------------------------
 
@@ -3530,124 +3531,6 @@ function notifyIssueEmail(string $accountVat, array $d): void {
     foreach ($recipients as $to) { try { send_mail($to, $subject, $html); } catch (\Throwable $e) {} }
 }
 
-// ===========================================================================
-// ΣΥΝΔΕΣΗ ΕΓΚΑΤΑΣΤΑΣΗΣ ΓΡΑΦΕΙΟΥ ↔ WEB SERVER (κλειδιά σύνδεσης)
-// ---------------------------------------------------------------------------
-// Το γραφείο δουλεύει τοπικά (SQLite, δικό του PHP). Ο web server είναι
-// ΠΡΟΑΙΡΕΤΙΚΟΣ: όταν η εγκατάσταση δεθεί μαζί του, τα δεδομένα ζουν ΕΚΕΙ και ο
-// λογιστής έχει έναν σύνδεσμο να δώσει στον πελάτη του — web εφαρμογή, χωρίς
-// καμία εγκατάσταση στη μεριά του πελάτη.
-//
-// Το δέσιμο γίνεται με το **κλειδί πρόσβασης** που φτιάχνει ο διαχειριστής του
-// server (Ρυθμίσεις → Κλειδιά πρόσβασης). Το κλειδί κουβαλά μέσα του και τη
-// διεύθυνση (`etim1_<base64 host>_<μυστικό>`), οπότε ο λογιστής δεν χρειάζεται
-// να ξέρει πού ζει ο server: επικολλά και τελείωσε.
-//
-// Πού γράφεται τι:
-//   service.json  → `mode: thin` + `server_url` — από εκεί το διαβάζει η ίδια η
-//                   εφαρμογή υπολογιστή στο επόμενο άνοιγμα
-//   app_settings  → `link.label` (ποιον λογαριασμό αναγνώρισε το κλειδί) και
-//                   `link.since` (πότε δέθηκε), για να τα δείχνει η οθόνη
-// ---------------------------------------------------------------------------
-
-/** Τρέχει σε εγκατάσταση γραφείου (όχι στον server); */
-function link_is_local(): bool {
-    return defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== '';
-}
-
-function link_url(): string { return rtrim((string)(link_service_conf()['server_url'] ?? ''), '/'); }
-
-/**
- * Το `service.json` της εγκατάστασης — το ίδιο αρχείο που διαβάζει η εφαρμογή
- * υπολογιστή για να αποφασίσει αν σηκώνει τοπικό backend ή μιλά σε server.
- *
- * Ζει δίπλα στα δεδομένα (ο φάκελος του `LOCAL_DB`), όχι στο web root.
- */
-function link_service_path(): string {
-    $dir = (defined('LOCAL_DB') && LOCAL_DB !== '') ? dirname(LOCAL_DB) : __DIR__;
-    return $dir . '/service.json';
-}
-
-function link_service_conf(): array {
-    $raw = @file_get_contents(link_service_path());
-    $d = $raw !== false ? json_decode($raw, true) : null;
-    return is_array($d) ? $d : [];
-}
-
-/**
- * Γράφει ΜΟΝΟ τα κλειδιά που του δίνεις, κρατώντας τα υπόλοιπα.
- *
- * Στο ίδιο αρχείο ζουν τα διαπιστευτήρια εκκίνησης και τα tokens της
- * εγκατάστασης: ένα ολικό ξαναγράψιμο θα τα έσβηνε και η εφαρμογή δεν θα
- * ξανάνοιγε.
- */
-function link_service_write(array $patch): bool {
-    $conf = array_merge(link_service_conf(), $patch);
-    $json = json_encode($conf, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    return @file_put_contents(link_service_path(), $json) !== false;
-}
-
-/**
- * Σπάει το κλειδί πρόσβασης `etim1_<base64 host>_<μυστικό>` σε (URL, μυστικό).
- *
- * Η διεύθυνση ταξιδεύει ΜΕΣΑ στο κλειδί επίτηδες — αλλιώς ο λογιστής θα έπρεπε
- * να ξέρει και να πληκτρολογεί τον server, που ήταν ακριβώς αυτό που έπρεπε να
- * φύγει από τη μέση. Τοπικές διευθύνσεις μιλούν http, όλες οι άλλες https.
- */
-function link_decode_key(string $token): array {
-    $parts = explode('_', trim($token));
-    if (count($parts) !== 3 || $parts[0] !== 'etim1' || $parts[2] === '') return ['', ''];
-    // ΠΡΟΣΟΧΗ: το `%` της PHP δίνει ΑΡΝΗΤΙΚΟ για αρνητικό αριστερό μέλος, οπότε
-    // το «(-μήκος) % 4» έσκαγε στο str_repeat(). Το padding υπολογίζεται θετικά.
-    $pad  = (4 - strlen($parts[1]) % 4) % 4;
-    $host = base64_decode(strtr($parts[1], '-_', '+/') . str_repeat('=', $pad), true);
-    if ($host === false || trim($host) === '') return ['', ''];
-    $local  = preg_match('#^(127\.0\.0\.1|localhost)(:|$)#i', $host) === 1;
-    return [($local ? 'http://' : 'https://') . rtrim($host, '/'), $parts[2]];
-}
-
-/**
- * Μία κλήση προς τον web server.
- *
- * Επιστρέφει πάντα πίνακα: `['ok'=>bool, 'data'=>?array, 'error'=>string]`. Ο
- * καλών δεν πρέπει ποτέ να δει HTML σφάλματος ή γυμνό timeout — η σύνδεση με
- * τον server είναι προαιρετική και η αποτυχία της δεν σταματά τη δουλειά.
- */
-function link_call(string $url, array $params, array $post = [], int $timeout = 30): array {
-    $url = rtrim($url, '/');
-    if ($url === '') return ['ok' => false, 'data' => null, 'error' => 'Δεν έχει οριστεί διεύθυνση server'];
-    $endpoint = $url . '/etimologio.php?' . http_build_query($params);
-
-    $ch = curl_init($endpoint);
-    $opts = [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => $timeout,
-        CURLOPT_CONNECTTIMEOUT => 15,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
-    ];
-    if ($post) {
-        $opts[CURLOPT_POST] = true;
-        $opts[CURLOPT_POSTFIELDS] = http_build_query($post);
-    }
-    curl_setopt_array($ch, $opts);
-    $body = curl_exec($ch);
-    $err  = curl_error($ch);
-    $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
-
-    if ($body === false || $err !== '') return ['ok' => false, 'data' => null, 'error' => 'Δεν απαντά ο server: ' . $err];
-    $data = json_decode((string)$body, true);
-    if (!is_array($data)) {
-        return ['ok' => false, 'data' => null,
-                'error' => 'Ο server απάντησε κάτι που δεν είναι JSON (HTTP ' . $code . ')'];
-    }
-    if (empty($data['success'])) {
-        return ['ok' => false, 'data' => $data, 'error' => (string)($data['error'] ?? ('HTTP ' . $code))];
-    }
-    return ['ok' => true, 'data' => $data, 'error' => ''];
-}
-
 // --- API ENTRY POINT ---------------------------------------------------------
 
 // ===========================================================================
@@ -3914,7 +3797,8 @@ if ($authAction !== '') {
         // Ο server δεν χρειάζεται αυτά τα endpoints: εκεί τα δεδομένα ΕΙΝΑΙ ήδη
         // στον server. Σε εγκατάσταση χωρίς DESKTOP_TOKEN απαντούν 404, ώστε να
         // μην υπάρχει καν επιφάνεια για κατάχρηση.
-        case 'link_get': case 'link_connect': case 'link_disconnect': {
+        case 'link_get': case 'link_connect': case 'link_disconnect':
+        case 'link_sync': case 'backup_status': case 'backup_run': {
             if (!link_is_local()) jsonError('Διαθέσιμο μόνο στην εφαρμογή υπολογιστή', 404);
             // Ο διακόπτης `?auth=` τρέχει ΠΡΙΝ την πύλη σύνδεσης (εκεί ζουν και
             // τα login/signup), οπότε η σύνδεση ελέγχεται εδώ ρητά.
@@ -3935,6 +3819,8 @@ if ($authAction !== '') {
                         'web_link'  => $url !== '' ? rtrim($url, '/') . '/app.php' : '',
                         'label'     => setting_get('link.label'),
                         'since'     => setting_get('link.since'),
+                        'last_sync' => setting_get('link.last_sync'),
+                        'can_sync'  => setting_get('link.key') !== '',
                         'items'     => $items,
                     ]);
                 }
@@ -3958,16 +3844,85 @@ if ($authAction !== '') {
                     if (!link_service_write(['mode' => 'thin', 'server_url' => $url])) {
                         jsonError('Δεν μπόρεσα να γράψω το service.json δίπλα στα δεδομένα');
                     }
+                    // Το κλειδί μένει (κρυπτογραφημένο, όπως τα στοιχεία email):
+                    // ο συγχρονισμός τρέχει αργότερα, χωρίς τον χρήστη μπροστά.
+                    setting_set('link.key', $key);
                     setting_set('link.label', (string)($d['label'] ?? $d['email'] ?? ''));
                     setting_set('link.since', date('Y-m-d H:i'));
                     jsonResponse(['success' => true, 'url' => $url,
                                   'label' => (string)($d['label'] ?? ''),
                                   'web_link' => $url . '/app.php']);
                 }
+                case 'link_sync': {
+                    // Αποθηκευμένο είναι ΟΛΟΚΛΗΡΟ το κλειδί (κουβαλά και τη
+                    // διεύθυνση)· ο server όμως αναγνωρίζει μόνο το μυστικό του
+                    // κομμάτι — το hash που κρατά είναι εκείνου.
+                    [$keyBase, $key] = link_decode_key(setting_get('link.key'));
+                    $url = link_url() ?: $keyBase;
+                    if ($key === '' || $url === '') {
+                        jsonError('Δεν υπάρχει αποθηκευμένο κλειδί. Ξανασύνδεσε τον server από εδώ, ώστε να μπορεί να συγχρονίζει.');
+                    }
+                    $only = preg_replace('/\D/', '', (string)($_POST['vat'] ?? ''));
+                    $done = [];
+                    foreach (auth_visible_accounts($me) as $a) {
+                        $vat = (string)$a['vat'];
+                        if ($only !== '' && $only !== $vat) continue;
+                        $full = account_by_vat($vat) ?: [];
+                        $payload = [
+                            'vat'           => $vat,
+                            'label'         => (string)($full['label'] ?? ''),
+                            'username'      => (string)($full['username'] ?? ''),
+                            'subkey'        => (string)($full['subkey'] ?? ''),
+                            'payments'      => sync_payments($vat),
+                            'customer_meta' => sync_customer_meta($vat),
+                        ];
+                        $r = link_call($url, ['api' => 'sync'],
+                                       ['payload' => json_encode($payload, JSON_UNESCAPED_UNICODE)],
+                                       120, $key);
+                        if (!$r['ok']) {
+                            $done[] = ['vat' => $vat, 'ok' => false, 'error' => $r['error']];
+                            continue;
+                        }
+                        // Η άλλη κατεύθυνση: ό,τι είχε ο server και δεν έχουμε.
+                        $back = sync_apply($vat, (array)($r['data']['payments'] ?? []),
+                                                 (array)($r['data']['customer_meta'] ?? []));
+                        $sent = (array)($r['data']['applied'] ?? []);
+                        $done[] = [
+                            'vat'   => $vat,
+                            'ok'    => true,
+                            'sent'  => ['payments' => (int)($sent['payments_added'] ?? 0),
+                                        'meta'     => (int)($sent['customer_meta_updated'] ?? 0)],
+                            'recv'  => ['payments' => (int)$back['payments_added'],
+                                        'meta'     => (int)$back['customer_meta_updated']],
+                        ];
+                    }
+                    setting_set('link.last_sync', date('Y-m-d H:i'));
+                    jsonResponse(['success' => true, 'companies' => $done,
+                                  'at' => setting_get('link.last_sync')]);
+                }
+                case 'backup_status': {
+                    $dir = link_backup_dir();
+                    $files = link_backup_files();
+                    $last  = $files ? $files[0] : null;
+                    jsonResponse([
+                        'success' => true,
+                        'folder'  => $dir,
+                        'count'   => count($files),
+                        'last'    => $last ? ['name' => basename($last),
+                                              'size' => filesize($last),
+                                              'at'   => date('Y-m-d H:i', (int)filemtime($last))] : null,
+                    ]);
+                }
+                case 'backup_run': {
+                    $r = link_backup_run();
+                    if (!$r['ok']) jsonError('Το αντίγραφο απέτυχε: ' . $r['error']);
+                    jsonResponse(['success' => true] + $r);
+                }
                 case 'link_disconnect': {
                     if (!link_service_write(['mode' => 'offline'])) {
                         jsonError('Δεν μπόρεσα να γράψω το service.json δίπλα στα δεδομένα');
                     }
+                    setting_set('link.key', '');
                     setting_set('link.label', '');
                     setting_set('link.since', '');
                     jsonResponse(['success' => true]);
@@ -4155,6 +4110,69 @@ $__isStaff    = user_is_staff($__user);      // master|editor → διαχείρ
 // ειδοποιήσεις και τον προγραμματισμό εταιρειών που δεν του ανήκουν.
 $__acctScope  = auth_data_scope($__user);
 if (is_array($__acctScope) && !$__acctScope) $__acctScope = ['__none__'];
+
+// ===========================================================================
+// ?api=sync — Η ΠΛΕΥΡΑ ΤΟΥ SERVER ΣΤΟΝ ΑΜΦΙΔΡΟΜΟ ΣΥΓΧΡΟΝΙΣΜΟ
+// ---------------------------------------------------------------------------
+// Ταυτοποίηση με **κλειδί πρόσβασης** (Authorization: Bearer …) — δεν υπάρχει
+// browser από την άλλη μεριά. Δέχεται ό,τι έχει το γραφείο, γράφει ό,τι λείπει,
+// και απαντά με ό,τι έχει ο ίδιος: η άλλη πλευρά κάνει το ίδιο με την απάντηση,
+// οπότε οι δύο βάσεις καταλήγουν ίδιες χωρίς καμία να είναι «η σωστή».
+// ===========================================================================
+// --- Λήψη του τελευταίου αντιγράφου ασφαλείας (μόνο τοπικά) -----------------
+// Δεν υπάρχει Explorer μέσα στο παράθυρο της εφαρμογής: το «άνοιγμα φακέλου»
+// αντικαθίσταται από κατέβασμα του αρχείου, που δουλεύει και σε browser.
+if (!empty($_GET['backup_file'] ?? $_POST['backup_file'] ?? '')) {
+    if (!link_is_local()) jsonError('Διαθέσιμο μόνο στην εφαρμογή υπολογιστή', 404);
+    $files = link_backup_files();
+    if (!$files) jsonError('Δεν υπάρχει αντίγραφο ακόμη');
+    $path = $files[0];
+    header('Content-Type: application/zip');
+    header('Content-Length: ' . filesize($path));
+    header('Content-Disposition: attachment; filename="' . basename($path) . '"');
+    readfile($path);
+    exit;
+}
+
+$apiAction = trim((string)($_GET['api'] ?? $_POST['api'] ?? ''));
+if ($apiAction !== '') {
+    if (!auth_by_access_key()) jsonError('Χρειάζεται κλειδί πρόσβασης (Authorization: Bearer …)', 401);
+    if ($apiAction !== 'sync') jsonError('Άγνωστη ενέργεια API: ' . $apiAction, 400);
+
+    $payload = json_decode((string)($_POST['payload'] ?? $_GET['payload'] ?? ''), true);
+    if (!is_array($payload)) jsonError('Λείπει ή είναι άκυρο το payload');
+    $vat = preg_replace('/\D/', '', (string)($payload['vat'] ?? ''));
+    if ($vat === '') jsonError('Λείπει το ΑΦΜ της εταιρείας');
+
+    // Πρώτος συγχρονισμός σε φρέσκο server: η εταιρεία δημιουργείται εδώ, μαζί
+    // με τα διαπιστευτήρια ΑΑΔΕ — αλλιώς ο πελάτης θα έμπαινε στο web και δεν
+    // θα έβλεπε καμία εταιρεία. Αν υπάρχει, ΔΕΝ αλλάζει ιδιοκτήτη.
+    $acc = account_by_vat($vat);
+    $accountState = 'kept';
+    if (!$acc) {
+        $newId = account_add((int)$__user['id'], $vat,
+                             (string)($payload['label'] ?? $vat),
+                             (string)($payload['username'] ?? ''),
+                             (string)($payload['subkey'] ?? ''));
+        $acc = account_get($newId);
+        $accountState = 'created';
+    } elseif (!auth_may_access_vat($__user, $vat)) {
+        jsonError('Το κλειδί δεν έχει πρόσβαση σε αυτή την εταιρεία', 403);
+    }
+
+    $applied = sync_apply($vat, (array)($payload['payments'] ?? []), (array)($payload['customer_meta'] ?? []));
+
+    jsonResponse([
+        'success'       => true,
+        'vat'           => $vat,
+        'account'       => $accountState,
+        'applied'       => $applied,
+        // Η άλλη κατεύθυνση: ό,τι έχει ο server, για να το γράψει το γραφείο.
+        'payments'      => sync_payments($vat),
+        'customer_meta' => sync_customer_meta($vat),
+        'app_url'       => app_base_url(),
+    ]);
+}
 
 // --- Φωνή του βοηθού (Piper, εκτός δικτύου) ---------------------------------
 // `?tts=1&lang=el&text=…` → audio/wav.

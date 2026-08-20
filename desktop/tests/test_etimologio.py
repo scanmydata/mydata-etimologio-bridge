@@ -2486,25 +2486,11 @@ def test_menu_actions_are_not_treated_as_pages() -> None:
     assert EtimologioWebShell._VIEWS["documents"] == "documents"
 
 
-def test_access_key_carries_its_own_address() -> None:
-    """Το κλειδί λέει ΚΑΙ πού να επαληθευτεί.
-
-    Χωρίς αυτό, ο χρήστης θα έπρεπε να ξέρει και να πληκτρολογεί τη διεύθυνση
-    του server — ακριβώς αυτό που το κλειδί υποτίθεται ότι γλιτώνει.
-    """
-    import base64
-
-    from timologio.gui.control_panel import _decode_key
-
-    host = "timologio.example.gr"
-    blob = base64.urlsafe_b64encode(host.encode()).decode().rstrip("=")
-    host_out, secret = _decode_key(f"etim1_{blob}_abc123")
-    assert host_out == host
-    assert secret == "abc123"
-
-    for bad in ("", "σκουπίδια", "etim2_x_y", "etim1_x", f"etim1_{blob}_"):
-        with pytest.raises(ValueError):
-            _decode_key(bad)
+# Ο έλεγχος «το κλειδί κουβαλά τη διεύθυνσή του» ΔΕΝ ζει πια εδώ: η
+# αποκωδικοποίηση μετακόμισε στο PHP (`serverlink.php: link_decode_key`), μαζί με
+# όλη τη σύνδεση προς τον server, όταν οι ρυθμίσεις του e-Τιμολόγιο μαζεύτηκαν
+# μέσα στο e-Τιμολόγιο. Ο φύλακας ζει τώρα στο `tools/pg_smoke.php` (ενότητα
+# «6β. Κλειδί σύνδεσης με server»), δηλαδή δίπλα στον κώδικα που ελέγχει.
 
 
 def test_downloads_have_a_folder_without_asking(tmp_path: Path, monkeypatch) -> None:

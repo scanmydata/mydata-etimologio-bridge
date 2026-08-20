@@ -422,7 +422,6 @@ class MainWindow(QMainWindow):
         self.control.set_start_minimized(load_start_minimized())
         self.control.start_minimized_changed.connect(self._on_start_minimized)
         self.control.reconnect_requested.connect(self.reload_clients)
-        self.control.etim_backend_changed.connect(self._switch_etim_backend)
         self.stack.addWidget(self.control)
 
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
@@ -1186,29 +1185,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
         self._set_mode_icon(etimologio=True)
         self._show_page("etimologio")
-
-    def _switch_etim_backend(self, server_url: str) -> None:
-        """Τοπικά ή σε server, ζωντανά.
-
-        Ο χρήστης το αλλάζει από τον Πίνακα ελέγχου· εδώ σταματά ό,τι τρέχει,
-        γράφεται η νέα λειτουργία και το κέλυφος ξαναξεκινά. Χωρίς επανεκκίνηση
-        της εφαρμογής: το e-Τιμολόγιο είναι σελίδα, όχι δεύτερο πρόγραμμα.
-        """
-        shell = getattr(self, "etimologio", None)
-        if shell is None:
-            return
-        try:
-            shell.shutdown()
-        except Exception:  # noqa: BLE001 — ίσως δεν είχε ξεκινήσει ποτέ
-            log.debug("Το e-Τιμολόγιο δεν χρειαζόταν τερματισμό")
-        service = getattr(shell, "_service", None)
-        if service is not None:
-            service.set_mode("thin" if server_url else "offline", server_url)
-        shell._started = False
-        shell._base = ""
-        log.info("e-Τιμολόγιο → %s", server_url or "τοπικά")
-        if self._current_page() == "etimologio":
-            shell.start()
 
     def _leave_etimologio(self) -> None:
         """Επιστροφή στη Λήψη Παραστατικών."""

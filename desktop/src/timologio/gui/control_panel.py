@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -41,54 +40,6 @@ from .widgets import ToggleSwitch
 
 #: Κάθε πόσο ξαναζωγραφίζεται η λίστα συνδέσεων.
 REFRESH_MS = 10_000
-
-
-def _decode_key(token: str) -> tuple[str, str]:
-    """«etim1_<base64(host)>_<secret>» → (host, secret).
-
-    Το κλειδί κουβαλά τη διεύθυνση επίτηδες: αλλιώς δεν υπάρχει τρόπος να
-    επαληθευτεί χωρίς ο χρήστης να ξέρει ήδη σε ποιον server να ρωτήσει — και
-    το ζητούμενο ήταν ακριβώς να μη χρειάζεται να ξέρει.
-    """
-    import base64
-
-    parts = token.strip().split("_")
-    if len(parts) != 3 or parts[0] != "etim1" or not parts[2]:
-        raise ValueError("Το κλειδί δεν έχει τη σωστή μορφή.")
-    padded = parts[1] + "=" * (-len(parts[1]) % 4)
-    host = base64.urlsafe_b64decode(padded.encode()).decode("utf-8", "replace")
-    if not host:
-        raise ValueError("Το κλειδί δεν περιέχει διεύθυνση.")
-    return host, parts[2]
-
-
-def _verify_access_key(token: str) -> tuple[str, str]:
-    """Ρωτά τον server αν το κλειδί ισχύει· επιστρέφει (url, ετικέτα)."""
-    import requests
-
-    host, secret = _decode_key(token)
-    scheme = "http" if host.startswith(("127.0.0.1", "localhost")) else "https"
-    base = f"{scheme}://{host}"
-    reply = requests.post(
-        f"{base}/etimologio.php",
-        data={"auth": "access_provision", "key": secret},
-        timeout=20,
-    )
-    data = reply.json()
-    if not data.get("success"):
-        raise ValueError(data.get("error") or "Άγνωστη απάντηση από τον server.")
-    return str(data.get("url") or base).rstrip("/"), str(data.get("label") or "")
-
-
-def _stored_server_url(data_dir: Path) -> str:
-    """Η αποθηκευμένη διεύθυνση server, χωρίς να ξεκινήσει το backend."""
-    import json
-
-    try:
-        conf = json.loads((Path(data_dir) / "etimologio" / "service.json").read_text("utf-8"))
-    except (OSError, ValueError):
-        return ""
-    return str(conf.get("server_url", "")) if conf.get("mode") == "thin" else ""
 
 
 def _dot(online: bool) -> str:
@@ -126,7 +77,6 @@ class ControlPanel(QWidget):
     #: Ζητήθηκε επανέλεγχος σύνδεσης (το κύριο παράθυρο ξαναφορτώνει τη λίστα).
     reconnect_requested = Signal()
     #: Το e-Τιμολόγιο να δουλέψει σε server (url) ή τοπικά (κενό url).
-    etim_backend_changed = Signal(str)
 
     def __init__(
         self,
@@ -152,8 +102,6 @@ class ControlPanel(QWidget):
         root.addWidget(self._header())
         root.addWidget(self._identity_box())
         root.addWidget(self._peers_box(), 1)
-        root.addWidget(self._etimologio_box())
-        root.addWidget(self._backup_box())
         root.addWidget(self._settings_box())
 
         self._timer = QTimer(self)
@@ -380,176 +328,6 @@ class ControlPanel(QWidget):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table, 1)
         return box
-
-    def _etimologio_box(self) -> QWidget:
-        """Πού ζουν τα δεδομένα του e-Τιμολόγιο: εδώ ή σε κοινό server.
-
-        Η επιλογή υπήρχε στις παλιές native σελίδες και χάθηκε όταν το UI έγινε
-        η ίδια η web εφαρμογή. Χωρίς αυτήν, ένα γραφείο που στήνει server δεν
-        έχει κανέναν τρόπο να στρέψει εκεί τις εφαρμογές των λογιστών του.
-
-        Ο χρήστης δεν πληκτρολογεί διεύθυνση: επικολλά **ένα κλειδί**, και η
-        διεύθυνση βγαίνει από αυτό (το κλειδί την κουβαλά κωδικοποιημένη) και
-        επιβεβαιώνεται με τον ίδιο τον server πριν αποθηκευτεί.
-        """
-        box = QGroupBox("e-Τιμολόγιο Pro — πού αποθηκεύονται τα δεδομένα")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(8)
-
-        self.etim_state = QLabel("")
-        self.etim_state.setWordWrap(True)
-        layout.addWidget(self.etim_state)
-
-        row = QHBoxLayout()
-        self.etim_key = QLineEdit()
-        self.etim_key.setPlaceholderText("Επικόλλησε το κλειδί πρόσβασης (etim1_…)")
-        self.etim_key.setEchoMode(QLineEdit.EchoMode.Password)
-        row.addWidget(self.etim_key, 1)
-        self.btn_etim_connect = QPushButton("Σύνδεση σε server")
-        self.btn_etim_connect.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_etim_connect.clicked.connect(self.connect_to_server)
-        row.addWidget(self.btn_etim_connect)
-        self.btn_etim_local = QPushButton("Τοπικά")
-        self.btn_etim_local.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_etim_local.setToolTip(
-            "Επιστροφή στα δεδομένα αυτού του υπολογιστή"
-        )
-        self.btn_etim_local.clicked.connect(lambda: self._apply_backend(""))
-        row.addWidget(self.btn_etim_local)
-        layout.addLayout(row)
-
-        note = QLabel(
-            "Το κλειδί το δίνει ο διαχειριστής του γραφείου από τις Ρυθμίσεις "
-            "του e-Τιμολόγιο. Δείχνεται μία φορά· αν χαθεί, φτιάχνεται νέο."
-        )
-        note.setWordWrap(True)
-        note.setObjectName("muted")
-        layout.addWidget(note)
-        self._refresh_etim_state()
-        return box
-
-    def connect_to_server(self) -> None:
-        """Επαληθεύει το κλειδί με τον server πριν αλλάξει οτιδήποτε."""
-        token = self.etim_key.text().strip()
-        if not token:
-            QMessageBox.information(self, "Κλειδί", "Επικόλλησε πρώτα το κλειδί.")
-            return
-        self.btn_etim_connect.setEnabled(False)
-        self.etim_state.setText("Έλεγχος κλειδιού…")
-        try:
-            url, label = _verify_access_key(token)
-        except Exception as exc:  # noqa: BLE001 — το μήνυμα πάει στον χρήστη
-            self.btn_etim_connect.setEnabled(True)
-            self._refresh_etim_state()
-            QMessageBox.warning(
-                self, "Σύνδεση", f"Το κλειδί δεν έγινε δεκτό.\n\n{exc}"
-            )
-            return
-        self.btn_etim_connect.setEnabled(True)
-        self.etim_key.clear()
-        QMessageBox.information(
-            self, "Σύνδεση",
-            f"Συνδέθηκε στον server ως «{label}».\n\n{url}",
-        )
-        self._apply_backend(url)
-
-    def _apply_backend(self, url: str) -> None:
-        self.etim_backend_changed.emit(url)
-        self._refresh_etim_state(url)
-
-    def _refresh_etim_state(self, url: str | None = None) -> None:
-        if url is None:
-            url = _stored_server_url(self._data_dir)
-        if url:
-            self.etim_state.setText(f"● Συνδεδεμένο σε server: {url}")
-            self.etim_state.setStyleSheet(f"color:{CURRENT.accent}; font-weight:600;")
-        else:
-            self.etim_state.setText(
-                "● Τοπικά σε αυτόν τον υπολογιστή (κρυπτογραφημένα)"
-            )
-            self.etim_state.setStyleSheet(f"color:{CURRENT.muted};")
-        self.btn_etim_local.setEnabled(bool(url))
-
-    def _backup_box(self) -> QWidget:
-        """Αντίγραφα ασφαλείας — τοπικά πάντα, στο Drive όταν είναι ρυθμισμένο.
-
-        Ο δίσκος που χάλασε παίρνει μαζί του και τα κλειδιά ΑΑΔΕ κάθε πελάτη,
-        που δεν ανακτώνται από πουθενά. Το τοπικό zip δουλεύει χωρίς δίκτυο και
-        χωρίς Google· η μεταφόρτωση είναι το επιπλέον βήμα.
-        """
-        box = QGroupBox("Αντίγραφα ασφαλείας e-Τιμολόγιο")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(8)
-
-        self.bk_state = QLabel("")
-        self.bk_state.setWordWrap(True)
-        self.bk_state.setObjectName("muted")
-        layout.addWidget(self.bk_state)
-
-        row = QHBoxLayout()
-        self.btn_bk_now = QPushButton("Αντίγραφο τώρα")
-        self.btn_bk_now.setObjectName("primary")
-        self.btn_bk_now.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_bk_now.setToolTip(
-            "Πακετάρει βάση + κλειδί κρυπτογράφησης σε ένα zip και — αν είναι "
-            "ρυθμισμένο το Google Drive — το ανεβάζει"
-        )
-        self.btn_bk_now.clicked.connect(self.run_backup_now)
-        row.addWidget(self.btn_bk_now)
-
-        self.btn_bk_folder = QPushButton("Άνοιγμα φακέλου")
-        self.btn_bk_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_bk_folder.clicked.connect(self.open_backup_folder)
-        row.addWidget(self.btn_bk_folder)
-        row.addStretch()
-        layout.addLayout(row)
-
-        self._refresh_backup_state()
-        return box
-
-    def _backup_dir(self) -> Path:
-        return Path(self._data_dir) / "etimologio" / "backups"
-
-    def _refresh_backup_state(self) -> None:
-        from ..etimologio import backup_drive
-
-        state = backup_drive.status()
-        folder = self._backup_dir()
-        count = len(list(folder.glob("etimologio-*.zip"))) if folder.is_dir() else 0
-        drive = "Google Drive: έτοιμο" if state.ready else ("Google Drive: " + state.problem)
-        self.bk_state.setText(str(count) + " τοπικά αντίγραφα · " + drive)
-
-    def run_backup_now(self) -> None:
-        from ..etimologio import backup_drive
-
-        self.btn_bk_now.setEnabled(False)
-        try:
-            backup_drive.bootstrap_secrets()
-            data = Path(self._data_dir) / "etimologio"
-            result = backup_drive.run_backup(data, to_drive=backup_drive.status().ready)
-        except Exception as exc:  # noqa: BLE001 — το μήνυμα πάει στον χρήστη
-            self.btn_bk_now.setEnabled(True)
-            QMessageBox.warning(self, "Αντίγραφο", "Απέτυχε: " + str(exc))
-            return
-        self.btn_bk_now.setEnabled(True)
-        self._refresh_backup_state()
-        size_mb = round(result["size"] / (1024 * 1024), 1)
-        detail = ("Αποθηκεύτηκε: " + result["archive"] + N
-                  + "Μέγεθος: " + str(size_mb) + " MB")
-        if result.get("uploaded"):
-            detail += N + "Ανέβηκε στο Google Drive."
-        elif result.get("error"):
-            detail += N + N + "Δεν ανέβηκε: " + result["error"]
-        QMessageBox.information(self, "Αντίγραφο ασφαλείας", detail)
-
-    def open_backup_folder(self) -> None:
-        from ..etimologio.pages import ui
-
-        folder = self._backup_dir()
-        folder.mkdir(parents=True, exist_ok=True)
-        ui.open_file(folder, self)
 
     def _settings_box(self) -> QWidget:
         box = QGroupBox("Ρυθμίσεις δικτύου")
