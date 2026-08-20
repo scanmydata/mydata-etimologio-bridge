@@ -37,9 +37,23 @@ function enc_key(): string {
     return $key;
 }
 
+// Η απουσία του sodium είναι σιωπηλή υποχώρηση — και ακριβώς γι' αυτό επικίνδυνη:
+// η εφαρμογή δουλεύει κανονικά ενώ γράφει καθαρά τα κλειδιά ΑΑΔΕ. Μία γραμμή στο
+// log ανά διεργασία, ώστε να φαίνεται στο php-server.log αντί να μη φαίνεται
+// πουθενά. Η οριστική λύση είναι να πακετάρεται το php_sodium.dll (build.ps1)·
+// μόλις υπάρξει, το crypto_backfill_plaintext() (localdb.php) κρυπτογραφεί όσα
+// γράφτηκαν καθαρά.
+function crypto_warn_no_sodium(): void {
+    static $warned = false;
+    if ($warned) return;
+    $warned = true;
+    error_log('[etimologio] ΠΡΟΣΟΧΗ: λείπει η επέκταση sodium — τα ευαίσθητα πεδία '
+            . '(κλειδιά ΑΑΔΕ, ονόματα πελατών, ποσά) αποθηκεύονται ΧΩΡΙΣ κρυπτογράφηση.');
+}
+
 function enc(?string $plain): string {
     $plain = (string)$plain;
-    if (!extension_loaded('sodium')) return $plain; // graceful fallback
+    if (!extension_loaded('sodium')) { crypto_warn_no_sodium(); return $plain; }
     $nonce  = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
     $cipher = sodium_crypto_secretbox($plain, $nonce, enc_key());
     return 'enc:1:' . base64_encode($nonce . $cipher);
@@ -48,7 +62,8 @@ function enc(?string $plain): string {
 function dec(?string $stored): string {
     $stored = (string)$stored;
     if (strncmp($stored, 'enc:1:', 6) !== 0) return $stored; // plaintext/legacy
-    if (!extension_loaded('sodium')) return '';
+    // Κρυπτογραφημένο περιεχόμενο σε PHP χωρίς sodium: αδύνατο να διαβαστεί.
+    if (!extension_loaded('sodium')) { crypto_warn_no_sodium(); return ''; }
     $raw = base64_decode(substr($stored, 6), true);
     if ($raw === false || strlen($raw) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) return '';
     $nonce  = substr($raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);

@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.4.6"
+#define AppVersion     "0.4.7"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -51,7 +51,10 @@ VersionInfoCopyright=© scanmydata
 VersionInfoOriginalFileName=TimologioDownloader-{#AppVersion}-setup.exe
 ; Εικονίδιο του ίδιου του setup.exe και γραφικά του οδηγού. Παράγονται από το
 ; logo.svg με το make_icon.py — ο Inno δέχεται μόνο .ico και .bmp εδώ.
-SetupIconFile=icon.ico
+; Το setup.exe φοράει το σήμα ScanmyData/e-Τιμολόγιο (installer-icon.ico) — αυτό
+; που βλέπει ο πελάτης κάτω αριστερά μέσα στην εφαρμογή και αναγνωρίζει όταν του
+; στέλνεις το αρχείο. Η ίδια η εφαρμογή κρατά το δικό της εικονίδιο (icon.ico).
+SetupIconFile=installer-icon.ico
 WizardSmallImageFile=wizard-small.bmp
 WizardImageFile=wizard-large.bmp
 ; Το λογότυπο είναι τετράγωνο· χωρίς αυτό ο Inno το τεντώνει στο πλάτος της

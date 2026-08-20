@@ -28,6 +28,9 @@ Thumbs.db
 # Encryption key (NEVER commit)
 .enckey
 
+# Μυστικά deployment — ΠΟΤΕ στο git
+.env
+
 # Ηχογραφήσεις για την εκπαίδευση φωνής: τα WAV ΔΕΝ μπαίνουν στο repo
 # (εκατοντάδες MB). Οι λίστες ανάγνωσης, ναι.
 training/voice/readlist/**/*.wav

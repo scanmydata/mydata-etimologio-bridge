@@ -1,6 +1,11 @@
 <?php
-// Clear OPcache on every request so file changes take effect immediately.
-if (function_exists('opcache_reset')) { opcache_reset(); }
+// Clear OPcache on every request so file changes take effect immediately — but
+// ONLY for a local/offline install. Στον server αυτό θα άδειαζε την cache
+// ΟΛΟΚΛΗΡΗΣ της εφαρμογής σε κάθε άνοιγμα σελίδας, αναγκάζοντας κάθε επόμενη
+// κλήση του API να ξαναμεταγλωττίσει το etimologio.php από την αρχή.
+if (function_exists('opcache_reset')
+    && in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1', ''], true)
+    && empty($_SERVER['HTTP_X_FORWARDED_FOR'])) { opcache_reset(); }
 
 /**
  * e-Timologio Pro — fast, multi-tenant UI on top of etimologio.php
@@ -302,15 +307,15 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   #colFilterPop{position:fixed;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;box-shadow:var(--shadow);padding:14px;display:none}
   #colFilterPop.on{display:block}
-  #colFilterPop h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
-  #colFilterPop .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px}
-  #colFilterPop .cf-search:focus{outline:none;border-color:var(--accent)}
-  #colFilterPop .cf-list{max-height:230px;overflow:auto;display:flex;flex-direction:column;gap:1px}
-  #colFilterPop .cf-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #colFilterPop .cf-item:hover{background:var(--hover)}
-  #colFilterPop .cf-item input{accent-color:var(--accent);flex:0 0 auto}
-  #colFilterPop .cf-actions{display:flex;gap:8px;margin-top:12px}
-  #colFilterPop .cf-actions button{flex:1}
+  #colFilterPop h5 h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
+  #colFilterPop .cf-search .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px}
+  #colFilterPop .cf-search:focus .cf-search:focus{outline:none;border-color:var(--accent)}
+  #colFilterPop .cf-list .cf-list{max-height:230px;overflow:auto;display:flex;flex-direction:column;gap:1px}
+  #colFilterPop .cf-item .cf-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #colFilterPop .cf-item:hover .cf-item:hover{background:var(--hover)}
+  #colFilterPop .cf-item input .cf-item input{accent-color:var(--accent);flex:0 0 auto}
+  #colFilterPop .cf-actions .cf-actions{display:flex;gap:8px;margin-top:12px}
+  #colFilterPop .cf-actions button .cf-actions button{flex:1}
   th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
   /* Guided page tour */
   #tourOverlay{position:fixed;inset:0;z-index:200;display:none}
@@ -551,6 +556,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <div id="notifPanel" class="notif-panel" hidden>
         <div class="notif-head"><b>Ειδοποιήσεις</b><span class="grow"></span>
           <button class="ghost sm" onclick="notifMarkAll()" title="Σήμανση όλων ως αναγνωσμένων">✓ Όλα</button>
+          <button class="ghost sm" onclick="checkAadeNewDocs(false).then(loadNotifications)" title="Σύγκριση με την πλατφόρμα της ΑΑΔΕ: ειδοποίηση για κάθε παραστατικό που δεν εκδόθηκε από εδώ">🛰️ Έλεγχος ΑΑΔΕ</button>
           <button class="ghost sm" onclick="loadNotifications()" title="Ανανέωση">↻</button></div>
         <div id="notifList" class="notif-list"><div class="notif-empty">—</div></div>
       </div>
@@ -642,7 +648,6 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <div class="row" style="align-items:center;margin-top:6px">
           <span class="hint" id="docCount"></span>
           <div class="grow"></div>
-          <button class="ghost sm cols-btn" onclick="openColumnChooser('docTable',this)" data-tip="Ποιες στήλες φαίνονται">⚙ Στήλες</button>
           <button class="ghost sm" onclick="docToggleAll(true)">Επιλογή όλων</button>
           <button class="ghost sm" onclick="docToggleAll(false)">Καμία</button>
           <button class="ghost" onclick="printSelectedDocs()" data-tip="Προεπισκόπηση &amp; εκτύπωση των επιλεγμένων">🖨️ Μαζική εκτύπωση</button>
@@ -1153,6 +1158,55 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <button class="primary" onclick="bkSave()">Αποθήκευση</button>
         </div>
       </div>
+      <?php if (defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== ''): ?>
+      <!-- ΜΟΝΟ στην εγκατάσταση γραφείου. Στον server δεν έχει νόημα: εκεί τα
+           δεδομένα ΕΙΝΑΙ ήδη στον server. -->
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>☁️ Σύνδεση με web server (προαιρετική)</strong>
+          <span class="pill" id="lkState">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">
+          Δουλεύεις μια χαρά και χωρίς αυτήν. Με τη σύνδεση όμως, τα δεδομένα των
+          εταιρειών σου ζουν <b>στον server</b> και κάθε πελάτης μπορεί να μπει
+          από browser με έναν σύνδεσμο — χωρίς να εγκαταστήσει τίποτα.
+          Ζήτα από τον διαχειριστή του server ένα <b>κλειδί πρόσβασης</b>
+          (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης» στον server) και επικόλλησέ το εδώ·
+          τη διεύθυνση την κουβαλά το ίδιο το κλειδί.
+        </p>
+        <div class="row" style="margin-top:8px">
+          <div class="field grow"><label>Κλειδί πρόσβασης</label>
+            <input id="lkKey" type="password" placeholder="etim1_…" autocomplete="off"></div>
+          <button class="primary" onclick="linkConnect()">Σύνδεση σε server</button>
+          <button class="ghost" onclick="linkSync()" id="lkSyncBtn" data-tip="Στέλνει ό,τι έγινε εδώ και φέρνει ό,τι έγινε στον server">🔄 Συγχρονισμός τώρα</button>
+          <button class="ghost" onclick="linkDisconnect()">Αποσύνδεση</button>
+        </div>
+        <div class="hint" id="lkInfo" style="margin-top:8px"></div>
+        <table id="lkTable"><thead><tr>
+          <th>Εταιρεία</th><th>ΑΦΜ</th><th>Σύνδεσμος για τον πελάτη</th><th class="nofilter"></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <?php endif; ?>
+      <?php if (defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== ''): ?>
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>💾 Αντίγραφα ασφαλείας</strong>
+          <span class="hint" id="bkState">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">
+          Ένα zip με τη <b>βάση</b> και το <b>κλειδί κρυπτογράφησης</b> μαζί —
+          χωριστά, κανένα από τα δύο δεν διαβάζεται. Κρατιούνται τα 14 νεότερα.
+          Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη,
+          που δεν ανακτώνται από πουθενά: κράτα ένα αντίγραφο και <b>εκτός</b>
+          υπολογιστή.
+        </p>
+        <div class="row" style="margin-top:6px">
+          <button class="primary" onclick="backupRun()">💾 Αντίγραφο τώρα</button>
+          <button class="ghost" onclick="backupDownload()" id="bkDl" data-tip="Κατεβάζει το πιο πρόσφατο αντίγραφο">⬇️ Λήψη τελευταίου</button>
+          <span class="hint" id="bkFolder"></span>
+        </div>
+      </div>
+      <?php endif; ?>
       <div class="panel" style="margin-top:16px">
         <strong>🏢 Συνδεδεμένοι λογαριασμοί AADE</strong>
         <p class="sub" style="margin-top:4px">Τα διαπιστευτήρια e-timologio αποθηκεύονται κρυπτογραφημένα και ρυθμίζονται από τον διαχειριστή.</p>
@@ -1231,6 +1285,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <p class="sub" id="adminBizNote"></p>
         <table id="adminBiz"><thead><tr><th>Επωνυμία</th><th>ΑΦΜ</th><th>Χρήστης (κάτοχος)</th><th>Λογιστές</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
+
     </section>
     <?php endif; ?>
 
@@ -2001,7 +2056,13 @@ async function testMailSettings(){
   }catch(e){$('#mpResult').textContent='Σφάλμα δικτύου';}
 }
 
-async function loadSettings(){loadMailSettings();try{const d=await api({accounts:1});
+async function loadSettings(){
+  // Πρώτα η κάρτα σύνδεσης: είναι τοπική και ακαριαία, ενώ η λίστα
+  // λογαριασμών ΑΑΔΕ πιο κάτω περιμένει το δίκτυο — χωρίς αυτή τη σειρά, σε
+  // υπολογιστή χωρίς σύνδεση η κάρτα έμενε άδεια για δευτερόλεπτα.
+  loadLink();
+  loadBackup();
+  loadMailSettings();try{const d=await api({accounts:1});
   $('#settAccts tbody').innerHTML=(d.accounts||[]).map(a=>`<tr><td>${esc(a.vat)}</td><td>${esc(a.label)}</td><td class="muted">•••</td></tr>`).join('')||'<tr><td colspan="3" class="muted">Δεν έχει συνδεθεί λογαριασμός AADE.</td></tr>';
 }catch(e){}
   load2fa();loadNotifPrefs();loadAccessKeys();}
@@ -2278,7 +2339,8 @@ async function saveAssign(){
   }catch(e){$('#asResult').textContent='Ανάθεση: '+e.message;}}
 const ROLE_LABELS={master:'Διαχειριστής',editor:'Λογιστής',business:'Επιχείρηση'};
 let ADMIN_ME=ME_ID;
-function renderAdmin(users){$('#adminUsers tbody').innerHTML=users.map(u=>{
+let ADMIN_USERS=[];        // η τελευταία λίστα χρηστών — τη θέλουν και οι επιλογείς των κλειδιών
+function renderAdmin(users){ADMIN_USERS=users||[];$('#adminUsers tbody').innerHTML=users.map(u=>{
   const st=u.status==='active'?'<span class="pill ok">ενεργός</span>':u.status==='pending'?'<span class="pill warn">εκκρεμεί</span>':u.status==='invited'?'<span class="pill">προσκεκλημένος</span>':'<span class="pill bad">ανενεργός</span>';
   const staff=u.role==='master'||u.role==='editor';
   const self=u.id===ADMIN_ME;
@@ -2485,7 +2547,38 @@ function attachColumnFilters(tableId){
     th.appendChild(b);
     if(gridState(tableId)[logical])b.classList.add('active');
   });
+  ensureColsButton(tableId);
   enhanceGrid(tableId);
+}
+
+// --- Το κουμπί «Στήλες», σε ΚΑΘΕ πίνακα --------------------------------------
+// Ο επιλογέας στηλών (openColumnChooser) υπήρχε ήδη, αλλά το κουμπί του ήταν
+// γραμμένο με το χέρι σε ΜΙΑ οθόνη — οπότε παντού αλλού η δυνατότητα ήταν
+// αόρατη. Εδώ η μπάρα μπαίνει μόνη της πάνω από κάθε πίνακα που περνά από το
+// attachColumnFilters(), άρα κάθε νέα οθόνη τη δικαιούται χωρίς να τη ζητήσει.
+function ensureColsButton(tableId){
+  const table=$('#'+tableId);if(!table||table.dataset.colsBtn)return;
+  const hdr=table.tHead&&table.tHead.rows[0];if(!hdr)return;
+  if(![...hdr.cells].some(th=>(th.textContent||'').trim()))return;   // πίνακας χωρίς επικεφαλίδες
+  table.dataset.colsBtn='1';
+  const bar=document.createElement('div');bar.className='grid-tools';
+  const b=document.createElement('button');
+  b.type='button';b.className='ghost sm cols-btn';b.textContent='⚙ Στήλες';
+  b.title='Ποιες στήλες φαίνονται';
+  b.onclick=e=>{e.stopPropagation();openColumnChooser(tableId,b);};
+  bar.appendChild(b);table.parentNode.insertBefore(bar,table);
+  markColsButton(tableId);
+}
+// Το κουμπί δείχνει ότι κάτι είναι κρυμμένο — αλλιώς μια στήλη που λείπει
+// μοιάζει με σφάλμα και όχι με επιλογή.
+function markColsButton(tableId){
+  const table=$('#'+tableId);if(!table)return;
+  const bar=table.previousElementSibling;
+  if(!bar||!bar.classList||!bar.classList.contains('grid-tools'))return;
+  const btn=bar.querySelector('.cols-btn');if(!btn)return;
+  const n=(gridLayout(tableId).hidden||[]).length;
+  btn.classList.toggle('active',n>0);
+  btn.title=n?(n===1?'1 κρυμμένη στήλη':n+' κρυμμένες στήλες'):'Ποιες στήλες φαίνονται';
 }
 // Το κελί μιας ΛΟΓΙΚΗΣ στήλης — όχι το `cells[i]`, που αλλάζει μόλις ο χρήστης
 // μετακινήσει στήλη. Κάθε κελί κρατά τον αρχικό του αριθμό στο `data-lc`.
@@ -2577,6 +2670,7 @@ function applyGridLayout(tableId){
     if(px)th.style.width=px+'px';
   });
   applyHidden(tableId);
+  markColsButton(tableId);
 }
 // --- Ποιες στήλες φαίνονται --------------------------------------------------
 // Ζητήθηκε για το ΜΑΡΚ (χρήσιμο, αλλά πλατύ και σπάνια αναγνώσιμο), αλλά ο
@@ -2597,7 +2691,7 @@ function setColumnHidden(tableId,logical,hidden){
   const L=gridLayout(tableId);const set=hiddenSet(tableId);
   hidden?set.add(logical):set.delete(logical);
   L.hidden=[...set];
-  applyHidden(tableId);saveGridLayout(tableId);
+  applyHidden(tableId);saveGridLayout(tableId);markColsButton(tableId);
 }
 function openColumnChooser(tableId,anchor){
   if(window.event&&window.event.stopPropagation)window.event.stopPropagation();
@@ -2615,7 +2709,7 @@ function openColumnChooser(tableId,anchor){
   pop.querySelector('.cf-list').onchange=e=>{const cb=e.target;
     if(cb&&cb.type==='checkbox')setColumnHidden(tableId,+cb.dataset.lc,!cb.checked);};
   pop.querySelector('.cf-clear').onclick=()=>{gridLayout(tableId).hidden=[];applyHidden(tableId);saveGridLayout(tableId);
-    pop.querySelectorAll('.cf-list input').forEach(cb=>cb.checked=true);};
+    markColsButton(tableId);pop.querySelectorAll('.cf-list input').forEach(cb=>cb.checked=true);};
   pop.querySelector('.cf-close').onclick=closeColFilter;
   const r=(anchor||table).getBoundingClientRect();
   pop.style.left=Math.max(8,Math.min(r.left-120,window.innerWidth-300))+'px';
@@ -5198,7 +5292,9 @@ const TOUR=[
   {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή <b>μίλα</b> και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ», «μαζική εκτύπωση», «παραστατικά», «πόσες αδιάβαστες», «πήγαινε στην καρτέλα». Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.<br><br>Στην εφαρμογή υπολογιστή ακούει και μιλά <b>εκτός δικτύου</b>: τίποτα δεν φεύγει από το μηχάνημα. Οι φωνητικές εντολές είναι αξιόπιστες για πλοήγηση και ερωτήσεις — τα ΑΦΜ γράψε τα.'},
   {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τους διακόπτες, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
   {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'},
-  {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'}
+  {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Πάνω από κάθε πίνακα υπάρχει και το «<b>⚙ Στήλες</b>»: διαλέγεις τι φαίνεται. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'},
+  {sel:'#lkTable',view:'settings',title:'☁️ Σύνδεση με web server',text:'Έχει το γραφείο server; Επικόλλησε εδώ το <b>κλειδί πρόσβασης</b> που σου έδωσε ο διαχειριστής — τη διεύθυνση την κουβαλά το ίδιο το κλειδί. Μετά, τα δεδομένα ζουν <b>και</b> στον server, ο πελάτης δουλεύει από browser με τον σύνδεσμο που αντιγράφεις από εδώ, και το «🔄 Συγχρονισμός τώρα» στέλνει ό,τι έγινε εδώ ΚΑΙ φέρνει ό,τι έγινε εκεί.'},
+  {sel:'#bkState',view:'settings',title:'💾 Αντίγραφα ασφαλείας',text:'Ένα zip με τη <b>βάση</b> και το <b>κλειδί κρυπτογράφησης</b> μαζί. Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη: πάτα «Αντίγραφο τώρα», κατέβασέ το και κράτα το <b>εκτός</b> υπολογιστή.'}
 ];
 let tourI=0;
 function startTour(){tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
@@ -5309,6 +5405,27 @@ const MANUAL=[
   ['Η εφαρμογή ξαναδοκιμάζει μόνη της κάθε 20 δευτερόλεπτα και η μπάρα φεύγει μόλις επανέλθει η σύνδεση· το «↻ Έλεγχος ξανά» το κάνει αμέσως.','li'],
   ['Τα <b>τοπικά</b> δεδομένα δεν επηρεάζονται: πελάτες, πληρωμές, καρτέλες και πρόχειρα διαβάζονται και γράφονται κανονικά.','li'],
 
+  ['11ζ. Σύνδεση με web server (μόνο στην εφαρμογή υπολογιστή)','h2'],
+  ['Η εφαρμογή δουλεύει μια χαρά μόνη της. Αν όμως το γραφείο έχει στημένο <b>web server</b>, μπορεί να δεθεί μαζί του: τα δεδομένα ζουν <b>και</b> εκεί, και κάθε πελάτης μπαίνει από browser με έναν σύνδεσμο — χωρίς να εγκαταστήσει τίποτα.','p'],
+  ['<b>Πώς γίνεται:</b> ο διαχειριστής του server φτιάχνει ένα <b>κλειδί πρόσβασης</b> (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης») και σου το δίνει. Το επικολλάς στις «Ρυθμίσεις → ☁️ Σύνδεση με web server» και πατάς «Σύνδεση σε server». Διεύθυνση δεν χρειάζεται να ξέρεις: το κλειδί την κουβαλά μέσα του.','li'],
+  ['Η αλλαγή γράφεται στα αρχεία της εγκατάστασης, οπότε <b>κλείσε και ξανάνοιξε</b> την εφαρμογή για να δουλέψει πάνω στον server.','li'],
+  ['Στην ίδια κάρτα βλέπεις τις εταιρείες σου και τον <b>σύνδεσμο που δίνεις στον πελάτη</b> (κουμπιά αντιγραφής και ανοίγματος). Το «Αποσύνδεση» γυρίζει σε τοπική λειτουργία· ό,τι έχει ήδη ανέβει μένει στον server.','li'],
+  ['Το κλειδί είναι <b>διαπιστευτήριο</b>: στείλ' το όπως θα έστελνες κωδικό, και αν χαθεί ζήτα ανάκληση και νέο.','li'],
+
+  ['11η. Αμφίδρομος συγχρονισμός','h2'],
+  ['Το «🔄 Συγχρονισμός τώρα» στην ίδια κάρτα δουλεύει <b>και προς τις δύο κατευθύνσεις</b>: στέλνει ό,τι καταχωρήθηκε εδώ και φέρνει ό,τι καταχωρήθηκε στον server (π.χ. από τον ίδιο τον πελάτη, μέσα από τον browser). Καμία πλευρά δεν είναι «η σωστή».','p'],
+  ['Ταξιδεύουν οι <b>πληρωμές</b> και οι <b>καρτέλες πελατών</b> (υπόλοιπο ανοίγματος, σημειώσεις), μαζί με την εταιρεία και τα διαπιστευτήρια ΑΑΔΕ την πρώτη φορά. Τα παραστατικά δεν χρειάζεται να συγχρονιστούν: και οι δύο πλευρές τα διαβάζουν από την ΑΑΔΕ.','li'],
+  ['Ο συγχρονισμός <b>επαναλαμβάνεται χωρίς ζημιά</b>: κάθε πληρωμή αναγνωρίζεται από το περιεχόμενό της, οπότε δεν διπλογράφεται ποτέ. Σε καρτέλα που άλλαξε και στις δύο πλευρές κρατιέται η <b>νεότερη</b>.','li'],
+  ['<b>Οι διαγραφές δεν ταξιδεύουν.</b> Αν σβήσεις μια πληρωμή στη μία πλευρά, ο επόμενος συγχρονισμός θα την ξαναφέρει από την άλλη. Σβήσ' την και στις δύο.','li'],
+
+  ['11θ. Αντίγραφα ασφαλείας','h2'],
+  ['Στις «Ρυθμίσεις → 💾 Αντίγραφα ασφαλείας» φτιάχνεις με ένα κουμπί ένα zip που περιέχει <b>τη βάση και το κλειδί κρυπτογράφησης μαζί</b> — χωριστά, κανένα από τα δύο δεν διαβάζεται. Κρατιούνται τα 14 νεότερα.','p'],
+  ['Ο δίσκος που θα χαλάσει παίρνει μαζί του τα <b>κλειδιά ΑΑΔΕ κάθε πελάτη</b>, που δεν ανακτώνται από πουθενά: κατέβασε το αντίγραφο («⬇️ Λήψη τελευταίου») και κράτα το <b>εκτός</b> αυτού του υπολογιστή.','li'],
+
+  ['11ι. Ειδοποιήσεις και για ό,τι δεν εκδόθηκε από εδώ','h2'],
+  ['Η καμπάνα δεν δείχνει πια μόνο τις δικές σου εκδόσεις. Κάθε φορά που υπάρχει internet, η εφαρμογή συγκρίνει τα αποθηκευμένα της με την <b>πλατφόρμα της ΑΑΔΕ</b> και γράφει ειδοποίηση (🛰️) για κάθε νέο ΜΑΡΚ: παραστατικά που εκδόθηκαν από άλλον υπολογιστή, από τον λογιστή, ή απευθείας στο e-Τιμολόγιο της ΑΑΔΕ.','p'],
+  ['Ο έλεγχος τρέχει μόνος του λίγο μετά το άνοιγμα και κάθε μισή ώρα· με το «🛰️ Έλεγχος ΑΑΔΕ» μέσα στην καμπάνα τον ζητάς αμέσως. Την πρώτη φορά δεν ειδοποιεί για ό,τι υπάρχει ήδη — μόνο για ό,τι εμφανίζεται από εκεί και πέρα.','li'],
+
   ['12. Χρήσιμα & συντομεύσεις','h2'],
   ['• Ctrl+K: αστραπιαία αναζήτηση πελάτη από παντού.  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']
 ];
@@ -5331,8 +5448,130 @@ async function downloadManual(){
     doc.save('e-timologio-egheiridio.pdf');
   }catch(e){toast('Εγχειρίδιο: '+e.message,'err');}
 }
+// ===== Σύνδεση με web server (μόνο στην εγκατάσταση γραφείου) ================
+// Το κλειδί πρόσβασης το φτιάχνει ο διαχειριστής ΣΤΟΝ SERVER· εδώ απλώς
+// επικολλάται. Η επιτυχής σύνδεση γράφει το `service.json` (mode: thin), που
+// είναι ό,τι διαβάζει η ίδια η εφαρμογή υπολογιστή όταν ξεκινά — γι' αυτό η
+// αλλαγή ισχύει στο επόμενο άνοιγμα, και το λέμε ρητά.
+async function loadLink(){
+  if(!$('#lkTable'))return;                      // εγκατάσταση server: δεν υπάρχει η κάρτα
+  try{
+    const d=await apost({auth:'link_get'});
+    if(!d.success)return;
+    const st=$('#lkState');
+    st.textContent=d.connected?'συνδεδεμένο':'τοπικά (offline)';
+    st.className='pill'+(d.connected?' ok':'');
+    $('#lkInfo').innerHTML=d.connected
+      ? `Server: <b>${esc(d.url)}</b>${d.label?(' · λογαριασμός <b>'+esc(d.label)+'</b>'):''}${d.since?(' · από '+esc(d.since)):''}`
+        +(d.last_sync?`<br>Τελευταίος συγχρονισμός: <b>${esc(d.last_sync)}</b>`:'')
+        +(d.connected&&!d.can_sync?'<br><span style="color:var(--warn,var(--muted))">Για συγχρονισμό, ξανασύνδεσε τον server από εδώ (χρειάζεται το κλειδί).</span>':'')
+      : 'Χωρίς σύνδεση: όλα μένουν σε αυτόν τον υπολογιστή.';
+    const sb=$('#lkSyncBtn');if(sb)sb.disabled=!d.connected;
+    $('#lkTable tbody').innerHTML=(d.items||[]).map(i=>`<tr>
+      <td>${esc(i.label||'—')}</td><td>${esc(i.vat)}</td>
+      <td>${d.web_link?`<span class="muted">${esc(d.web_link)}</span>`:'<span class="muted">—</span>'}</td>
+      <td class="right">${d.web_link?`<button class="ghost sm" onclick="linkCopy('${q1(d.web_link)}')">🔗 Αντιγραφή</button>
+        <button class="ghost sm" onclick="window.open('${q1(d.web_link)}','_blank')">🌐 Άνοιγμα</button>`:''}</td></tr>`)
+      .join('')||'<tr><td colspan="4" class="muted">Καμία εταιρεία σε αυτή την εγκατάσταση.</td></tr>';
+  }catch(e){}
+}
+async function linkConnect(){
+  const key=($('#lkKey').value||'').trim();
+  if(!key){toast('Επικόλλησε το κλειδί πρόσβασης','err');return;}
+  try{
+    const d=await apost({auth:'link_connect',key});
+    if(d.success){
+      $('#lkKey').value='';
+      toast('Συνδέθηκε: '+(d.label||d.url),'ok');
+      // Η αλλαγή ζει στο service.json, που το διαβάζει η εφαρμογή ΟΤΑΝ ΞΕΚΙΝΑ:
+      // χωρίς αυτό το μήνυμα, ο λογιστής θα περίμενε να αλλάξει κάτι τώρα.
+      alert('Η σύνδεση αποθηκεύτηκε. Κλείσε και ξανάνοιξε την εφαρμογή για να δουλέψει πάνω στον server.');
+      loadLink();
+    }
+  }catch(e){toast(e.message,'err');}
+}
+async function linkDisconnect(){
+  if(!confirm('Επιστροφή σε τοπική λειτουργία; Τα δεδομένα που ζουν στον server μένουν εκεί.'))return;
+  try{const d=await apost({auth:'link_disconnect'});
+    if(d.success){toast('Επιστροφή σε τοπική λειτουργία','ok');loadLink();}
+  }catch(e){toast(e.message,'err');}
+}
+// Αμφίδρομος: στέλνει ό,τι έγινε εδώ ΚΑΙ γράφει ό,τι έγινε στον server. Δεν
+// υπάρχει «σωστή» πλευρά — γι' αυτό και το κουμπί λέει «συγχρονισμός», όχι
+// «ανέβασμα».
+async function linkSync(){
+  const btn=$('#lkSyncBtn');if(btn)btn.disabled=true;
+  toast('Συγχρονισμός…','ok');
+  try{
+    const d=await apost({auth:'link_sync'});
+    const ok=(d.companies||[]).filter(c=>c.ok);
+    const bad=(d.companies||[]).filter(c=>!c.ok);
+    const sent=ok.reduce((n,c)=>n+c.sent.payments,0), recv=ok.reduce((n,c)=>n+c.recv.payments,0);
+    toast(bad.length
+      ? `Συγχρονισμός με σφάλματα: ${esc(bad[0].error||'')}`
+      : `Συγχρονίστηκαν ${ok.length} εταιρείες · ↑${sent} ↓${recv} πληρωμές`, bad.length?'err':'ok');
+    loadLink();
+  }catch(e){toast(e.message,'err');}
+  finally{if(btn)btn.disabled=false;}
+}
+async function loadBackup(){
+  if(!$('#bkState'))return;
+  try{
+    const d=await apost({auth:'backup_status'});
+    if(!d.success)return;
+    $('#bkState').textContent=d.count?`${d.count} αντίγραφα · τελευταίο ${d.last?d.last.at:''}`:'κανένα αντίγραφο ακόμη';
+    $('#bkFolder').textContent=d.folder||'';
+    const dl=$('#bkDl');if(dl)dl.disabled=!d.count;
+  }catch(e){}
+}
+async function backupRun(){
+  toast('Δημιουργία αντιγράφου…','ok');
+  try{
+    const d=await apost({auth:'backup_run'});
+    if(d.success){
+      toast(`Έτοιμο: ${d.name} (${(d.size/1024/1024).toFixed(1)} MB)`,'ok');
+      loadBackup();
+    }
+  }catch(e){toast(e.message,'err');}
+}
+function backupDownload(){
+  // Το κατέβασμα περνά από το ίδιο endpoint, ώστε να δουλεύει και μέσα στο
+  // παράθυρο της εφαρμογής (δεν υπάρχει Explorer εκεί).
+  window.open(API+'?backup_file=1'+(ACCOUNT?('&account='+encodeURIComponent(ACCOUNT)):''),'_blank');
+}
+function linkCopy(url){
+  if(!url)return;
+  try{navigator.clipboard.writeText(url);toast('Ο σύνδεσμος αντιγράφηκε','ok');}
+  catch(e){prompt('Αντίγραψε τον σύνδεσμο:',url);}
+}
+
 // ===== Issuance notifications (TODO 91) ======================================
 async function pollNotifCount(){try{const d=await api({notif_count:1});setBell(d.unread||0);}catch(e){}}
+
+// --- Έλεγχος ΑΑΔΕ: ειδοποιήσεις και για ό,τι ΔΕΝ εκδόθηκε από εδώ ------------
+// Η καμπάνα γέμιζε μόνο από εκδόσεις αυτής της εγκατάστασης. Ένα παραστατικό
+// που έβγαλε ο λογιστής από αλλού, ή που εκδόθηκε απευθείας στο e-Τιμολόγιο της
+// ΑΑΔΕ, δεν εμφανιζόταν ποτέ. Εδώ η εφαρμογή, κάθε φορά που έχει internet,
+// συγκρίνει την τοπική cache με την πλατφόρμα (`?sync=newdocs`) και ο server
+// γράφει ειδοποίηση για κάθε νέο ΜΑΡΚ. Σιωπηλό όταν δεν υπάρχει δίκτυο ή
+// σύνδεση ΑΑΔΕ — ο έλεγχος δεν είναι λόγος να δει ο χρήστης σφάλμα.
+let AADE_CHECK_BUSY=false;
+async function checkAadeNewDocs(silent=true){
+  if(AADE_CHECK_BUSY)return;
+  if(navigator.onLine===false)return;
+  AADE_CHECK_BUSY=true;
+  try{
+    const d=await api({sync:'newdocs'});
+    if(d&&d.success){
+      await pollNotifCount();
+      if(d.discovered>0)toast(d.discovered+' νέο/α παραστατικό/ά από την ΑΑΔΕ','ok');
+      else if(!silent)toast('Κανένα νέο παραστατικό στην ΑΑΔΕ','ok');
+    }else if(!silent)toast('Ο έλεγχος δεν ολοκληρώθηκε','err');
+  }catch(e){if(!silent)toast('Ο έλεγχος δεν ολοκληρώθηκε: '+e.message,'err');}
+  finally{AADE_CHECK_BUSY=false;}
+}
+// Ξαναδοκίμασε μόλις επιστρέψει το δίκτυο — αυτή είναι η «σύνδεση στο internet».
+window.addEventListener('online',()=>setTimeout(()=>checkAadeNewDocs(),4000));
 function setBell(n){const b=$('#bellBadge');if(!b)return;n=+n||0;if(n>0){b.hidden=false;b.textContent=n>99?'99+':n;}else b.hidden=true;}
 async function toggleNotifPanel(){const p=$('#notifPanel');const willOpen=p.hidden;p.hidden=!willOpen;if(willOpen)await loadNotifications();}
 document.addEventListener('click',e=>{const w=document.querySelector('.bell-wrap');const p=$('#notifPanel');if(w&&p&&!w.contains(e.target))p.hidden=true;});
@@ -5345,7 +5584,7 @@ function renderNotifications(items){const list=$('#notifList');
     const amt=n.amount_total!=null?fmt(n.amount_total)+' €':'';
     const who=esc(n.actor_name||n.actor_email||'');
     const buyer=esc(n.buyer_name||n.buyer_vat||'');
-    const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':'');
+    const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':(n.source==='aade'?' 🛰️':''));
     const acct=(IS_STAFF&&n.account_vat)?(' · ΑΦΜ '+esc(n.account_vat)):'';
     const seri=n.series?(' · Σειρά '+esc(n.series)+(n.aa?('/'+esc(n.aa)):'')):'';
     return `<div class="notif-item ${n.is_read?'':'unread'}" onclick="notifRead(${n.id},this)">
@@ -5474,6 +5713,10 @@ function addEyes(root){
 
 (async()=>{addEyes();loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
+  // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
+  // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε μισή ώρα.
+  setTimeout(()=>checkAadeNewDocs(),9000);
+  setInterval(()=>checkAadeNewDocs(),1800000);
   // First-time visitors: gently offer the tour once.
   if(!localStorage.getItem('etim_tour_done'))setTimeout(()=>{try{if(confirm('Καλωσήρθες! Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;'))startTour();else localStorage.setItem('etim_tour_done','1');}catch(e){}},900);
 })();

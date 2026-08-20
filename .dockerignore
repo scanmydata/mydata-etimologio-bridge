@@ -21,6 +21,8 @@ tools/make_icon.py
 
 # Τοπικά μυστικά/δεδομένα — δεν πρέπει ΠΟΤΕ να μπουν σε image
 config.php
+.env
+.env.*
 .enckey
 .cookies/
 *.sqlite

@@ -243,6 +243,26 @@ if ((Test-Path $sttExe) -and (Test-Path $sttModel)) {
 Write-Host "== 3.5/5  Φορητή PHP (installer\php) ==" -ForegroundColor Cyan
 $phpDir = Join-Path $PSScriptRoot "php"
 $phpExe = Join-Path $phpDir "php.exe"
+
+# Οι επεκτάσεις που κρατάμε μετά το κλάδεμα (δες παρακάτω). Ορίζονται ΕΔΩ γιατί
+# χρειάζονται και για τον έλεγχο φρεσκάδας: ένα κλαδεμένο δέντρο από παλιότερο
+# build δεν έχει όσες προστέθηκαν αργότερα, και σκέτη «υπάρχει το php.exe;»
+# έλεγχος θα το ξαναχρησιμοποιούσε — με το build να σκάει στην επαλήθευση.
+# ΤΟ php_sodium.dll ΕΙΝΑΙ ΥΠΟΧΡΕΩΤΙΚΟ: το crypto.php κρυπτογραφεί μ' αυτό όσα
+# αποθηκεύονται (κλειδιά ΑΑΔΕ, ονόματα πελατών, ποσά). Χωρίς την επέκταση η
+# enc() «υποχωρεί ήπια» και γράφει ΚΑΘΑΡΟ κείμενο — δηλαδή μια τοπική
+# εγκατάσταση κρατούσε τα subscription keys ασφράγιστα, χωρίς κανένα μήνυμα.
+$keep = @("php_pdo_sqlite.dll","php_sqlite3.dll","php_openssl.dll",
+          "php_mbstring.dll","php_curl.dll","php_pdo_pgsql.dll","php_sodium.dll")
+
+if (Test-Path $phpExe) {
+    $missing = $keep | Where-Object { -not (Test-Path (Join-Path $phpDir "ext\$_")) }
+    if ($missing) {
+        Write-Host "   Λείπουν επεκτάσεις ($($missing -join ', ')) — ξαναφέρνω τη φορητή PHP."
+        Remove-Item $phpDir -Recurse -Force
+    }
+}
+
 if (-not (Test-Path $phpExe)) {
     # Η ακριβής έκδοση ΔΕΝ καρφώνεται: το windows.php.net μετακινεί τα παλιά
     # builds στο /archives/ και ένα σταθερό URL σκάει με 404 μόλις βγει η επόμενη
@@ -284,6 +304,7 @@ extension=openssl
 extension=mbstring
 extension=curl
 extension=pdo_pgsql
+extension=sodium
 curl.cainfo = "cacert.pem"
 openssl.cafile = "cacert.pem"
 memory_limit = 256M
@@ -292,10 +313,8 @@ date.timezone = "Europe/Athens"
 "@ | Set-Content -Path (Join-Path $phpDir "php.ini") -Encoding utf8
 
 # Κλάδεμα: η διανομή έρχεται με 40 επεκτάσεις και ~30MB δεδομένα ICU. Εμείς
-# φορτώνουμε έξι. Χωρίς αυτό το βήμα ο installer φούσκωνε κατά ~35MB με oci8,
+# φορτώνουμε εφτά ($keep, πιο πάνω). Χωρίς αυτό το βήμα ο installer φούσκωνε κατά ~35MB με oci8,
 # firebird, snmp, ldap, imap, intl… που δεν καλούνται ποτέ.
-$keep = @("php_pdo_sqlite.dll","php_sqlite3.dll","php_openssl.dll",
-          "php_mbstring.dll","php_curl.dll","php_pdo_pgsql.dll")
 Get-ChildItem (Join-Path $phpDir "ext") -Filter *.dll |
     Where-Object { $keep -notcontains $_.Name } | Remove-Item -Force
 # icu*: μόνο για το php_intl που μόλις αφαιρέθηκε. glib/enchant: για το enchant.
@@ -308,7 +327,7 @@ foreach ($p in @("icudt*.dll","icuin*.dll","icuuc*.dll","icuio*.dll","glib-2.dll
 # Επαλήθευση ότι το κλάδεμα δεν έσπασε καμία από τις έξι: αν λείπει εξάρτηση, το
 # `php -m` δεν θα τη δείξει και η offline λειτουργία θα έσκαγε μόνο στον πελάτη.
 $loaded = & $phpExe -c (Join-Path $phpDir "php.ini") -m
-foreach ($need in @("PDO","pdo_sqlite","sqlite3","openssl","mbstring","curl")) {
+foreach ($need in @("PDO","pdo_sqlite","sqlite3","openssl","mbstring","curl","sodium")) {
     if ($loaded -notcontains $need) { throw "Η επέκταση '$need' δεν φορτώνει μετά το κλάδεμα της PHP" }
 }
 $phpSize = [math]::Round(((Get-ChildItem $phpDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB),1)

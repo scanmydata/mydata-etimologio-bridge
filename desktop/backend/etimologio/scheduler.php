@@ -45,7 +45,11 @@ if ($BASE === '') { slog('APP_BASE_URL not set in config.php — cannot reach th
 $ENDPOINT = $BASE . '/etimologio.php';
 
 // --- Single-instance lock so overlapping cron ticks don't double-issue ------
-$lockPath = __DIR__ . '/.scheduler.lock';
+// Το lock ζει δίπλα στα δεδομένα, όχι μέσα στο web root: στον container ο
+// φάκελος της εφαρμογής είναι σκόπιμα μη εγγράψιμος από τον χρήστη του web.
+$lockDir  = (defined('LOCAL_DB') && LOCAL_DB !== '') ? dirname(LOCAL_DB) : __DIR__;
+if (!is_dir($lockDir) || !is_writable($lockDir)) $lockDir = sys_get_temp_dir();
+$lockPath = $lockDir . '/.scheduler.lock';
 $lock = @fopen($lockPath, 'c');
 if ($lock && !flock($lock, LOCK_EX | LOCK_NB)) {
     slog('Another scheduler run is in progress — skipping this tick.');

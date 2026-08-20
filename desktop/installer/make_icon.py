@@ -3,7 +3,8 @@
     uv run --extra gui python installer/make_icon.py
 
 Βγάζει:
-  icon.ico          εικονίδιο για το exe, τον installer και τη γραμμή εργασιών
+  icon.ico          εικονίδιο για το exe και τη γραμμή εργασιών (λογότυπο myDATA)
+  installer-icon.ico  εικονίδιο του setup.exe — το σήμα ScanmyData/e-Τιμολόγιο
   logo.png          το λογότυπο σε PNG
   wizard-small.bmp  το λογότυπο στην κεφαλίδα του installer
   wizard-large.bmp  η πλαϊνή εικόνα στην πρώτη/τελευταία σελίδα του installer
@@ -38,6 +39,12 @@ ICO = HERE / "icon.ico"
 PNG = HERE / "logo.png"
 WIZARD_SMALL = HERE / "wizard-small.bmp"
 WIZARD_LARGE = HERE / "wizard-large.bmp"
+
+# Το setup.exe φοράει το σήμα ScanmyData (το ίδιο που δείχνει το πλαϊνό μενού
+# κάτω αριστερά όταν είσαι στο e-Τιμολόγιο Pro), όχι το λογότυπο του
+# Downloader: αυτό αναγνωρίζει ο πελάτης όταν του στέλνεις το αρχείο.
+BRAND_PNG = HERE / "etimologio-logo.png"
+INSTALLER_ICO = HERE / "installer-icon.ico"
 
 
 def render(renderer: QSvgRenderer, size: int) -> QImage:
@@ -102,6 +109,28 @@ def write_ico(images: list[QImage], path: Path) -> None:
     )
 
 
+def render_png(source: QImage, size: int) -> QImage:
+    """Ένα μέγεθος του σήματος, από την πηγαία εικόνα.
+
+    Κάθε μέγεθος βγαίνει με μία σμίκρυνση από το πρωτότυπο 512άρι (και όχι
+    αλυσιδωτά), αλλιώς τα μικρά μεγέθη μαζεύουν θολούρα από τα ενδιάμεσα.
+    """
+    scaled = source.scaled(
+        size, size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    if scaled.width() == size and scaled.height() == size:
+        return scaled
+    # Μη τετράγωνη πηγή: κεντράρισμα σε τετράγωνο καμβά, χωρίς παραμόρφωση.
+    canvas = QImage(size, size, QImage.Format.Format_ARGB32)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.drawImage((size - scaled.width()) // 2, (size - scaled.height()) // 2, scaled)
+    painter.end()
+    return canvas
+
+
 def wizard_bmp(
     renderer: QSvgRenderer, width: int, height: int, logo: int, background: str
 ) -> QImage:
@@ -143,7 +172,21 @@ def main() -> int:
     # Πλαϊνή εικόνα: το σκούρο μπλε της εφαρμογής, με το λογότυπο στη μέση.
     wizard_bmp(renderer, 192, 386, 128, "#0d2340").save(str(WIZARD_LARGE), "BMP")
 
-    for path in (ICO, PNG, WIZARD_SMALL, WIZARD_LARGE):
+    # Το εικονίδιο του installer: από το PNG του σήματος, όχι από το SVG.
+    if BRAND_PNG.exists():
+        brand = QImage(str(BRAND_PNG))
+        if brand.isNull():
+            print(f"Το {BRAND_PNG.name} δεν διαβάζεται", file=sys.stderr)
+            return 1
+        write_ico([render_png(brand, size) for size in SIZES], INSTALLER_ICO)
+    else:
+        print(f"ΠΡΟΣΟΧΗ: λείπει το {BRAND_PNG.name} — ο installer θα πάρει το εικονίδιο της εφαρμογής",
+              file=sys.stderr)
+
+    outputs = [ICO, PNG, WIZARD_SMALL, WIZARD_LARGE]
+    if INSTALLER_ICO.exists():
+        outputs.append(INSTALLER_ICO)
+    for path in outputs:
         print(f"Δημιουργήθηκε: {path.name}  ({path.stat().st_size:,} bytes)")
     return 0
 

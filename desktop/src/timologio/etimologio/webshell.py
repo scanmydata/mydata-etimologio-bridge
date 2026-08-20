@@ -224,8 +224,22 @@ class EtimologioWebShell(QWidget):
         self._retry.show()
 
     def _on_error(self, message: str) -> None:
-        self._set_status(f"Το τοπικό backend δεν ξεκίνησε.\n\n{message}")
+        thin = self._service.mode() == "thin"
+        where = (f"Ο server ({self._service.server_url()}) δεν απαντά."
+                 if thin else "Το τοπικό backend δεν ξεκίνησε.")
+        self._set_status(f"{where}\n\n{message}")
         self._retry.show()
+        self._go_local.setVisible(thin)
+
+    def _back_to_local(self) -> None:
+        """Πίσω στα δεδομένα αυτού του υπολογιστή, χωρίς να χρειάζεται server.
+
+        Το ίδιο κάνει και το «Αποσύνδεση» των Ρυθμίσεων — αλλά εκείνο ζει μέσα
+        στη σελίδα, που εδώ ακριβώς δεν φορτώνει.
+        """
+        self._service.set_mode("offline")
+        self._go_local.hide()
+        self._restart()
 
     def _set_status(self, text: str) -> None:
         self._status.setText(text)
