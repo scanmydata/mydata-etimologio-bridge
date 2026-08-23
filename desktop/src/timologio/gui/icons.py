@@ -340,6 +340,7 @@ _logo_cache: dict[tuple[int, bool], QPixmap] = {}
 #: (`assets/icons/app-icon-512.png`), ώστε οι δύο όψεις του ίδιου προϊόντος να
 #: έχουν το ίδιο σήμα.
 _ETIMOLOGIO_LOGO = "etimologio-logo.png"
+_DOWNLOADER_LOGO = "logo-downloader.png"
 
 
 def _asset_path(name: str) -> Path | None:
@@ -404,6 +405,23 @@ def logo_pixmap(size: int = 38, etimologio: bool = False) -> QPixmap:
         painter.end()
         _logo_cache[key] = pixmap
         return pixmap
+
+    # Πρώτα το PNG του νέου σήματος, μετά το παλιό SVG. Το σχέδιο δεν είναι
+    # πια γράμματα σε πλαίσιο αλλά εικονογράφηση με σκιάσεις — δεν ξαναγράφεται
+    # ως SVG, και δεν υπάρχει λόγος: στα 38 pixel του μενού ένα καλό PNG είναι
+    # ισάξιο. Το SVG μένει ως εφεδρεία, ώστε μια εγκατάσταση χωρίς το νέο
+    # αρχείο να συνεχίσει να δείχνει λογότυπο αντί για κενό.
+    brand = _asset_path(_DOWNLOADER_LOGO)
+    if brand is not None:
+        source = QPixmap(str(brand))
+        if not source.isNull():
+            scaled = source.scaled(
+                size, size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            _logo_cache[key] = scaled
+            return scaled
 
     path = _logo_path()
     if path is not None:
