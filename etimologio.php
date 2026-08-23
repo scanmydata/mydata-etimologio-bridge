@@ -3834,6 +3834,7 @@ if ($authAction !== '') {
         // στον server. Σε εγκατάσταση χωρίς DESKTOP_TOKEN απαντούν 404, ώστε να
         // μην υπάρχει καν επιφάνεια για κατάχρηση.
         case 'link_get': case 'link_connect': case 'link_disconnect':
+        case 'link_use_server': case 'link_use_local':
         case 'link_sync': case 'backup_status': case 'backup_run': {
             if (!link_is_local()) jsonError('Διαθέσιμο μόνο στην εφαρμογή υπολογιστή', 404);
             // Ο διακόπτης `?auth=` τρέχει ΠΡΙΝ την πύλη σύνδεσης (εκεί ζουν και
@@ -3848,9 +3849,16 @@ if ($authAction !== '') {
                     foreach (auth_visible_accounts($me) as $a) {
                         $items[] = ['vat' => (string)$a['vat'], 'label' => (string)$a['label']];
                     }
+                    // ΤΡΕΙΣ καταστάσεις, όχι δύο. Το «έχω κλειδί» δεν σημαίνει
+                    // «δουλεύω πάνω στον server»: ανάμεσά τους στέκεται μια ρητή
+                    // απόφαση του χρήστη, γιατί η δεύτερη αλλάζει το πού ζουν τα
+                    // δεδομένα που βλέπει και με ποια στοιχεία μπαίνει.
+                    $thin = ($conf['mode'] ?? 'offline') === 'thin' && $url !== '';
                     jsonResponse([
                         'success'   => true,
-                        'connected' => ($conf['mode'] ?? 'offline') === 'thin' && $url !== '',
+                        'connected' => $thin,
+                        'thin'      => $thin,
+                        'has_key'   => setting_get('link.key') !== '',
                         'url'       => $url,
                         'web_link'  => $url !== '' ? rtrim($url, '/') . '/app.php' : '',
                         'label'     => setting_get('link.label'),
@@ -3874,19 +3882,29 @@ if ($authAction !== '') {
                     $d   = $r['data'];
                     $url = rtrim((string)($d['url'] ?? $base), '/');
 
-                    // Η αλλαγή γράφεται στο service.json — το ίδιο αρχείο που
-                    // διαβάζει η εφαρμογή υπολογιστή για να αποφασίσει αν θα
-                    // σηκώσει τοπικό backend ή θα μιλήσει στον server.
-                    if (!link_service_write(['mode' => 'thin', 'server_url' => $url])) {
-                        jsonError('Δεν μπόρεσα να γράψω το service.json δίπλα στα δεδομένα');
-                    }
-                    // Το κλειδί μένει (κρυπτογραφημένο, όπως τα στοιχεία email):
-                    // ο συγχρονισμός τρέχει αργότερα, χωρίς τον χρήστη μπροστά.
+                    // ⚠️ ΔΕΝ γράφουμε εδώ `mode: thin`. Το κάναμε, και ήταν
+                    // παγίδα: στο επόμενο άνοιγμα η εφαρμογή μιλούσε στον server,
+                    // ο οποίος ΔΕΝ ήξερε τον τοπικό λογαριασμό — ο λογιστής
+                    // έβλεπε φόρμα σύνδεσης, τα τοπικά του στοιχεία δεν
+                    // δούλευαν εκεί (σωστά: είναι άλλη βάση), και τα δεδομένα
+                    // του έμεναν άθικτα στον δίσκο αλλά απρόσιτα.
+                    //
+                    // Το κλειδί μόνο του δεν φτιάχνει λογαριασμό: τον φτιάχνει ο
+                    // διαχειριστής του server (εγγραφή, επιβεβαίωση email,
+                    // ρόλος λογιστή) και ΜΕΤΑ βγάζει κλειδί γι' αυτόν. Εδώ
+                    // λοιπόν καταχωρούμε το κλειδί, ανεβάζουμε τα δεδομένα, και
+                    // η μετάβαση σε λειτουργία server μένει ξεχωριστή απόφαση.
                     setting_set('link.key', $key);
                     setting_set('link.label', (string)($d['label'] ?? $d['email'] ?? ''));
                     setting_set('link.since', date('Y-m-d H:i'));
+                    // Πρώτος συγχρονισμός αμέσως: αλλιώς ο server μένει άδειος
+                    // και η «σύνδεση» δεν έχει δείξει τίποτα.
+                    $sync = link_sync_all($me);
                     jsonResponse(['success' => true, 'url' => $url,
                                   'label' => (string)($d['label'] ?? ''),
+                                  'email' => (string)($d['email'] ?? ''),
+                                  'role'  => (string)($d['role'] ?? ''),
+                                  'synced' => $sync,
                                   'web_link' => $url . '/app.php']);
                 }
                 case 'link_sync': {
@@ -3953,6 +3971,34 @@ if ($authAction !== '') {
                     $r = link_backup_run();
                     if (!$r['ok']) jsonError('Το αντίγραφο απέτυχε: ' . $r['error']);
                     jsonResponse(['success' => true] + $r);
+                }
+                case 'link_use_server': {
+                    // Η ρητή μετάβαση: από εδώ και πέρα η εφαρμογή μιλά στον
+                    // server. Απαιτεί καταχωρημένο κλειδί — χωρίς αυτό θα
+                    // έγραφε «thin» χωρίς διεύθυνση και η εφαρμογή δεν θα
+                    // άνοιγε ΚΑΘΟΛΟΥ στο επόμενο ξεκίνημα.
+                    [$base, $secret] = link_decode_key(setting_get('link.key'));
+                    if ($base === '' || $secret === '') {
+                        jsonError('Καταχώρησε πρώτα κλειδί πρόσβασης');
+                    }
+                    // Και ελέγχουμε ΤΩΡΑ ότι ο server απαντά: μια μετάβαση σε
+                    // server που δεν σηκώνεται αφήνει τον χρήστη με λευκή οθόνη.
+                    $r = link_call($base, ['auth' => 'access_provision'], ['key' => $secret]);
+                    if (!$r['ok']) jsonError('Ο server δεν απαντά: ' . $r['error']);
+                    $url = rtrim((string)($r['data']['url'] ?? $base), '/');
+                    if (!link_service_write(['mode' => 'thin', 'server_url' => $url])) {
+                        jsonError('Δεν μπόρεσα να γράψω το service.json δίπλα στα δεδομένα');
+                    }
+                    jsonResponse(['success' => true, 'url' => $url,
+                                  'email' => (string)($r['data']['email'] ?? '')]);
+                }
+                case 'link_use_local': {
+                    // Επιστροφή στα τοπικά δεδομένα ΧΩΡΙΣ να χαθεί το κλειδί:
+                    // ο λογιστής γυρίζει μπρος-πίσω, δεν ξαναρχίζει από την αρχή.
+                    if (!link_service_write(['mode' => 'offline'])) {
+                        jsonError('Δεν μπόρεσα να γράψω το service.json δίπλα στα δεδομένα');
+                    }
+                    jsonResponse(['success' => true]);
                 }
                 case 'link_disconnect': {
                     if (!link_service_write(['mode' => 'offline'])) {
