@@ -1,0 +1,6 @@
+# Τα scripts που τρέχουν ΜΕΣΑ στον container μένουν LF ό,τι κι αν λέει το
+# core.autocrlf του μηχανήματος. Ένα entrypoint.sh με CRLF δίνει
+# «/bin/sh^M: bad interpreter» και ο container δεν ξεκινά καν.
+*.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
