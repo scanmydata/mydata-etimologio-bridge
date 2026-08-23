@@ -100,6 +100,35 @@ docker compose logs -f etimologio
 
 ---
 
+## 3β. Αυτόματο deploy σε κάθε push (webhook)
+
+Με **Auto Deploy** αναμμένο (Advanced), το Coolify χτίζει μόνο του σε κάθε push
+στο `deploy/server`. Χρειάζεται webhook στο GitHub — και **δύο** πράγματα που
+αστοχούν σιωπηλά:
+
+1. **Η διεύθυνση.** Η σελίδα Webhooks του Coolify δείχνει `http://<ip>:8000/…`
+   όταν λείπει το *Instance's Domain* (Settings → Configuration). Αυτή η
+   διεύθυνση δεν είναι προσβάσιμη από το GitHub σε home server. Βάλε στο GitHub
+   (repo → Settings → Webhooks) τη **δημόσια** διεύθυνση του πίνακα:
+
+   ```
+   https://<coolify-hostname>/webhooks/source/github/events/manual
+   ```
+
+2. **Το μυστικό.** Πρέπει να είναι **ακριβώς το ίδιο** στα δύο μέρη: στο πεδίο
+   *GitHub Webhook Secret* της εφαρμογής στο Coolify και στο πεδίο *Secret* του
+   webhook στο GitHub.
+
+> ⚠️ Όταν τα μυστικά διαφέρουν, **το GitHub δείχνει πράσινο `200 OK`** και τίποτα
+> δεν χτίζεται: το Coolify απορρίπτει την υπογραφή αλλά απαντά κανονικά. Μην
+> κρίνεις από το χρώμα στο GitHub — κρίνε από τη λίστα **Deployments**. Αν κάθε
+> γραμμή εκεί λέει «Manual», ο webhook δεν έχει πυροδοτήσει ποτέ.
+
+Έλεγχος: κάνε ένα οποιοδήποτε push και δες να εμφανίζεται μέσα σε δευτερόλεπτα
+νέα γραμμή στα Deployments.
+
+---
+
 ## 4. Το volume `/data` — μη το χάσεις
 
 | Αρχείο | Τι είναι |
