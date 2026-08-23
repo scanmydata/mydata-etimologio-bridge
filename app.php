@@ -355,6 +355,14 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
      δεν έχει επιλεγεί πελάτης — τα δύο κουμπιά έμοιαζαν νεκρά ακριβώς τότε που
      τα χρειαζόσουν. Το toast δεν είναι διαδραστικό: δεν έχει λόγο να δέχεται
      κλικ ποτέ. */
+  /* Το κουμπί του μενού και το σκοτεινό φόντο του συρταριού υπάρχουν μόνο σε
+     στενή οθόνη — τα media queries πιο κάτω τα ανάβουν. */
+  .nav-burger{display:none;align-self:center;font-size:17px;line-height:1;padding:9px 12px}
+  #navScrim{position:fixed;inset:0;z-index:59;background:rgba(3,8,16,.55);
+            opacity:0;transition:opacity .2s ease}
+  body.nav-open #navScrim{opacity:1}
+  body.nav-open{overflow:hidden}
+  body.embedded .nav-burger{display:none!important}
   /* --- Μικρές οθόνες ------------------------------------------------------
      Η εφαρμογή σχεδιάστηκε για γραφείο, αλλά ο λογιστής την ανοίγει και από
      κινητό για να δει ένα υπόλοιπο ή να στείλει ένα PDF. Δύο σκαλοπάτια: σε
@@ -366,27 +374,31 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     header #who{display:none}          /* ό,τι είναι διακοσμητικό φεύγει πρώτο */
   }
   @media (max-width:760px){
-    .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr;
-         grid-template-areas:"side" "top" "main";height:auto;min-height:100vh}
+    /* ΣΥΡΤΑΡΙ, όχι οριζόντια μπάρα. Η μπάρα ήταν συμβιβασμός και κόστιζε
+       διπλά: οι 14 ενότητες κυλούσαν σε μια λωρίδα που έκρυβε τις μισές, και
+       οι διακόπτες με το υποσέλιδο δεν χωρούσαν πουθενά — έπρεπε να κρυφτούν.
+       Το συρτάρι βγαίνει ΠΑΝΩ από το περιεχόμενο, χωρίς να του τρώει πλάτος,
+       και χωράει ολόκληρο το μενού όπως στον υπολογιστή. */
+    .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;
+         grid-template-areas:"top" "main";height:auto;min-height:100vh;min-height:100dvh}
     /* Το πρόθεμα `body` ανεβάζει την ειδικότητα: οι γενικοί κανόνες της μπάρας
        γράφονται ΠΙΟ ΚΑΤΩ στο φύλλο και αλλιώς θα κέρδιζαν μέσα στο media. */
-    body .app.offline{grid-template-rows:auto auto auto 1fr;
-                      grid-template-areas:"net" "side" "top" "main"}
+    body .app.offline{grid-template-rows:auto auto 1fr;
+                      grid-template-areas:"net" "top" "main"}
     body #netBar{padding:8px 12px;font-size:12.5px;flex-wrap:wrap}
-    aside{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px;
-          border-right:none;border-bottom:1px solid var(--line);padding:6px 10px}
-    .brand{padding:6px 8px;font-size:15px}
-    /* ⚠️ ΜΙΑ σειρά που κυλά, όχι αναδίπλωση: με `flex-wrap` οι 14 ενότητες
-       γίνονταν μπλοκ 594px και έσπρωχναν την κεφαλίδα στο κάτω μέρος της
-       οθόνης — ακριβώς κάτω από το πλωτό κουμπί του βοηθού, που σκέπαζε την
-       «Έξοδο». */
-    .menu{display:flex;flex-wrap:nowrap;gap:4px;overflow-x:auto;padding:0 0 4px;
-          scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
-    .nav-item{padding:7px 10px;font-size:13px;white-space:nowrap;flex:none;scroll-snap-align:start}
-    .nav-item .ic{margin-right:2px}
-    /* Οι διακόπτες και το υποσέλιδο δεν χωρούν σε μπάρα — ζουν στις Ρυθμίσεις. */
-    .side-controls,.side-foot{display:none}
-    header{flex-wrap:wrap;gap:8px;padding:10px 12px}
+    .nav-burger{display:inline-flex}
+    aside{position:fixed;top:0;left:0;bottom:0;z-index:60;
+          width:min(84vw,290px);max-width:100%;padding:0;
+          border-right:1px solid var(--line);border-bottom:none;
+          overflow-y:auto;-webkit-overflow-scrolling:touch;
+          transform:translateX(-100%);transition:transform .22s ease}
+    body.nav-open aside{transform:none;box-shadow:var(--shadow)}
+    .brand{padding:16px 16px 10px;font-size:17px}
+    .menu{flex:0 0 auto;overflow:visible;padding:8px}
+    .nav-item{padding:12px 13px;font-size:15px}
+    /* Ο αντίχειρας δεν είναι δείκτης ποντικιού: τίποτα κάτω από 44px. */
+    header .ghost.sm,.nav-burger{min-height:40px}
+    header{flex-wrap:wrap;gap:8px;padding:10px 12px;align-items:center}
     header>.field{flex:1 1 100%}
     .search-trigger{flex:1 1 100%}
     main{padding:12px}
@@ -487,7 +499,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 </head>
 <body class="<?= $__embedded ? 'embedded' : '' ?>">
 <div class="app">
-  <aside>
+  <aside id="sideNav">
     <div class="brand"><img src="assets/icons/app-icon-192.png" alt="" class="brand-ic">e-Timologio <span>Pro</span></div>
     <nav class="menu" id="menu">
       <div class="nav-item active" data-view="issue"><span class="ic">🧾</span> Έκδοση</div>
@@ -531,6 +543,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <img src="assets/brand/scanmydata-dark.png" alt="ScanmyData" class="bm-dark">
       </a></div>
   </aside>
+  <!-- Το σκοτεινό φόντο του συρταριού: κλείνει με ένα άγγιγμα οπουδήποτε. -->
+  <div id="navScrim" onclick="closeNav()" hidden></div>
 
   <div id="netBar" role="status" aria-live="polite">
     <span class="nb-dot"></span>
@@ -541,6 +555,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   </div>
 
   <header>
+    <button class="ghost sm nav-burger" id="navBurger" onclick="toggleNav()"
+            aria-label="Μενού" aria-expanded="false" aria-controls="sideNav">☰</button>
     <div class="field" style="min-width:230px">
       <label class="hint">Λογαριασμός (επιχείρηση)</label>
       <select id="account"></select>
@@ -1938,7 +1954,24 @@ function enhanceViewTables(v){
   const view=$('#view-'+v);if(!view)return;
   view.querySelectorAll('table[id]').forEach(t=>attachColumnFilters(t.id));
 }
-document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>showView(n.dataset.view));
+document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{showView(n.dataset.view);closeNav();});
+
+// --- Το μενού σε κινητό ----------------------------------------------------
+// Σε στενή οθόνη το πλαϊνό μενού είναι συρτάρι. Κλείνει με ΚΑΘΕ τρόπο που
+// περιμένει ο χρήστης: επιλογή ενότητας, άγγιγμα στο φόντο, Escape, ή γύρισμα
+// της οθόνης σε πλάτος όπου το μενού ξαναγίνεται μόνιμο — αλλιώς έμενε ανοιχτό
+// από πάνω και έμοιαζε με κολλημένη εφαρμογή.
+function navIsDrawer(){return window.matchMedia('(max-width:760px)').matches;}
+function setNav(open){
+  document.body.classList.toggle('nav-open',open);
+  const scrim=$('#navScrim'),burger=$('#navBurger');
+  if(scrim)scrim.hidden=!open;
+  if(burger)burger.setAttribute('aria-expanded',open?'true':'false');
+}
+function toggleNav(){setNav(!document.body.classList.contains('nav-open'));}
+function closeNav(){if(document.body.classList.contains('nav-open'))setNav(false);}
+window.addEventListener('keydown',e=>{if(e.key==='Escape')closeNav();});
+window.addEventListener('resize',()=>{if(!navIsDrawer())closeNav();});
 
 // Accounts
 async function initAccounts(){
