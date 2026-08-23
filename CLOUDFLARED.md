@@ -7,14 +7,18 @@
 
 ## Τι πρέπει να εκτεθεί
 
-Ένα και μόνο πράγμα: ο container `etimologio`, **HTTP στη θύρα 8080**.
+Ένα και μόνο πράγμα: ο container `etimologio`, **HTTP στη θύρα 8090**.
+
+> Όχι 8080: εκεί απαντά **το ίδιο το Coolify** σε αυτόν τον server. Αν δείξεις
+> το tunnel στην 8080 θα βγάλεις τον πίνακα του Coolify στο internet, όχι την
+> εφαρμογή.
 
 | | |
 |---|---|
 | Πρωτόκολλο origin | `http` (όχι https — το TLS το κάνει η Cloudflare) |
-| Θύρα | `8080` |
+| Θύρα | `8090` |
 | Health endpoint | `GET /healthz.php` → `ok` (και `?db=1` για «απαντά και η βάση») |
-| Προτεινόμενο hostname | π.χ. `timologio.<το-domain-σου>` |
+| Hostname | `etimologiopro.scanmydata.gr` |
 
 Ποιος το χρησιμοποιεί: οι πελάτες‑επιχειρήσεις από browser (`/app.php`) **και**
 η εφαρμογή υπολογιστή σε λειτουργία thin client (`/etimologio.php`). Είναι το
@@ -44,13 +48,13 @@ ingress** και η προσθήκη γίνεται από το dashboard (βή�
 ingress:
   # …οι υπάρχουσες εγγραφές — ΜΗΝ τις πειράξεις…
 
-  - hostname: timologio.example.gr
-    service: http://etimologio:8080          # δες §3 για το σωστό host
+  - hostname: etimologiopro.scanmydata.gr
+    service: http://etimologio:8090          # δες §3 για το σωστό host
     originRequest:
       noTLSVerify: true
       connectTimeout: 30s
       # Το κατέβασμα PDF από την ΑΑΔΕ και η μαζική εκτύπωση μπορεί να αργήσουν.
-      httpHostHeader: timologio.example.gr
+      httpHostHeader: etimologiopro.scanmydata.gr
 
   - service: http_status:404                 # μένει ΤΕΛΕΥΤΑΙΟ
 ```
@@ -65,7 +69,7 @@ sudo systemctl reload cloudflared           # ή: docker restart cloudflared
 Και η DNS εγγραφή:
 
 ```bash
-cloudflared tunnel route dns <TUNNEL> timologio.example.gr
+cloudflared tunnel route dns <TUNNEL> etimologiopro.scanmydata.gr
 ```
 
 ### 2β. Tunnel από το dashboard
@@ -74,7 +78,7 @@ Zero Trust → **Networks → Tunnels** → το tunnel σου → **Public Host
 **Add a public hostname**:
 
 - Subdomain `timologio`, Domain το δικό σου
-- Type **HTTP**, URL `etimologio:8080` (ή δες §3)
+- Type **HTTP**, URL `etimologio:8090` (ή δες §3)
 - Additional settings → **No TLS Verify: On**
 
 ### 3. Ποιο host:port να βάλεις
@@ -83,10 +87,10 @@ Zero Trust → **Networks → Tunnels** → το tunnel σου → **Public Host
 
 | Το cloudflared τρέχει… | Βάλε |
 |---|---|
-| σε container **στο ίδιο docker network** με την εφαρμογή | `http://etimologio:8080` |
-| σε container σε **άλλο** network | βάλε το στο ίδιο network, ή `http://<ip-του-host>:8080` |
-| ως **systemd service στον host** | `http://127.0.0.1:8080` |
-| με **Coolify** | ο proxy του Coolify (Traefik). Στο ingress βάλε το URL που δείχνει το Coolify για την εφαρμογή· εναλλακτικά, βάλε το cloudflared στο δίκτυο του Coolify και δείξε απευθείας `http://<service>:8080` |
+| σε container **στο ίδιο docker network** με την εφαρμογή | `http://etimologio:8090` |
+| σε container σε **άλλο** network | βάλε το στο ίδιο network, ή `http://<ip-του-host>:8090` |
+| ως **systemd service στον host** | `http://127.0.0.1:8090` |
+| με **Coolify** | ο proxy του Coolify (Traefik). Στο ingress βάλε το URL που δείχνει το Coolify για την εφαρμογή· εναλλακτικά, βάλε το cloudflared στο δίκτυο του Coolify και δείξε απευθείας `http://<service>:8090` |
 
 Αν το compose του repo τρέχει αυτούσιο, το service ονομάζεται **`etimologio`**
 και το network **`etimologio_net`**. Για να μπει το cloudflared εκεί:
@@ -107,14 +111,14 @@ networks:
 
 ```bash
 # από τον server, πριν το tunnel
-curl -s http://localhost:8080/healthz.php                       # → ok
+curl -s http://localhost:8090/healthz.php                       # → ok
 
 # από τον container του cloudflared (ότι βλέπει το origin)
-docker exec cloudflared wget -qO- http://etimologio:8080/healthz.php
+docker exec cloudflared wget -qO- http://etimologio:8090/healthz.php
 
 # απ' έξω, μετά το DNS
-curl -s https://timologio.example.gr/healthz.php                 # → ok
-curl -sI https://timologio.example.gr/app.php | head -3          # → 200/302
+curl -s https://etimologiopro.scanmydata.gr/healthz.php                 # → ok
+curl -sI https://etimologiopro.scanmydata.gr/app.php | head -3          # → 200/302
 ```
 
 Αν το `/healthz.php` απαντά έξω αλλά το `/app.php` όχι, το πρόβλημα είναι στην

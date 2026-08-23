@@ -18,7 +18,7 @@ repo, αλλά **δεν μπαίνει στο image** — το `.dockerignore` �
  ┌───────────────────┐                  ┌────────────────────────────────┐
  │ Downloader        │                  │ cloudflared ──► Coolify proxy  │
  │ e‑Τιμολόγιο Pro   │ ── HTTPS ───────►│      │                         │
- └───────────────────┘                  │ etimologio (αυτό το image):8080│
+ └───────────────────┘                  │ etimologio (αυτό το image):8090│
  Πελάτες ── HTTPS (browser) ───────────►│ Postgres  +  volume → /data    │
                                         └────────────────────────────────┘
 ```
@@ -42,7 +42,7 @@ docker compose up -d
 docker compose logs -f etimologio
 ```
 
-Έλεγχος: `curl http://localhost:8080/healthz.php` → `ok`
+Έλεγχος: `curl http://localhost:8090/healthz.php` → `ok`
 
 Το compose σηκώνει **Postgres 16** + την εφαρμογή, με named volumes για τα
 δεδομένα. Δεν εκθέτει τίποτα στο internet — αυτό το κάνει το cloudflared.
@@ -56,7 +56,11 @@ docker compose logs -f etimologio
 2. **Εφαρμογή:** *New Resource → Application → Git repository*
    - Branch: **`deploy/server`**
    - Build Pack: **Dockerfile**
-   - Port: **8080** (η μόνη θύρα που εκθέτει το image)
+   - Port: **8090** (η μόνη θύρα που εκθέτει το image)
+
+   > Όχι 8080: σε αυτόν τον server την κρατά **το ίδιο το Coolify**. Ο αριθμός
+   > πρέπει να είναι ο ίδιος σε τρία σημεία — εδώ, στο `EXPOSE` του Dockerfile
+   > και στο ingress του cloudflared.
 3. **Volume (υποχρεωτικό):** mount στο **`/data`**.
 4. **Env:** `DATABASE_URL` = το URL του βήματος 1, συν όσα θέλεις από τον πίνακα
    του §3. Το `DATABASE_URL` σπάει μόνο του σε DSN/χρήστη/κωδικό στο boot
@@ -162,9 +166,9 @@ docker compose exec etimologio php tools/pg_smoke.php
 Χειροκίνητα, αν θέλεις τα επιμέρους:
 
 ```bash
-curl -s http://localhost:8080/healthz.php                 # → ok (ζει η εφαρμογή)
-curl -s "http://localhost:8080/healthz.php?db=1"          # → ok (απαντά και η βάση)
-curl -s "http://localhost:8080/etimologio.php?auth=me"    # → JSON (χωρίς σύνδεση)
+curl -s http://localhost:8090/healthz.php                 # → ok (ζει η εφαρμογή)
+curl -s "http://localhost:8090/healthz.php?db=1"          # → ok (απαντά και η βάση)
+curl -s "http://localhost:8090/etimologio.php?auth=me"    # → JSON (χωρίς σύνδεση)
 docker compose exec etimologio php -m | grep -E "pdo_pgsql|sodium|curl|zip"
 docker compose exec postgres psql -U etimologio -d etimologio -c '\d account_managers'
 ```
@@ -278,16 +282,16 @@ Cloudflare **Access** μπροστά στο hostname — δες [`CLOUDFLARED.md
 
 ### Α. Ο server (μία φορά)
 
-1. Deploy στο Coolify όπως στο §2 — Dockerfile, θύρα **8080**, volume `/data`,
+1. Deploy στο Coolify όπως στο §2 — Dockerfile, θύρα **8090**, volume `/data`,
    `DATABASE_URL` από την Postgres του Coolify.
 2. Πρόσθεσε το hostname στο υπάρχον tunnel ([`CLOUDFLARED.md`](CLOUDFLARED.md)).
-3. Βάλε το τελικό `APP_URL` (π.χ. `https://timologio.example.gr`) και redeploy.
+3. Βάλε το τελικό `APP_URL` (π.χ. `https://etimologiopro.scanmydata.gr`) και redeploy.
    **Το `APP_URL` μπαίνει μέσα στο κλειδί** — αν είναι λάθος, η εφαρμογή
    υπολογιστή θα ψάχνει λάθος διεύθυνση.
 4. Έλεγχος πριν προχωρήσεις:
 
 ```bash
-curl -s https://timologio.example.gr/healthz.php?db=1
+curl -s https://etimologiopro.scanmydata.gr/healthz.php?db=1
 ```
 
    Πρέπει να απαντήσει `ok`. Μετά, μέσα από τον container:

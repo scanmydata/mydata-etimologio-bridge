@@ -54,7 +54,7 @@ set_exception_handler(static function (\Throwable $e): void {
 });
 
 // --- Πίσω από proxy (cloudflared/Coolify) -----------------------------------
-// Ο container μιλά καθαρό HTTP στη 8080· το TLS το τερματίζει η Cloudflare. Ό,τι
+// Ο container μιλά καθαρό HTTP στη 8090· το TLS το τερματίζει η Cloudflare. Ό,τι
 // ρωτά «είναι HTTPS;» πρέπει να κοιτά και την κεφαλίδα του proxy, αλλιώς το
 // cookie μένει χωρίς Secure και οι σύνδεσμοι των email βγαίνουν http://.
 function req_is_https(): bool {

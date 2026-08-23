@@ -3,10 +3,10 @@
 # One container serves both halves of the product: the browser UI (app.php) for
 # client businesses and the JSON API that the desktop app talks to in thin-client
 # mode. Deployed on the home server/VPS through Coolify, which builds from the
-# repo, injects the env below and routes to port 8080 (cloudflared in front).
+# repo, injects the env below and routes to port 8090 (cloudflared in front).
 #
 # Build:  docker build -t etimologio .
-# Run:    docker run -p 8080:8080 --env-file .env -v etim-data:/data etimologio
+# Run:    docker run -p 8090:8090 --env-file .env -v etim-data:/data etimologio
 
 FROM php:8.3-apache
 
@@ -54,11 +54,16 @@ RUN set -eux; \
     php -m | grep -Eq '^(pdo_pgsql)$'; \
     php -m | grep -Eq '^(sodium)$'
 
-# Apache: rewrite/headers on, listen where Coolify and cloudflared expect (8080),
+# Apache: rewrite/headers on, listen where Coolify and cloudflared expect (8090),
 # and a ServerName so startup does not warn on every boot.
+#
+# NOT 8080: on this home server Coolify itself already answers there, so an app
+# on 8080 either refuses to bind or shadows the panel. 8090 is the app's port
+# everywhere -- EXPOSE, healthcheck, compose, the Coolify "Ports" field and the
+# cloudflared ingress must all say the same number.
 RUN a2enmod rewrite headers \
- && sed -ri 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
- && sed -ri 's!<VirtualHost \*:80>!<VirtualHost *:8080>!' /etc/apache2/sites-available/000-default.conf \
+ && sed -ri 's/^Listen 80$/Listen 8090/' /etc/apache2/ports.conf \
+ && sed -ri 's!<VirtualHost \*:80>!<VirtualHost *:8090>!' /etc/apache2/sites-available/000-default.conf \
  && printf 'ServerName etimologio\n' > /etc/apache2/conf-available/servername.conf \
  && a2enconf servername
 
@@ -101,10 +106,10 @@ COPY deploy/dburl.php /usr/local/bin/dburl.php
 
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 8080
+EXPOSE 8090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD php -r 'exit(@file_get_contents("http://127.0.0.1:8080/healthz.php")==="ok"?0:1);'
+  CMD php -r 'exit(@file_get_contents("http://127.0.0.1:8090/healthz.php")==="ok"?0:1);'
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 

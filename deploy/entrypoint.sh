@@ -70,7 +70,7 @@ const SMTP_PASS           = $(php_str "${SMTP_PASS:-}");
 const APP_URL             = $(php_str "$(printf '%s' "${APP_URL:-}" | sed 's:/*$::')");
 
 const SCHED_TOKEN        = $(php_str "${SCHED_TOKEN:-}");
-const APP_BASE_URL       = 'http://127.0.0.1:8080';
+const APP_BASE_URL       = 'http://127.0.0.1:8090';
 const NOTIFY_ADMIN_EMAIL = $(php_str "${NOTIFY_ADMIN_EMAIL:-}");
 PHP
 

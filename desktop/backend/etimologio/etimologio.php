@@ -4080,7 +4080,7 @@ if ($authAction !== '') {
 $schedTok = (string)($_POST['sched_token'] ?? $_GET['sched_token'] ?? '');
 if ($schedTok !== '' && defined('SCHED_TOKEN') && SCHED_TOKEN !== '' && hash_equals((string)SCHED_TOKEN, $schedTok)) {
     // req_is_loopback(): loopback IP ΚΑΙ καμία κεφαλίδα proxy — ο runner τρέχει
-    // μέσα στον container και χτυπά το 127.0.0.1:8080 απευθείας, ποτέ μέσω
+    // μέσα στον container και χτυπά το 127.0.0.1:8090 απευθείας, ποτέ μέσω
     // cloudflared/Coolify.
     $isLoopback = req_is_loopback();
     $sUid       = (int)($_POST['sched_uid'] ?? $_GET['sched_uid'] ?? 0);

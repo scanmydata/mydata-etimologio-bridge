@@ -2,7 +2,7 @@
 #
 #   cp .env.example .env   &&   docker compose up -d
 #
-# Δεν εκθέτει τίποτα στο internet: η θύρα 8080 δένεται ΜΟΝΟ στο loopback και η
+# Δεν εκθέτει τίποτα στο internet: η θύρα 8090 δένεται ΜΟΝΟ στο loopback και η
 # πρόσβαση από έξω γίνεται μέσω cloudflared (δες CLOUDFLARED.md). Αν το
 # cloudflared τρέχει σε container, βάλ' το στο δίκτυο `etimologio_net`.
 
@@ -59,7 +59,7 @@ services:
       # δεν ξανα-αποκρυπτογραφούνται ποτέ.
       - etimdata:/data
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8090:8090"
     networks: [etimologio_net]
 
 volumes:

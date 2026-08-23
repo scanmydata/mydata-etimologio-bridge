@@ -317,3 +317,27 @@ Coolify και τη **σύνδεση εταιρειών με τα κλειδιά
       ενημέρωση στις εγκατεστημένες εφαρμογές — απόφαση του χρήστη, ώστε να
       δοκιμάσει πρώτος.
 
+### Θύρα 8090 + έλεγχος ενημερώσεων
+
+- [x] **Η εφαρμογή μετακόμισε στην 8090.** Στη 8080 απαντά **το ίδιο το Coolify**
+      σε αυτόν τον server: ένα deploy εκεί είτε δεν δένει τη θύρα είτε — χειρότερα
+      — βγάζει τον πίνακα του Coolify στο internet μέσω του tunnel. Ο αριθμός
+      άλλαξε **παντού μαζί**: `Listen`/`VirtualHost`/`EXPOSE`/healthcheck του
+      `Dockerfile`, `APP_BASE_URL` του `entrypoint.sh` (το χτυπά ο
+      χρονοπρογραμματιστής μέσα στον container), `docker-compose.yml`, `DEPLOY.md`,
+      `CLOUDFLARED.md`.
+- [x] **Hostname**: `etimologiopro.scanmydata.gr` σε `CLOUDFLARED.md`, `DEPLOY.md`,
+      `.env.example` — όχι πια placeholder.
+- [x] **Ο έλεγχος ενημερώσεων ρωτά πλέον ΚΑΙ ΤΑ ΔΥΟ repos** και κρατά τη νεότερη
+      κυκλοφορία (`updates.OWNER_REPOS`). Το πρόβλημα ήταν σιωπηλό και κλειστό:
+      το `updates.py` ρωτούσε **μόνο** το `MyData-Invoice-Downloader`, που έχει
+      ακόμη **v0.2.30**· μια εγκατάσταση 0.4.7 έπαιρνε 0.2.30 < 0.4.7 και έλεγε
+      «είστε ενημερωμένοι» — καμία μελλοντική έκδοση δεν θα έφτανε ποτέ.
+      Ζωντανός έλεγχος: βρίσκει `0.4.7` με τον installer (463 MB) από το bridge,
+      επιβιώνει όταν ένα repo δίνει 404, και **σκάει** όταν πέφτουν και τα δύο
+      (ποτέ ψεύτικο «ενημερωμένος»). 3 νέα tests· σουίτα **479 passed / 13 skipped**.
+- [x] ⚠️ **Το venv του `desktop/` δείχνει σε ΑΛΛΟ checkout**
+      (`.venv/Lib/site-packages/timologio_downloader.pth` →
+      `C:\Users\tony-pc\Documents\timologio-downloader\src`). Χωρίς
+      `PYTHONPATH=<αυτό το repo>/desktop/src` τα tests τρέχουν πάνω στο **παλιό**
+      δέντρο και δείχνουν πράσινα για κώδικα που δεν άλλαξε.
