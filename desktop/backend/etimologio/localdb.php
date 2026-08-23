@@ -817,6 +817,17 @@ function account_update(int $id, array $d): void {
     ]);
 }
 
+/**
+ * Αλλάζει τον ΚΑΤΟΧΟ μιας εταιρείας.
+ *
+ * Χωριστή από την `account_update()` επίτηδες: εκείνη τη λέει η φόρμα των
+ * διαπιστευτηρίων και δεν πρέπει να μπορεί να μεταβιβάσει εταιρεία κατά λάθος.
+ */
+function account_set_owner(int $id, int $userId): void {
+    $st = localdb()->prepare("UPDATE aade_accounts SET user_id = :u WHERE id = :id");
+    $st->execute([':u' => $userId, ':id' => $id]);
+}
+
 function account_delete(int $id): bool {
     $db = localdb();
     $db->prepare("DELETE FROM account_managers WHERE account_id = :id")->execute([':id' => $id]);

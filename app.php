@@ -2295,8 +2295,27 @@ function renderBiz(accs){const el=$('#adminBiz');if(!el)return;
     const who=master?(mgrs.length?mgrs.map(esc).join(', '):'<span class="pill warn">κανένας</span>'):'<span class="muted">εσύ</span>';
     return `<tr>
     <td><b>${esc(a.label||'—')}</b></td><td>${esc(a.vat||'')}</td><td>${esc(a.owner_email||'—')}</td><td>${who}</td>
-    <td class="right"><button class="primary sm" onclick="openCompany(${a.id})" data-tip="Άνοιγμα της καρτέλας αυτής της εταιρείας">✎ Επεξεργασία</button></td></tr>`;}).join('')
+    <td class="right"><button class="ghost sm" onclick="inviteClient(${a.id},'${esc(a.label||a.vat||'')}')" data-tip="Πρόσκληση του πελάτη να μπαίνει μόνος του στη δική του εταιρεία">✉️ Πρόσκληση πελάτη</button>
+      <button class="primary sm" onclick="openCompany(${a.id})" data-tip="Άνοιγμα της καρτέλας αυτής της εταιρείας">✎ Επεξεργασία</button></td></tr>`;}).join('')
     ||`<tr><td colspan="5" class="muted">${master?'Καμία συνδεδεμένη επιχείρηση. Πάτησε «+ Νέα επιχείρηση».':'Δεν σου έχει ανατεθεί καμία εταιρεία ακόμη.'}</td></tr>`;}
+
+// Ο λογιστής καλεί τον πελάτη του χωρίς να περάσει από τον διαχειριστή. Ο ρόλος
+// είναι πάντα «επιχείρηση» — αυτό το επιβάλλει ο server, όχι αυτή η φόρμα.
+async function inviteClient(id,label){
+  const email=(prompt('Email του πελάτη για την εταιρεία «'+label+'»:')||'').trim();
+  if(!email)return;
+  const name=(prompt('Επωνυμία που θα βλέπει ο πελάτης:',label)||'').trim();
+  try{const d=await apost({auth:'staff_invite_client',account_id:id,email,name});
+    if(d.success===false)throw new Error(d.error||'σφάλμα');
+    // Χωρίς email ρυθμισμένο ο σύνδεσμος πρέπει να δοθεί με το χέρι — αλλιώς η
+    // «επιτυχής» πρόσκληση δεν φτάνει ποτέ σε κανέναν.
+    if(d.invite_link&&!d.emailed){
+      prompt('Δεν στάλθηκε email. Δώσε αυτόν τον σύνδεσμο στον πελάτη:',d.invite_link);
+    }else{
+      toast(d.note||'Η πρόσκληση στάλθηκε','ok');
+    }
+    loadAdmin();
+  }catch(e){toast('Πρόσκληση: '+e.message,'err');}}
 
 // --- Μία εταιρεία, μία φόρμα -------------------------------------------------
 let CO_ID=0;
