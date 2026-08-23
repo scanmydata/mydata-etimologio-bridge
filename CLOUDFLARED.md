@@ -77,7 +77,7 @@ cloudflared tunnel route dns <TUNNEL> etimologiopro.scanmydata.gr
 Zero Trust → **Networks → Tunnels** → το tunnel σου → **Public Hostnames** →
 **Add a public hostname**:
 
-- Subdomain `timologio`, Domain το δικό σου
+- Subdomain `etimologiopro`, Domain `scanmydata.gr`
 - Type **HTTP**, URL `etimologio:8090` (ή δες §3)
 - Additional settings → **No TLS Verify: On**
 
