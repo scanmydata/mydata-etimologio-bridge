@@ -122,8 +122,14 @@ esac
 # the standalone desktop install creates. Skipped when no token is configured,
 # because the endpoint refuses service-auth without one anyway.
 if [ -n "${SCHED_TOKEN:-}" ]; then
+  # ΧΩΡΙΣ ανακατεύθυνση στο /proc/1/fd/1: ο www-data ΔΕΝ έχει δικαίωμα να γράψει
+  # στην έξοδο της διεργασίας 1 (ανήκει στον root), οπότε το `sh` σταματούσε με
+  # «cannot create /proc/1/fd/1: Permission denied» ΠΡΙΝ καν τρέξει η php — ο
+  # χρονοπρογραμματιστής δεν χτύπησε ποτέ, κάθε λεπτό, σιωπηλά. Το υποκέλυφος
+  # κληρονομεί ούτως ή άλλως την έξοδο του container: τα μηνύματα φαίνονται
+  # κανονικά στα logs χωρίς κανένα κόλπο.
   ( while true; do
-      su -s /bin/sh -c 'php /var/www/html/scheduler.php >/proc/1/fd/1 2>&1' www-data || true
+      su -s /bin/sh -c 'php /var/www/html/scheduler.php' www-data 2>&1 || true
       sleep 60
     done ) &
   log "scheduler tick every 60s"
