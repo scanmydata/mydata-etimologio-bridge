@@ -6,8 +6,14 @@
 ;
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
-#define AppName        "Timologio Downloader"
-#define AppVersion     "0.4.8"
+; ΤΟ ΟΝΟΜΑ ΠΟΥ ΒΛΕΠΕΙ Ο ΧΡΗΣΤΗΣ. Δεν αλλάζουν μαζί του ούτε το AppId (ο
+; Inno αναγνωρίζει από εκεί την υπάρχουσα εγκατάσταση για να την
+; αναβαθμίσει), ούτε το AppExeName (ο auto-updater σταματά και ξαναρχίζει
+; τη διεργασία με το όνομά της), ούτε το κλειδί μητρώου
+; Software\scanmydata\TimologioDownloader (εκεί ζει ο φάκελος δεδομένων —
+; μια αλλαγή εκεί θα άνοιγε την εφαρμογή σε ΑΔΕΙΑ βάση).
+#define AppName        "ScanmyData Suite"
+#define AppVersion     "0.4.9"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -25,7 +31,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist\installer
-OutputBaseFilename=TimologioDownloader-{#AppVersion}-setup
+OutputBaseFilename=ScanmyDataSuite-{#AppVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

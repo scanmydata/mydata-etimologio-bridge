@@ -182,6 +182,9 @@ a = Analysis(
             # εφαρμογή. Χωρίς αυτό, το πακεταρισμένο build πέφτει πίσω στη
             # μονόχρωμη γλυφή του μενού.
             os.path.join(SPECPATH, "etimologio-logo.png"),
+            # Και του Downloader, με τη νέα εικονογράφηση: το logo.svg παραπάνω
+            # μένει μόνο ως εφεδρεία (gui/icons.py:logo_pixmap).
+            os.path.join(SPECPATH, "logo-downloader.png"),
             # Το σήμα του γραφείου, κάτω αριστερά και στις δύο εφαρμογές.
             os.path.join(SPECPATH, "scanmydata-light.png"),
             os.path.join(SPECPATH, "scanmydata-dark.png"),

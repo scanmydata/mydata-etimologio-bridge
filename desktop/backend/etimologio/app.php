@@ -430,6 +430,19 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     .toast{left:10px;right:10px;max-width:none}
     .notif-panel{width:min(360px,92vw);right:-8px}
   }
+  /* --- Αναμονή -------------------------------------------------------------
+     Οι κλήσεις προς ΑΑΔΕ/VIES/server αργούν δευτερόλεπτα. Χωρίς σημάδι, ο
+     χρήστης ξαναπατά το κουμπί (και ξαναστέλνει), ή νομίζει ότι κόλλησε.
+     Είναι `<dialog>` και όχι απλό div: ένα div κάθεται ΚΑΤΩ από ανοιχτό modal
+     (τα modals ζουν στο top layer), οπότε η αναμονή θα ήταν αόρατη ακριβώς
+     εκεί που τη χρειάζεσαι — μέσα στις φόρμες. */
+  #busyDlg{border:none;background:transparent;box-shadow:none;max-width:none;width:auto;padding:0}
+  #busyDlg::backdrop{background:rgba(3,8,16,.55)}
+  .busy-box{display:flex;align-items:center;gap:14px;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:18px 22px}
+  .busy-box .spin{width:22px;height:22px;border-width:3px}
+  .busy-box b{display:block;font-size:15px}
+  .busy-box small{color:var(--muted)}
   .toast{pointer-events:none;position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
   .toast.show{opacity:1;transform:none}
   .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--bad)}
@@ -563,6 +576,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   </aside>
   <!-- Το σκοτεινό φόντο του συρταριού: κλείνει με ένα άγγιγμα οπουδήποτε. -->
   <div id="navScrim" onclick="closeNav()" hidden></div>
+
+  <dialog id="busyDlg" aria-live="polite">
+    <div class="busy-box"><span class="spin"></span>
+      <div><b id="busyMsg">Περιμένετε…</b><small id="busySub"></small></div></div>
+  </dialog>
 
   <div id="netBar" role="status" aria-live="polite">
     <span class="nb-dot"></span>
@@ -1150,7 +1168,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <strong>🔑 Κλειδιά πρόσβασης — σύνδεση εφαρμογής υπολογιστή</strong>
           <button class="add" onclick="createAccessKey()">➕ Νέο κλειδί</button>
         </div>
-        <p class="sub" style="margin-top:4px">Δώσε ένα κλειδί σε κάθε υπολογιστή που θα συνδέεται σε αυτόν τον server. Στην εφαρμογή: <b>Πίνακας ελέγχου → Σύνδεση σε server</b> — επικόλληση και τέλος· τη διεύθυνση τη βρίσκει μόνη της. Το κλειδί εμφανίζεται <b>μία φορά</b>.</p>
+        <p class="sub" style="margin-top:4px">Δώσε ένα κλειδί σε κάθε υπολογιστή που θα συνδέεται σε αυτόν τον server. Στην εφαρμογή: <b>Ρυθμίσεις → ☁️ Σύνδεση με web server → Καταχώρηση &amp; ανέβασμα</b> — επικόλληση και τέλος· τη διεύθυνση τη βρίσκει μόνη της. Ο χρήστης πρέπει να έχει ΗΔΗ λογαριασμό εδώ (πρόσκληση + επιβεβαίωση email), αλλιώς θα δει φόρμα σύνδεσης που δεν μπορεί να περάσει. Το κλειδί εμφανίζεται <b>μία φορά</b>.</p>
         <div id="akNew" style="margin:8px 0"></div>
         <table id="akTable"><thead><tr><th>Περιγραφή</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Κατάσταση</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
@@ -1214,11 +1232,15 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           τη διεύθυνση την κουβαλά το ίδιο το κλειδί.
         </p>
         <div class="row" style="margin-top:8px">
-          <div class="field grow"><label>Κλειδί πρόσβασης</label>
+          <div class="field grow"><label>1. Κλειδί πρόσβασης</label>
             <input id="lkKey" type="password" placeholder="etim1_…" autocomplete="off"></div>
-          <button class="primary" onclick="linkConnect()">Σύνδεση σε server</button>
+          <button class="primary" onclick="linkConnect()" data-tip="Καταχωρεί το κλειδί και ανεβάζει τα δεδομένα σου. Η εφαρμογή συνεχίζει να δουλεύει τοπικά.">🔗 Καταχώρηση &amp; ανέβασμα</button>
           <button class="ghost" onclick="linkSync()" id="lkSyncBtn" data-tip="Στέλνει ό,τι έγινε εδώ και φέρνει ό,τι έγινε στον server">🔄 Συγχρονισμός τώρα</button>
-          <button class="ghost" onclick="linkDisconnect()">Αποσύνδεση</button>
+          <button class="ghost" onclick="linkDisconnect()" data-tip="Σβήνει το κλειδί και επιστρέφει οριστικά σε τοπική λειτουργία">✖ Αποσύνδεση</button>
+        </div>
+        <div class="row" style="margin-top:10px;align-items:center;gap:10px">
+          <button class="ghost" id="lkModeBtn" onclick="linkUseServer()" data-tip="Η εφαρμογή θα δείχνει τα δεδομένα του server">🖥️ Χρήση δεδομένων server</button>
+          <span class="hint" id="lkModeNote"></span>
         </div>
         <div class="hint" id="lkInfo" style="margin-top:8px"></div>
         <table id="lkTable"><thead><tr>
@@ -3021,7 +3043,7 @@ function editCustomer(vat){
 }
 function ceOpenCard(){custEditModal.close();openCard(CE_VAT,$('#ceName').value);}
 async function ceLookup(){if(!/^\d{9}$/.test(CE_VAT)){toast('Ο πελάτης δεν έχει ΑΦΜ','err');return;}
-  try{const c=await afmDetails(CE_VAT);
+  try{const c=await afmDetails(CE_VAT,{busy:true});
     if(!c){toast('Δεν βρέθηκαν στοιχεία για αυτό το ΑΦΜ','err');return;}
     if(c.name)$('#ceName').value=c.name;
     if(c.address)$('#ceAddress').value=c.address;
@@ -3042,7 +3064,7 @@ async function saveCustomerEdit(){
     custEditModal.close();toast('Ο πελάτης ενημερώθηκε','ok');loadCustomers(true);
   }catch(e){$('#ceResult').textContent='Πελάτης: '+e.message;}}
 async function cmLookup(){const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}
-  try{const c=await afmDetails(afm);
+  try{const c=await afmDetails(afm,{busy:true});
     if(!c){toast('Δεν βρέθηκαν στοιχεία για αυτό το ΑΦΜ','err');return;}
     $('#cmName').value=c.name||'';$('#cmAddress').value=c.address||'';
     $('#cmCity').value=c.city||'';$('#cmZip').value=c.zip||'';
@@ -3056,7 +3078,7 @@ async function saveCustomer(){
       saved={vat:'',name:$('#cpName').value,address:$('#cpAddress').value,city:$('#cpCity').value,zip:$('#cpZip').value};
     }else{const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}
       // Το `afmDetails` κάνει ΚΑΙ την καταχώρηση (`?afm=`) ΚΑΙ το δεύτερο βήμα.
-      const c=(await afmDetails(afm))||{};d={success:true};
+      const c=(await afmDetails(afm,{busy:true}))||{};d={success:true};
       saved={vat:afm,name:c.name||$('#cmName').value||'',
              address:c.address||$('#cmAddress').value||'',
              city:c.city||$('#cmCity').value||'',zip:c.zip||$('#cmZip').value||''};
@@ -3711,22 +3733,28 @@ async function afmDetails(afm,opts){
   afm=String(afm||'').trim();
   if(!/^\d{9}$/.test(afm))return null;
   const o=opts||{};
-  // Πρώτα η καταχώρηση στην ΑΑΔΕ (αυτό κάνει το `?afm=`), μετά τα στοιχεία.
-  if(o.register!==false){try{await api({afm});}catch(e){}}
-  let c=null;
-  try{const d=await api({list_customers:1,cust_vat:afm});
-      const list=(d&&d.customers)||[];
-      c=list.find(x=>String(x.vat||'')===afm)||list[0]||null;
-  }catch(e){}
-  if(!c&&typeof ALL_CUSTOMERS!=='undefined'&&Array.isArray(ALL_CUSTOMERS)){
-    c=ALL_CUSTOMERS.find(x=>String(x.vat||'')===afm)||null;
-  }
-  if(!c)return null;
-  // Ο πίνακας της ΑΑΔΕ γράφει τον ΤΚ ΜΕΣΑ στην πόλη («ΑΘΗΝΑ 11527»).
-  const city=String(c.city||'');const zm=city.match(/\b(\d{5})\b/);
-  return {vat:afm,name:c.name||'',address:c.address||'',
-          city:zm?city.replace(zm[1],'').replace(/[,\s]+$/,'').trim():city,
-          zip:c.zip||(zm?zm[1]:'')};
+  // Η αναμονή μπαίνει ΜΟΝΟ όταν το ζήτησε ο χρήστης με κουμπί. Στο γράψιμο του
+  // ΑΦΜ (debounce) μια οθόνη που ανοιγοκλείνει σε κάθε ψηφίο είναι χειρότερη
+  // από την καθυστέρηση.
+  if(o.busy)busyOn('Άντληση στοιχείων πελάτη…','ΑΦΜ '+afm+' — από την ΑΑΔΕ');
+  try{
+    // Πρώτα η καταχώρηση στην ΑΑΔΕ (αυτό κάνει το `?afm=`), μετά τα στοιχεία.
+    if(o.register!==false){try{await api({afm});}catch(e){}}
+    let c=null;
+    try{const d=await api({list_customers:1,cust_vat:afm});
+        const list=(d&&d.customers)||[];
+        c=list.find(x=>String(x.vat||'')===afm)||list[0]||null;
+    }catch(e){}
+    if(!c&&typeof ALL_CUSTOMERS!=='undefined'&&Array.isArray(ALL_CUSTOMERS)){
+      c=ALL_CUSTOMERS.find(x=>String(x.vat||'')===afm)||null;
+    }
+    if(!c)return null;
+    // Ο πίνακας της ΑΑΔΕ γράφει τον ΤΚ ΜΕΣΑ στην πόλη («ΑΘΗΝΑ 11527»).
+    const city=String(c.city||'');const zm=city.match(/\b(\d{5})\b/);
+    return {vat:afm,name:c.name||'',address:c.address||'',
+            city:zm?city.replace(zm[1],'').replace(/[,\s]+$/,'').trim():city,
+            zip:c.zip||(zm?zm[1]:'')};
+  }finally{if(o.busy)busyOff();}
 }
 function lookupAfm(){clearTimeout(afmTimer);afmTimer=setTimeout(async()=>{const afm=$('#iAfm').value.trim();if(!/^\d{9}$/.test(afm))return;
   const c=await afmDetails(afm);
@@ -5525,8 +5553,10 @@ const MANUAL=[
 
   ['11ζ. Σύνδεση με web server (μόνο στην εφαρμογή υπολογιστή)','h2'],
   ['Η εφαρμογή δουλεύει μια χαρά μόνη της. Αν όμως το γραφείο έχει στημένο <b>web server</b>, μπορεί να δεθεί μαζί του: τα δεδομένα ζουν <b>και</b> εκεί, και κάθε πελάτης μπαίνει από browser με έναν σύνδεσμο — χωρίς να εγκαταστήσει τίποτα.','p'],
-  ['<b>Πώς γίνεται:</b> ο διαχειριστής του server φτιάχνει ένα <b>κλειδί πρόσβασης</b> (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης») και σου το δίνει. Το επικολλάς στις «Ρυθμίσεις → ☁️ Σύνδεση με web server» και πατάς «Σύνδεση σε server». Διεύθυνση δεν χρειάζεται να ξέρεις: το κλειδί την κουβαλά μέσα του.','li'],
-  ['Η αλλαγή γράφεται στα αρχεία της εγκατάστασης, οπότε <b>κλείσε και ξανάνοιξε</b> την εφαρμογή για να δουλέψει πάνω στον server.','li'],
+  ['<b>Πρώτα ο λογαριασμός.</b> Ο διαχειριστής του server σε γράφει εκεί ως <b>λογιστή</b>: παίρνεις email πρόσκλησης, βάζεις κωδικό, επιβεβαιώνεις. Αυτά τα στοιχεία θα χρησιμοποιείς στο web — ο τοπικός λογαριασμός της εφαρμογής <b>δεν</b> ισχύει στον server, είναι άλλη βάση.','li'],
+  ['<b>Βήμα 1 — Καταχώρηση &amp; ανέβασμα.</b> Ο διαχειριστής σου δίνει ένα <b>κλειδί πρόσβασης</b> (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης» στον server). Επικόλλησέ το στις «Ρυθμίσεις → ☁️ Σύνδεση με web server» και πάτησε «🔗 Καταχώρηση &amp; ανέβασμα». Οι εταιρείες και οι πληρωμές σου ανεβαίνουν αμέσως. Διεύθυνση δεν χρειάζεται να ξέρεις: το κλειδί την κουβαλά μέσα του. <b>Η εφαρμογή συνεχίζει να δουλεύει στα τοπικά δεδομένα.</b>','li'],
+  ['<b>Βήμα 2 — Χρήση δεδομένων server.</b> Μπες πρώτα στο web από browser και βεβαιώσου ότι όλα φαίνονται σωστά. Μετά, αν θέλεις να δείχνει και η εφαρμογή τα δεδομένα του server, πάτησε «🖥️ Χρήση δεδομένων server» και <b>κλείσε και ξανάνοιξε</b>. Από εκεί και πέρα μπαίνεις με τα στοιχεία <b>του server</b>.','li'],
+  ['<b>Πάντα υπάρχει γυρισμός.</b> Σε λειτουργία server, μια μπάρα στην κορυφή γράφει πού βρίσκεσαι και έχει κουμπί «💻 Τοπικά δεδομένα». Τα δεδομένα αυτού του υπολογιστή δεν πειράζονται ποτέ.','li'],
   ['Στην ίδια κάρτα βλέπεις τις εταιρείες σου και τον <b>σύνδεσμο που δίνεις στον πελάτη</b> (κουμπιά αντιγραφής και ανοίγματος). Το «Αποσύνδεση» γυρίζει σε τοπική λειτουργία· ό,τι έχει ήδη ανέβει μένει στον server.','li'],
   ['Το κλειδί είναι <b>διαπιστευτήριο</b>: στείλ\' το όπως θα έστελνες κωδικό, και αν χαθεί ζήτα ανάκληση και νέο.','li'],
 
@@ -5567,6 +5597,29 @@ async function downloadManual(){
   }catch(e){toast('Εγχειρίδιο: '+e.message,'err');}
 }
 // ===== Σύνδεση με web server (μόνο στην εγκατάσταση γραφείου) ================
+// --- Αναμονή ---------------------------------------------------------------
+// Με μετρητή, όχι με σημαία: δύο αργές δουλειές μαζί (π.χ. άντληση ΑΦΜ μέσα σε
+// αποθήκευση πελάτη) αλλιώς θα έσβηναν η μία την οθόνη της άλλης.
+let BUSY_N=0;
+function busyOn(msg,sub){
+  const d=$('#busyDlg');if(!d)return;
+  $('#busyMsg').textContent=msg||'Περιμένετε…';
+  $('#busySub').textContent=sub||'';
+  BUSY_N++;
+  if(!d.open){try{d.showModal();}catch(e){}}
+}
+function busyOff(){
+  const d=$('#busyDlg');if(!d)return;
+  BUSY_N=Math.max(0,BUSY_N-1);
+  if(BUSY_N===0&&d.open)d.close();
+}
+// Ό,τι τυλίγεται εδώ σβήνει την αναμονή ΚΑΙ στο σφάλμα — αλλιώς μια αποτυχία
+// άφηνε την εφαρμογή κλειδωμένη πίσω από μια οθόνη που δεν φεύγει ποτέ.
+async function withBusy(msg,fn,sub){
+  busyOn(msg,sub);
+  try{return await fn();}finally{busyOff();}
+}
+
 // Το κλειδί πρόσβασης το φτιάχνει ο διαχειριστής ΣΤΟΝ SERVER· εδώ απλώς
 // επικολλάται. Η επιτυχής σύνδεση γράφει το `service.json` (mode: thin), που
 // είναι ό,τι διαβάζει η ίδια η εφαρμογή υπολογιστή όταν ξεκινά — γι' αυτό η
@@ -5577,8 +5630,18 @@ async function loadLink(){
     const d=await apost({auth:'link_get'});
     if(!d.success)return;
     const st=$('#lkState');
-    st.textContent=d.connected?'συνδεδεμένο':'τοπικά (offline)';
-    st.className='pill'+(d.connected?' ok':'');
+    st.textContent=d.thin?'λειτουργία server':(d.has_key?'κλειδί καταχωρημένο · τοπικά δεδομένα':'τοπικά (offline)');
+    st.className='pill'+(d.thin?' ok':'');
+    const mb=$('#lkModeBtn'),mn=$('#lkModeNote');
+    if(mb){
+      mb.disabled=!d.has_key;
+      mb.textContent=d.thin?'💻 Επιστροφή σε τοπικά δεδομένα':'🖥️ Χρήση δεδομένων server';
+      mb.onclick=d.thin?linkUseLocal:linkUseServer;
+    }
+    if(mn)mn.textContent=d.thin
+      ? 'Η εφαρμογή δείχνει τα δεδομένα του server. Μπαίνεις με τα στοιχεία ΤΟΥ SERVER.'
+      : (d.has_key?'Τα δεδομένα ανεβαίνουν στον server, αλλά η εφαρμογή δουλεύει ακόμη τοπικά.'
+                  :'Καταχώρησε πρώτα κλειδί πρόσβασης.');
     $('#lkInfo').innerHTML=d.connected
       ? `Server: <b>${esc(d.url)}</b>${d.label?(' · λογαριασμός <b>'+esc(d.label)+'</b>'):''}${d.since?(' · από '+esc(d.since)):''}`
         +(d.last_sync?`<br>Τελευταίος συγχρονισμός: <b>${esc(d.last_sync)}</b>`:'')
@@ -5593,19 +5656,44 @@ async function loadLink(){
       .join('')||'<tr><td colspan="4" class="muted">Καμία εταιρεία σε αυτή την εγκατάσταση.</td></tr>';
   }catch(e){}
 }
+// ΒΗΜΑ 1: καταχώρηση κλειδιού + ανέβασμα. Η εφαρμογή ΜΕΝΕΙ στα τοπικά δεδομένα.
 async function linkConnect(){
   const key=($('#lkKey').value||'').trim();
   if(!key){toast('Επικόλλησε το κλειδί πρόσβασης','err');return;}
   try{
-    const d=await apost({auth:'link_connect',key});
+    const d=await withBusy('Σύνδεση με τον server…',
+      ()=>apost({auth:'link_connect',key}),'Έλεγχος κλειδιού και ανέβασμα δεδομένων');
     if(d.success){
       $('#lkKey').value='';
-      toast('Συνδέθηκε: '+(d.label||d.url),'ok');
-      // Η αλλαγή ζει στο service.json, που το διαβάζει η εφαρμογή ΟΤΑΝ ΞΕΚΙΝΑ:
-      // χωρίς αυτό το μήνυμα, ο λογιστής θα περίμενε να αλλάξει κάτι τώρα.
-      alert('Η σύνδεση αποθηκεύτηκε. Κλείσε και ξανάνοιξε την εφαρμογή για να δουλέψει πάνω στον server.');
+      const s=d.synced||{};
+      toast('Καταχωρήθηκε: '+(d.label||d.url),'ok');
+      alert('Το κλειδί καταχωρήθηκε για τον λογαριασμό '+(d.email||d.label||'')+'.\n\n'
+        +'Ανέβηκαν '+(s.companies||0)+' εταιρείες στον server.\n\n'
+        +'Η εφαρμογή συνεχίζει να δουλεύει στα ΤΟΠΙΚΑ δεδομένα. Όταν επιβεβαιώσεις '
+        +'ότι μπαίνεις κανονικά στο web (με το email και τον κωδικό ΤΟΥ SERVER), '
+        +'πάτησε «Χρήση δεδομένων server».');
       loadLink();
     }
+  }catch(e){toast(e.message,'err');}
+}
+// ΒΗΜΑ 2: η ρητή μετάβαση. Χωριστή επίτηδες — δες το σχόλιο στο link_connect.
+async function linkUseServer(){
+  if(!confirm('Από το επόμενο άνοιγμα, η εφαρμογή θα δείχνει τα δεδομένα ΤΟΥ SERVER.\n\n'
+    +'Θα μπαίνεις με το email και τον κωδικό που έχεις ΣΤΟΝ SERVER — ο τοπικός '
+    +'λογαριασμός δεν ισχύει εκεί.\n\nΤα τοπικά δεδομένα μένουν στον δίσκο και '
+    +'επιστρέφεις όποτε θες, από εδώ ή από το κουμπί «Τοπικά δεδομένα».\n\nΣυνέχεια;'))return;
+  try{
+    const d=await withBusy('Έλεγχος server…',()=>apost({auth:'link_use_server'}));
+    if(d.success){
+      alert('Έτοιμο. Κλείσε και ξανάνοιξε την εφαρμογή.\n\nΘα σου ζητηθεί σύνδεση με '
+        +'τα στοιχεία του server'+(d.email?(' ('+d.email+')'):'')+'.');
+      loadLink();
+    }
+  }catch(e){toast(e.message,'err');}
+}
+async function linkUseLocal(){
+  try{const d=await apost({auth:'link_use_local'});
+    if(d.success){alert('Επιστροφή στα τοπικά δεδομένα. Κλείσε και ξανάνοιξε την εφαρμογή.');loadLink();}
   }catch(e){toast(e.message,'err');}
 }
 async function linkDisconnect(){
@@ -5619,9 +5707,9 @@ async function linkDisconnect(){
 // «ανέβασμα».
 async function linkSync(){
   const btn=$('#lkSyncBtn');if(btn)btn.disabled=true;
-  toast('Συγχρονισμός…','ok');
   try{
-    const d=await apost({auth:'link_sync'});
+    const d=await withBusy('Συγχρονισμός με τον server…',()=>apost({auth:'link_sync'}),
+      'Στέλνει ό,τι έγινε εδώ και φέρνει ό,τι έγινε εκεί');
     const ok=(d.companies||[]).filter(c=>c.ok);
     const bad=(d.companies||[]).filter(c=>!c.ok);
     const sent=ok.reduce((n,c)=>n+c.sent.payments,0), recv=ok.reduce((n,c)=>n+c.recv.payments,0);

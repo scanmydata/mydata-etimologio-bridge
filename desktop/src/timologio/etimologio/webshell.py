@@ -25,6 +25,7 @@ from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QStackedWidget,
@@ -126,6 +127,27 @@ class EtimologioWebShell(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+
+        # ΜΟΝΙΜΗ μπάρα σε λειτουργία server, όχι μόνο στην οθόνη σφάλματος.
+        # Η παγίδα που τη γέννησε: ο server ΑΠΑΝΤΑ κανονικά και δείχνει φόρμα
+        # σύνδεσης· καμία αποτυχία, άρα καμία οθόνη σφάλματος, άρα καμία έξοδος.
+        # Ο λογιστής κάθεται μπροστά σε login που δεν δέχεται τον τοπικό του
+        # λογαριασμό (σωστά — είναι άλλη βάση), με τα δεδομένα του να ζουν
+        # άθικτα στον δίσκο δύο εκατοστά πιο κάτω, και χωρίς τρόπο να γυρίσει.
+        self._thin_bar = QWidget()
+        bar = QHBoxLayout(self._thin_bar)
+        bar.setContentsMargins(10, 6, 10, 6)
+        self._thin_label = QLabel("")
+        self._thin_label.setWordWrap(True)
+        bar.addWidget(self._thin_label, 1)
+        back = QPushButton("💻 Τοπικά δεδομένα")
+        back.setToolTip("Επιστροφή στα δεδομένα αυτού του υπολογιστή. "
+                        "Ό,τι έχει ανέβει στον server μένει εκεί.")
+        back.clicked.connect(self._back_to_local)
+        bar.addWidget(back, 0)
+        self._thin_bar.hide()
+        root.addWidget(self._thin_bar)
+
         self._stack = QStackedWidget()
         root.addWidget(self._stack)
 
@@ -169,8 +191,20 @@ class EtimologioWebShell(QWidget):
         if self._started:
             return
         self._started = True
+        self._sync_thin_bar()
         self._set_status("Εκκίνηση e-Τιμολόγιο Pro…")
         _run(self._service.start_local, self._on_ready, self._on_error)
+
+    def _sync_thin_bar(self) -> None:
+        """Δείχνει τη μπάρα όσο η εφαρμογή δουλεύει πάνω στον server."""
+        thin = self._service.mode() == "thin"
+        if thin:
+            self._thin_label.setText(
+                "Λειτουργία server: βλέπεις τα δεδομένα του "
+                f"{self._service.server_url()} και μπαίνεις με τα στοιχεία ΤΟΥ SERVER. "
+                "Τα τοπικά δεδομένα είναι ασφαλή σε αυτόν τον υπολογιστή."
+            )
+        self._thin_bar.setVisible(thin)
 
     def _restart(self) -> None:
         self._started = False
@@ -239,6 +273,7 @@ class EtimologioWebShell(QWidget):
         """
         self._service.set_mode("offline")
         self._go_local.hide()
+        self._thin_bar.hide()
         self._restart()
 
     def _set_status(self, text: str) -> None:

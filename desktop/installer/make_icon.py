@@ -216,6 +216,28 @@ def render_png(source: QImage, size: int) -> QImage:
     return canvas
 
 
+def wizard_bmp_image(
+    art: QImage, width: int, height: int, logo: int, background: str
+) -> QImage:
+    """Το ίδιο με το `wizard_bmp`, αλλά από έτοιμη εικόνα αντί για SVG.
+
+    Οι εικόνες του οδηγού δείχνουν πλέον το σήμα **ScanmyData**: ο πελάτης
+    κατεβάζει «ScanmyData Suite» και πρέπει να το αναγνωρίσει από την πρώτη
+    οθόνη, όχι να δει το λογότυπο ενός από τα δύο μισά του.
+    """
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    image.fill(QColor(background))
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    scaled = art.scaled(logo, logo, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+    painter.drawImage(int((width - scaled.width()) / 2),
+                      int((height - scaled.height()) / 2), scaled)
+    painter.end()
+    return image
+
+
 def wizard_bmp(
     renderer: QSvgRenderer, width: int, height: int, logo: int, background: str
 ) -> QImage:
@@ -261,10 +283,19 @@ def main() -> int:
         branded_tile(symbol, 256).save(str(BRAND_PREVIEW), "PNG")
     render(renderer, 512).save(str(PNG), "PNG")
 
-    # Κεφαλίδα οδηγού: λευκό φόντο, όσο πιο κοντά στο θέμα «modern» του Inno.
-    wizard_bmp(renderer, 138, 138, 118, "#ffffff").save(str(WIZARD_SMALL), "BMP")
-    # Πλαϊνή εικόνα: το σκούρο μπλε της εφαρμογής, με το λογότυπο στη μέση.
-    wizard_bmp(renderer, 192, 386, 128, "#0d2340").save(str(WIZARD_LARGE), "BMP")
+    # Οι εικόνες του οδηγού: το σήμα ScanmyData. Η κεφαλίδα παίρνει το σκέτο
+    # σήμα σε λευκό (το λεκτικό δεν χωράει σε 138 pixel), η πλαϊνή εικόνα το
+    # ολόκληρο λογότυπο πάνω στο σκούρο μπλε της εφαρμογής.
+    if mark.isNull():
+        wizard_bmp(renderer, 138, 138, 118, "#ffffff").save(str(WIZARD_SMALL), "BMP")
+        wizard_bmp(renderer, 192, 386, 128, "#0d2340").save(str(WIZARD_LARGE), "BMP")
+    else:
+        symbol = brand_symbol(mark)
+        wizard_bmp_image(symbol, 138, 138, 108, "#ffffff").save(str(WIZARD_SMALL), "BMP")
+        # Το σκούρο λογότυπο πάνω σε σκούρο φόντο δεν φαίνεται: μπαίνει η λευκή
+        # πλακέτα, ίδια με το εικονίδιο, ώστε οι δύο εικόνες να μοιάζουν.
+        wizard_bmp_image(branded_tile(symbol, 148), 192, 386, 148, "#0d2340").save(
+            str(WIZARD_LARGE), "BMP")
 
     # Το setup.exe φοράει ΤΟ ΙΔΙΟ σήμα με την εφαρμογή. Δύο διαφορετικά
     # εικονίδια για το ίδιο προϊόν μπερδεύουν: ο πελάτης κατεβάζει ένα αρχείο

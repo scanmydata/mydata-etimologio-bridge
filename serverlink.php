@@ -310,3 +310,43 @@ function sync_apply(string $vat, array $payments, array $meta): array {
     }
     return ['payments_added' => $added, 'customer_meta_updated' => $updated];
 }
+
+/**
+ * Συγχρονίζει ΟΛΕΣ τις ορατές εταιρείες του χρήστη με τον server.
+ *
+ * Ζει εδώ και όχι μέσα στο `?auth=link_sync`, γιατί τον καλούν ΔΥΟ διαδρομές:
+ * το κουμπί «Συγχρονισμός τώρα» και η πρώτη καταχώρηση κλειδιού — εκείνη
+ * πρέπει να αφήσει τον server με δεδομένα μέσα, αλλιώς ο λογιστής συνδέεται
+ * και βλέπει άδειο πρόγραμμα.
+ */
+function link_sync_all(array $me): array {
+    [$keyBase, $key] = link_decode_key(setting_get('link.key'));
+    $url = link_url() ?: $keyBase;
+    if ($key === '' || $url === '') return ['ok' => false, 'error' => 'χωρίς κλειδί'];
+    $sent = 0; $recv = 0; $companies = 0; $errors = [];
+    foreach (auth_visible_accounts($me) as $a) {
+        $vat  = (string)$a['vat'];
+        $full = account_by_vat($vat) ?: [];
+        $payload = [
+            'vat'           => $vat,
+            'label'         => (string)($full['label'] ?? ''),
+            'username'      => (string)($full['username'] ?? ''),
+            'subkey'        => (string)($full['subkey'] ?? ''),
+            'payments'      => sync_payments($vat),
+            'customer_meta' => sync_customer_meta($vat),
+        ];
+        $r = link_call($url, ['api' => 'sync'],
+                       ['payload' => json_encode($payload, JSON_UNESCAPED_UNICODE)], 120, $key);
+        if (!$r['ok']) { $errors[] = $vat . ': ' . $r['error']; continue; }
+        $back = sync_apply($vat, (array)($r['data']['payments'] ?? []),
+                                 (array)($r['data']['customer_meta'] ?? []));
+        $applied = (array)($r['data']['applied'] ?? []);
+        $sent += (int)($applied['payments_added'] ?? 0);
+        $recv += (int)($back['payments_added'] ?? 0);
+        $companies++;
+    }
+    setting_set('link.last_sync', date('Y-m-d H:i'));
+    return ['ok' => empty($errors), 'companies' => $companies,
+            'sent' => $sent, 'recv' => $recv, 'errors' => $errors];
+}
+
