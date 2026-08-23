@@ -295,3 +295,49 @@ Coolify και τη **σύνδεση εταιρειών με τα κλειδιά
 - [x] **`DEPLOY.md §11`** ξαναγράφτηκε: ένας δρόμος σύνδεσης (Ρυθμίσεις), πίνακας
       με το τι ταξιδεύει και τι όχι στον συγχρονισμό.
 
+### Κυκλοφορία 0.4.7
+
+- [x] **Installer**: `TimologioDownloader-0.4.7-setup.exe` — **442,4 MB**, χτίστηκε
+      με `installer/build.ps1`. Το Inno Setup 6 ήταν εγκατεστημένο **ανά χρήστη**
+      (`%LOCALAPPDATA%\Programs`), γι' αυτό ένας πρόχειρος έλεγχος μόνο στο
+      `Program Files` το είχε βγάλει «απόν».
+      Επαληθεύτηκε μέσα στο παγωμένο bundle: `backend/etimologio/serverlink.php`
+      υπάρχει, και η φορητή PHP φορτώνει **sodium** + pdo_sqlite + pdo_pgsql +
+      curl + mbstring.
+- [x] **Και οι δύο γραμμές στην 0.4.7**: `planning/etimologio-merge` πήρε όλη την
+      εφαρμογή (χωρίς `DEPLOY.md`, `CLOUDFLARED.md`, `docker-compose.yml`,
+      `.env.example` — μένουν στο branch του server). Οι δύο κλάδοι διαφέρουν
+      πλέον **μόνο** σε αυτά τα 4 αρχεία.
+- [x] **Ενσωματώθηκαν 3 commits του χρήστη** που είχαν πάει στο remote όσο
+      δούλευα (`libsqlite3-dev` για το `pdo_sqlite`, μορφοποίηση Dockerfile) —
+      rebase, όχι force-push· η διόρθωση πέρασε και στην κύρια γραμμή.
+- [x] **Tag `v0.4.7`** μετακινήθηκε στο commit που όντως χτίστηκε.
+- [x] **Release** στο repo του bridge, με τον installer συνημμένο. **Δεν** μπήκε
+      στο `MyData-Invoice-Downloader`, δηλαδή **δεν** ενεργοποιεί αυτόματη
+      ενημέρωση στις εγκατεστημένες εφαρμογές — απόφαση του χρήστη, ώστε να
+      δοκιμάσει πρώτος.
+
+### Θύρα 8090 + έλεγχος ενημερώσεων
+
+- [x] **Η εφαρμογή μετακόμισε στην 8090.** Στη 8080 απαντά **το ίδιο το Coolify**
+      σε αυτόν τον server: ένα deploy εκεί είτε δεν δένει τη θύρα είτε — χειρότερα
+      — βγάζει τον πίνακα του Coolify στο internet μέσω του tunnel. Ο αριθμός
+      άλλαξε **παντού μαζί**: `Listen`/`VirtualHost`/`EXPOSE`/healthcheck του
+      `Dockerfile`, `APP_BASE_URL` του `entrypoint.sh` (το χτυπά ο
+      χρονοπρογραμματιστής μέσα στον container), `docker-compose.yml`, `DEPLOY.md`,
+      `CLOUDFLARED.md`.
+- [x] **Hostname**: `etimologiopro.scanmydata.gr` σε `CLOUDFLARED.md`, `DEPLOY.md`,
+      `.env.example` — όχι πια placeholder.
+- [x] **Ο έλεγχος ενημερώσεων ρωτά πλέον ΚΑΙ ΤΑ ΔΥΟ repos** και κρατά τη νεότερη
+      κυκλοφορία (`updates.OWNER_REPOS`). Το πρόβλημα ήταν σιωπηλό και κλειστό:
+      το `updates.py` ρωτούσε **μόνο** το `MyData-Invoice-Downloader`, που έχει
+      ακόμη **v0.2.30**· μια εγκατάσταση 0.4.7 έπαιρνε 0.2.30 < 0.4.7 και έλεγε
+      «είστε ενημερωμένοι» — καμία μελλοντική έκδοση δεν θα έφτανε ποτέ.
+      Ζωντανός έλεγχος: βρίσκει `0.4.7` με τον installer (463 MB) από το bridge,
+      επιβιώνει όταν ένα repo δίνει 404, και **σκάει** όταν πέφτουν και τα δύο
+      (ποτέ ψεύτικο «ενημερωμένος»). 3 νέα tests· σουίτα **479 passed / 13 skipped**.
+- [x] ⚠️ **Το venv του `desktop/` δείχνει σε ΑΛΛΟ checkout**
+      (`.venv/Lib/site-packages/timologio_downloader.pth` →
+      `C:\Users\tony-pc\Documents\timologio-downloader\src`). Χωρίς
+      `PYTHONPATH=<αυτό το repo>/desktop/src` τα tests τρέχουν πάνω στο **παλιό**
+      δέντρο και δείχνουν πράσινα για κώδικα που δεν άλλαξε.

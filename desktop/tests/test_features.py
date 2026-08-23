@@ -225,6 +225,76 @@ def test_updater_script_self_deletes_scheduled_task():
     assert script.index("/Delete") < script.index("running installer")
 
 
+def _fake_release(tag: str, repo: str) -> dict:
+    return {
+        "tag_name": tag,
+        "html_url": f"https://github.com/{repo}/releases/tag/{tag}",
+        "assets": [{"name": f"TimologioDownloader-{tag.lstrip('v')}-setup.exe",
+                    "browser_download_url": f"https://x/{tag}.exe", "size": 1}],
+        "body": "",
+    }
+
+
+def _patch_github(monkeypatch, table: dict):
+    """`table` = {repo: tag ή None για 404}."""
+    import requests
+
+    class _Resp:
+        def __init__(self, repo):
+            self._repo = repo
+            self._tag = table.get(repo)
+
+        def raise_for_status(self):
+            if self._tag is None:
+                raise requests.HTTPError(f"404 for {self._repo}")
+
+        def json(self):
+            return _fake_release(self._tag, self._repo)
+
+    def fake_get(url, **kw):
+        repo = url.split("/repos/", 1)[1].rsplit("/releases", 1)[0]
+        return _Resp(repo)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+
+def test_update_check_prefers_the_newest_release_across_repos(monkeypatch):
+    """Το προϊόν μετακόμισε repo. Ο έλεγχος ρωτά ΚΑΙ ΤΑ ΔΥΟ και κρατά τη νεότερη
+    έκδοση — αλλιώς μια κυκλοφορία στο νέο repo δεν έφτανε ποτέ σε εγκαταστάσεις
+    που ρωτούν το παλιό (και το παλιό, με μικρότερο tag, έλεγε «ενημερωμένος»)."""
+    from timologio import updates
+
+    new_repo, old_repo = updates.OWNER_REPOS
+    _patch_github(monkeypatch, {new_repo: "v0.4.7", old_repo: "v0.2.30"})
+    info = updates.check("0.4.6")
+    assert info.latest == "0.4.7"
+    assert new_repo in info.url
+    assert info.is_newer is True
+    # Ίδια έκδοση με την τρέχουσα: καμία ειδοποίηση.
+    assert updates.check("0.4.7").is_newer is False
+
+
+def test_update_check_survives_one_dead_repo(monkeypatch):
+    """Ένα repo που δεν απαντά δεν ακυρώνει τον έλεγχο."""
+    from timologio import updates
+
+    new_repo, old_repo = updates.OWNER_REPOS
+    _patch_github(monkeypatch, {new_repo: None, old_repo: "v0.2.30"})
+    assert updates.check("0.1.0").latest == "0.2.30"
+
+
+def test_update_check_raises_when_every_repo_is_down(monkeypatch):
+    """ΚΡΙΣΙΜΟ: χωρίς δίκτυο ο έλεγχος πρέπει να σκάσει, ώστε ο χρήστης να δει
+    σφάλμα — ποτέ σιωπηλό «είστε ενημερωμένοι» πάνω από άγνωστη κατάσταση."""
+    import requests
+
+    from timologio import updates
+
+    _patch_github(monkeypatch, {})
+    with pytest.raises(requests.HTTPError):
+        updates.check("0.1.0")
+
+
 def test_schedule_via_task_builds_correct_schtasks_call(monkeypatch):
     """Ο φρουρός auto-update περνά από Task Scheduler: /Create με το script και
     μετά /Run για άμεση πυροδότηση — έξω από το job της εφαρμογής."""

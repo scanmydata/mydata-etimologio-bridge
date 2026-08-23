@@ -13,7 +13,7 @@
 
 ## Εγκατάσταση
 
-**[⬇ Κατεβάστε τον installer](https://github.com/scanmydata/MyData-Invoice-Downloader/releases/latest)**
+**[⬇ Κατεβάστε τον installer](https://github.com/scanmydata/mydata-etimologio-bridge/releases/latest)**
 και τρέξτε τον. Δεν χρειάζεται Python ούτε δικαιώματα διαχειριστή — η
 εγκατάσταση γίνεται στον λογαριασμό του χρήστη, χωρίς UAC.
 

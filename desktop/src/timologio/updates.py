@@ -16,7 +16,17 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-OWNER_REPO = "scanmydata/MyData-Invoice-Downloader"
+#: Τα repos που κοιτάζουμε, με σειρά προτεραιότητας. ΔΥΟ, όχι ένα: το προϊόν
+#: μετακόμισε στο `mydata-etimologio-bridge` (εκεί ζει πια ολόκληρο — Downloader
+#: + e-Τιμολόγιο Pro), αλλά οι ήδη εγκατεστημένες εκδόσεις ρωτούν ακόμη το παλιό.
+#: Ρωτώντας ΚΑΙ ΤΑ ΔΥΟ και κρατώντας τη νεότερη έκδοση, μια κυκλοφορία σε όποιο
+#: από τα δύο φτάνει σε όλους — και δεν ξανακολλάει το προϊόν επειδή το release
+#: βγήκε «στο λάθος repo».
+OWNER_REPOS = (
+    "scanmydata/mydata-etimologio-bridge",
+    "scanmydata/MyData-Invoice-Downloader",
+)
+OWNER_REPO = OWNER_REPOS[0]
 API_URL = f"https://api.github.com/repos/{OWNER_REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{OWNER_REPO}/releases/latest"
 
@@ -62,18 +72,44 @@ class UpdateInfo:
 
 
 def check(current: str, timeout: int = 8) -> UpdateInfo:
-    """Ρωτά το GitHub για την τελευταία έκδοση. Σηκώνει εξαίρεση αν αποτύχει."""
+    """Ρωτά το GitHub για την τελευταία έκδοση. Σηκώνει εξαίρεση αν αποτύχει.
+
+    Ρωτά ΟΛΑ τα ``OWNER_REPOS`` και κρατά τη νεότερη κυκλοφορία. Ένα repo που
+    δεν απαντά (404, δίκτυο) αγνοείται· αν δεν απαντήσει ΚΑΝΕΝΑ, η εξαίρεση του
+    πρώτου ταξιδεύει προς τα πάνω — ο χρήστης πρέπει να δει πραγματικό σφάλμα,
+    όχι ψεύτικο «είστε ενημερωμένοι».
+    """
+    best: UpdateInfo | None = None
+    first_error: Exception | None = None
+    for repo in OWNER_REPOS:
+        try:
+            info = _check_repo(repo, current, timeout)
+        except Exception as exc:            # noqa: BLE001 — δες docstring
+            log.warning("έλεγχος έκδοσης: το %s δεν απάντησε (%s)", repo, exc)
+            if first_error is None:
+                first_error = exc
+            continue
+        if best is None or parse_version(info.latest) > parse_version(best.latest):
+            best = info
+    if best is None:
+        raise first_error if first_error is not None else RuntimeError("κανένα repo")
+    return best
+
+
+def _check_repo(repo: str, current: str, timeout: int) -> UpdateInfo:
+    """Η τελευταία κυκλοφορία ΕΝΟΣ repo. Σηκώνει εξαίρεση αν δεν απαντήσει."""
     import requests
 
     response = requests.get(
-        API_URL,
+        f"https://api.github.com/repos/{repo}/releases/latest",
         timeout=timeout,
         headers={"Accept": "application/vnd.github+json"},
     )
     response.raise_for_status()
     data = response.json()
     tag = str(data.get("tag_name") or "").strip()
-    url = str(data.get("html_url") or "").strip() or RELEASES_URL
+    url = (str(data.get("html_url") or "").strip()
+           or f"https://github.com/{repo}/releases/latest")
 
     asset_url = asset_name = ""
     asset_size = 0
