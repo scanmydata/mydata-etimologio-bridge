@@ -3783,6 +3783,42 @@ if ($authAction !== '') {
             }
             jsonResponse(['success' => true, 'account_id' => $id]);
         }
+        case 'staff_invite_client': {
+            // Ο λογιστής καλεί τον ΠΕΛΑΤΗ του σε εταιρεία που ήδη διαχειρίζεται.
+            // Μέχρι τώρα κάθε πρόσκληση περνούσε από τον διαχειριστή, ακόμη κι
+            // όταν επρόκειτο για δικό του πελάτη σε δική του εταιρεία.
+            //
+            // ΔΥΟ φύλακες, και οι δύο απαραίτητοι:
+            //   1. η εταιρεία πρέπει να του έχει ανατεθεί (αλλιώς θα έδινε
+            //      πρόσβαση σε ξένα βιβλία),
+            //   2. ο ρόλος είναι ΠΑΝΤΑ `business` — ένας λογιστής δεν φτιάχνει
+            //      διαχειριστές ούτε άλλους λογιστές.
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $id = (int)($_POST['account_id'] ?? 0);
+            $a  = account_get($id);
+            if (!$a) jsonError('Η εταιρεία δεν βρέθηκε', 404);
+            if (!is_master() && !in_array((int)$u['id'], account_manager_ids($id), true)) {
+                jsonError('Η εταιρεία δεν σας έχει ανατεθεί', 403);
+            }
+            $email = strtolower(trim((string)($_POST['email'] ?? '')));
+            $name  = trim((string)($_POST['name'] ?? '')) ?: (string)$a['label'];
+            $existing = user_by_email($email);
+            if ($existing) {
+                // Υπάρχων λογαριασμός: δεν στέλνουμε πρόσκληση, τον συνδέουμε.
+                // Ποτέ σε λογαριασμό προσωπικού — θα του έπαιρνε τον ρόλο.
+                if (user_is_staff($existing)) jsonError('Το email ανήκει σε λογιστή/διαχειριστή', 409);
+                account_set_owner($id, (int)$existing['id']);
+                jsonResponse(['success' => true, 'linked' => true,
+                              'note' => 'Ο λογαριασμός υπήρχε ήδη και συνδέθηκε με την εταιρεία.']);
+            }
+            $r = auth_invite($email, 'business', $name, (int)$u['id']);
+            if (empty($r['success'])) jsonResponse($r);
+            account_set_owner($id, (int)$r['id']);
+            $r['linked'] = true;
+            jsonResponse($r);
+        }
         case 'admin_set_managers': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             $uid = (int)($_POST['user_id'] ?? 0);

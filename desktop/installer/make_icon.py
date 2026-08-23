@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtSvg import QSvgRenderer
 
 SIZES = (16, 24, 32, 48, 64, 128, 256)
@@ -45,6 +45,15 @@ WIZARD_LARGE = HERE / "wizard-large.bmp"
 # Downloader: αυτό αναγνωρίζει ο πελάτης όταν του στέλνεις το αρχείο.
 BRAND_PNG = HERE / "etimologio-logo.png"
 INSTALLER_ICO = HERE / "installer-icon.ico"
+
+# Το σήμα ScanmyData σε διαφάνεια, σκούρο μπλε. ΔΕΝ μπαίνει σκέτο σε εικονίδιο:
+# πάνω στη σκούρα γραμμή εργασιών των Windows το σκούρο σχέδιο εξαφανίζεται.
+# Μπαίνει πάντα σε λευκή στρογγυλεμένη πλακέτα — όπως ακριβώς το παλιό
+# εικονίδιο myDATA, που γι' αυτόν τον λόγο είχε κι εκείνο λευκό φόντο.
+BRAND_MARK = HERE / "scanmydata-light.png"
+TILE_BG = QColor("#ffffff")
+TILE_BORDER = QColor("#123a63")
+BRAND_PREVIEW = HERE / "app-icon-preview.png"
 
 
 def render(renderer: QSvgRenderer, size: int) -> QImage:
@@ -109,6 +118,82 @@ def write_ico(images: list[QImage], path: Path) -> None:
     )
 
 
+def alpha_columns(image: QImage) -> list[bool]:
+    """Ποιες στήλες έχουν μελάνι· η μάσκα από την οποία βρίσκουμε το κενό."""
+    used = []
+    for x in range(image.width()):
+        column = False
+        for y in range(image.height()):
+            if ((image.pixel(x, y) >> 24) & 0xFF) > 12:
+                column = True
+                break
+        used.append(column)
+    return used
+
+
+def brand_symbol(source: QImage) -> QImage:
+    """Μόνο το σήμα (χέρι + κινητό), χωρίς το λεκτικό «ScanmyData».
+
+    Το λεκτικό δεν διαβάζεται στα 16 ή 32 pixel — γίνεται μουτζούρα. Το κόψιμο
+    δεν είναι καρφωμένο σε συντεταγμένες: βρίσκουμε το **πλατύτερο κενό** της
+    εικόνας, που είναι το διάστημα ανάμεσα στο σήμα και στο κείμενο, ώστε ένα
+    μελλοντικό λογότυπο άλλων διαστάσεων να κοπεί σωστά χωρίς αλλαγή κώδικα.
+    """
+    image = source.convertToFormat(QImage.Format.Format_ARGB32)
+    used = alpha_columns(image)
+    gaps, start = [], None
+    for x, ink in enumerate(used):
+        if not ink and start is None:
+            start = x
+        elif ink and start is not None:
+            gaps.append((start, x - start))
+            start = None
+    inner = [g for g in gaps if g[0] > 0]
+    if not inner:
+        return image
+    split = max(inner, key=lambda g: g[1])[0]
+    first = used.index(True) if True in used else 0
+    rows = [y for y in range(image.height())
+            if any(((image.pixel(x, y) >> 24) & 0xFF) > 12 for x in range(first, split))]
+    if not rows:
+        return image
+    return image.copy(first, rows[0], split - first, rows[-1] - rows[0] + 1)
+
+
+def branded_tile(symbol: QImage, size: int) -> QImage:
+    """Το σήμα πάνω σε λευκή στρογγυλεμένη πλακέτα, σε ένα μέγεθος."""
+    canvas = QImage(size, size, QImage.Format.Format_ARGB32)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    # Το περίγραμμα λεπταίνει αναλογικά· κάτω από 24px παραλείπεται εντελώς,
+    # γιατί ένα 1px πλαίσιο εκεί τρώει το ίδιο το σχέδιο.
+    stroke = size * 0.035
+    inset = stroke / 2 if size >= 24 else 0.0
+    radius = size * 0.2
+    painter.setBrush(QBrush(TILE_BG))
+    painter.setPen(QPen(TILE_BORDER, stroke) if size >= 24 else Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(
+        QRectF(inset, inset, size - 2 * inset, size - 2 * inset), radius, radius
+    )
+
+    # Περιθώριο: το σήμα δεν ακουμπά ποτέ την άκρη της πλακέτας.
+    pad = size * 0.16
+    box = size - 2 * pad
+    scaled = symbol.scaled(
+        int(box), int(box),
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    painter.drawImage(
+        int((size - scaled.width()) / 2), int((size - scaled.height()) / 2), scaled
+    )
+    painter.end()
+    return canvas
+
+
 def render_png(source: QImage, size: int) -> QImage:
     """Ένα μέγεθος του σήματος, από την πηγαία εικόνα.
 
@@ -162,9 +247,18 @@ def main() -> int:
         print("Το logo.svg δεν είναι έγκυρο SVG", file=sys.stderr)
         return 1
 
-    # Κάθε μέγεθος ζωγραφίζεται ξεχωριστά από το SVG: μια υποβάθμιση του 256
-    # στα 16 pixel μετατρέπει το λογότυπο σε θολή κηλίδα.
-    write_ico([render(renderer, size) for size in SIZES], ICO)
+    # Το εικονίδιο της εφαρμογής (γραμμή εργασιών, Alt-Tab, exe) είναι το σήμα
+    # ScanmyData — αυτό αναγνωρίζει ο πελάτης. Κάθε μέγεθος συντίθεται ξεχωριστά:
+    # μια υποβάθμιση του 256 στα 16 pixel βγάζει θολή κηλίδα.
+    mark = QImage(str(BRAND_MARK)) if BRAND_MARK.exists() else QImage()
+    if mark.isNull():
+        print(f"ΠΡΟΣΟΧΗ: λείπει το {BRAND_MARK.name} — κρατώ το λογότυπο myDATA",
+              file=sys.stderr)
+        write_ico([render(renderer, size) for size in SIZES], ICO)
+    else:
+        symbol = brand_symbol(mark)
+        write_ico([branded_tile(symbol, size) for size in SIZES], ICO)
+        branded_tile(symbol, 256).save(str(BRAND_PREVIEW), "PNG")
     render(renderer, 512).save(str(PNG), "PNG")
 
     # Κεφαλίδα οδηγού: λευκό φόντο, όσο πιο κοντά στο θέμα «modern» του Inno.
@@ -172,8 +266,13 @@ def main() -> int:
     # Πλαϊνή εικόνα: το σκούρο μπλε της εφαρμογής, με το λογότυπο στη μέση.
     wizard_bmp(renderer, 192, 386, 128, "#0d2340").save(str(WIZARD_LARGE), "BMP")
 
-    # Το εικονίδιο του installer: από το PNG του σήματος, όχι από το SVG.
-    if BRAND_PNG.exists():
+    # Το setup.exe φοράει ΤΟ ΙΔΙΟ σήμα με την εφαρμογή. Δύο διαφορετικά
+    # εικονίδια για το ίδιο προϊόν μπερδεύουν: ο πελάτης κατεβάζει ένα αρχείο
+    # και μετά ψάχνει άλλο εικονίδιο στη γραμμή εργασιών.
+    if not mark.isNull():
+        symbol = brand_symbol(mark)
+        write_ico([branded_tile(symbol, size) for size in SIZES], INSTALLER_ICO)
+    elif BRAND_PNG.exists():
         brand = QImage(str(BRAND_PNG))
         if brand.isNull():
             print(f"Το {BRAND_PNG.name} δεν διαβάζεται", file=sys.stderr)
