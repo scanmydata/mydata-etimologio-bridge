@@ -358,6 +358,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   /* Το κουμπί του μενού και το σκοτεινό φόντο του συρταριού υπάρχουν μόνο σε
      στενή οθόνη — τα media queries πιο κάτω τα ανάβουν. */
   .nav-burger{display:none;align-self:center;font-size:17px;line-height:1;padding:9px 12px}
+  .hdr-logo{display:none;width:30px;height:30px;border-radius:8px;cursor:pointer;flex:none}
   #navScrim{position:fixed;inset:0;z-index:59;background:rgba(3,8,16,.55);
             opacity:0;transition:opacity .2s ease}
   body.nav-open #navScrim{opacity:1}
@@ -387,6 +388,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
                       grid-template-areas:"net" "top" "main"}
     body #netBar{padding:8px 12px;font-size:12.5px;flex-wrap:wrap}
     .nav-burger{display:inline-flex}
+    .hdr-logo{display:block;order:0}
     aside{position:fixed;top:0;left:0;bottom:0;z-index:60;
           width:min(84vw,290px);max-width:100%;padding:0;
           border-right:1px solid var(--line);border-bottom:none;
@@ -571,6 +573,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   </div>
 
   <header>
+    <!-- Σε κινητό το πλαϊνό μενού είναι κρυμμένο, οπότε μαζί του χάνεται και το
+         σήμα της εφαρμογής: η κεφαλίδα έμοιαζε με ανώνυμη γραμμή εργαλείων.
+         Εδώ μπαίνει ξανά, αριστερά από το ☰, και ανοίγει κι αυτό το μενού. -->
+    <img class="hdr-logo" src="assets/icons/app-icon-192.png" alt="e-Timologio Pro"
+         onclick="toggleNav()">
     <button class="ghost sm nav-burger" id="navBurger" onclick="toggleNav()"
             aria-label="Μενού" aria-expanded="false" aria-controls="sideNav">☰</button>
     <div class="field" style="min-width:230px">
@@ -2995,12 +3002,12 @@ function editCustomer(vat){
 }
 function ceOpenCard(){custEditModal.close();openCard(CE_VAT,$('#ceName').value);}
 async function ceLookup(){if(!/^\d{9}$/.test(CE_VAT)){toast('Ο πελάτης δεν έχει ΑΦΜ','err');return;}
-  try{const d=await api({afm:CE_VAT});const c=d.customer||d.info||d;
-    if(c.name||c.customer_name)$('#ceName').value=c.name||c.customer_name;
+  try{const c=await afmDetails(CE_VAT);
+    if(!c){toast('Δεν βρέθηκαν στοιχεία για αυτό το ΑΦΜ','err');return;}
+    if(c.name)$('#ceName').value=c.name;
     if(c.address)$('#ceAddress').value=c.address;
     if(c.city)$('#ceCity').value=c.city;
     if(c.zip)$('#ceZip').value=c.zip;
-    if(c.doy)$('#ceDoy').value=c.doy;
     toast('Στοιχεία αντλήθηκαν','ok');
   }catch(e){toast('Taxisnet: '+e.message,'err');}}
 async function saveCustomerEdit(){
@@ -3016,7 +3023,11 @@ async function saveCustomerEdit(){
     custEditModal.close();toast('Ο πελάτης ενημερώθηκε','ok');loadCustomers(true);
   }catch(e){$('#ceResult').textContent='Πελάτης: '+e.message;}}
 async function cmLookup(){const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}
-  try{const d=await api({afm});const c=d.customer||d.info||d;$('#cmName').value=c.name||c.customer_name||'';$('#cmAddress').value=c.address||'';$('#cmCity').value=c.city||'';$('#cmZip').value=c.zip||'';toast('Στοιχεία αντλήθηκαν','ok');}catch(e){toast('Taxisnet: '+e.message,'err');}}
+  try{const c=await afmDetails(afm);
+    if(!c){toast('Δεν βρέθηκαν στοιχεία για αυτό το ΑΦΜ','err');return;}
+    $('#cmName').value=c.name||'';$('#cmAddress').value=c.address||'';
+    $('#cmCity').value=c.city||'';$('#cmZip').value=c.zip||'';
+    toast('Στοιχεία αντλήθηκαν','ok');}catch(e){toast('Taxisnet: '+e.message,'err');}}
 async function saveCustomer(){
   try{let d,saved=null;
     // Η επεξεργασία έχει δική της φόρμα (`custEditModal`) — εδώ μόνο νέοι πελάτες.
@@ -3024,8 +3035,12 @@ async function saveCustomer(){
       if(!$('#cpName').value||!$('#cpCity').value||!$('#cpZip').value){toast('Συμπλήρωσε όνομα/πόλη/ΤΚ','err');return;}
       d=await api({create_personal_customer:1,cust_name:$('#cpName').value,cust_address:$('#cpAddress').value,cust_city:$('#cpCity').value,cust_zip:$('#cpZip').value,cust_job_description:$('#cpJob').value,cust_email:$('#cpEmail').value,cust_phone1:$('#cpPhone').value});
       saved={vat:'',name:$('#cpName').value,address:$('#cpAddress').value,city:$('#cpCity').value,zip:$('#cpZip').value};
-    }else{const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}d=await api({afm});
-      const c=(d&&(d.info||d.customer))||{};saved={vat:afm,name:c.name||$('#cmName').value||'',address:c.address||'',city:c.city||'',zip:c.zip||''};
+    }else{const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}
+      // Το `afmDetails` κάνει ΚΑΙ την καταχώρηση (`?afm=`) ΚΑΙ το δεύτερο βήμα.
+      const c=(await afmDetails(afm))||{};d={success:true};
+      saved={vat:afm,name:c.name||$('#cmName').value||'',
+             address:c.address||$('#cmAddress').value||'',
+             city:c.city||$('#cmCity').value||'',zip:c.zip||$('#cmZip').value||''};
       // Το `?afm` δημιουργεί τον πελάτη από το Taxisnet αλλά ΔΕΝ ξέρει email ή
       // τηλέφωνο. Αν τα συμπλήρωσε ο χρήστης, τα γράφουμε αμέσως μετά —
       // αλλιώς θα έπρεπε να ανοίξει ξανά την καρτέλα για να τα βάλει.
@@ -3668,8 +3683,40 @@ function issueFor(vat,name){showView('issue');wizSkip(/^\d{9}$/.test(vat)?'pro':
   if(/^\d{9}$/.test(vat))lookupAfm();toast('Έκδοση για '+(name||vat),'ok');}
 
 let afmTimer;
+// Το `?afm=` της ΑΑΔΕ ΔΕΝ επιστρέφει στοιχεία πελάτη. Απαντά μόνο «βρέθηκε»
+// (`{success,status,code,vat}`) — καταχωρεί/επιβεβαιώνει τον πελάτη και τελείωσε.
+// Η επωνυμία, η διεύθυνση και η πόλη θέλουν ΔΕΥΤΕΡΟ βήμα, το
+// `list_customers&cust_vat=…`. Χωρίς αυτό τα πεδία έμεναν κενά και ο χρήστης
+// τα ξαναέγραφε με το χέρι σε κάθε νέο πελάτη — ενώ ο Downloader τα βρίσκει.
+async function afmDetails(afm,opts){
+  afm=String(afm||'').trim();
+  if(!/^\d{9}$/.test(afm))return null;
+  const o=opts||{};
+  // Πρώτα η καταχώρηση στην ΑΑΔΕ (αυτό κάνει το `?afm=`), μετά τα στοιχεία.
+  if(o.register!==false){try{await api({afm});}catch(e){}}
+  let c=null;
+  try{const d=await api({list_customers:1,cust_vat:afm});
+      const list=(d&&d.customers)||[];
+      c=list.find(x=>String(x.vat||'')===afm)||list[0]||null;
+  }catch(e){}
+  if(!c&&typeof ALL_CUSTOMERS!=='undefined'&&Array.isArray(ALL_CUSTOMERS)){
+    c=ALL_CUSTOMERS.find(x=>String(x.vat||'')===afm)||null;
+  }
+  if(!c)return null;
+  // Ο πίνακας της ΑΑΔΕ γράφει τον ΤΚ ΜΕΣΑ στην πόλη («ΑΘΗΝΑ 11527»).
+  const city=String(c.city||'');const zm=city.match(/\b(\d{5})\b/);
+  return {vat:afm,name:c.name||'',address:c.address||'',
+          city:zm?city.replace(zm[1],'').replace(/[,\s]+$/,'').trim():city,
+          zip:c.zip||(zm?zm[1]:'')};
+}
 function lookupAfm(){clearTimeout(afmTimer);afmTimer=setTimeout(async()=>{const afm=$('#iAfm').value.trim();if(!/^\d{9}$/.test(afm))return;
-  try{const d=await api({afm});const c=d.customer||d.info||d;if(c){$('#iName').value=c.name||c.customer_name||$('#iName').value;$('#iAddress').value=c.address||$('#iAddress').value;$('#iCity').value=c.city||$('#iCity').value;$('#iZip').value=c.zip||$('#iZip').value;toast('Στοιχεία πελάτη OK','ok');}}catch(e){}},400);}
+  const c=await afmDetails(afm);
+  if(!c)return;
+  if(c.name)$('#iName').value=c.name;
+  if(c.address)$('#iAddress').value=c.address;
+  if(c.city)$('#iCity').value=c.city;
+  if(c.zip)$('#iZip').value=c.zip;
+  toast(c.name?('Πελάτης: '+c.name):'Ο πελάτης καταχωρήθηκε','ok');},400);}
 // Lines editor (multi-line). Each line has a searchable product combobox that shows
 // "code - description" in the field; the dropdown offers "➕ Νέο είδος" first, then items.
 function prodText(code){const p=PRODMAP[code];return code?(code+(p&&p.desc?' - '+p.desc:'')):'';}
@@ -3912,7 +3959,10 @@ async function dnLoadCustDeliv(vat,cust){cust=cust||{};
     $('#dnDBranch').value=(m.branch!==undefined&&m.branch!=='')?m.branch:'0';
   }catch(e){$('#dnDStreet').value=cust.address||'';$('#dnDCity').value=cust.city||'';$('#dnDZip').value=cust.zip||'';}}
 function dnLookup(){clearTimeout(dnTimer);dnTimer=setTimeout(async()=>{const afm=$('#dnAfm').value.trim();if(!/^\d{9}$/.test(afm))return;
-  try{const d=await api({afm});const c=d.customer||d.info||d;if(c){$('#dnName').value=c.name||c.customer_name||$('#dnName').value;$('#dnCust').value=$('#dnName').value;dnLoadCustDeliv(afm,{address:c.address,city:c.city,zip:c.zip});}}catch(e){}},400);}
+  const c=await afmDetails(afm);
+  if(!c)return;
+  if(c.name){$('#dnName').value=c.name;$('#dnCust').value=c.name;}
+  dnLoadCustDeliv(afm,{address:c.address,city:c.city,zip:c.zip});},400);}
 
 // --- Loading place: company base (via profile) + localStorage reuse ----------
 // Loading place is stored server-side in the DB (encrypted), per account, under
