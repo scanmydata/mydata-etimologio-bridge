@@ -27,6 +27,18 @@ FROM php:8.3-apache
 # `apt-get purge --auto-remove libpq-dev` removes libpq5 as well and pdo_pgsql
 # then fails to load — the database would be unreachable with only a startup
 # warning in the log.
+#
+# Το `readlink -f` πριν το `dpkg-query -S` δεν είναι στολίδι. Το `ldd`
+# δείχνει το symlink του SONAME (…/libzip.so.5)· ρώτα το dpkg ποιος το
+# κατέχει και δεν απαντά τίποτα, το πακέτο μένει «auto», και το
+# `--auto-remove` το σβήνει. Έτσι ακριβώς εξαφανίστηκε η libzip ενώ το
+# `zip` έμενε ενεργό στο ini: ΚΑΘΕ αίτημα κατέγραφε «Unable to load
+# dynamic library zip» και η εισαγωγή .xlsx από τράπεζα ήταν νεκρή σε
+# έναν server που έδειχνε υγιέστατος. Λύνοντας πρώτα το symlink, δίνουμε
+# στο dpkg ένα αρχείο που όντως κατέχει.
+#
+# Ο βρόχος στο τέλος είναι ο φύλακας: μια επέκταση που λείπει ΡΙΧΝΕΙ ΤΟ
+# BUILD, αντί να βγάλει εικόνα που ξεκινά μια χαρά και αστοχεί αργότερα.
 RUN set -eux; \
     savedAptMark="$(apt-mark showmanual)"; \
     apt-get update; \
@@ -47,12 +59,14 @@ RUN set -eux; \
     apt-mark manual $savedAptMark > /dev/null; \
     ldd "$(php -r 'echo ini_get("extension_dir");')"/*.so \
         | awk '/=>/ { print $3 }' | sort -u | grep -v '^$' \
+        | xargs -r readlink -f | sort -u \
         | xargs -r dpkg-query -S 2>/dev/null | cut -d: -f1 | sort -u \
         | xargs -r apt-mark manual; \
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
     rm -rf /var/lib/apt/lists/*; \
-    php -m | grep -Eq '^(pdo_pgsql)$'; \
-    php -m | grep -Eq '^(sodium)$'
+    for ext in pdo_pgsql pdo_sqlite mbstring zip sodium; do \
+        php -m | grep -Eq "^${ext}$" || { echo "MISSING PHP EXTENSION: $ext" >&2; exit 1; }; \
+    done
 
 # Apache: rewrite/headers on, listen where Coolify and cloudflared expect (8090),
 # and a ServerName so startup does not warn on every boot.
