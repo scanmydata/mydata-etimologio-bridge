@@ -410,7 +410,10 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
        `min-width:230px` από το markup, και μόνο έτσι χωράει στη σειρά. */
     header>.field{order:2;flex:1 1 auto;min-width:0!important}
     header>.field>.hint{display:none}
-    header>.grow{order:3}
+    /* Ο διαχωριστής `grow` σπρώχνει την «Έξοδο» σε δική της σειρά όταν παίρνει
+       όλο τον υπόλοιπο χώρο. Σε κινητό δεν χρειάζεται: τη στοίχιση την κάνει
+       ήδη το πεδίο του λογαριασμού που απλώνεται. */
+    header>.grow{display:none}
     header>.bell-wrap{order:4;margin-left:0!important}
     header>button.ghost.sm:not(.nav-burger){order:4}
     .search-trigger{order:9;flex:1 1 100%}
