@@ -406,7 +406,9 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
        `button.ghost.sm` και αλλιώς θα έφευγε δεξιά μαζί με την «Έξοδο». */
     header{flex-wrap:wrap;gap:8px;padding:10px 12px;align-items:center}
     header>.nav-burger{order:1}
-    header>.field{order:2;flex:1 1 auto;min-width:0}
+    /* Το `!important` δεν είναι τεμπελιά: το πεδίο κουβαλά inline
+       `min-width:230px` από το markup, και μόνο έτσι χωράει στη σειρά. */
+    header>.field{order:2;flex:1 1 auto;min-width:0!important}
     header>.field>.hint{display:none}
     header>.grow{order:3}
     header>.bell-wrap{order:4;margin-left:0!important}
