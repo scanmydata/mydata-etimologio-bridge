@@ -355,6 +355,14 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
      δεν έχει επιλεγεί πελάτης — τα δύο κουμπιά έμοιαζαν νεκρά ακριβώς τότε που
      τα χρειαζόσουν. Το toast δεν είναι διαδραστικό: δεν έχει λόγο να δέχεται
      κλικ ποτέ. */
+  /* Το κουμπί του μενού και το σκοτεινό φόντο του συρταριού υπάρχουν μόνο σε
+     στενή οθόνη — τα media queries πιο κάτω τα ανάβουν. */
+  .nav-burger{display:none;align-self:center;font-size:17px;line-height:1;padding:9px 12px}
+  #navScrim{position:fixed;inset:0;z-index:59;background:rgba(3,8,16,.55);
+            opacity:0;transition:opacity .2s ease}
+  body.nav-open #navScrim{opacity:1}
+  body.nav-open{overflow:hidden}
+  body.embedded .nav-burger{display:none!important}
   /* --- Μικρές οθόνες ------------------------------------------------------
      Η εφαρμογή σχεδιάστηκε για γραφείο, αλλά ο λογιστής την ανοίγει και από
      κινητό για να δει ένα υπόλοιπο ή να στείλει ένα PDF. Δύο σκαλοπάτια: σε
@@ -366,29 +374,49 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     header #who{display:none}          /* ό,τι είναι διακοσμητικό φεύγει πρώτο */
   }
   @media (max-width:760px){
-    .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr;
-         grid-template-areas:"side" "top" "main";height:auto;min-height:100vh}
+    /* ΣΥΡΤΑΡΙ, όχι οριζόντια μπάρα. Η μπάρα ήταν συμβιβασμός και κόστιζε
+       διπλά: οι 14 ενότητες κυλούσαν σε μια λωρίδα που έκρυβε τις μισές, και
+       οι διακόπτες με το υποσέλιδο δεν χωρούσαν πουθενά — έπρεπε να κρυφτούν.
+       Το συρτάρι βγαίνει ΠΑΝΩ από το περιεχόμενο, χωρίς να του τρώει πλάτος,
+       και χωράει ολόκληρο το μενού όπως στον υπολογιστή. */
+    .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;
+         grid-template-areas:"top" "main";height:auto;min-height:100vh;min-height:100dvh}
     /* Το πρόθεμα `body` ανεβάζει την ειδικότητα: οι γενικοί κανόνες της μπάρας
        γράφονται ΠΙΟ ΚΑΤΩ στο φύλλο και αλλιώς θα κέρδιζαν μέσα στο media. */
-    body .app.offline{grid-template-rows:auto auto auto 1fr;
-                      grid-template-areas:"net" "side" "top" "main"}
+    body .app.offline{grid-template-rows:auto auto 1fr;
+                      grid-template-areas:"net" "top" "main"}
     body #netBar{padding:8px 12px;font-size:12.5px;flex-wrap:wrap}
-    aside{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px;
-          border-right:none;border-bottom:1px solid var(--line);padding:6px 10px}
-    .brand{padding:6px 8px;font-size:15px}
-    /* ⚠️ ΜΙΑ σειρά που κυλά, όχι αναδίπλωση: με `flex-wrap` οι 14 ενότητες
-       γίνονταν μπλοκ 594px και έσπρωχναν την κεφαλίδα στο κάτω μέρος της
-       οθόνης — ακριβώς κάτω από το πλωτό κουμπί του βοηθού, που σκέπαζε την
-       «Έξοδο». */
-    .menu{display:flex;flex-wrap:nowrap;gap:4px;overflow-x:auto;padding:0 0 4px;
-          scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
-    .nav-item{padding:7px 10px;font-size:13px;white-space:nowrap;flex:none;scroll-snap-align:start}
-    .nav-item .ic{margin-right:2px}
-    /* Οι διακόπτες και το υποσέλιδο δεν χωρούν σε μπάρα — ζουν στις Ρυθμίσεις. */
-    .side-controls,.side-foot{display:none}
-    header{flex-wrap:wrap;gap:8px;padding:10px 12px}
-    header>.field{flex:1 1 100%}
-    .search-trigger{flex:1 1 100%}
+    .nav-burger{display:inline-flex}
+    aside{position:fixed;top:0;left:0;bottom:0;z-index:60;
+          width:min(84vw,290px);max-width:100%;padding:0;
+          border-right:1px solid var(--line);border-bottom:none;
+          overflow-y:auto;-webkit-overflow-scrolling:touch;
+          transform:translateX(-100%);transition:transform .22s ease}
+    body.nav-open aside{transform:none;box-shadow:var(--shadow)}
+    .brand{padding:16px 16px 10px;font-size:17px}
+    .menu{flex:0 0 auto;overflow:visible;padding:8px}
+    .nav-item{padding:12px 13px;font-size:15px}
+    /* Ο αντίχειρας δεν είναι δείκτης ποντικιού: τίποτα κάτω από 44px. */
+    header .ghost.sm,.nav-burger{min-height:40px}
+    /* ΔΥΟ σειρές, όχι τέσσερις. Με κάθε στοιχείο σε δική του γραμμή η κεφαλίδα
+       έπιανε 221px σε οθόνη 390px — το ένα τρίτο της οθόνης πριν καν αρχίσει η
+       δουλειά. Πρώτη σειρά: μενού, λογαριασμός, ειδοποιήσεις, έξοδος. Δεύτερη:
+       η αναζήτηση, που θέλει όλο το πλάτος για να είναι χρήσιμη.
+       Το `:not(.nav-burger)` χρειάζεται: το κουμπί του μενού είναι κι αυτό
+       `button.ghost.sm` και αλλιώς θα έφευγε δεξιά μαζί με την «Έξοδο». */
+    header{flex-wrap:wrap;gap:8px;padding:10px 12px;align-items:center}
+    header>.nav-burger{order:1}
+    /* Το `!important` δεν είναι τεμπελιά: το πεδίο κουβαλά inline
+       `min-width:230px` από το markup, και μόνο έτσι χωράει στη σειρά. */
+    header>.field{order:2;flex:1 1 auto;min-width:0!important}
+    header>.field>.hint{display:none}
+    /* Ο διαχωριστής `grow` σπρώχνει την «Έξοδο» σε δική της σειρά όταν παίρνει
+       όλο τον υπόλοιπο χώρο. Σε κινητό δεν χρειάζεται: τη στοίχιση την κάνει
+       ήδη το πεδίο του λογαριασμού που απλώνεται. */
+    header>.grow{display:none}
+    header>.bell-wrap{order:4;margin-left:0!important}
+    header>button.ghost.sm:not(.nav-burger){order:4}
+    .search-trigger{order:9;flex:1 1 100%}
     main{padding:12px}
     .panel{padding:12px}
     /* Οι πίνακες κυλούν μέσα στο πλαίσιό τους, δεν σπρώχνουν τη σελίδα. */
@@ -487,7 +515,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 </head>
 <body class="<?= $__embedded ? 'embedded' : '' ?>">
 <div class="app">
-  <aside>
+  <aside id="sideNav">
     <div class="brand"><img src="assets/icons/app-icon-192.png" alt="" class="brand-ic">e-Timologio <span>Pro</span></div>
     <nav class="menu" id="menu">
       <div class="nav-item active" data-view="issue"><span class="ic">🧾</span> Έκδοση</div>
@@ -531,6 +559,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <img src="assets/brand/scanmydata-dark.png" alt="ScanmyData" class="bm-dark">
       </a></div>
   </aside>
+  <!-- Το σκοτεινό φόντο του συρταριού: κλείνει με ένα άγγιγμα οπουδήποτε. -->
+  <div id="navScrim" onclick="closeNav()" hidden></div>
 
   <div id="netBar" role="status" aria-live="polite">
     <span class="nb-dot"></span>
@@ -541,6 +571,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   </div>
 
   <header>
+    <button class="ghost sm nav-burger" id="navBurger" onclick="toggleNav()"
+            aria-label="Μενού" aria-expanded="false" aria-controls="sideNav">☰</button>
     <div class="field" style="min-width:230px">
       <label class="hint">Λογαριασμός (επιχείρηση)</label>
       <select id="account"></select>
@@ -1938,7 +1970,24 @@ function enhanceViewTables(v){
   const view=$('#view-'+v);if(!view)return;
   view.querySelectorAll('table[id]').forEach(t=>attachColumnFilters(t.id));
 }
-document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>showView(n.dataset.view));
+document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{showView(n.dataset.view);closeNav();});
+
+// --- Το μενού σε κινητό ----------------------------------------------------
+// Σε στενή οθόνη το πλαϊνό μενού είναι συρτάρι. Κλείνει με ΚΑΘΕ τρόπο που
+// περιμένει ο χρήστης: επιλογή ενότητας, άγγιγμα στο φόντο, Escape, ή γύρισμα
+// της οθόνης σε πλάτος όπου το μενού ξαναγίνεται μόνιμο — αλλιώς έμενε ανοιχτό
+// από πάνω και έμοιαζε με κολλημένη εφαρμογή.
+function navIsDrawer(){return window.matchMedia('(max-width:760px)').matches;}
+function setNav(open){
+  document.body.classList.toggle('nav-open',open);
+  const scrim=$('#navScrim'),burger=$('#navBurger');
+  if(scrim)scrim.hidden=!open;
+  if(burger)burger.setAttribute('aria-expanded',open?'true':'false');
+}
+function toggleNav(){setNav(!document.body.classList.contains('nav-open'));}
+function closeNav(){if(document.body.classList.contains('nav-open'))setNav(false);}
+window.addEventListener('keydown',e=>{if(e.key==='Escape')closeNav();});
+window.addEventListener('resize',()=>{if(!navIsDrawer())closeNav();});
 
 // Accounts
 async function initAccounts(){
@@ -5410,13 +5459,13 @@ const MANUAL=[
   ['<b>Πώς γίνεται:</b> ο διαχειριστής του server φτιάχνει ένα <b>κλειδί πρόσβασης</b> (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης») και σου το δίνει. Το επικολλάς στις «Ρυθμίσεις → ☁️ Σύνδεση με web server» και πατάς «Σύνδεση σε server». Διεύθυνση δεν χρειάζεται να ξέρεις: το κλειδί την κουβαλά μέσα του.','li'],
   ['Η αλλαγή γράφεται στα αρχεία της εγκατάστασης, οπότε <b>κλείσε και ξανάνοιξε</b> την εφαρμογή για να δουλέψει πάνω στον server.','li'],
   ['Στην ίδια κάρτα βλέπεις τις εταιρείες σου και τον <b>σύνδεσμο που δίνεις στον πελάτη</b> (κουμπιά αντιγραφής και ανοίγματος). Το «Αποσύνδεση» γυρίζει σε τοπική λειτουργία· ό,τι έχει ήδη ανέβει μένει στον server.','li'],
-  ['Το κλειδί είναι <b>διαπιστευτήριο</b>: στείλ' το όπως θα έστελνες κωδικό, και αν χαθεί ζήτα ανάκληση και νέο.','li'],
+  ['Το κλειδί είναι <b>διαπιστευτήριο</b>: στείλ\' το όπως θα έστελνες κωδικό, και αν χαθεί ζήτα ανάκληση και νέο.','li'],
 
   ['11η. Αμφίδρομος συγχρονισμός','h2'],
   ['Το «🔄 Συγχρονισμός τώρα» στην ίδια κάρτα δουλεύει <b>και προς τις δύο κατευθύνσεις</b>: στέλνει ό,τι καταχωρήθηκε εδώ και φέρνει ό,τι καταχωρήθηκε στον server (π.χ. από τον ίδιο τον πελάτη, μέσα από τον browser). Καμία πλευρά δεν είναι «η σωστή».','p'],
   ['Ταξιδεύουν οι <b>πληρωμές</b> και οι <b>καρτέλες πελατών</b> (υπόλοιπο ανοίγματος, σημειώσεις), μαζί με την εταιρεία και τα διαπιστευτήρια ΑΑΔΕ την πρώτη φορά. Τα παραστατικά δεν χρειάζεται να συγχρονιστούν: και οι δύο πλευρές τα διαβάζουν από την ΑΑΔΕ.','li'],
   ['Ο συγχρονισμός <b>επαναλαμβάνεται χωρίς ζημιά</b>: κάθε πληρωμή αναγνωρίζεται από το περιεχόμενό της, οπότε δεν διπλογράφεται ποτέ. Σε καρτέλα που άλλαξε και στις δύο πλευρές κρατιέται η <b>νεότερη</b>.','li'],
-  ['<b>Οι διαγραφές δεν ταξιδεύουν.</b> Αν σβήσεις μια πληρωμή στη μία πλευρά, ο επόμενος συγχρονισμός θα την ξαναφέρει από την άλλη. Σβήσ' την και στις δύο.','li'],
+  ['<b>Οι διαγραφές δεν ταξιδεύουν.</b> Αν σβήσεις μια πληρωμή στη μία πλευρά, ο επόμενος συγχρονισμός θα την ξαναφέρει από την άλλη. Σβήσ\' την και στις δύο.','li'],
 
   ['11θ. Αντίγραφα ασφαλείας','h2'],
   ['Στις «Ρυθμίσεις → 💾 Αντίγραφα ασφαλείας» φτιάχνεις με ένα κουμπί ένα zip που περιέχει <b>τη βάση και το κλειδί κρυπτογράφησης μαζί</b> — χωριστά, κανένα από τα δύο δεν διαβάζεται. Κρατιούνται τα 14 νεότερα.','p'],

@@ -7,7 +7,10 @@
 set -eu
 
 DATA_DIR="${ETIM_DATA_DIR:-/data}"
-mkdir -p "$DATA_DIR/.cookies"
+# Το .sessions κρατά τους συνδεδεμένους χρήστες ΑΝΑΜΕΣΑ σε deploys — δες το
+# session.save_path στο deploy/php.ini.
+mkdir -p "$DATA_DIR/.cookies" "$DATA_DIR/.sessions"
+chmod 700 "$DATA_DIR/.sessions" 2>/dev/null || true
 chown -R www-data:www-data "$DATA_DIR" 2>/dev/null || true
 
 php_str() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/\\\\'/g")"; }
@@ -33,6 +36,8 @@ max_input_time = ${PHP_MAX_EXECUTION_TIME:-300}
 upload_max_filesize = ${PHP_UPLOAD_MAX_FILESIZE:-32M}
 post_max_size = ${PHP_POST_MAX_SIZE:-40M}
 date.timezone = ${TZ:-Europe/Athens}
+; Ακολουθεί τον ΠΡΑΓΜΑΤΙΚΟ φάκελο δεδομένων, όχι το σταθερό /data του php.ini.
+session.save_path = "${DATA_DIR}/.sessions"
 INI
 
 cat > /var/www/html/config.php <<PHP
