@@ -398,9 +398,20 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     .nav-item{padding:12px 13px;font-size:15px}
     /* Ο αντίχειρας δεν είναι δείκτης ποντικιού: τίποτα κάτω από 44px. */
     header .ghost.sm,.nav-burger{min-height:40px}
+    /* ΔΥΟ σειρές, όχι τέσσερις. Με κάθε στοιχείο σε δική του γραμμή η κεφαλίδα
+       έπιανε 221px σε οθόνη 390px — το ένα τρίτο της οθόνης πριν καν αρχίσει η
+       δουλειά. Πρώτη σειρά: μενού, λογαριασμός, ειδοποιήσεις, έξοδος. Δεύτερη:
+       η αναζήτηση, που θέλει όλο το πλάτος για να είναι χρήσιμη.
+       Το `:not(.nav-burger)` χρειάζεται: το κουμπί του μενού είναι κι αυτό
+       `button.ghost.sm` και αλλιώς θα έφευγε δεξιά μαζί με την «Έξοδο». */
     header{flex-wrap:wrap;gap:8px;padding:10px 12px;align-items:center}
-    header>.field{flex:1 1 100%}
-    .search-trigger{flex:1 1 100%}
+    header>.nav-burger{order:1}
+    header>.field{order:2;flex:1 1 auto;min-width:0}
+    header>.field>.hint{display:none}
+    header>.grow{order:3}
+    header>.bell-wrap{order:4;margin-left:0!important}
+    header>button.ghost.sm:not(.nav-burger){order:4}
+    .search-trigger{order:9;flex:1 1 100%}
     main{padding:12px}
     .panel{padding:12px}
     /* Οι πίνακες κυλούν μέσα στο πλαίσιό τους, δεν σπρώχνουν τη σελίδα. */
