@@ -22,13 +22,42 @@ const GDRIVE_DEFAULT_FOLDER = 'ScanmyData backups';
 
 function gdrive_configured(): bool {
     foreach (['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_DRIVE_REFRESH_TOKEN'] as $k) {
-        if (secret_get($k) === '') return false;
+        if (suite_secret($k) === '') return false;
     }
     return true;
 }
 
 function gdrive_folder_name(): string {
-    return secret_get('GOOGLE_DRIVE_FOLDER', GDRIVE_DEFAULT_FOLDER);
+    return suite_secret('GOOGLE_DRIVE_FOLDER', GDRIVE_DEFAULT_FOLDER);
+}
+
+/**
+ * Ρητό id φακέλου, αν ο διαχειριστής θέλει ΣΥΓΚΕΚΡΙΜΕΝΟ φάκελο του Drive του.
+ *
+ * Το id είναι η μόνη αδιαμφισβήτητη διεύθυνση: δύο φάκελοι μπορούν να έχουν το
+ * ίδιο όνομα, και ένας φάκελος μπορεί να μετονομαστεί χωρίς να μας το πει
+ * κανείς. Το βρίσκεις στο URL όταν τον ανοίγεις:
+ * `drive.google.com/drive/folders/<ID>`.
+ */
+function gdrive_folder_id_setting(): string {
+    return trim(suite_secret('GOOGLE_DRIVE_FOLDER_ID'));
+}
+
+/** Ένας υποφάκελος με δεδομένο όνομα μέσα σε γονέα — τον φτιάχνει αν λείπει. */
+function gdrive_child_folder(string $parentId, string $name): array {
+    $q = sprintf("mimeType='%s' and name='%s' and '%s' in parents and trashed=false",
+                 GDRIVE_FOLDER_MIME, str_replace("'", "\\'", $name), $parentId);
+    $r = gdrive_call('GET', 'https://www.googleapis.com/drive/v3/files?'
+        . http_build_query(['q' => $q, 'fields' => 'files(id,name)', 'pageSize' => 1]), [], null, 30);
+    if (!$r['ok']) return $r;
+    if (!empty($r['data']['files'][0]['id'])) {
+        return ['ok' => true, 'id' => (string)$r['data']['files'][0]['id']];
+    }
+    $r = gdrive_call('POST', 'https://www.googleapis.com/drive/v3/files?fields=id',
+        ['Content-Type: application/json'],
+        json_encode(['name' => $name, 'mimeType' => GDRIVE_FOLDER_MIME, 'parents' => [$parentId]]), 30);
+    if (!$r['ok']) return $r;
+    return ['ok' => true, 'id' => (string)($r['data']['id'] ?? '')];
 }
 
 /**
@@ -49,9 +78,9 @@ function gdrive_token(): array {
         CURLOPT_TIMEOUT        => 20,
         CURLOPT_POST           => true,
         CURLOPT_POSTFIELDS     => http_build_query([
-            'client_id'     => secret_get('GOOGLE_CLIENT_ID'),
-            'client_secret' => secret_get('GOOGLE_CLIENT_SECRET'),
-            'refresh_token' => secret_get('GOOGLE_DRIVE_REFRESH_TOKEN'),
+            'client_id'     => suite_secret('GOOGLE_CLIENT_ID'),
+            'client_secret' => suite_secret('GOOGLE_CLIENT_SECRET'),
+            'refresh_token' => suite_secret('GOOGLE_DRIVE_REFRESH_TOKEN'),
             'grant_type'    => 'refresh_token',
         ]),
     ]);
@@ -93,24 +122,43 @@ function gdrive_call(string $method, string $url, array $headers = [], $body = n
     return ['ok' => true, 'data' => is_array($d) ? $d : [], 'raw' => (string)$resp];
 }
 
-/** Το id του φακέλου προορισμού — τον φτιάχνει αν λείπει. */
+/**
+ * Το id του φακέλου προορισμού.
+ *
+ * Τρεις τρόποι να τον ορίσεις, με αυτή τη σειρά:
+ *   1. `GOOGLE_DRIVE_FOLDER_ID` — ρητό id υπάρχοντος φακέλου (το πιο ακριβές),
+ *   2. `GOOGLE_DRIVE_FOLDER` ως **διαδρομή** («ScanmyData/Backups/e-Timologio»),
+ *      όπου κάθε σκαλοπάτι φτιάχνεται αν λείπει,
+ *   3. σκέτο όνομα στη ρίζα.
+ * Η διαδρομή υπάρχει γιατί κανείς δεν θέλει άλλον έναν φάκελο πεταμένο στη
+ * ρίζα του Drive του.
+ */
 function gdrive_folder_id(): array {
     static $id = null;
     if ($id !== null) return $id;
-    $name = gdrive_folder_name();
-    $q = sprintf("mimeType='%s' and name='%s' and trashed=false",
-                 GDRIVE_FOLDER_MIME, str_replace("'", "\\'", $name));
-    $r = gdrive_call('GET', 'https://www.googleapis.com/drive/v3/files?'
-        . http_build_query(['q' => $q, 'fields' => 'files(id,name)', 'pageSize' => 1]), [], null, 30);
-    if (!$r['ok']) return $id = $r;
-    if (!empty($r['data']['files'][0]['id'])) {
-        return $id = ['ok' => true, 'id' => (string)$r['data']['files'][0]['id']];
+
+    $explicit = gdrive_folder_id_setting();
+    if ($explicit !== '') {
+        // Επιβεβαιώνουμε ότι υπάρχει ΚΑΙ ότι είναι φάκελος: ένα λάθος id θα
+        // έστελνε τα αντίγραφα σε ανύπαρκτο μέρος και θα το μαθαίναμε αργά.
+        $r = gdrive_call('GET', 'https://www.googleapis.com/drive/v3/files/'
+            . rawurlencode($explicit) . '?fields=id,name,mimeType', [], null, 30);
+        if (!$r['ok']) return $id = ['ok' => false, 'error' => 'GOOGLE_DRIVE_FOLDER_ID: ' . $r['error']];
+        if (($r['data']['mimeType'] ?? '') !== GDRIVE_FOLDER_MIME) {
+            return $id = ['ok' => false, 'error' => 'το GOOGLE_DRIVE_FOLDER_ID δεν είναι φάκελος'];
+        }
+        return $id = ['ok' => true, 'id' => $explicit, 'name' => (string)($r['data']['name'] ?? '')];
     }
-    $r = gdrive_call('POST', 'https://www.googleapis.com/drive/v3/files?fields=id',
-        ['Content-Type: application/json'],
-        json_encode(['name' => $name, 'mimeType' => GDRIVE_FOLDER_MIME]), 30);
-    if (!$r['ok']) return $id = $r;
-    return $id = ['ok' => true, 'id' => (string)($r['data']['id'] ?? '')];
+
+    $parts = array_values(array_filter(array_map('trim', explode('/', gdrive_folder_name())), fn($x) => $x !== ''));
+    if (!$parts) $parts = [GDRIVE_DEFAULT_FOLDER];
+    $parent = 'root';
+    foreach ($parts as $name) {
+        $r = gdrive_child_folder($parent, $name);
+        if (!$r['ok']) return $id = $r;
+        $parent = $r['id'];
+    }
+    return $id = ['ok' => true, 'id' => $parent, 'name' => implode('/', $parts)];
 }
 
 /**

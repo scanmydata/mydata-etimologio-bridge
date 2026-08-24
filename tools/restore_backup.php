@@ -12,7 +12,7 @@
 // μη χρειάζεται τίποτα από την ίδια την εφαρμογή που μόλις χάθηκε.
 //
 // Επαναφορά μετά την εξαγωγή:
-//   psql "$DATABASE_URL" < db.sql        (Postgres)
+//   pg_restore -d "$DATABASE_URL" --clean --no-owner db.dump   (Postgres)
 //   cp local.sqlite /data/.localdata.sqlite   (SQLite)
 //   cp .enckey /data/.enckey             ΚΡΙΣΙΜΟ — χωρίς αυτό τα κρυπτογραφημένα
 //                                        πεδία δεν διαβάζονται ποτέ ξανά.
