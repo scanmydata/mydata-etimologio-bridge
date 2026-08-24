@@ -99,7 +99,7 @@ function srv_backup_dump(): array {
 }
 
 function srv_backup_passphrase(): string {
-    return secret_get('BACKUP_PASSPHRASE');
+    return suite_secret('BACKUP_PASSPHRASE');
 }
 
 /**
@@ -196,7 +196,9 @@ function srv_backup_run(string $reason = 'manual'): array {
         $missing = [];
         foreach (['BACKUP_PASSPHRASE', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
                   'GOOGLE_DRIVE_REFRESH_TOKEN'] as $k) {
-            if (secret_get($k) === '') $missing[] = $k;
+            // Δείχνουμε ΚΑΙ ΤΑ ΔΥΟ ονόματα που ψάξαμε: αλλιώς ο διαχειριστής
+            // βλέπει «λείπει το BACKUP_PASSPHRASE» ενώ το έχει βάλει με επίθεμα.
+            if (suite_secret($k) === '') $missing[] = implode(' ή ', suite_secret_names($k));
         }
         $out['missing_secrets'] = $missing;
         setting_set('srvbackup.last', json_encode($out));

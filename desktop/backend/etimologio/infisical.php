@@ -92,3 +92,37 @@ function secret_get(string $name, string $default = ''): string {
     $all = infisical_cache();
     return isset($all[$name]) && $all[$name] !== '' ? $all[$name] : $default;
 }
+
+/**
+ * Το πρώτο μυστικό που υπάρχει, από μια λίστα ονομάτων.
+ *
+ * Χρειάζεται γιατί ένα Infisical εξυπηρετεί ΠΟΛΛΑ προϊόντα: εκεί μέσα ζουν ήδη
+ * τα μυστικά του ScanmyData, και ένα σκέτο `BACKUP_PASSPHRASE` δεν λέει ποιανού
+ * είναι. Το ίδιο μυστικό λοιπόν αναζητείται πρώτα με επίθεμα προϊόντος και μετά
+ * σκέτο — έτσι δουλεύουν και οι δύο ονοματοδοσίες χωρίς ρύθμιση.
+ */
+function secret_get_first(array $names, string $default = ''): string {
+    foreach ($names as $n) {
+        $v = secret_get($n);
+        if ($v !== '') return $v;
+    }
+    return $default;
+}
+
+/**
+ * Τα ονόματα κάτω από τα οποία ψάχνουμε ένα μυστικό του Suite.
+ *
+ * Το επίθεμα αλλάζει με `BACKUP_SECRET_SUFFIX` — αν αύριο το προϊόν λέγεται
+ * αλλιώς, δεν χρειάζεται αλλαγή κώδικα.
+ */
+function suite_secret_names(string $key): array {
+    $suffix = env_or_const('BACKUP_SECRET_SUFFIX');
+    if ($suffix === '') $suffix = '_SCANMYDATA_SUITE';
+    return [$key . $suffix, $key];
+}
+
+/** Ένα μυστικό του Suite: πρώτα με επίθεμα, μετά σκέτο. */
+function suite_secret(string $key, string $default = ''): string {
+    return secret_get_first(suite_secret_names($key), $default);
+}
+

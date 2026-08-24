@@ -22,13 +22,13 @@ const GDRIVE_DEFAULT_FOLDER = 'ScanmyData backups';
 
 function gdrive_configured(): bool {
     foreach (['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_DRIVE_REFRESH_TOKEN'] as $k) {
-        if (secret_get($k) === '') return false;
+        if (suite_secret($k) === '') return false;
     }
     return true;
 }
 
 function gdrive_folder_name(): string {
-    return secret_get('GOOGLE_DRIVE_FOLDER', GDRIVE_DEFAULT_FOLDER);
+    return suite_secret('GOOGLE_DRIVE_FOLDER', GDRIVE_DEFAULT_FOLDER);
 }
 
 /**
@@ -40,7 +40,7 @@ function gdrive_folder_name(): string {
  * `drive.google.com/drive/folders/<ID>`.
  */
 function gdrive_folder_id_setting(): string {
-    return trim(secret_get('GOOGLE_DRIVE_FOLDER_ID'));
+    return trim(suite_secret('GOOGLE_DRIVE_FOLDER_ID'));
 }
 
 /** Ένας υποφάκελος με δεδομένο όνομα μέσα σε γονέα — τον φτιάχνει αν λείπει. */
@@ -78,9 +78,9 @@ function gdrive_token(): array {
         CURLOPT_TIMEOUT        => 20,
         CURLOPT_POST           => true,
         CURLOPT_POSTFIELDS     => http_build_query([
-            'client_id'     => secret_get('GOOGLE_CLIENT_ID'),
-            'client_secret' => secret_get('GOOGLE_CLIENT_SECRET'),
-            'refresh_token' => secret_get('GOOGLE_DRIVE_REFRESH_TOKEN'),
+            'client_id'     => suite_secret('GOOGLE_CLIENT_ID'),
+            'client_secret' => suite_secret('GOOGLE_CLIENT_SECRET'),
+            'refresh_token' => suite_secret('GOOGLE_DRIVE_REFRESH_TOKEN'),
             'grant_type'    => 'refresh_token',
         ]),
     ]);
