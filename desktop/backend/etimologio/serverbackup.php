@@ -182,7 +182,15 @@ function srv_backup_run(string $reason = 'manual'): array {
 
     if (!$encrypted) {
         // Δες το σχόλιο στην κορυφή: ασφράγιστο αντίγραφο δεν φεύγει από εδώ.
+        //
+        // Μαζί με το «λείπει», λέμε και ΠΟΥ κόλλησε: το μυστικό δεν ήρθε επειδή
+        // δεν υπάρχει στο Infisical, ή επειδή το Infisical δεν απάντησε
+        // καθόλου; Χωρίς αυτό, ο διαχειριστής κοιτάζει ένα «λείπει» και δεν
+        // ξέρει αν φταίει η ρύθμιση ή το δίκτυο. Μετράμε ΠΛΗΘΟΣ μυστικών, ποτέ
+        // τιμές — αυτό το κείμενο καταλήγει σε logs.
         $out['error'] = 'Χωρίς BACKUP_PASSPHRASE το αντίγραφο μένει μόνο τοπικά.';
+        $out['infisical'] = infisical_configured();
+        $out['infisical_secrets'] = count(infisical_cache());
         setting_set('srvbackup.last', json_encode($out));
         return $out;
     }
