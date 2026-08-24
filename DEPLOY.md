@@ -129,6 +129,84 @@ docker compose logs -f etimologio
 
 ---
 
+## 3γ. Αντίγραφα της βάσης στο Google Drive
+
+Ο server παίρνει **τη βάση μαζί με το `.enckey`** — χωρίς το δεύτερο, τα
+κρυπτογραφημένα στοιχεία ΑΑΔΕ κάθε εταιρείας δεν ξαναδιαβάζονται ποτέ. Το
+αρχείο κρυπτογραφείται και ανεβαίνει στο Drive **σου** (OAuth χρήστη, όχι
+service account: ένας service account δεν έχει δικό του χώρο και τα αντίγραφα
+θα ήταν αόρατα σε εσένα).
+
+Πότε παίρνεται:
+
+| Πότε | Πώς |
+|---|---|
+| **Κάθε μέρα** | ο χρονοπρογραμματιστής, στην ώρα που ορίζεις (default 03:00) |
+| **Χειροκίνητα** | Διαχείριση → «🗄️ Αντίγραφα ασφαλείας του server» → «💾 Αντίγραφο τώρα» |
+| **Πριν από κάθε deploy** | Coolify → Pre-deployment command (δες παρακάτω) |
+
+### Τα μυστικά (Infisical)
+
+Ίδιο μοτίβο με το ScanmyData: στο Coolify μπαίνουν **μόνο** τα διαπιστευτήρια
+του Infisical, και τα υπόλοιπα κατεβαίνουν από εκεί στο boot.
+
+| Env στο Coolify | Τι είναι |
+|---|---|
+| `INFISICAL_TOKEN` | service token με δικαίωμα ανάγνωσης |
+| `INFISICAL_PROJECT_ID` | το workspace |
+| `INFISICAL_ENVIRONMENT` | π.χ. `prod` |
+| `INFISICAL_BASE_URL` | προαιρετικό (default `https://app.infisical.com`) |
+
+Και μέσα στο Infisical, τέσσερα μυστικά:
+
+| Μυστικό | Τι είναι |
+|---|---|
+| `GOOGLE_CLIENT_ID` | OAuth client (τύπου **Desktop app**) από το Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | το μυστικό του ίδιου client |
+| `GOOGLE_DRIVE_REFRESH_TOKEN` | refresh token με scope `https://www.googleapis.com/auth/drive` |
+| `BACKUP_PASSPHRASE` | η φράση που κρυπτογραφεί το αρχείο — **φύλαξέ τη χωριστά** |
+| `GOOGLE_DRIVE_FOLDER` | προαιρετικό όνομα φακέλου (default «ScanmyData backups») |
+
+> ⚠️ **Χωρίς `BACKUP_PASSPHRASE` το αντίγραφο ΔΕΝ ανεβαίνει** — μένει μόνο
+> τοπικά στο `/data/backups`. Επίτηδες: μέσα του κάθεται η βάση **μαζί** με το
+> κλειδί της, και ένα ασφράγιστο τέτοιο αρχείο δεν έχει δουλειά σε cloud.
+> Η κάρτα της Διαχείρισης το γράφει με κόκκινο όσο λείπει.
+
+Τα ίδια μυστικά δουλεύουν και ως σκέτα env, χωρίς Infisical — χρήσιμο για
+δοκιμή. Το ρητό env κερδίζει πάντα του Infisical.
+
+### Αντίγραφο πριν από κάθε deploy
+
+Coolify → την εφαρμογή → **Configuration → General → Pre/Post Deployment
+Commands → Pre-deployment**:
+
+```
+sh /var/www/html/deploy/pre-deploy-backup.sh
+```
+
+Τρέχει με τον **παλιό** κώδικα και την παλιά βάση ακόμη στη θέση τους — γι'
+αυτό δεν μπαίνει στο entrypoint, που ξεκινά αφού η αλλαγή έχει ήδη γίνει. Δεν
+ρίχνει ποτέ το deploy· αν θέλεις το αντίθετο, βάλε `PREDEPLOY_BACKUP_STRICT=1`.
+
+### Επαναφορά
+
+```bash
+php tools/restore_backup.php /data/backups/server-<ημερομηνία>-auto.zip.enc /tmp/rs
+```
+
+Ζητά τη φράση (ή τη βρίσκει από το `BACKUP_PASSPHRASE`), βγάζει το zip και
+τυπώνει τι περιέχει. Μετά:
+
+```bash
+psql "$DATABASE_URL" < db.sql      # Postgres
+cp .enckey /data/.enckey           # ΚΡΙΣΙΜΟ
+```
+
+> Δοκίμασε την επαναφορά **πριν** τη χρειαστείς. Ένα αντίγραφο που δεν έχει
+> ανοίξει ποτέ κανείς είναι υπόθεση, όχι αντίγραφο.
+
+---
+
 ## 4. Το volume `/data` — μη το χάσεις
 
 | Αρχείο | Τι είναι |

@@ -240,30 +240,96 @@ def manual_signature() -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+def _logo_data_uri(size: int = 96) -> str:
+    """Το σήμα του e-Τιμολόγιο ως data URI, ώστε να ταξιδεύει μέσα στο HTML.
+
+    Ίδια τεχνική με το `gui/manual.py`: το έγγραφο δεν πρέπει να ψάχνει αρχείο
+    στον δίσκο τη στιγμή της εκτύπωσης — η διαδρομή αλλάζει μέσα στο bundle.
+    """
+    from PySide6.QtCore import QBuffer, QByteArray
+
+    from ..gui.icons import logo_pixmap
+
+    pixmap = logo_pixmap(size, etimologio=True)
+    if pixmap.isNull():
+        return ""
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+    pixmap.save(buffer, "PNG")
+    buffer.close()
+    import base64
+
+    return f"data:image/png;base64,{base64.b64encode(bytes(data)).decode('ascii')}"
+
+
 def manual_html() -> str:
-    """Το εγχειρίδιο ως HTML, για απόδοση σε PDF."""
-    parts = [
-        "<html><head><meta charset='utf-8'><style>"
-        "body{font-family:Segoe UI,Arial,sans-serif;color:#12202b;line-height:1.5}"
-        "h1{font-size:24px;border-bottom:3px solid #0ea5e9;padding-bottom:6px}"
-        "h2{font-size:16px;color:#0369a1;margin-top:22px}"
-        "li{margin:4px 0}"
-        "</style></head><body>"
+    """Το εγχειρίδιο ως HTML, για απόδοση σε PDF.
+
+    Η διάταξη είναι ΙΔΙΑ με του Downloader (`gui/manual.py`): εξώφυλλο με σήμα
+    και έκδοση, γραμμή, εισαγωγή σε γκρι, κεφαλίδες στο χρώμα της εφαρμογής.
+    Τα δύο εγχειρίδια είναι του ίδιου προϊόντος και ο χρήστης τα ανοίγει το ένα
+    μετά το άλλο — δεν έχει νόημα να μοιάζουν με δύο διαφορετικές εταιρείες.
+
+    ⚠️ Το QTextDocument δέχεται **υποσύνολο** της HTML/CSS (Qt rich text): όχι
+    flexbox, όχι `border-radius`, όχι σύγχρονοι επιλογείς. Γι' αυτό το
+    εξώφυλλο είναι `<table>` και τα χρώματα γράφονται inline, ακριβώς όπως στο
+    `gui/manual.py` — ό,τι δεν καταλαβαίνει το αγνοεί ΣΙΩΠΗΛΑ, και το λάθος
+    φαίνεται μόνο στο τυπωμένο PDF.
+    """
+    from ..config import APP_VERSION
+    from ..gui.theme import LIGHT as p
+
+    logo = _logo_data_uri()
+    logo_tag = f'<img src="{logo}" width="86" height="86">' if logo else ""
+
+    head = [
+        f"<html><body style=\"font-family:'Segoe UI',Calibri,sans-serif; color:{p.txt};\">",
+        '<table width="100%"><tr>',
+        f'  <td width="100">{logo_tag}</td>',
+        '  <td>',
+        f'    <div style="font-size:26pt; font-weight:bold; color:{p.accent};">e-Τιμολόγιο Pro</div>',
+        f'    <div style="font-size:13pt; color:{p.muted};">Εγχειρίδιο χρήσης &middot; έκδοση {APP_VERSION}</div>',
+        '  </td>',
+        '</tr></table>',
+        f'<hr color="{p.line}">',
     ]
+
+    body: list[str] = []
     open_list = False
+    first_para = True
     for text, kind in MANUAL:
         if kind == "li" and not open_list:
-            parts.append("<ul>")
+            body.append("<ul>")
             open_list = True
         elif kind != "li" and open_list:
-            parts.append("</ul>")
+            body.append("</ul>")
             open_list = False
-        tag = {"h1": "h1", "h2": "h2", "li": "li"}.get(kind, "p")
-        parts.append(f"<{tag}>{text}</{tag}>")
+        if kind == "h1":
+            # Ο τίτλος ζει πια στο εξώφυλλο· μια δεύτερη φορά θα ήταν θόρυβος.
+            continue
+        if kind == "h2":
+            body.append(f'<h2 style="color:{p.accent};">{text}</h2>')
+        elif kind == "li":
+            body.append(f"<li>{text}</li>")
+        elif first_para:
+            # Η πρώτη παράγραφος είναι η περιγραφή του προϊόντος: γκρι, όπως
+            # στον Downloader, ώστε να διαβάζεται ως υπότιτλος και όχι ως βήμα.
+            body.append(f'<p style="color:{p.muted};">{text}</p>')
+            first_para = False
+        else:
+            body.append(f"<p>{text}</p>")
     if open_list:
-        parts.append("</ul>")
-    parts.append("</body></html>")
-    return "".join(parts)
+        body.append("</ul>")
+
+    foot = [
+        f'<hr color="{p.line}">',
+        f'<p style="font-size:9pt; color:{p.muted};">ScanmyData Suite &middot; '
+        f'e-Τιμολόγιο Pro {APP_VERSION} &middot; '
+        'τα δεδομένα αποθηκεύονται κρυπτογραφημένα σε αυτόν τον υπολογιστή.</p>',
+        "</body></html>",
+    ]
+    return "\n".join(head + body + foot)
 
 
 def build_manual(target: Path) -> Path:

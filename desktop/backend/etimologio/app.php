@@ -1397,6 +1397,38 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <table id="adminBiz"><thead><tr><th>Επωνυμία</th><th>ΑΦΜ</th><th>Χρήστης (κάτοχος)</th><th>Λογιστές</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
 
+      <?php if (!defined('DESKTOP_TOKEN') || DESKTOP_TOKEN === ''): ?>
+      <!-- Αντίγραφα ΤΟΥ SERVER — μόνο ο διαχειριστής, και μόνο ΣΤΟΝ SERVER.
+           Στην εγκατάσταση γραφείου τα αντίγραφα έχουν δική τους κάρτα στις
+           Ρυθμίσεις: εκεί τα δεδομένα είναι ήδη στον δίσκο του χρήστη, και μια
+           δεύτερη κάρτα που λέει «server» θα ήταν απλώς μπερδεμένη. -->
+      <div class="panel" id="srvBackupCard" style="margin-top:16px" hidden>
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🗄️ Αντίγραφα ασφαλείας του server</strong>
+          <span class="pill" id="sbState">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">
+          Η βάση <b>μαζί με το κλειδί κρυπτογράφησης</b> — χωρίς αυτό τα στοιχεία
+          ΑΑΔΕ των εταιρειών δεν ξαναδιαβάζονται ποτέ. Το αρχείο
+          κρυπτογραφείται με τη φράση <code>BACKUP_PASSPHRASE</code> και ανεβαίνει
+          στο Google Drive. Παίρνεται αυτόματα κάθε μέρα, χειροκίνητα από εδώ,
+          και <b>πριν από κάθε deploy</b>.
+        </p>
+        <div class="row" style="margin-top:8px;align-items:center;gap:10px">
+          <button class="primary" onclick="srvBackupRun()">💾 Αντίγραφο τώρα</button>
+          <label class="side-toggle" style="color:var(--txt)">
+            <input type="checkbox" id="sbAuto" onchange="srvBackupSaveSettings()"> Αυτόματο ημερήσιο</label>
+          <div class="field" style="max-width:120px"><label>Ώρα</label>
+            <input id="sbHour" type="number" min="0" max="23" onchange="srvBackupSaveSettings()"></div>
+          <button class="ghost" onclick="loadSrvBackup()">↻ Ανανέωση</button>
+        </div>
+        <div class="hint" id="sbInfo" style="margin-top:8px"></div>
+        <table id="sbTable"><thead><tr>
+          <th>Αρχείο</th><th>Πότε</th><th class="num">Μέγεθος</th><th>Πού</th><th class="nofilter"></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <?php endif; ?>
+
     </section>
     <?php endif; ?>
 
@@ -2299,7 +2331,7 @@ async function loadAdmin(){
     if(ADMIN_SCOPE.is_master){
       const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);
     }
-    loadWorkTime();loadAuditLog();
+    loadWorkTime();loadAuditLog();loadSrvBackup();
     enhanceViewTables('admin');
   }catch(e){toast('Διαχείριση: '+e.message,'err');}}
 
@@ -2325,6 +2357,65 @@ setInterval(()=>{
   if(WORK_ACC>=WORK_PING_SEC){const secs=WORK_ACC;WORK_ACC=0;
     api({work_ping:1,seconds:secs}).catch(()=>{});}
 },5000);
+
+// --- Αντίγραφα ασφαλείας του server ------------------------------------------
+// Ο λογιστής δεν τα βλέπει καν: η κάρτα ανάβει μόνο για τον διαχειριστή, και ο
+// server ελέγχει ούτως ή άλλως τον ρόλο σε κάθε κλήση.
+function fmtBytes(n){n=+n||0;return n>1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(0)+' KB';}
+async function loadSrvBackup(){
+  const card=$('#srvBackupCard');
+  if(!card||!ADMIN_SCOPE.is_master)return;
+  card.hidden=false;
+  try{
+    const d=await apost({auth:'srv_backup_status'});
+    if(!d.success)return;
+    const st=$('#sbState');
+    const ready=d.encrypted&&d.drive_ready;
+    st.textContent=ready?'ενεργά':(d.encrypted?'μόνο τοπικά':'χωρίς κρυπτογράφηση');
+    st.className='pill'+(ready?' ok':' warn');
+    $('#sbAuto').checked=!!d.auto_on;
+    $('#sbHour').value=d.auto_hour;
+    // Το «γιατί δεν ανεβαίνει» πρέπει να λέγεται ΕΔΩ. Αλλιώς ο διαχειριστής
+    // βλέπει «εντάξει» και ανακαλύπτει το κενό τη μέρα που θα το χρειαστεί.
+    const miss=[];
+    if(!d.encrypted)miss.push('λείπει το <b>BACKUP_PASSPHRASE</b> — το αντίγραφο δεν φεύγει από τον server');
+    if(!d.drive_ready)miss.push('λείπουν τα κλειδιά <b>Google Drive</b>');
+    if(!d.infisical)miss.push('χωρίς <b>Infisical</b> (τα μυστικά διαβάζονται από τα env)');
+    $('#sbInfo').innerHTML=
+      `Βάση: <b>${esc(d.engine)}</b> · φάκελος Drive: <b>${esc(d.folder)}</b>`
+      +(d.last_at?` · τελευταίο: <b>${esc(d.last_at)}</b>`:'')
+      +(miss.length?('<br><span style="color:var(--bad)">⚠ '+miss.join(' · ')+'</span>'):'');
+    const rows=[];
+    (d.local||[]).forEach(f=>rows.push({...f,where:'server',link:''}));
+    ((d.drive&&d.drive.files)||[]).forEach(f=>rows.push({...f,where:'Drive'}));
+    $('#sbTable tbody').innerHTML=rows.map(f=>`<tr>
+      <td>${esc(f.name)}</td><td>${esc(f.at||'')}</td>
+      <td class="num">${esc(fmtBytes(f.size))}</td><td>${esc(f.where)}</td>
+      <td class="right">${f.where==='server'
+        ? `<button class="ghost sm" onclick="srvBackupDownload('${q1(f.name)}')">⬇ Λήψη</button>`
+        : (f.link?`<button class="ghost sm" onclick="window.open('${q1(f.link)}','_blank')">🌐 Άνοιγμα</button>`:'')}</td></tr>`)
+      .join('')||'<tr><td colspan="5" class="muted">Κανένα αντίγραφο ακόμη.</td></tr>';
+  }catch(e){}
+}
+async function srvBackupRun(){
+  try{
+    const d=await withBusy('Αντίγραφο του server…',()=>apost({auth:'srv_backup_run'}),
+      'Dump βάσης, κρυπτογράφηση και ανέβασμα στο Drive');
+    if(d.error)toast('Αντίγραφο: '+d.error,'err');
+    else toast(`Έτοιμο: ${d.name} (${fmtBytes(d.size)})${d.uploaded?' → Drive':''}`,'ok');
+    loadSrvBackup();
+  }catch(e){toast(e.message,'err');}
+}
+function srvBackupDownload(name){
+  // Απευθείας πλοήγηση: το αρχείο είναι δεκάδες MB και δεν έχει νόημα να
+  // περάσει από fetch για να ξαναγραφτεί σε blob.
+  window.location=`etimologio.php?srv_backup_file=${encodeURIComponent(name)}`;
+}
+async function srvBackupSaveSettings(){
+  try{await apost({auth:'srv_backup_settings',auto:$('#sbAuto').checked?1:0,hour:$('#sbHour').value});
+    toast('Αποθηκεύτηκε','ok');loadSrvBackup();
+  }catch(e){toast(e.message,'err');}
+}
 
 // --- Ημερολόγιο ενεργειών ----------------------------------------------------
 const AUDIT_LABELS={login:'Σύνδεση',login_2fa:'Σύνδεση (2FA)',logout:'Αποσύνδεση',
