@@ -17,13 +17,6 @@
   /* Το σήμα της εφαρμογής, πάνω από το όνομα: η οθόνη σύνδεσης ήταν το μόνο
      σημείο του web που δεν έδειχνε λογότυπο — σκέτο κείμενο σε ένα κουτί. */
   .brand-logo{display:block;width:76px;height:auto;margin:0 auto 10px}
-  /* Η σουίτα, διακριτικά κάτω-κάτω: ο πελάτης που παίρνει τον σύνδεσμο βλέπει
-     ότι πίσω από το e-Τιμολόγιο υπάρχει και η εφαρμογή λήψης. */
-  .suite{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);
-    display:flex;gap:16px;justify-content:center;align-items:flex-start}
-  .suite div{display:flex;flex-direction:column;align-items:center;gap:4px;
-    font-size:10.5px;color:var(--muted);max-width:120px;text-align:center}
-  .suite img{width:30px;height:auto}
   .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
   .tabs{display:flex;gap:6px;margin-bottom:16px}
   .tabs button{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:9px;padding:9px;cursor:pointer;font:inherit;font-weight:600}
@@ -112,10 +105,6 @@
 
   <div class="msg" id="msg"></div>
   <div class="foot">🔒 Τα δεδομένα αποθηκεύονται κρυπτογραφημένα</div>
-  <div class="suite">
-    <div><img src="<?= asset_url('assets/brand/logo-etimologio.png') ?>" alt="">e-Τιμολόγιο Pro<br>έκδοση παραστατικών</div>
-    <div><img src="<?= asset_url('assets/brand/logo-downloader.png') ?>" alt="">Timologio Downloader<br>μαζική λήψη από myDATA</div>
-  </div>
 </div>
 
 <script>

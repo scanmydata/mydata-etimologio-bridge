@@ -228,6 +228,15 @@ const NOTIFY_ADMIN_EMAIL = '';
         root = resolve_backend_root()
         if not (root / "etimologio.php").exists():
             raise RuntimeError(f"Λείπει το backend e-Τιμολόγιο ({root}).")
+        # Φάκελος με αντίγραφα αλλά χωρίς εταιρείες: τα φορτώνουμε ΠΡΙΝ ξεκινήσει
+        # ο server, όσο κανείς δεν κρατά τη βάση ανοιχτή. Δες backup.adopt_existing
+        # — δεν γράφει ποτέ πάνω από δουλειά που υπάρχει ήδη.
+        try:
+            from .backup import adopt_existing
+
+            adopt_existing(self.data_dir)
+        except Exception:  # noqa: BLE001 — ποτέ λόγος να μην ανοίξει η εφαρμογή
+            log.exception("Η αυτόματη φόρτωση αντιγράφου απέτυχε")
         self._port = _free_port()
         self._write_config(self._port)
         (self.data_dir / ".cookies").mkdir(exist_ok=True)

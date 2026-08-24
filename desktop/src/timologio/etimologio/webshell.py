@@ -124,6 +124,7 @@ class _Host(QObject):
 
     start_minimized_changed = Signal(bool)
     update_check_requested = Signal()
+    restore_requested = Signal()
 
     @Slot(bool)
     def setStartMinimized(self, value: bool) -> None:  # noqa: N802 — JS API
@@ -132,6 +133,10 @@ class _Host(QObject):
     @Slot()
     def checkUpdates(self) -> None:  # noqa: N802 — JS API
         self.update_check_requested.emit()
+
+    @Slot()
+    def restoreBackup(self) -> None:  # noqa: N802 — JS API
+        self.restore_requested.emit()
 
 
 class EtimologioWebShell(QWidget):
@@ -239,6 +244,7 @@ class EtimologioWebShell(QWidget):
         self._host = _Host(self)
         self._host.start_minimized_changed.connect(self.start_minimized_changed)
         self._host.update_check_requested.connect(self.update_check_requested)
+        self._host.restore_requested.connect(self.restore_backup)
 
         self._channel = QWebChannel(self)
         self._channel.registerObject("etimHost", self._host)
@@ -489,6 +495,65 @@ class EtimologioWebShell(QWidget):
     def set_tooltips(self, on: bool) -> None:
         self._tips_on = bool(on)
         self._apply_prefs()
+
+    # --- επαναφορά από αντίγραφο -------------------------------------------
+    def restore_backup(self) -> None:
+        """Επαναφορά της βάσης του e-Τιμολόγιο από αντίγραφο.
+
+        ΓΙΑΤΙ ΕΔΩ ΚΑΙ ΟΧΙ ΣΤΗΝ PHP: η επαναφορά αντικαθιστά τη βάση πάνω στην
+        οποία τρέχει ο ίδιος ο server. Πρέπει πρώτα να σταματήσει — και μόνο
+        αυτή η πλευρά ελέγχει τον κύκλο ζωής του. Το «Αντίγραφο τώρα» μένει
+        στην PHP: εκεί δεν χρειάζεται να σταματήσει τίποτα.
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from . import backup as etim_backup
+
+        folder = etim_backup.backups_dir(self._service.data_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        found = etim_backup.list_backups(self._service.data_dir)
+        if found:
+            newest, when, size = found[0]
+            answer = QMessageBox.question(
+                self, "Επαναφορά e-Τιμολόγιο",
+                f"Επαναφορά από το πιο πρόσφατο αντίγραφο;\n\n"
+                f"{newest.name}\n{when:%d/%m/%Y %H:%M} · {size / 1024:.0f} KB\n\n"
+                "Η τρέχουσα κατάσταση κρατιέται ως «pre-restore», οπότε η ενέργεια "
+                "είναι αναστρέψιμη.\n\n«Άλλο αρχείο…» για δικό σας zip.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Open,
+            )
+            if answer == QMessageBox.StandardButton.No:
+                return
+            chosen = newest if answer == QMessageBox.StandardButton.Yes else None
+        else:
+            chosen = None
+        if chosen is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Επιλέξτε αντίγραφο e-Τιμολόγιο", str(folder),
+                "Αντίγραφο (*.zip);;Όλα τα αρχεία (*.*)",
+            )
+            if not path:
+                return
+            chosen = Path(path)
+
+        # Ο server ΚΡΑΤΑΕΙ τη βάση ανοιχτή: χωρίς αυτό, η SQLite θα έγραφε το
+        # παλιό WAL πάνω στη νέα βάση μόλις έκλεινε.
+        self.shutdown()
+        self._started = False
+        try:
+            written = etim_backup.restore(chosen, self._service.data_dir)
+        except Exception as exc:  # noqa: BLE001 — φτάνει στον χρήστη ως μήνυμα
+            QMessageBox.warning(
+                self, "Επαναφορά", f"Η επαναφορά δεν έγινε:\n\n{exc}"
+            )
+            self.start()
+            return
+        self.start()
+        QMessageBox.information(
+            self, "Επαναφορά",
+            f"Έγινε επαναφορά από:\n{chosen.name}\n\nΑρχεία: {', '.join(written)}",
+        )
 
     def set_desktop_prefs(self, start_minimized: bool, version: str = "") -> None:
         """Η κατάσταση των ρυθμίσεων του προγράμματος, για το panel της σελίδας."""

@@ -17,6 +17,7 @@ from ..config import (
     AADE_HOST,
     URL_REQUEST_DOCS,
     URL_REQUEST_E3_INFO,
+    URL_REQUEST_MY_EXPENSES,
     URL_REQUEST_TRANSMITTED_DOCS,
     Settings,
 )
@@ -219,3 +220,42 @@ class MydataClient:
             break
 
         return result
+
+    # --- έλεγχος διαπιστευτηρίων -------------------------------------------
+    def check_credentials(
+        self, *, date_from: str, date_to: str, entity_vat: str | None = None
+    ) -> int:
+        """Ρωτά το ``RequestMyExpenses`` και επιστρέφει πόσες γραμμές γύρισαν.
+
+        ΓΙΑΤΙ ΑΥΤΟ ΤΟ ENDPOINT και όχι το `RequestDocs`: ο έλεγχος τρέχει τη
+        στιγμή που καταχωρείται ο πελάτης, μέσα σε ένα παράθυρο διαλόγου. Το
+        `RequestDocs` θα κατέβαζε ολόκληρα παραστατικά — δεκάδες MB XML για μια
+        ερώτηση ναι/όχι. Τα «σύνολα εξόδων» της §4.2.9 απαντούν το ίδιο πράγμα
+        με μία μικρή σελίδα, χωρίς pagination.
+
+        **Μηδέν γραμμές ΔΕΝ σημαίνει αποτυχία**: ένας πελάτης μπορεί κάλλιστα να
+        μην έχει έξοδα τον τρέχοντα μήνα. Η απάντηση HTTP 200 είναι από μόνη της
+        η απόδειξη ότι τα διαπιστευτήρια έγιναν δεκτά — το λάθος κλειδί γυρίζει
+        403 (`AuthError`) με κενό σώμα.
+        """
+        params: dict[str, str] = {"dateFrom": date_from, "dateTo": date_to}
+        if entity_vat:
+            params["entityVatNumber"] = entity_vat
+        payload = self._get(URL_REQUEST_MY_EXPENSES, params)
+        return _count_elements(payload)
+
+
+def _count_elements(payload: bytes) -> int:
+    """Πόσα «παιδιά» έχει η ρίζα της απάντησης.
+
+    Δεν παρσάρουμε το σχήμα των συνόλων: ο έλεγχος ενδιαφέρεται για το αν
+    απάντησε η ΑΑΔΕ, όχι για το τι είπε. Ένα XML που δεν διαβάζεται μετρά ως
+    μηδέν αντί να ρίξει τον διάλογο.
+    """
+    from xml.etree import ElementTree as ET
+
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError:
+        return 0
+    return sum(1 for _ in root)

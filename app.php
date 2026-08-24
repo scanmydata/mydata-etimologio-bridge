@@ -231,6 +231,18 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   .view.active{display:block}
   @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
   .panel{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
+  /* Πτυσσόμενες ενότητες ρυθμίσεων. Το «κεφάλι» είναι η πρώτη γραμμή του panel
+     και μένει πάντα ορατό· ό,τι ακολουθεί μπαίνει σε .sect-body. */
+  .sect-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+  .panel.sect{padding:0}
+  .panel.sect > .sect-head{padding:14px 18px;cursor:pointer;user-select:none;
+    display:flex;align-items:center;gap:10px;border-radius:var(--radius)}
+  .panel.sect > .sect-head:hover{background:var(--chip)}
+  .panel.sect > .sect-head > strong{flex:1}
+  .sect-caret{color:var(--muted);font-size:12px;transition:transform .15s ease;flex:none}
+  .panel.sect.open > .sect-head .sect-caret{transform:rotate(180deg)}
+  .panel.sect > .sect-body{display:none;padding:0 18px 18px}
+  .panel.sect.open > .sect-body{display:block}
   h2.title{margin:0 0 4px;font-size:20px}
   .sub{color:var(--muted);margin:0 0 16px;font-size:13px}
   .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
@@ -1037,6 +1049,13 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <!-- SETTINGS -->
     <section class="view" id="view-settings">
       <h2 class="title">Ρυθμίσεις λογαριασμού</h2><p class="sub">Στοιχεία χρήστη, κωδικός πρόσβασης και συνδεδεμένοι λογαριασμοί AADE.</p>
+      <!-- Οι ενότητες είναι πτυσσόμενες (δες `setupSections`): η οθόνη είχε
+           φτάσει τα δέκα panel και ο χρήστης κύλαγε ψάχνοντας. -->
+      <div class="sect-bar">
+        <button class="ghost sm" onclick="sectAll('#view-settings',true)">⬇️ Άνοιγμα όλων</button>
+        <button class="ghost sm" onclick="sectAll('#view-settings',false)">⬆️ Κλείσιμο όλων</button>
+        <span class="hint">Πάτα σε μια ενότητα για να ανοίξει — η εφαρμογή θυμάται ποιες κρατάς ανοιχτές.</span>
+      </div>
       <div class="panel">
         <strong>🔑 Αλλαγή κωδικού</strong>
         <div class="row" style="margin-top:10px">
@@ -1271,8 +1290,10 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <div class="row" style="margin-top:6px">
           <button class="primary" onclick="backupRun()">💾 Αντίγραφο τώρα</button>
           <button class="ghost" onclick="backupDownload()" id="bkDl" data-tip="Κατεβάζει το πιο πρόσφατο αντίγραφο">⬇️ Λήψη τελευταίου</button>
+          <button class="ghost" onclick="backupRestore()" id="bkRestore" data-tip="Φέρνει πίσω βάση και κλειδί από αντίγραφο. Η τρέχουσα κατάσταση κρατιέται ως «pre-restore».">↩️ Επαναφορά από αντίγραφο</button>
           <span class="hint" id="bkFolder"></span>
         </div>
+        <p class="sub" id="bkRestoreNote" style="margin-top:6px"></p>
       </div>
       <?php endif; ?>
       <?php if ($__embedded): ?>
@@ -5544,6 +5565,55 @@ $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').val
 async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions','drafts'];
   for(const k of kinds){try{await api({sync:k});}catch(e){}}}
 
+// --- Πτυσσόμενες ενότητες ρυθμίσεων -------------------------------------------
+//
+// Η οθόνη των Ρυθμίσεων έφτασε τα δέκα panel (κωδικός, 2FA, email, IBAN,
+// αυτόματη αποστολή, server, αντίγραφα, λογαριασμοί ΑΑΔΕ, εφαρμογή υπολογιστή).
+// Όλα ανοιχτά μαζί σήμαιναν κύλιση για να βρεις οτιδήποτε.
+//
+// Γίνεται με κώδικα και όχι με markup επίτηδες: κάθε νέο panel που θα μπει στην
+// οθόνη γίνεται ενότητα από μόνο του, χωρίς να το θυμηθεί κανείς.
+function setupSections(sel){
+  const view=$(sel);if(!view)return;
+  [...view.children].filter(el=>el.classList.contains('panel')).forEach((panel,i)=>{
+    if(panel.classList.contains('sect'))return;
+    const strong=panel.querySelector('strong');if(!strong)return;
+    // Το κεφάλι είναι η πρώτη γραμμή: το `.row` που κρατά τον τίτλο (μαζί με το
+    // pill κατάστασης ή το κουμπί «➕»), αλλιώς το σκέτο <strong>.
+    let head=strong.closest('.row');
+    if(!head||head.parentElement!==panel){
+      // Panel που ξεκινά με σκέτο <strong>: του δίνουμε δικό του κεφάλι, ώστε
+      // όλες οι ενότητες να έχουν την ίδια δομή (και το ίδιο CSS).
+      head=document.createElement('div');
+      panel.insertBefore(head,strong);
+      head.appendChild(strong);
+    }
+    const body=document.createElement('div');
+    body.className='sect-body';
+    while(head.nextSibling)body.appendChild(head.nextSibling);
+    panel.appendChild(body);
+    head.classList.add('sect-head');
+    head.insertAdjacentHTML('beforeend','<span class="sect-caret">▾</span>');
+    panel.classList.add('sect');
+    panel.dataset.sect=sel.replace(/\W/g,'')+'_'+i;
+    // Κλειστές από προεπιλογή: ο χρήστης ανοίγει ΜΟΝΟ ό,τι ήρθε να αλλάξει.
+    if(localStorage.getItem('etim_sect_'+panel.dataset.sect)==='1')panel.classList.add('open');
+    head.addEventListener('click',e=>{
+      // Τα χειριστήρια του κεφαλιού δουλεύουν κανονικά — δεν διπλώνουν την ενότητα.
+      if(e.target.closest('button,input,select,a,label'))return;
+      sectSet(panel,!panel.classList.contains('open'));
+    });
+  });
+}
+function sectSet(panel,open){
+  panel.classList.toggle('open',open);
+  if(panel.dataset.sect)localStorage.setItem('etim_sect_'+panel.dataset.sect,open?'1':'0');
+}
+function sectAll(sel,open){document.querySelectorAll(sel+' > .panel.sect').forEach(p=>sectSet(p,open));}
+// Η ξενάγηση δείχνει πεδία που ζουν ΜΕΣΑ σε ενότητες. Κλειστή ενότητα σημαίνει
+// στοιχείο με μηδενικές διαστάσεις — δηλαδή δείκτη στη γωνία της οθόνης.
+function sectReveal(el){const p=el&&el.closest('.panel.sect');if(p&&!p.classList.contains('open'))sectSet(p,true);}
+
 // --- Ρυθμίσεις της εφαρμογής υπολογιστή ---------------------------------------
 //
 // Η σελίδα είναι η ίδια στο web και στον υπολογιστή, αλλά «εκκίνηση στο tray»
@@ -5587,7 +5657,7 @@ const TOUR=[
   {sel:'[data-view="schedule"]',title:'⏰ Προγραμματισμός',text:'Προγραμμάτισε την αυτόματη έκδοση παραστατικών (μεμονωμένων ή μαζικών) σε μελλοντική ώρα, με προαιρετική επανάληψη. Εδώ βλέπεις κατάσταση & ιστορικό.'},
   {sel:'#account',title:'🏢 Επιλογή εταιρίας',text:'Διάλεξε εδώ την επιχείρηση με την οποία δουλεύεις. Ο <b>διαχειριστής</b> βλέπει κάθε εταιρία· ο <b>λογιστής</b> μόνο τις δικές του — και τις ανοίγει μόνος του από τη Διαχείριση, χωρίς να περιμένει ανάθεση.'},
   {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.'},
-  {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις & προτιμήσεις email',text:'Αλλαγή κωδικού, ενεργοποίηση 2FA με authenticator, και — για λογιστή/διαχειριστή — επιλογή για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις email ειδοποιήσεων.'},
+  {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις',text:'Η οθόνη είναι χωρισμένη σε <b>πτυσσόμενες ενότητες</b>: πάτα τον τίτλο μιας ενότητας για να ανοίξει, και η εφαρμογή θυμάται ποιες κρατάς ανοιχτές. Πάνω-πάνω υπάρχουν «Άνοιγμα όλων» και «Κλείσιμο όλων».<br><br>Μέσα θα βρεις: κωδικό, 2FA με authenticator, πάροχο email, και — για λογιστή/διαχειριστή — για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις ειδοποιήσεις.'},
   {sel:'#bkTable',view:'settings',title:'🏦 Λογαριασμοί & αυτόματη αποστολή',text:'Καταχώρησε τα IBAN της επιχείρησης — η τράπεζα βγαίνει από λίστα και το IBAN ελέγχεται πραγματικά (mod-97), οπότε λάθος ψηφίο δεν περνά. Όσα έχουν ✓ «στο email» γράφονται στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο· μπορείς και να ανεβάσεις PDF με τους λογαριασμούς.'},
   {sel:'#bkAutoSend',view:'settings',title:'📤 Να φεύγει μόνο του',text:'Με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ στέλνεται αμέσως στον πελάτη με το PDF συνημμένο. Παρακάτω ορίζεις και <b>προγραμματισμένη αποστολή καρτελών</b>: ημέρα του μήνα, μόνο σε όσους χρωστούν, πάνω από ένα ποσό.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα Ctrl+K οποιαδήποτε στιγμή για να βρεις πελάτη αστραπιαία.'},
@@ -5596,7 +5666,8 @@ const TOUR=[
   {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'},
   {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Πάνω από κάθε πίνακα υπάρχει και το «<b>⚙ Στήλες</b>»: διαλέγεις τι φαίνεται. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'},
   {sel:'#lkTable',view:'settings',title:'☁️ Σύνδεση με web server',text:'Έχει το γραφείο server; Επικόλλησε εδώ το <b>κλειδί πρόσβασης</b> που σου έδωσε ο διαχειριστής — τη διεύθυνση την κουβαλά το ίδιο το κλειδί. Μετά, τα δεδομένα ζουν <b>και</b> στον server, ο πελάτης δουλεύει από browser με τον σύνδεσμο που αντιγράφεις από εδώ, και το «🔄 Συγχρονισμός τώρα» στέλνει ό,τι έγινε εδώ ΚΑΙ φέρνει ό,τι έγινε εκεί.'},
-  {sel:'#bkState',view:'settings',title:'💾 Αντίγραφα ασφαλείας',text:'Ένα zip με τη <b>βάση</b> και το <b>κλειδί κρυπτογράφησης</b> μαζί. Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη: πάτα «Αντίγραφο τώρα», κατέβασέ το και κράτα το <b>εκτός</b> υπολογιστή.'}
+  {sel:'#dtTray',view:'settings',title:'🖥️ Ρυθμίσεις της εφαρμογής',text:'Μέσα στην εφαρμογή υπολογιστή, οι Ρυθμίσεις κρατούν και ό,τι αφορά το ΠΡΟΓΡΑΜΜΑ: «<b>Εκκίνηση στο tray</b>» (ξεκινά χωρίς παράθυρο, δίπλα στο ρολόι) και «<b>Έλεγχος για ενημερώσεις</b>». Είναι οι ίδιοι διακόπτες με τον Πίνακα ελέγχου — μία ρύθμιση, όπου κι αν την πειράξεις.'},
+  {sel:'#bkState',view:'settings',title:'💾 Αντίγραφα & επαναφορά',text:'Ένα zip με τη <b>βάση</b> και το <b>κλειδί κρυπτογράφησης</b> μαζί. Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη: πάτα «Αντίγραφο τώρα», κατέβασέ το και κράτα το <b>εκτός</b> υπολογιστή.<br><br>Η «<b>↩️ Επαναφορά από αντίγραφο</b>» κάνει τον δρόμο ανάποδα — γράφει πίσω βάση ΚΑΙ κλειδί, κρατώντας την τρέχουσα κατάσταση ως «pre-restore». Και αν δείξεις την εγκατάσταση σε φάκελο που κουβαλάς από αλλού, το νεότερο αντίγραφο φορτώνεται <b>μόνο του</b> όσο η βάση είναι ακόμη άδεια.'}
 ];
 let tourI=0,TOUR_STEPS=[];
 // ΜΟΝΟ τα βήματα που υπάρχουν σε ΑΥΤΗ την εγκατάσταση και σε αυτόν τον ρόλο:
@@ -5630,6 +5701,7 @@ function tourShow(i){
 // στοιχείο στη θέση του, οπότε ο δείκτης κάθονταν αλλού από ό,τι έδειχνε.
 function tourPlace(s){
   const el=document.querySelector(s.sel),ring=$('#tourRing'),box=$('#tourBox');
+  sectReveal(el);
   box.style.transform='none';
   // Μηδενισμός πριν τη μέτρηση: από θέση κοντά στη δεξιά άκρη το κουτί
   // στενεύει και θα μετρούσαμε λάθος πλάτος.
@@ -5943,6 +6015,20 @@ function backupDownload(){
   // παράθυρο της εφαρμογής (δεν υπάρχει Explorer εκεί).
   window.open(API+'?backup_file=1'+(ACCOUNT?('&account='+encodeURIComponent(ACCOUNT)):''),'_blank');
 }
+// ⚠️ Η ΕΠΑΝΑΦΟΡΑ ΔΕΝ ΓΙΝΕΤΑΙ ΑΠΟ ΕΔΩ. Αντικαθιστά τη βάση πάνω στην οποία
+// τρέχει ο ίδιος ο server που εξυπηρετεί αυτή τη σελίδα: πρέπει πρώτα να
+// σταματήσει, και αυτό το ξέρει μόνο η εφαρμογή υπολογιστή. Το ζητάμε από τη
+// γέφυρα, εκείνη ρωτά ποιο αντίγραφο, κάνει τη δουλειά και ξαναφορτώνει.
+function backupRestore(){
+  const h=dtHost();
+  const note=$('#bkRestoreNote');
+  if(!h){
+    if(note)note.textContent='Η επαναφορά γίνεται μόνο μέσα από την εφαρμογή υπολογιστή — εκεί ζουν η βάση και το κλειδί.';
+    return;
+  }
+  h.restoreBackup();
+  if(note)note.textContent='Άνοιξε το παράθυρο επιλογής αντιγράφου στην εφαρμογή.';
+}
 function linkCopy(url){
   if(!url)return;
   try{navigator.clipboard.writeText(url);toast('Ο σύνδεσμος αντιγράφηκε','ok');}
@@ -6115,7 +6201,7 @@ function addEyes(root){
   });
 }
 
-(async()=>{addEyes();loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+(async()=>{addEyes();setupSections('#view-settings');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
   // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε μισή ώρα.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal
@@ -52,6 +53,61 @@ class _Lookup(QObject):
         self.done.emit(self._vat, name)
 
 
+def current_month() -> tuple[str, str]:
+    """Πρώτη ημέρα του τρέχοντος μήνα → σήμερα, σε μορφή ΑΑΔΕ (dd/MM/yyyy)."""
+    today = date.today()
+    return today.replace(day=1).strftime("%d/%m/%Y"), today.strftime("%d/%m/%Y")
+
+
+class _CredentialProbe(QObject):
+    """Δοκιμή διαπιστευτηρίων myDATA, εκτός του νήματος του UI.
+
+    ΓΙΑΤΙ ΥΠΑΡΧΕΙ: το «Api myData» και το «Subscription key e-timologio» είναι
+    δύο διαφορετικά κλειδιά με ίδια μορφή (32 hex). Ο έλεγχος μορφής τα δέχεται
+    και τα δύο, οπότε ένας πελάτης καταχωρούνταν «σωστά» και το λάθος φαινόταν
+    ώρες αργότερα, μέσα σε μαζική λήψη, ως ένα 403 δίπλα σε δεκάδες επιτυχίες.
+    Εδώ ρωτάμε την ΑΑΔΕ επιτόπου.
+    """
+
+    done = Signal(bool, str)  # ok, μήνυμα
+
+    def __init__(self, user: str, key: str, vat: str, settings) -> None:
+        super().__init__()
+        self._user, self._key, self._vat = user, key, vat
+        self._settings = settings
+
+    def run(self) -> None:
+        from ..mydata.client import MydataClient
+        from ..mydata.errors import AuthError, MissingKeyError, MydataError
+
+        date_from, date_to = current_month()
+        try:
+            with MydataClient(self._user, self._key, self._settings) as api:
+                rows = api.check_credentials(
+                    date_from=date_from, date_to=date_to, entity_vat=self._vat
+                )
+        except MissingKeyError:
+            self.done.emit(False, "Λείπει ο χρήστης ή το κλειδί API.")
+            return
+        except AuthError:
+            self.done.emit(
+                False,
+                "Η ΑΑΔΕ απέρριψε τα διαπιστευτήρια (403). Ελέγξτε ότι το κλειδί "
+                "είναι το «Api myData» και ότι ο χρήστης αντιστοιχεί σε αυτό.",
+            )
+            return
+        except MydataError as exc:
+            self.done.emit(False, f"{exc.message_el} — δοκιμάστε ξανά.")
+            return
+        except Exception as exc:  # noqa: BLE001 — μια δοκιμή δεν ρίχνει τον διάλογο
+            self.done.emit(False, f"Η δοκιμή δεν ολοκληρώθηκε: {exc}")
+            return
+        # ⚠️ Μηδέν γραμμές ΔΕΝ είναι αποτυχία: ο πελάτης μπορεί να μην έχει έξοδα
+        # τον τρέχοντα μήνα. Το HTTP 200 είναι η απόδειξη.
+        extra = f" · {rows} εγγραφές" if rows else " · χωρίς έξοδα αυτόν τον μήνα"
+        self.done.emit(True, f"Τα διαπιστευτήρια δουλεύουν ({date_from}–{date_to}){extra}.")
+
+
 class ClientDialog(QDialog):
     """ΑΦΜ -> (VIES) επωνυμία -> credentials, ή μαζική εισαγωγή από Excel."""
 
@@ -66,6 +122,8 @@ class ClientDialog(QDialog):
         self._thread: QThread | None = None
         self._lookup: _Lookup | None = None
         self._looked_up = ""
+        self._probe_thread: QThread | None = None
+        self._probe: _CredentialProbe | None = None
         self.client: Client | None = None
         self.excel_path: str | None = None
 
@@ -136,7 +194,18 @@ class ClientDialog(QDialog):
             "Εγγραφή στο myDATA REST API."
         )
         self.key.textChanged.connect(self._validate)
-        form.addRow("Κλειδί API:", self.key)
+        key_row = QHBoxLayout()
+        key_row.addWidget(self.key)
+        # Ο έλεγχος μορφής δέχεται και το ΛΑΘΟΣ κλειδί (το «Subscription key
+        # e-timologio» είναι κι αυτό 32 hex). Μόνο η ΑΑΔΕ ξέρει.
+        self.btn_test = QPushButton("Δοκιμή")
+        self.btn_test.setToolTip(
+            "Ρωτά την ΑΑΔΕ με τα στοιχεία που έγραψες (σύνολα εξόδων του "
+            "τρέχοντος μήνα). Δεν κατεβάζει και δεν αποθηκεύει τίποτα."
+        )
+        self.btn_test.clicked.connect(self._test_credentials)
+        key_row.addWidget(self.btn_test)
+        form.addRow("Κλειδί API:", key_row)
         root.addLayout(form)
 
         self.hint = QLabel("")
@@ -280,6 +349,40 @@ class ClientDialog(QDialog):
         self.hint.setText(text)
         self.hint.setStyleSheet(f"color:{color};")
 
+    # ------------------------------------------------- δοκιμή διαπιστευτηρίων
+    def _test_credentials(self) -> None:
+        user = self.user.text().strip()
+        key = self.key.text().strip()
+        vat = norm_afm(self.vat.text())
+        if not user or not key:
+            self._say("Συμπλήρωσε χρήστη ΚΑΙ κλειδί API για να γίνει η δοκιμή.", CURRENT.warn)
+            return
+        if self._probe_thread is not None:
+            return
+        from ..config import load_settings
+
+        self.btn_test.setEnabled(False)
+        self.btn_test.setText("Δοκιμή…")
+        self._say("Ερώτηση στην ΑΑΔΕ…", CURRENT.muted)
+
+        self._probe_thread = QThread(self)
+        self._probe = _CredentialProbe(user, key, vat, load_settings())
+        self._probe.moveToThread(self._probe_thread)
+        self._probe_thread.started.connect(self._probe.run)
+        self._probe.done.connect(self._on_test_done)
+        self._probe_thread.start()
+
+    def _on_test_done(self, ok: bool, message: str) -> None:
+        thread = self._probe_thread
+        self._probe_thread = None
+        self._probe = None
+        if thread is not None:
+            thread.quit()
+            thread.wait(3000)
+        self.btn_test.setEnabled(True)
+        self.btn_test.setText("Δοκιμή")
+        self._say(("✓ " if ok else "✗ ") + message, CURRENT.ok if ok else CURRENT.bad)
+
     def _validate(self) -> None:
         vat = norm_afm(self.vat.text())
         key = self.key.text().strip()
@@ -349,7 +452,8 @@ class ClientDialog(QDialog):
         self.accept()
 
     def closeEvent(self, event) -> None:
-        if self._thread:
-            self._thread.quit()
-            self._thread.wait(2000)
+        for thread in (self._thread, self._probe_thread):
+            if thread is not None:
+                thread.quit()
+                thread.wait(3000)
         super().closeEvent(event)

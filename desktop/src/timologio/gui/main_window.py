@@ -11,6 +11,8 @@ import os
 import subprocess
 import tempfile
 from contextlib import contextmanager
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -65,6 +67,9 @@ from ..crypto import Crypto
 from ..db import init_db
 from ..download.storage import find_client_folder
 from ..reports import export_documents, export_documents_xlsx
+from ..schedule import SyncSchedule
+from ..schedule import from_dict as schedule_from_dict
+from ..schedule import to_dict as schedule_to_dict
 from .analysis_panel import AnalysisPanel
 from .busy import BusyOverlay
 from .client_dialog import ClientDialog
@@ -120,6 +125,19 @@ _PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher")
 _PANEL_W = 440
 
 
+
+def _parse_stamp(value) -> datetime | None:
+    """ISO κείμενο από το QSettings -> datetime, ανεκτικά."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def schedule_keys() -> tuple[str, ...]:
+    """Τα κλειδιά του QSettings που κρατούν το πρόγραμμα."""
+    return tuple(schedule_to_dict(SyncSchedule()).keys())
+
 class MainWindow(QMainWindow):
     def __init__(self, *, force_show: bool = False) -> None:
         super().__init__()
@@ -162,6 +180,12 @@ class MainWindow(QMainWindow):
         repo.normalize_disabled_clients(self.conn)
         self.crypto = Crypto(self.settings.enckey_path)
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
+        #: Πότε έτρεξε τελευταία φορά ΠΡΟΓΡΑΜΜΑΤΙΣΜΕΝΗ λήψη. Επιβιώνει σε
+        #: επανεκκίνηση: αλλιώς ένα άνοιγμα-κλείσιμο της εφαρμογής μετά την ώρα
+        #: του ραντεβού θα ξανακατέβαζε τα πάντα, κάθε φορά.
+        self._last_scheduled_run = _parse_stamp(
+            self._prefs.value("sync_schedule/last_run", "")
+        )
         self._thread: QThread | None = None
         self._worker: SyncWorker | None = None
         # Ξεχωριστό thread για τη λήψη «μόνο online» (headless browser).
@@ -200,6 +224,13 @@ class MainWindow(QMainWindow):
         self._start_presence()
         self._start_db_watch()
         self._setup_tray()
+        # Το ρολόι της αυτόματης λήψης. Ένα λεπτό είναι αρκετά συχνά ώστε ένα
+        # ραντεβού να μη χαθεί, και αρκετά αραιά ώστε ο έλεγχος (μια σύγκριση
+        # ημερομηνιών) να μη φαίνεται πουθενά.
+        self._sched_timer = QTimer(self)
+        self._sched_timer.setInterval(60_000)
+        self._sched_timer.timeout.connect(self._check_schedule)
+        self._sched_timer.start()
         QTimer.singleShot(400, self._maybe_first_run_tour)
         if self._connection_problem:
             QTimer.singleShot(200, self._report_connection_problem)
@@ -326,6 +357,63 @@ class MainWindow(QMainWindow):
         save_start_minimized(value)
         log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
 
+    # ------------------------------------------- χρονοπρογραμματισμός λήψης
+    def _load_schedule(self) -> SyncSchedule:
+        stored = {key: self._prefs.value(key) for key in schedule_keys()}
+        return schedule_from_dict(stored)
+
+    def _on_schedule_changed(self, schedule: SyncSchedule) -> None:
+        """Αποθηκεύει το πρόγραμμα και δείχνει πότε χτυπά την επόμενη φορά.
+
+        Οι «επιλεγμένοι» παγώνουν ΕΔΩ, τη στιγμή της αλλαγής: αν διαβάζονταν την
+        ώρα της λήψης, ένα κλικ στη λίστα πελατών θα άλλαζε σιωπηλά τι κατεβαίνει
+        αύριο στις επτά.
+        """
+        if schedule.scope == "selected":
+            ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+            schedule = replace(
+                schedule, vats=tuple(sorted(v for v in self._checked if v in ready))
+            )
+            self.control._sched_vats = schedule.vats
+        for key, value in schedule_to_dict(schedule).items():
+            self._prefs.setValue(key, value)
+        self.control.show_schedule_state(schedule, self._last_scheduled_run)
+        log.info("Χρονοπρογραμματισμός λήψης: %s", schedule.describe())
+
+    def _check_schedule(self) -> None:
+        """Χτυπά το ρολόι; Καλείται μια φορά το λεπτό.
+
+        Ο έλεγχος είναι φθηνός και δεν αγγίζει δίκτυο. Ό,τι κι αν πει, δεν
+        ξεκινά δεύτερη λήψη όσο τρέχει μία (`_thread`).
+        """
+        if self._thread is not None:
+            return
+        schedule = self._load_schedule()
+        if not schedule.is_due(datetime.now(), self._last_scheduled_run):
+            return
+        self._last_scheduled_run = datetime.now()
+        self._prefs.setValue("sync_schedule/last_run", self._last_scheduled_run.isoformat())
+        self._log("── Προγραμματισμένη λήψη")
+        self._run_scheduled_sync()
+
+    def _run_scheduled_sync(self) -> None:
+        """Η ίδια λήψη με το κουμπί, αλλά με τους πελάτες του προγράμματος."""
+        if self._thread is not None:
+            self._log("Η προγραμματισμένη λήψη παραλείφθηκε: τρέχει ήδη λήψη.")
+            return
+        schedule = self._load_schedule()
+        ready = [r["vat"] for r in repo.list_clients(self.conn, only_ready=True)]
+        targets = schedule.targets(ready)
+        if not targets:
+            self._log("Προγραμματισμένη λήψη: κανένας πελάτης με κλειδί API.")
+            return
+        # Το `on_sync` κατεβάζει τους ΤΣΕΚΑΡΙΣΜΕΝΟΥΣ (ή όλους): δίνουμε τη
+        # στοχευμένη λίστα από την ίδια πόρτα, ώστε να υπάρχει μία διαδρομή
+        # λήψης — με τα ίδια backup, logs και ειδοποιήσεις.
+        self._checked = set(targets)
+        self._sync_checked()
+        self.on_sync()
+
     def _on_start_minimized_requested(self, value: bool) -> None:
         """Η ίδια ρύθμιση, ζητημένη από τις Ρυθμίσεις του e-Τιμολόγιο.
 
@@ -443,6 +531,9 @@ class MainWindow(QMainWindow):
         self.control.set_start_minimized(load_start_minimized())
         self.control.start_minimized_changed.connect(self._on_start_minimized)
         self.control.reconnect_requested.connect(self.reload_clients)
+        self.control.schedule_changed.connect(self._on_schedule_changed)
+        self.control.schedule_run_requested.connect(self._run_scheduled_sync)
+        self.control.set_schedule(self._load_schedule())
         self.stack.addWidget(self.control)
 
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
@@ -2088,8 +2179,13 @@ class MainWindow(QMainWindow):
                 "ψηφίο, η επωνυμία έρχεται μόνη της — δεν χρειάζεται να πατήσετε "
                 "τίποτα. Αν το ΑΦΜ το ξέρουμε ήδη, μπαίνει ακαριαία· αλλιώς "
                 "ρωτιέται το VIES.\n\n"
-                "Μετά συμπληρώστε το myDATA REST API key. Στο ίδιο παράθυρο "
-                "υπάρχει και η μαζική εισαγωγή από Excel.",
+                "Μετά συμπληρώστε το myDATA REST API key και πατήστε «Δοκιμή»: "
+                "ρωτάμε την ΑΑΔΕ επιτόπου (σύνολα εξόδων του τρέχοντος μήνα) και "
+                "σας λέμε αμέσως αν τα διαπιστευτήρια περνούν. Χρήσιμο γιατί το "
+                "«Api myData» και το «Subscription key e-timologio» μοιάζουν ίδια "
+                "(32 χαρακτήρες) — και το λάθος φαινόταν ώρες αργότερα, μέσα σε "
+                "μια μαζική λήψη.\n\n"
+                "Στο ίδιο παράθυρο υπάρχει και η μαζική εισαγωγή από Excel.",
                 lambda: self.menu.button("add_client"),
             ),
             Step(
@@ -2171,6 +2267,21 @@ class MainWindow(QMainWindow):
                 "Το «Δοκιμή browser» ανοίγει αόρατα τον Edge/Chrome και ελέγχει "
                 "ότι η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά σας.",
                 lambda: self.menu.button("control"),
+                lambda: self._show_page("control"),
+            ),
+            Step(
+                "8. Αυτόματη λήψη σε ώρα που δεν ενοχλεί",
+                "Στον ίδιο πίνακα, «Χρονοπρογραμματισμός λήψης»: ορίστε ώρα και "
+                "ημέρες και η λήψη ξεκινά μόνη της.\n\n"
+                "«Όλοι με κλειδί API» ή «μόνο οι επιλεγμένοι» — οι επιλεγμένοι "
+                "παγώνουν τη στιγμή που αποθηκεύετε, ώστε ένα κλικ στη λίστα να "
+                "μην αλλάζει σιωπηλά τι κατεβαίνει αύριο. Πελάτης χωρίς κλειδί "
+                "δεν συμμετέχει ποτέ.\n\n"
+                "Η λήψη τρέχει ΜΕΣΑ στην εφαρμογή: το πρόγραμμα ισχύει όσο αυτή "
+                "είναι ανοιχτή — γι' αυτό υπάρχει από κάτω η «Εκκίνηση στο tray». "
+                "Ραντεβού που χάθηκε με τον υπολογιστή κλειστό εκτελείται μόλις "
+                "ανοίξει, την ίδια μέρα. Το «Λήψη τώρα» το δοκιμάζει αμέσως.",
+                lambda: self.control.chk_schedule,
                 lambda: self._show_page("control"),
             ),
             Step(
