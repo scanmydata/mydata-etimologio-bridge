@@ -53,6 +53,18 @@ function srv_backup_dump(): array {
     if (!srv_backup_is_pg()) {
         $path = defined('LOCAL_DB') ? (string)LOCAL_DB : '';
         if ($path === '' || !is_file($path)) return ['ok' => false, 'error' => 'δεν βρέθηκε η βάση'];
+        // `VACUUM INTO` πρώτα: γράφει ΣΥΜΠΥΚΝΩΜΕΝΟ αντίγραφο, χωρίς τις τρύπες
+        // που αφήνουν οι διαγραφές, και χωρίς να πειράξει την τρέχουσα βάση.
+        // Σε μεγάλες βάσεις κόβει εύκολα το μισό μέγεθος.
+        $tmp = sys_get_temp_dir() . '/etim-vac-' . bin2hex(random_bytes(4)) . '.sqlite';
+        try {
+            localdb()->exec("VACUUM INTO " . localdb()->quote($tmp));
+            $bytes = @file_get_contents($tmp);
+            @unlink($tmp);
+            if ($bytes !== false) return ['ok' => true, 'name' => 'local.sqlite', 'bytes' => $bytes];
+        } catch (Throwable $e) {
+            @unlink($tmp);   // παλιά SQLite χωρίς VACUUM INTO: συνεχίζουμε απλά
+        }
         $bytes = @file_get_contents($path);
         if ($bytes === false) return ['ok' => false, 'error' => 'η βάση δεν διαβάζεται'];
         return ['ok' => true, 'name' => 'local.sqlite', 'bytes' => $bytes];
@@ -63,7 +75,10 @@ function srv_backup_dump(): array {
         [$k, $v] = array_pad(explode('=', $part, 2), 2, '');
         if ($k !== '') $dsn[trim($k)] = trim($v);
     }
-    $cmd = sprintf('pg_dump --no-owner --no-privileges -h %s -p %s -U %s -d %s 2>&1',
+    // `-Fc -Z9`: το custom format της Postgres, συμπιεσμένο στο μέγιστο. Ένα
+    // απλό SQL dump είναι κείμενο και φουσκώνει — εδώ το αρχείο βγαίνει
+    // πολλαπλάσια μικρότερο, και η επαναφορά γίνεται με `pg_restore`.
+    $cmd = sprintf('pg_dump --no-owner --no-privileges -Fc -Z 9 -h %s -p %s -U %s -d %s',
         escapeshellarg($dsn['host'] ?? 'localhost'),
         escapeshellarg((string)($dsn['port'] ?? '5432')),
         escapeshellarg((string)(defined('DB_USER') ? DB_USER : '')),
@@ -80,7 +95,7 @@ function srv_backup_dump(): array {
     if ($code !== 0 || $out === '' || $out === false) {
         return ['ok' => false, 'error' => 'pg_dump: ' . trim(substr((string)($err ?: $out), 0, 300))];
     }
-    return ['ok' => true, 'name' => 'db.sql', 'bytes' => (string)$out];
+    return ['ok' => true, 'name' => 'db.dump', 'bytes' => (string)$out];
 }
 
 function srv_backup_passphrase(): string {
@@ -129,6 +144,7 @@ function srv_backup_run(string $reason = 'manual'): array {
         $k = @file_get_contents($keyFile);
         if ($k !== false) $files['.enckey'] = $k;
     }
+    // Μικρό επίτηδες: ό,τι χρειάζεται για να ξέρεις τι κρατάς, τίποτα άλλο.
     $files['manifest.json'] = json_encode([
         'at'      => date('c'),
         'reason'  => $reason,
@@ -138,6 +154,10 @@ function srv_backup_run(string $reason = 'manual'): array {
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
     $stamp = date('Ymd-His');
+    // Το zip κρατά τα τρία αρχεία μαζί· η συμπίεσή του είναι σχεδόν δωρεάν όταν
+    // το dump έρχεται ήδη συμπιεσμένο από την Postgres, και ουσιαστική για το
+    // SQLite. Το κόστος είναι λίγα bytes κεφαλίδας — αξίζει για να ταξιδεύουν
+    // βάση, κλειδί και manifest σαν ΕΝΑ πράγμα.
     $zip   = zip_build($files);
     $pass  = srv_backup_passphrase();
     $name  = "server-$stamp-$reason.zip";

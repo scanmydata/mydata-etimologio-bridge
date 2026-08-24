@@ -165,7 +165,8 @@ service account: ένας service account δεν έχει δικό του χώρ
 | `GOOGLE_CLIENT_SECRET` | το μυστικό του ίδιου client |
 | `GOOGLE_DRIVE_REFRESH_TOKEN` | refresh token με scope `https://www.googleapis.com/auth/drive` |
 | `BACKUP_PASSPHRASE` | η φράση που κρυπτογραφεί το αρχείο — **φύλαξέ τη χωριστά** |
-| `GOOGLE_DRIVE_FOLDER` | προαιρετικό όνομα φακέλου (default «ScanmyData backups») |
+| `GOOGLE_DRIVE_FOLDER` | προαιρετικό: όνομα **ή διαδρομή** φακέλου, π.χ. `ScanmyData/Backups/e-Timologio` — κάθε σκαλοπάτι φτιάχνεται αν λείπει (default «ScanmyData backups») |
+| `GOOGLE_DRIVE_FOLDER_ID` | προαιρετικό: **ρητό id** υπάρχοντος φακέλου, από το URL `drive.google.com/drive/folders/<ID>`. Κερδίζει του ονόματος — δύο φάκελοι μπορεί να λέγονται το ίδιο |
 
 > ⚠️ **Χωρίς `BACKUP_PASSPHRASE` το αντίγραφο ΔΕΝ ανεβαίνει** — μένει μόνο
 > τοπικά στο `/data/backups`. Επίτηδες: μέσα του κάθεται η βάση **μαζί** με το
@@ -198,8 +199,8 @@ php tools/restore_backup.php /data/backups/server-<ημερομηνία>-auto.zi
 τυπώνει τι περιέχει. Μετά:
 
 ```bash
-psql "$DATABASE_URL" < db.sql      # Postgres
-cp .enckey /data/.enckey           # ΚΡΙΣΙΜΟ
+pg_restore -d "$DATABASE_URL" --clean --no-owner db.dump   # Postgres
+cp .enckey /data/.enckey                                   # ΚΡΙΣΙΜΟ
 ```
 
 > Δοκίμασε την επαναφορά **πριν** τη χρειαστείς. Ένα αντίγραφο που δεν έχει
