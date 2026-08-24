@@ -407,12 +407,10 @@ class MainWindow(QMainWindow):
         if not targets:
             self._log("Προγραμματισμένη λήψη: κανένας πελάτης με κλειδί API.")
             return
-        # Το `on_sync` κατεβάζει τους ΤΣΕΚΑΡΙΣΜΕΝΟΥΣ (ή όλους): δίνουμε τη
-        # στοχευμένη λίστα από την ίδια πόρτα, ώστε να υπάρχει μία διαδρομή
-        # λήψης — με τα ίδια backup, logs και ειδοποιήσεις.
-        self._checked = set(targets)
-        self._sync_checked()
-        self.on_sync()
+        # Ίδια πόρτα με το κουμπί — μία διαδρομή λήψης, με τα ίδια backup, logs
+        # και ειδοποιήσεις — αλλά με ρητή λίστα, ώστε να μην αλλάξει η επιλογή
+        # που άφησε ο χρήστης στην οθόνη.
+        self.on_sync(targets)
 
     def _on_start_minimized_requested(self, value: bool) -> None:
         """Η ίδια ρύθμιση, ζητημένη από τις Ρυθμίσεις του e-Τιμολόγιο.
@@ -1837,15 +1835,21 @@ class MainWindow(QMainWindow):
         self._log(f"Συμπλήρωση κενού {to_gr(start)} – {to_gr(end)}")
         self.on_sync()
 
-    def on_sync(self) -> None:
+    def on_sync(self, only: list[str] | None = None) -> None:
         if self._thread is not None:
             return
         # Οι επιλεγμένοι μπορεί να περιλαμβάνουν και πελάτες χωρίς κλειδί (είναι
         # επιλέξιμοι για διαγραφή)· η λήψη κρατά μόνο όσους έχουν κλειδί.
         ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
-        vats = [v for v in sorted(self._checked) if v in ready]
-        if not vats:
-            vats = sorted(ready)
+        if only is not None:
+            # Ρητή λίστα (προγραμματισμένη λήψη): ΔΕΝ πειράζουμε τα τσεκαρισμένα
+            # του χρήστη. Μια αυτόματη λήψη στις επτά το πρωί δεν επιτρέπεται να
+            # αλλάξει την επιλογή που άφησε χθες ανοιχτή στην οθόνη.
+            vats = [v for v in only if v in ready]
+        else:
+            vats = [v for v in sorted(self._checked) if v in ready]
+            if not vats:
+                vats = sorted(ready)
         if not vats:
             QMessageBox.information(
                 self, "Κανένας πελάτης",
