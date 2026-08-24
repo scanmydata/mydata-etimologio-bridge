@@ -191,6 +191,14 @@ function srv_backup_run(string $reason = 'manual'): array {
         $out['error'] = 'Χωρίς BACKUP_PASSPHRASE το αντίγραφο μένει μόνο τοπικά.';
         $out['infisical'] = infisical_configured();
         $out['infisical_secrets'] = count(infisical_cache());
+        // ΠΟΙΑ λείπουν, ονομαστικά. Η διαφορά ανάμεσα σε «πήγαινε πρόσθεσε ένα
+        // μυστικό» και «πήγαινε ψάξε» είναι ακριβώς αυτή η γραμμή.
+        $missing = [];
+        foreach (['BACKUP_PASSPHRASE', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
+                  'GOOGLE_DRIVE_REFRESH_TOKEN'] as $k) {
+            if (secret_get($k) === '') $missing[] = $k;
+        }
+        $out['missing_secrets'] = $missing;
         setting_set('srvbackup.last', json_encode($out));
         return $out;
     }
