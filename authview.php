@@ -5,15 +5,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>e-Timologio Pro — Σύνδεση</title>
-<link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
-<link rel="icon" href="assets/icons/favicon.ico" sizes="any">
-<link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="<?= asset_url('assets/icons/favicon-32.png') ?>">
+<link rel="icon" href="<?= asset_url('assets/icons/favicon.ico') ?>" sizes="any">
+<link rel="apple-touch-icon" sizes="180x180" href="<?= asset_url('assets/icons/apple-touch-icon.png') ?>">
 <style>
   :root{--bg:#0b1220;--panel:#131f33;--panel2:#18263d;--line:#2b3b54;--txt:#e6edf6;--muted:#93a4bd;--accent:#38bdf8;--accent2:#0ea5e9;--ok:#22c55e;--bad:#ef4444;--radius:14px;--shadow:0 10px 30px rgba(0,0,0,.4)}
   *{box-sizing:border-box} html,body{height:100%}
   body{margin:0;font-family:system-ui,'Segoe UI',Roboto,Arial,sans-serif;background:radial-gradient(1200px 600px at 70% -10%,#12233c,#0b1220);color:var(--txt);display:flex;align-items:center;justify-content:center;min-height:100vh}
   .box{width:min(420px,94%);background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:26px 26px 22px}
   .brand{font-size:22px;font-weight:800;margin-bottom:2px}.brand span{color:var(--accent)}
+  /* Το σήμα της εφαρμογής, πάνω από το όνομα: η οθόνη σύνδεσης ήταν το μόνο
+     σημείο του web που δεν έδειχνε λογότυπο — σκέτο κείμενο σε ένα κουτί. */
+  .brand-logo{display:block;width:76px;height:auto;margin:0 auto 10px}
+  /* Η σουίτα, διακριτικά κάτω-κάτω: ο πελάτης που παίρνει τον σύνδεσμο βλέπει
+     ότι πίσω από το e-Τιμολόγιο υπάρχει και η εφαρμογή λήψης. */
+  .suite{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);
+    display:flex;gap:16px;justify-content:center;align-items:flex-start}
+  .suite div{display:flex;flex-direction:column;align-items:center;gap:4px;
+    font-size:10.5px;color:var(--muted);max-width:120px;text-align:center}
+  .suite img{width:30px;height:auto}
   .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
   .tabs{display:flex;gap:6px;margin-bottom:16px}
   .tabs button{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:9px;padding:9px;cursor:pointer;font:inherit;font-weight:600}
@@ -40,6 +50,7 @@
 </head>
 <body>
 <div class="box">
+  <img class="brand-logo" src="<?= asset_url('assets/brand/logo-etimologio.png') ?>" alt="">
   <div class="brand">e-Timologio <span>Pro</span></div>
   <div class="sub" id="subtitle">Συνδεθείτε στον λογαριασμό της επιχείρησής σας</div>
 
@@ -101,6 +112,10 @@
 
   <div class="msg" id="msg"></div>
   <div class="foot">🔒 Τα δεδομένα αποθηκεύονται κρυπτογραφημένα</div>
+  <div class="suite">
+    <div><img src="<?= asset_url('assets/brand/logo-etimologio.png') ?>" alt="">e-Τιμολόγιο Pro<br>έκδοση παραστατικών</div>
+    <div><img src="<?= asset_url('assets/brand/logo-downloader.png') ?>" alt="">Timologio Downloader<br>μαζική λήψη από myDATA</div>
+  </div>
 </div>
 
 <script>

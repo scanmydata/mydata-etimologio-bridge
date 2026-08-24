@@ -20,7 +20,7 @@ class Tray(QSystemTrayIcon):
     def __init__(self, window: QWidget, app_icon: QIcon, role_label: str) -> None:
         super().__init__(app_icon, window)
         self._window = window
-        self.setToolTip(f"Λήψη Παραστατικών myDATA — {role_label}")
+        self.setToolTip(f"Timologio Downloader — {role_label}")
 
         menu = QMenu()
         self.act_show = QAction("Άνοιγμα", menu)

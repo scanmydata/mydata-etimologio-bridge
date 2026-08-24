@@ -233,7 +233,7 @@ class SideMenu(QWidget):
         return panel, box
 
     def _build_downloader_menu(self) -> QWidget:
-        """Λήψη Παραστατικών myDATA — η αρχική εφαρμογή."""
+        """Timologio Downloader — η αρχική εφαρμογή."""
         panel, box = self._panel()
 
         # Ο «Νέος πελάτης» πάνω από τη λίστα: είναι το πρώτο πράγμα που κάνει
@@ -365,7 +365,7 @@ class SideMenu(QWidget):
 
         box.addSpacing(10)
         box.addWidget(self._separator("ΕΦΑΡΜΟΓΕΣ"))
-        self._add(box, "downloader", "Λήψη Παραστατικών",
+        self._add(box, "downloader", "Timologio Downloader",
                   "Επιστροφή στη μαζική λήψη παραστατικών myDATA")
         return panel
 
@@ -377,7 +377,7 @@ class SideMenu(QWidget):
         self._dl_panel.setVisible(not etim)
         self.logo.setPixmap(logo_pixmap(38, etimologio=etim))
         self._title.setText("e-Τιμολόγιο" if etim else "myDATA")
-        self._subtitle.setText("Pro · ΑΑΔΕ" if etim else "Λήψη Παραστατικών")
+        self._subtitle.setText("Pro · ΑΑΔΕ" if etim else "Timologio Downloader")
 
     def mode(self) -> str:
         return self._mode
@@ -407,7 +407,7 @@ class SideMenu(QWidget):
         # στο e-Τιμολόγιο, ώστε να ξέρει πάντα σε ποια εφαρμογή βρίσκεται.
         self._title = QLabel("myDATA")
         self._title.setObjectName("menuTitle")
-        self._subtitle = QLabel("Λήψη Παραστατικών")
+        self._subtitle = QLabel("Timologio Downloader")
         self._subtitle.setObjectName("menuSubtitle")
         text.addWidget(self._title)
         text.addWidget(self._subtitle)

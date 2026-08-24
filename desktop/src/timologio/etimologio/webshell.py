@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -109,8 +110,37 @@ def webengine_available() -> bool:
     return True
 
 
+class _Host(QObject):
+    """Ό,τι μπορεί να ζητήσει η **σελίδα** από την εφαρμογή.
+
+    Οι Ρυθμίσεις του e-Τιμολόγιο ζουν μέσα στο ``app.php``, αλλά «εκκίνηση στο
+    tray» και «έλεγχος για ενημερώσεις» δεν είναι ρυθμίσεις του λογαριασμού:
+    τις ξέρει μόνο το Qt. Χωρίς γέφυρα θα έπρεπε να ζουν σε άλλη οθόνη — και ο
+    χρήστης να τις ψάχνει σε δύο σημεία.
+
+    Τα ονόματα των slots είναι αυτά που καλεί η σελίδα (``window.etimHost``),
+    οπότε γράφονται σε camelCase όπως κάθε JavaScript API.
+    """
+
+    start_minimized_changed = Signal(bool)
+    update_check_requested = Signal()
+
+    @Slot(bool)
+    def setStartMinimized(self, value: bool) -> None:  # noqa: N802 — JS API
+        self.start_minimized_changed.emit(bool(value))
+
+    @Slot()
+    def checkUpdates(self) -> None:  # noqa: N802 — JS API
+        self.update_check_requested.emit()
+
+
 class EtimologioWebShell(QWidget):
     """Το κέλυφος: ξεκινά το backend και δείχνει το ``app.php`` του."""
+
+    #: Η σελίδα ζήτησε αλλαγή στο «εκκίνηση στο tray».
+    start_minimized_changed = Signal(bool)
+    #: Η σελίδα ζήτησε έλεγχο για ενημερώσεις.
+    update_check_requested = Signal()
 
     def __init__(self, data_dir: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -124,6 +154,10 @@ class EtimologioWebShell(QWidget):
         # `None` = «δεν το έχει πει κανείς ακόμη»: η σελίδα κρατά ό,τι είχε.
         self._theme_light: bool | None = None
         self._tips_on: bool | None = None
+        #: «Εκκίνηση στο tray» + έκδοση — τα δείχνει το panel «Εφαρμογή
+        #: υπολογιστή» των Ρυθμίσεων. `None` = δεν το έχει πει κανείς ακόμη.
+        self._start_minimized: bool | None = None
+        self._app_version = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -183,7 +217,50 @@ class EtimologioWebShell(QWidget):
         #: εκκίνησης από μια πλοήγηση που ακύρωσε μια λήψη.
         self._loaded_ok = False
         self._view.loadFinished.connect(self._load_finished)
+        self._install_host_bridge()
         self._stack.addWidget(self._view)
+
+    # --- η γέφυρα σελίδας ↔ εφαρμογής ---------------------------------------
+    def _install_host_bridge(self) -> None:
+        """Δίνει στη σελίδα ένα ``window.etimHost`` για ό,τι ξέρει μόνο το Qt.
+
+        Το ``qwebchannel.js`` ζει ως **πόρος μέσα στο ίδιο το QtWebEngine**, δεν
+        το σερβίρει ο PHP και δεν μπαίνει στο repo: δεν υπάρχει τίποτα να
+        ξεχαστεί στο πακετάρισμα. Μπαίνει στο ``DocumentCreation`` ώστε το
+        ``etimHost`` να υπάρχει πριν τρέξει ο κώδικας της σελίδας.
+
+        Αν λείψει, η σελίδα απλώς δεν βλέπει γέφυρα και το panel «Εφαρμογή
+        υπολογιστή» το λέει — δεν ρίχνει τίποτα.
+        """
+        from PySide6.QtCore import QFile, QIODevice
+        from PySide6.QtWebChannel import QWebChannel
+        from PySide6.QtWebEngineCore import QWebEngineScript
+
+        self._host = _Host(self)
+        self._host.start_minimized_changed.connect(self.start_minimized_changed)
+        self._host.update_check_requested.connect(self.update_check_requested)
+
+        self._channel = QWebChannel(self)
+        self._channel.registerObject("etimHost", self._host)
+        self._view.page().setWebChannel(self._channel)
+
+        source = QFile(":/qtwebchannel/qwebchannel.js")
+        if not source.open(QIODevice.OpenModeFlag.ReadOnly):
+            log.warning("Λείπει το qwebchannel.js — οι ρυθμίσεις υπολογιστή δεν θα φαίνονται")
+            return
+        code = bytes(source.readAll()).decode("utf-8")
+        source.close()
+        script = QWebEngineScript()
+        script.setName("etim-host")
+        script.setSourceCode(
+            code
+            + "\nnew QWebChannel(qt.webChannelTransport,function(c){"
+            "window.etimHost=c.objects.etimHost;});\n"
+        )
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        script.setRunsOnSubFrames(False)
+        self._view.page().scripts().insert(script)
 
     # --- κύκλος ζωής --------------------------------------------------------
     def start(self) -> None:
@@ -413,6 +490,13 @@ class EtimologioWebShell(QWidget):
         self._tips_on = bool(on)
         self._apply_prefs()
 
+    def set_desktop_prefs(self, start_minimized: bool, version: str = "") -> None:
+        """Η κατάσταση των ρυθμίσεων του προγράμματος, για το panel της σελίδας."""
+        self._start_minimized = bool(start_minimized)
+        if version:
+            self._app_version = str(version)
+        self._apply_prefs()
+
     def _apply_prefs(self) -> None:
         """Στέλνει θέμα + βοηθητικά μηνύματα στη σελίδα.
 
@@ -427,6 +511,11 @@ class EtimologioWebShell(QWidget):
             flag = "true" if self._tips_on else "false"
             stored = "1" if self._tips_on else "0"
             self._js(f"applyTips({flag});localStorage.setItem('etim_tips','{stored}');")
+        if self._start_minimized is not None or self._app_version:
+            payload = json.dumps(
+                {"tray": self._start_minimized, "version": self._app_version}
+            )
+            self._js(f"applyDesktopPrefs({payload});")
 
     # --- συμβατότητα με το κέλυφος του Downloader ---------------------------
     def focus_customer(self, vat: str) -> None:

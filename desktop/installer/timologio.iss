@@ -13,7 +13,7 @@
 ; Software\scanmydata\TimologioDownloader (εκεί ζει ο φάκελος δεδομένων —
 ; μια αλλαγή εκεί θα άνοιγε την εφαρμογή σε ΑΔΕΙΑ βάση).
 #define AppName        "ScanmyData Suite"
-#define AppVersion     "0.4.9"
+#define AppVersion     "0.4.10"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -42,7 +42,7 @@ DisableWelcomePage=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
-UninstallDisplayIcon={app}\{#AppExeName}
+UninstallDisplayIcon={app}\ScanmyDataSuite.ico
 ; Στοιχεία εκδότη στο ίδιο το setup.exe. Ένα ανυπόγραφο installer ΧΩΡΙΣ VersionInfo
 ; είναι από τα πρώτα που «σηκώνει» το SmartScreen/Defender ως άγνωστο — τα πλήρη
 ; στοιχεία δίνουν ταυτότητα και μειώνουν τα ψευδώς-θετικά (και στην εγκατάσταση και
@@ -121,12 +121,18 @@ Name: "desktopicon"; Description: "Δημιουργία συντόμευσης �
 
 [Files]
 Source: "..\dist\TimologioDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Το σήμα ScanmyData ως ξεχωριστό αρχείο εικονιδίου, για τις συντομεύσεις.
+; Το exe το φοράει ήδη, αλλά τα Windows κρατούν επίμονη μνήμη εικονιδίων ανά
+; συντόμευση: μετά από αναβάθμιση (ίδιο AppId, ίδιο όνομα exe) η συντόμευση
+; συνέχιζε να δείχνει το ΠΑΛΙΟ σχέδιο. Ρητό IconFilename σε νέα διαδρομή σπάει
+; τη μνήμη και λέει ρητά τι φοράει η σουίτα.
+Source: "installer-icon.ico"; DestDir: "{app}"; DestName: "ScanmyDataSuite.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\ScanmyDataSuite.ico"
 Name: "{group}\Φάκελος παραστατικών"; Filename: "{code:GetDataDir}"
 Name: "{group}\Απεγκατάσταση {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\ScanmyDataSuite.ico"; Tasks: desktopicon
 
 [Registry]
 ; Η εφαρμογή διαβάζει από εδώ τον φάκελο δεδομένων (config.py:_data_dir_from_registry).

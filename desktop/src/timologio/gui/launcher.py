@@ -1,9 +1,9 @@
 """Η αρχική οθόνη: διάλεξε εφαρμογή.
 
 Το πρόγραμμα είναι δύο εφαρμογές σε ένα εκτελέσιμο. Χωρίς αυτή την οθόνη
-άνοιγε κατευθείαν στη Λήψη Παραστατικών και το e-Τιμολόγιο έμοιαζε με «καρτέλα»
-κάπου μέσα — ενώ είναι ισότιμο πρόγραμμα. Η επιλογή γίνεται εδώ και αλλάζει
-ανά πάσα στιγμή από το πλαϊνό μενού.
+άνοιγε κατευθείαν στον Timologio Downloader και το e-Τιμολόγιο έμοιαζε
+με «καρτέλα» κάπου μέσα — ενώ είναι ισότιμο πρόγραμμα. Η επιλογή γίνεται
+εδώ και αλλάζει ανά πάσα στιγμή από το πλαϊνό μενού.
 """
 
 from __future__ import annotations
@@ -25,7 +25,10 @@ from .theme import CURRENT
 class _Card(QPushButton):
     """Μεγάλη κάρτα επιλογής — λογότυπο, τίτλος, περιγραφή."""
 
-    def __init__(self, title: str, subtitle: str, lines: list[str], pixmap) -> None:
+    def __init__(
+        self, title: str, subtitle: str, lines: list[str], pixmap,
+        *, etimologio: bool = False,
+    ) -> None:
         super().__init__()
         self.setObjectName("tile")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -37,6 +40,10 @@ class _Card(QPushButton):
 
         logo = QLabel()
         logo.setPixmap(pixmap)
+        # Το `restyle` ξαναζωγραφίζει τα λογότυπα μετά από αλλαγή θέματος και
+        # ρωτά ΑΥΤΗ την ιδιότητα ποιο από τα δύο είναι. Χωρίς αυτήν έπαιρναν
+        # και οι δύο κάρτες το σήμα του Downloader.
+        logo.setProperty("etim", etimologio)
         logo.setFixedSize(52, 52)
         logo.setScaledContents(True)
         box.addWidget(logo)
@@ -63,7 +70,7 @@ class _Card(QPushButton):
 
 
 class Launcher(QWidget):
-    """Δύο κάρτες: Λήψη Παραστατικών ή e-Τιμολόγιο Pro."""
+    """Δύο κάρτες: Timologio Downloader ή e-Τιμολόγιο Pro."""
 
     chosen = Signal(str)   # "downloader" | "etimologio"
 
@@ -90,7 +97,7 @@ class Launcher(QWidget):
         cards.addStretch(1)
 
         downloader = _Card(
-            "Λήψη Παραστατικών",
+            "Timologio Downloader",
             "Μαζική λήψη των παραστατικών των πελατών σας από το myDATA.",
             ["Πολλοί πελάτες, μία λήψη",
              "Αρχειοθέτηση PDF ανά ΑΦΜ και μήνα",
@@ -107,6 +114,7 @@ class Launcher(QWidget):
              "Πελάτες, καρτέλες, πληρωμές",
              "Μαζική εκτύπωση και εξαγωγή ZIP"],
             logo_pixmap(52, etimologio=True),
+            etimologio=True,
         )
         etimologio.clicked.connect(lambda: self.chosen.emit("etimologio"))
         cards.addWidget(etimologio)
@@ -115,11 +123,23 @@ class Launcher(QWidget):
         root.addLayout(cards)
         root.addStretch(2)
 
+        # Η έκδοση ήταν γραμμένη με το χρώμα «muted» και στο μέγεθος του σώματος:
+        # πάνω στο σκούρο μπλε της αρχικής οθόνης μόλις που διαβαζόταν, και ο
+        # χρήστης που ρωτιέται «ποια έκδοση έχεις;» έπρεπε να σκύψει. Παίρνει το
+        # κανονικό χρώμα κειμένου (λευκό στο σκούρο θέμα) και ένα μέγεθος πάνω.
+        self._version_label: QLabel | None = None
         if version:
-            foot = QLabel(f"έκδοση {version}")
-            foot.setObjectName("muted")
-            foot.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            root.addWidget(foot)
+            self._version_label = QLabel(f"έκδοση {version}")
+            self._version_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            self._paint_version()
+            root.addWidget(self._version_label)
+
+    def _paint_version(self) -> None:
+        if self._version_label is not None:
+            self._version_label.setStyleSheet(
+                f"color:{CURRENT.txt};font-size:15px;font-weight:600;"
+                "letter-spacing:.3px;"
+            )
 
     def restyle(self) -> None:
         """Ξαναβάφει τα λογότυπα μετά από αλλαγή θέματος."""
@@ -128,5 +148,8 @@ class Launcher(QWidget):
                 label.setPixmap(
                     logo_pixmap(52, etimologio=label.property("etim") is True)
                 )
+        # Η έκδοση έχει καρφωμένο χρώμα (δεν είναι «muted»), οπότε πρέπει να
+        # ξαναγραφτεί μόνη της — αλλιώς μένει λευκή πάνω σε φωτεινό θέμα.
+        self._paint_version()
         # Τα εικονίδια των καρτών ακολουθούν το χρώμα τόνου του νέου θέματος.
         _ = icon("etimologio", CURRENT.accent)

@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         # επιλεγεί «εκκίνηση στο tray», η ΠΡΩΤΗ αυτή εμφάνιση γίνεται κανονικά,
         # ώστε ο χρήστης να δει το πρόγραμμα αντί να «εξαφανιστεί» στο tray.
         self._force_show = force_show
-        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self.setWindowTitle("Timologio Downloader — Λήψη Παραστατικών myDATA")
         # Αρχικό ΚΑΙ ελάχιστο μέγεθος, πάντα ΜΕΣΑ στα όρια της οθόνης. Το σταθερό
         # 1340×840 ξεπερνούσε το ύψος σε φορητούς/μικρές αναλύσεις: η γραμμή
         # κατάστασης και το κάτω μέρος του πλαϊνού μενού έβγαιναν κάτω από την
@@ -326,6 +326,27 @@ class MainWindow(QMainWindow):
         save_start_minimized(value)
         log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
 
+    def _on_start_minimized_requested(self, value: bool) -> None:
+        """Η ίδια ρύθμιση, ζητημένη από τις Ρυθμίσεις του e-Τιμολόγιο.
+
+        Ο διακόπτης του πίνακα ελέγχου ενημερώνεται κι αυτός: δύο οθόνες που
+        δείχνουν την ίδια ρύθμιση δεν επιτρέπεται να λένε διαφορετικά πράγματα.
+        """
+        self._on_start_minimized(value)
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.set_start_minimized(value)
+
+    def _check_updates_requested(self) -> None:
+        """Έλεγχος ενημερώσεων από τις Ρυθμίσεις του e-Τιμολόγιο.
+
+        Χρησιμοποιεί τον ΙΔΙΟ έλεγχο με το κουμπί του πίνακα ελέγχου — ένας
+        δεύτερος θα σήμαινε δεύτερο νήμα, δεύτερο παράθυρο και δύο απαντήσεις.
+        """
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.check_updates()
+
     def _notify_done(self, title: str, body: str) -> None:
         """Στο τέλος μιας εργασίας: ειδοποίηση Windows (κάτω δεξιά) + αναβόσβημα
         του εικονιδίου στη γραμμή εργασιών — ώστε να το προσέξει ο χρήστης ακόμη
@@ -440,6 +461,17 @@ class MainWindow(QMainWindow):
 
             log.warning("Λείπει το QtWebEngine — πτώση στις native σελίδες")
             self.etimologio = EtimologioShell(self.settings.data_dir)
+        # Οι Ρυθμίσεις του e-Τιμολόγιο δείχνουν και τις ρυθμίσεις του ΙΔΙΟΥ ΤΟΥ
+        # ΠΡΟΓΡΑΜΜΑΤΟΣ (tray, ενημερώσεις). Η σελίδα δεν τις ξέρει — τις ζητά
+        # από εδώ και καταλήγουν στους ίδιους χειριστές με το πλαϊνό μενού, ώστε
+        # η ρύθμιση να είναι μία, όπου κι αν την πειράξει ο χρήστης.
+        for signal_name, handler in (
+            ("start_minimized_changed", self._on_start_minimized_requested),
+            ("update_check_requested", self._check_updates_requested),
+        ):
+            signal = getattr(self.etimologio, signal_name, None)
+            if signal is not None:
+                signal.connect(handler)
         self.stack.addWidget(self.etimologio)
 
         # Η αρχική οθόνη επιλογής εφαρμογής. Μπαίνει τελευταία στο stack ώστε οι
@@ -831,7 +863,7 @@ class MainWindow(QMainWindow):
 
         all_rows = all_clients
         ready = sum(1 for r in all_rows if r["status"] == "ready")
-        self.status.showMessage(
+        self._set_counts_status(
             f"{len(all_rows)} πελάτες · {ready} διαθέσιμοι · "
             f"{len(all_rows) - ready} χωρίς κλειδί API · "
             f"{len(self._checked)} επιλεγμένοι για λήψη"
@@ -931,7 +963,7 @@ class MainWindow(QMainWindow):
         """Οι δύο λίστες (Πελάτες / Λήψη) δείχνουν την ίδια επιλογή."""
         self.sync_page.set_checked(self._checked)
         self._update_selcount()
-        self.status.showMessage(
+        self._set_counts_status(
             f"{len(self._checked)} πελάτες επιλεγμένοι για λήψη"
             if self._checked else "Κανένας επιλεγμένος — η λήψη θα γίνει για όλους"
         )
@@ -1153,6 +1185,7 @@ class MainWindow(QMainWindow):
         — στο e-Τιμολόγιο η αντίστοιχη έννοια είναι η εταιρεία, που έχει δική
         της μπάρα.
         """
+        self._chrome_page = name
         chooser = name == "launcher"
         self.menu.setVisible(not chooser)
         self.active_client.setVisible(not chooser and name != "etimologio")
@@ -1165,6 +1198,21 @@ class MainWindow(QMainWindow):
             self.status.clearMessage()
         elif getattr(self, "_status_saved", ""):
             self.status.showMessage(self._status_saved)
+
+    def _set_counts_status(self, text: str) -> None:
+        """Η μέτρηση των πελατών της Λήψης — ΜΟΝΟ όπου σημαίνει κάτι.
+
+        Το `_chrome_for` την έσβηνε στην οθόνη επιλογής εφαρμογής, αλλά η λίστα
+        πελατών φορτώνει ΜΕΤΑ την εκκίνηση: το «168 πελάτες · 62 διαθέσιμοι…»
+        έγραφε από πάνω της και καθόταν κάτω-κάτω στην αρχική οθόνη, μιλώντας
+        για μια εφαρμογή που ο χρήστης δεν είχε καν διαλέξει. Κρατιέται και
+        επανέρχεται μόλις γυρίσει στη Λήψη.
+        """
+        self._status_saved = text
+        if getattr(self, "_chrome_page", "") in ("etimologio", "launcher"):
+            self.status.clearMessage()
+            return
+        self.status.showMessage(text)
 
     def _current_page(self) -> str:
         return _PAGES[self.stack.currentIndex()]
@@ -1181,15 +1229,16 @@ class MainWindow(QMainWindow):
         # ήδη επιλέξει ο χρήστης στο μενού — όχι με τις δικές του προεπιλογές.
         self._etim_call("set_theme", self._prefs.value("theme", "dark") == "light")
         self._etim_call("set_tooltips", self._tooltips_on)
+        self._etim_call("set_desktop_prefs", load_start_minimized(), APP_VERSION)
         self.menu.set_mode("etimologio")
         self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
         self._set_mode_icon(etimologio=True)
         self._show_page("etimologio")
 
     def _leave_etimologio(self) -> None:
-        """Επιστροφή στη Λήψη Παραστατικών."""
+        """Επιστροφή στον Timologio Downloader."""
         self.menu.set_mode("downloader")
-        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self.setWindowTitle("Timologio Downloader — Λήψη Παραστατικών myDATA")
         self._set_mode_icon(etimologio=False)
         self._show_page("clients")
 
