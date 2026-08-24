@@ -163,7 +163,7 @@ service account: ένας service account δεν έχει δικό του χώρ
 |---|---|
 | `GOOGLE_CLIENT_ID` | OAuth client (τύπου **Desktop app**) από το Google Cloud Console |
 | `GOOGLE_CLIENT_SECRET` | το μυστικό του ίδιου client |
-| `GOOGLE_DRIVE_REFRESH_TOKEN` | refresh token με scope `https://www.googleapis.com/auth/drive` |
+| `GOOGLE_DRIVE_REFRESH_TOKEN` | refresh token με scope `https://www.googleapis.com/auth/drive`. Το βγάζει το `tools/google_refresh_token.py` (δες παρακάτω) |
 | `BACKUP_PASSPHRASE` | η φράση που κρυπτογραφεί το αρχείο — **φύλαξέ τη χωριστά** |
 | `GOOGLE_DRIVE_FOLDER` | προαιρετικό: όνομα **ή διαδρομή** φακέλου, π.χ. `ScanmyData/Backups/e-Timologio` — κάθε σκαλοπάτι φτιάχνεται αν λείπει (default «ScanmyData backups») |
 | `GOOGLE_DRIVE_FOLDER_ID` | προαιρετικό: **ρητό id** υπάρχοντος φακέλου, από το URL `drive.google.com/drive/folders/<ID>`. Κερδίζει του ονόματος — δύο φάκελοι μπορεί να λέγονται το ίδιο |
@@ -181,6 +181,22 @@ service account: ένας service account δεν έχει δικό του χώρ
 
 Τα ίδια μυστικά δουλεύουν και ως σκέτα env, χωρίς Infisical — χρήσιμο για
 δοκιμή. Το ρητό env κερδίζει πάντα του Infisical.
+
+### Το refresh token
+
+Ο λογαριασμός του Drive δίνει τη συγκατάθεση **μία φορά**, από τον browser όπου
+είναι συνδεδεμένος:
+
+```bash
+python tools/google_refresh_token.py <CLIENT_ID> <CLIENT_SECRET>
+```
+
+Ανοίγει τη σελίδα της Google, περιμένει το «Να επιτραπεί» και τυπώνει το token.
+Ζητά **πλήρες `drive`** επίτηδες: με `drive.file` η εφαρμογή βλέπει μόνο όσα
+αρχεία έφτιαξε η ίδια, οπότε δεν θα έβρισκε ποτέ έναν φάκελο που έφτιαξες εσύ με
+το χέρι — θα έφτιαχνε δεύτερο ομώνυμο. Αν προτιμάς τη στενότερη κλίμακα, τρέξ' το
+με `--scope drive.file` και άσε την εφαρμογή να φτιάξει μόνη της τον φάκελο
+(χωρίς `GOOGLE_DRIVE_FOLDER_ID`).
 
 ### Αντίγραφο πριν από κάθε deploy
 
