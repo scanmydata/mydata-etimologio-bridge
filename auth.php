@@ -136,11 +136,77 @@ function user_is_staff(array $u): bool {
     return in_array($u['role'] ?? '', ['master', 'editor'], true);
 }
 
+// --- Φρένο στις δοκιμές κωδικού --------------------------------------------
+//
+// Ο server είναι ΔΗΜΟΣΙΟΣ. Χωρίς φρένο, ένα script δοκιμάζει κωδικούς όσο θέλει:
+// το `password_verify` είναι αργό για έναν άνθρωπο, όχι για δέκα χιλιάδες
+// αιτήματα. Δύο μετρητές, γιατί καλύπτουν διαφορετικές επιθέσεις:
+//   * ανά (email + IP) — επίμονη δοκιμή σε ΕΝΑΝ λογαριασμό,
+//   * ανά IP — «password spraying»: ένας κωδικός σε πολλούς λογαριασμούς.
+//
+// Το κλείδωμα είναι ΧΡΟΝΙΚΟ, όχι μόνιμο: ένας πραγματικός χρήστης που ξέχασε
+// τον κωδικό του δεν πρέπει να χρειάζεται διαχειριστή για να ξαναμπεί. Και
+// μετριέται στη βάση, όχι στη συνεδρία — μια επίθεση δεν κρατά cookies.
+const LOGIN_MAX_FAILS   = 6;      // δοκιμές πριν το κλείδωμα
+const LOGIN_WINDOW_SEC  = 900;    // 15 λεπτά: τόσο «θυμάται» τις αποτυχίες
+const LOGIN_LOCK_SEC    = 900;    // και τόσο κλειδώνει (διπλασιάζεται)
+const LOGIN_LOCK_MAX    = 3600;
+const LOGIN_IP_MAX      = 20;     // αποτυχίες ανά IP στο ίδιο παράθυρο
+
+function login_gate_key(string $email, string $ip): string {
+    return 'login.fail.' . substr(hash('sha256', strtolower($email) . '|' . $ip), 0, 32);
+}
+
+function login_gate_read(string $key): array {
+    $raw = setting_get($key);
+    $d = $raw !== '' ? json_decode($raw, true) : null;
+    return is_array($d) ? $d + ['n' => 0, 'first' => 0, 'until' => 0] : ['n' => 0, 'first' => 0, 'until' => 0];
+}
+
+/** Πόσα δευτερόλεπτα μένουν στο κλείδωμα (0 = ελεύθερο). */
+function login_locked_for(string $email, string $ip): int {
+    foreach ([login_gate_key($email, $ip), login_gate_key('', $ip)] as $key) {
+        $g = login_gate_read($key);
+        $left = (int)$g['until'] - time();
+        if ($left > 0) return $left;
+    }
+    return 0;
+}
+
+function login_note_failure(string $email, string $ip): void {
+    $now = time();
+    foreach ([[login_gate_key($email, $ip), LOGIN_MAX_FAILS], [login_gate_key('', $ip), LOGIN_IP_MAX]] as [$key, $max]) {
+        $g = login_gate_read($key);
+        // Παλιό παράθυρο: ξεκινά καθαρός μετρητής, αλλιώς μια αποτυχία τον
+        // περασμένο μήνα θα μετρούσε μαζί με τη σημερινή.
+        if ($now - (int)$g['first'] > LOGIN_WINDOW_SEC) { $g['n'] = 0; $g['first'] = $now; }
+        $g['n'] = (int)$g['n'] + 1;
+        if ($g['n'] >= $max) {
+            $steps = (int)floor($g['n'] / $max);
+            $g['until'] = $now + (int)min(LOGIN_LOCK_MAX, LOGIN_LOCK_SEC * $steps);
+        }
+        setting_set($key, json_encode($g));
+    }
+}
+
+function login_note_success(string $email, string $ip): void {
+    setting_set(login_gate_key($email, $ip), '');
+}
+
 function auth_login(string $email, string $password): array {
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    $left = login_locked_for($email, $ip);
+    if ($left > 0) {
+        return ['success' => false, 'locked' => true,
+                'error' => 'Πολλές αποτυχημένες προσπάθειες. Δοκιμάστε ξανά σε '
+                           . max(1, (int)ceil($left / 60)) . ' λεπτά.'];
+    }
     $u = user_by_email($email);
     if (!$u || !password_verify($password, $u['password_hash'])) {
+        login_note_failure($email, $ip);
         return ['success' => false, 'error' => 'Λάθος email ή κωδικός'];
     }
+    login_note_success($email, $ip);
     // Ανεπιβεβαίωτο email: μπλοκάρει ΠΡΙΝ από την έγκριση, γιατί μια εγγραφή με
     // λάθος (ή ξένο) email δεν πρέπει καν να φτάσει στον διαχειριστή. Ο έλεγχος
     // κοιτάζει και το token: λογαριασμοί που δημιουργήθηκαν πριν υπάρξει η
@@ -580,6 +646,30 @@ function auth_migrate_legacy_accounts(): void {
         account_add((int)$master, (string)$a['vat'], (string)($a['label'] ?? $a['vat']),
                     (string)($a['username'] ?? ''), (string)($a['subscription_key'] ?? ''));
     }
+}
+
+/**
+ * Διεύθυνση στατικού αρχείου, με σφραγίδα έκδοσης.
+ *
+ * ⚠️ ΓΙΑΤΙ ΥΠΑΡΧΕΙ. Τα εικονίδια και τα λογότυπα σερβίρονται με
+ * `Cache-Control: public, max-age=86400` (deploy/apache-etimologio.conf) και
+ * μπροστά τους κάθεται η Cloudflare. Όταν άλλαξαν τα σήματα των δύο εφαρμογών,
+ * οι διευθύνσεις έμειναν ίδιες — και το web συνέχισε να δείχνει το ΠΑΛΙΟ
+ * λογότυπο: μια ολόκληρη μέρα από την άκρη του δικτύου (`cf-cache-status: HIT`)
+ * και αόριστα σε κάθε browser που το είχε ήδη κατεβάσει. Ο κώδικας ήταν σωστός,
+ * η εικόνα λάθος, και τίποτα στον server δεν το έδειχνε.
+ *
+ * Η σφραγίδα είναι ο χρόνος τροποποίησης του αρχείου: αλλάζει μόνη της μόλις
+ * αλλάξει το σχέδιο και μένει σταθερή όσο δεν αλλάζει, οπότε η cache συνεχίζει
+ * να δουλεύει κανονικά.
+ */
+function asset_url(string $path): string {
+    static $stamps = [];
+    if (!isset($stamps[$path])) {
+        $full = __DIR__ . '/' . ltrim($path, '/');
+        $stamps[$path] = is_file($full) ? (string)filemtime($full) : '0';
+    }
+    return $path . '?v=' . $stamps[$path];
 }
 
 /**

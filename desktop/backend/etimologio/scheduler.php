@@ -29,6 +29,7 @@ date_default_timezone_set('Europe/Athens');   // run_at is stored as Greek local
 define('SKIP_ACCOUNT_RESOLUTION', 1);          // we don't want config's legacy resolver
 require __DIR__ . '/config.php';               // constants (SCHED_TOKEN, APP_BASE_URL, …)
 require __DIR__ . '/localdb.php';              // job store + crypto
+require_once __DIR__ . '/serverbackup.php';
 
 $argvv   = $argv ?? [];
 $DRY     = in_array('--dry-run', $argvv, true);
@@ -186,3 +187,9 @@ function sched_http_post(string $url, array $fields): array {
     curl_close($ch);
     return [$code, $body === false ? '' : (string)$body, $err];
 }
+
+// Το ημερήσιο αντίγραφο του server ζει στον ίδιο παλμό με τις εκδόσεις: ο tick
+// τρέχει ανά λεπτό ούτως ή άλλως, και ένα δεύτερο cron θα ήταν ένα ακόμη
+// πράγμα που μπορεί να μη στηθεί.
+try { srv_backup_tick(); } catch (Throwable $e) { error_log('srv_backup_tick: ' . $e->getMessage()); }
+

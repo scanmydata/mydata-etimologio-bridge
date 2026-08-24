@@ -11,10 +11,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, QTime, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +37,7 @@ from .. import presence, sharing, updates
 from ..config import ROLE_LABELS_EL
 from ..db import is_network_path
 from ..locking import SyncLock
+from ..schedule import DAY_NAMES, SyncSchedule
 from . import updater
 from .icons import icon
 from .theme import CURRENT
@@ -76,6 +81,10 @@ class ControlPanel(QWidget):
     start_minimized_changed = Signal(bool)
     #: Ζητήθηκε επανέλεγχος σύνδεσης (το κύριο παράθυρο ξαναφορτώνει τη λίστα).
     reconnect_requested = Signal()
+    #: Ο χρήστης πείραξε τον χρονοπρογραμματισμό της λήψης.
+    schedule_changed = Signal(object)
+    #: «Λήψη τώρα» από τον χρονοπρογραμματισμό.
+    schedule_run_requested = Signal()
     #: Το e-Τιμολόγιο να δουλέψει σε server (url) ή τοπικά (κενό url).
 
     def __init__(
@@ -94,6 +103,9 @@ class ControlPanel(QWidget):
         self._role = role
         self._version = version
         self._conn = conn
+        #: Οι πελάτες του προγράμματος όταν είναι «μόνο οι επιλεγμένοι».
+        #: Τους κρατά το κύριο παράθυρο (εκεί ζει η λίστα) και τους περνά εδώ.
+        self._sched_vats: tuple[str, ...] = ()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -102,6 +114,7 @@ class ControlPanel(QWidget):
         root.addWidget(self._header())
         root.addWidget(self._identity_box())
         root.addWidget(self._peers_box(), 1)
+        root.addWidget(self._schedule_box())
         root.addWidget(self._settings_box())
 
         self._timer = QTimer(self)
@@ -329,6 +342,128 @@ class ControlPanel(QWidget):
         layout.addWidget(self.table, 1)
         return box
 
+    def _schedule_box(self) -> QWidget:
+        """Αυτόματη λήψη σε ώρα που δεν ενοχλεί.
+
+        Ο λογιστής κατεβάζει τα ίδια πράγματα κάθε πρωί για τους ίδιους πελάτες.
+        Η λήψη κρατά λεπτά και τρώει το δίκτυο· η φυσική της ώρα είναι πριν
+        ανοίξει το γραφείο.
+        """
+        box = QGroupBox("Χρονοπρογραμματισμός λήψης")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        self.chk_schedule = ToggleSwitch("Αυτόματη λήψη παραστατικών")
+        self.chk_schedule.setToolTip(
+            "Η λήψη ξεκινά μόνη της την ώρα που ορίζεις, για τους πελάτες που "
+            "έχουν κλειδί API"
+        )
+        self.chk_schedule.toggled.connect(self._emit_schedule)
+        layout.addWidget(self.chk_schedule)
+
+        when = QHBoxLayout()
+        when.addWidget(QLabel("Ώρα:"))
+        self.sched_time = QTimeEdit()
+        self.sched_time.setDisplayFormat("HH:mm")
+        self.sched_time.setFixedWidth(90)
+        self.sched_time.timeChanged.connect(self._emit_schedule)
+        when.addWidget(self.sched_time)
+        when.addSpacing(12)
+        when.addWidget(QLabel("Ημέρες:"))
+        # Κενή επιλογή = κάθε μέρα. Το λέει και το «Σύνοψη» από κάτω, ώστε να μη
+        # χρειάζεται να το μαντέψει κανείς.
+        self.sched_days: list[QCheckBox] = []
+        for index, name in enumerate(DAY_NAMES):
+            day = QCheckBox(name)
+            day.setToolTip("Καμία επιλεγμένη ημέρα σημαίνει «κάθε μέρα»")
+            day.toggled.connect(self._emit_schedule)
+            self.sched_days.append(day)
+            when.addWidget(day)
+        when.addStretch(1)
+        layout.addLayout(when)
+
+        who = QHBoxLayout()
+        who.addWidget(QLabel("Πελάτες:"))
+        self.sched_scope = QComboBox()
+        self.sched_scope.addItem("Όλοι με κλειδί API", "all")
+        self.sched_scope.addItem("Μόνο οι επιλεγμένοι", "selected")
+        self.sched_scope.setToolTip(
+            "«Οι επιλεγμένοι» = όσοι είναι τσεκαρισμένοι στη λίστα πελατών τη "
+            "στιγμή που πατάς «Αποθήκευση». Πελάτης χωρίς κλειδί δεν συμμετέχει "
+            "ποτέ."
+        )
+        self.sched_scope.currentIndexChanged.connect(self._emit_schedule)
+        who.addWidget(self.sched_scope)
+        self.btn_sched_now = QPushButton("Λήψη τώρα")
+        self.btn_sched_now.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sched_now.setToolTip("Τρέχει αμέσως ό,τι θα έτρεχε το πρόγραμμα")
+        self.btn_sched_now.clicked.connect(self.schedule_run_now)
+        who.addWidget(self.btn_sched_now)
+        who.addStretch(1)
+        layout.addLayout(who)
+
+        self.sched_state = QLabel("")
+        self.sched_state.setWordWrap(True)
+        self.sched_state.setObjectName("muted")
+        layout.addWidget(self.sched_state)
+
+        note = QLabel(
+            "Η λήψη τρέχει μέσα στην εφαρμογή, οπότε το πρόγραμμα ισχύει όσο "
+            "αυτή είναι ανοιχτή — γι' αυτό υπάρχει η «Εκκίνηση στο tray» "
+            "παρακάτω. Ραντεβού που χάθηκε επειδή ο υπολογιστής ήταν κλειστός "
+            "εκτελείται μόλις ανοίξει, την ίδια μέρα."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("muted")
+        note.setProperty("help_line", True)
+        layout.addWidget(note)
+        return box
+
+    # --- πρόγραμμα: κατάσταση ↔ widgets ------------------------------------
+    def schedule(self) -> SyncSchedule:
+        """Ό,τι δείχνουν τώρα τα χειριστήρια."""
+        days = frozenset(i for i, box in enumerate(self.sched_days) if box.isChecked())
+        return SyncSchedule(
+            enabled=self.chk_schedule.isChecked(),
+            at=self.sched_time.time().toString("HH:mm"),
+            days=days,
+            scope=str(self.sched_scope.currentData() or "all"),
+            vats=self._sched_vats,
+        )
+
+    def set_schedule(self, schedule: SyncSchedule) -> None:
+        """Δείχνει ένα αποθηκευμένο πρόγραμμα, χωρίς να το ξαναεκπέμψει."""
+        self._sched_vats = tuple(schedule.vats)
+        widgets = [self.chk_schedule, self.sched_time, self.sched_scope, *self.sched_days]
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            self.chk_schedule.setChecked(schedule.enabled)
+            self.sched_time.setTime(QTime.fromString(schedule.at, "HH:mm"))
+            for index, box in enumerate(self.sched_days):
+                box.setChecked(index in schedule.days)
+            position = self.sched_scope.findData(schedule.scope)
+            self.sched_scope.setCurrentIndex(max(0, position))
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+        self.show_schedule_state(schedule)
+
+    def show_schedule_state(self, schedule: SyncSchedule, last_run=None) -> None:
+        text = schedule.describe()
+        upcoming = schedule.next_run(datetime.now(), last_run)
+        if upcoming is not None:
+            text += f"\nΕπόμενη: {upcoming:%d/%m/%Y %H:%M}"
+        self.sched_state.setText(text)
+
+    def _emit_schedule(self, *_args) -> None:
+        self.schedule_changed.emit(self.schedule())
+
+
+    def schedule_run_now(self) -> None:
+        """Τρέχει ΤΩΡΑ ό,τι θα έτρεχε το πρόγραμμα (χωρίς να αλλάξει την ώρα)."""
+        self.schedule_run_requested.emit()
     def _settings_box(self) -> QWidget:
         box = QGroupBox("Ρυθμίσεις δικτύου")
         layout = QVBoxLayout(box)

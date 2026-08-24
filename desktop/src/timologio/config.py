@@ -6,15 +6,25 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # --- myDATA endpoints -------------------------------------------------------
 MYDATA_BASE = "https://mydatapi.aade.gr/myDATA"
 URL_REQUEST_DOCS = f"{MYDATA_BASE}/RequestDocs"
 URL_REQUEST_TRANSMITTED_DOCS = f"{MYDATA_BASE}/RequestTransmittedDocs"
 URL_REQUEST_E3_INFO = f"{MYDATA_BASE}/RequestE3Info"
+#: Έλεγχος διαπιστευτηρίων. Το `RequestMyExpenses` επιστρέφει τα **σύνολα** των
+#: εξόδων μιας περιόδου (myDATA REST API v2.0.1, §4.2.9) — μια απάντηση μικρή
+#: όσο μια σελίδα, σε αντίθεση με το `RequestDocs` που κατεβάζει ολόκληρα
+#: παραστατικά. Ό,τι χρειάζεται για να απαντηθεί «περνούν αυτά τα κλειδιά;»
+#: χωρίς να φορτωθεί η ΑΑΔΕ με πραγματική λήψη.
+URL_REQUEST_MY_EXPENSES = f"{MYDATA_BASE}/RequestMyExpenses"
 
 #: Ο μόνος host στον οποίο επιτρέπεται να σταλούν τα διαπιστευτήρια ΑΑΔΕ.
 AADE_HOST = "mydatapi.aade.gr"
@@ -42,7 +52,7 @@ ROLES = ("standalone", "server", "terminal")
 #: Η έκδοση που δηλώνει το κάθε instance στους υπόλοιπους του δικτύου. Κρατιέται
 #: εδώ ώστε να υπάρχει μία πηγή: το pyproject δεν διαβάζεται μέσα από το bundle
 #: του PyInstaller.
-APP_VERSION = "0.4.9"
+APP_VERSION = "0.4.12"
 
 ROLE_LABELS_EL = {
     "standalone": "Αυτόνομος υπολογιστής",
@@ -227,15 +237,97 @@ class Settings:
         return load_role()
 
 
+def _has_clients(db_path: Path) -> bool:
+    """Έχει ΔΕΔΟΜΕΝΑ αυτή η βάση; (όχι απλώς «υπάρχει το αρχείο»)
+
+    Ανοίγει read-only: ένας φάκελος που ελέγχεται δεν πρέπει να αποκτήσει βάση
+    επειδή τον κοιτάξαμε.
+    """
+    if not db_path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        try:
+            return conn.execute("SELECT 1 FROM clients LIMIT 1").fetchone() is not None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
+def _save_data_dir(path: Path) -> None:
+    """Γράφει τον φάκελο δεδομένων στο μητρώο (ό,τι γράφει και ο installer)."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REG_PATH) as key:
+            winreg.SetValueEx(key, _REG_VALUE, 0, winreg.REG_SZ, str(path))
+    except OSError:
+        pass
+
+
+def recover_data_dir(configured: Path) -> Path:
+    """Ο φάκελος που ΟΝΤΩΣ κρατά τα δεδομένα, όταν ο ρυθμισμένος είναι άδειος.
+
+    ⚠️ ΓΙΑΤΙ ΥΠΑΡΧΕΙ — μετρημένο σε πραγματική εγκατάσταση. Ο installer παίρνει
+    τον φάκελο από τη γραμμή εντολών της αυτόματης ενημέρωσης με το
+    ``{param:DATADIR|}`` του Inno, **που κόβει την τιμή στο πρώτο κενό**. Το
+    ``C:\\…\\Παραστατικά myDATA`` γινόταν ``C:\\…\\Παραστατικά``: ο installer
+    έγραφε ΑΥΤΟ στο μητρώο, η επόμενη εκκίνηση άνοιγε καινούρια άδεια βάση, και
+    ο χρήστης έβλεπε την εφαρμογή «να έχασε τα πάντα» ενώ τα δεδομένα κάθονταν
+    άθικτα δύο εκατοστά πιο δίπλα. Το ίδιο έπαιρνε μαζί του και το e-Τιμολόγιο,
+    που ζει σε υποφάκελο του ίδιου φακέλου.
+
+    Η αιτία διορθώθηκε στον installer (δες ``CmdLineParam`` στο timologio.iss),
+    αλλά το χαλασμένο μητρώο ΜΕΝΕΙ σε όποιον ενημερώθηκε ήδη. Εδώ το βρίσκουμε
+    και το επισκευάζουμε: το κόψιμο γίνεται πάντα σε κενό, άρα ο πραγματικός
+    φάκελος είναι αδελφός που **ξεκινά με το ίδιο όνομα**.
+
+    Δεν μετακινεί και δεν σβήνει τίποτα — μόνο δείχνει αλλού.
+    """
+    if _has_clients(configured / "timologio.db"):
+        return configured
+
+    candidates: list[Path] = []
+    try:
+        prefix = configured.name + " "
+        candidates += sorted(
+            p for p in configured.parent.iterdir()
+            if p.is_dir() and p.name.startswith(prefix)
+        )
+    except OSError:
+        pass
+    default = _default_data_dir()
+    if default != configured:
+        candidates.append(default)
+
+    for candidate in candidates:
+        if _has_clients(candidate / "timologio.db"):
+            log.warning(
+                "Ο ρυθμισμένος φάκελος δεδομένων (%s) είναι άδειος — τα δεδομένα "
+                "βρέθηκαν στο %s. Διορθώνεται το μητρώο.", configured, candidate,
+            )
+            _save_data_dir(candidate)
+            return candidate
+    return configured
+
+
 def load_settings() -> Settings:
     """Ο φάκελος δεδομένων, κατά σειρά προτεραιότητας:
 
     1. TIMOLOGIO_DATA_DIR (για δοκιμές / φορητή χρήση)
     2. ό,τι επέλεξε ο χρήστης στην εγκατάσταση (registry)
     3. Έγγραφα\\Παραστατικά myDATA
+
+    Το (2) περνά από ``recover_data_dir``: μια ρύθμιση που δείχνει σε άδειο
+    φάκελο δεν είναι λόγος να ανοίξει η εφαρμογή χωρίς τα δεδομένα του χρήστη.
     """
     raw = os.environ.get("TIMOLOGIO_DATA_DIR")
     if raw:
         return Settings(data_dir=Path(raw).expanduser())
     from_registry = _data_dir_from_registry()
-    return Settings(data_dir=from_registry or _default_data_dir())
+    if from_registry is not None:
+        return Settings(data_dir=recover_data_dir(from_registry))
+    return Settings(data_dir=_default_data_dir())

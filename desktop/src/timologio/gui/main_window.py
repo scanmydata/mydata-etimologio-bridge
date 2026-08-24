@@ -11,6 +11,8 @@ import os
 import subprocess
 import tempfile
 from contextlib import contextmanager
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -65,6 +67,9 @@ from ..crypto import Crypto
 from ..db import init_db
 from ..download.storage import find_client_folder
 from ..reports import export_documents, export_documents_xlsx
+from ..schedule import SyncSchedule
+from ..schedule import from_dict as schedule_from_dict
+from ..schedule import to_dict as schedule_to_dict
 from .analysis_panel import AnalysisPanel
 from .busy import BusyOverlay
 from .client_dialog import ClientDialog
@@ -120,6 +125,19 @@ _PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher")
 _PANEL_W = 440
 
 
+
+def _parse_stamp(value) -> datetime | None:
+    """ISO κείμενο από το QSettings -> datetime, ανεκτικά."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def schedule_keys() -> tuple[str, ...]:
+    """Τα κλειδιά του QSettings που κρατούν το πρόγραμμα."""
+    return tuple(schedule_to_dict(SyncSchedule()).keys())
+
 class MainWindow(QMainWindow):
     def __init__(self, *, force_show: bool = False) -> None:
         super().__init__()
@@ -127,7 +145,7 @@ class MainWindow(QMainWindow):
         # επιλεγεί «εκκίνηση στο tray», η ΠΡΩΤΗ αυτή εμφάνιση γίνεται κανονικά,
         # ώστε ο χρήστης να δει το πρόγραμμα αντί να «εξαφανιστεί» στο tray.
         self._force_show = force_show
-        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self.setWindowTitle("Timologio Downloader — Λήψη Παραστατικών myDATA")
         # Αρχικό ΚΑΙ ελάχιστο μέγεθος, πάντα ΜΕΣΑ στα όρια της οθόνης. Το σταθερό
         # 1340×840 ξεπερνούσε το ύψος σε φορητούς/μικρές αναλύσεις: η γραμμή
         # κατάστασης και το κάτω μέρος του πλαϊνού μενού έβγαιναν κάτω από την
@@ -162,6 +180,12 @@ class MainWindow(QMainWindow):
         repo.normalize_disabled_clients(self.conn)
         self.crypto = Crypto(self.settings.enckey_path)
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
+        #: Πότε έτρεξε τελευταία φορά ΠΡΟΓΡΑΜΜΑΤΙΣΜΕΝΗ λήψη. Επιβιώνει σε
+        #: επανεκκίνηση: αλλιώς ένα άνοιγμα-κλείσιμο της εφαρμογής μετά την ώρα
+        #: του ραντεβού θα ξανακατέβαζε τα πάντα, κάθε φορά.
+        self._last_scheduled_run = _parse_stamp(
+            self._prefs.value("sync_schedule/last_run", "")
+        )
         self._thread: QThread | None = None
         self._worker: SyncWorker | None = None
         # Ξεχωριστό thread για τη λήψη «μόνο online» (headless browser).
@@ -200,6 +224,13 @@ class MainWindow(QMainWindow):
         self._start_presence()
         self._start_db_watch()
         self._setup_tray()
+        # Το ρολόι της αυτόματης λήψης. Ένα λεπτό είναι αρκετά συχνά ώστε ένα
+        # ραντεβού να μη χαθεί, και αρκετά αραιά ώστε ο έλεγχος (μια σύγκριση
+        # ημερομηνιών) να μη φαίνεται πουθενά.
+        self._sched_timer = QTimer(self)
+        self._sched_timer.setInterval(60_000)
+        self._sched_timer.timeout.connect(self._check_schedule)
+        self._sched_timer.start()
         QTimer.singleShot(400, self._maybe_first_run_tour)
         if self._connection_problem:
             QTimer.singleShot(200, self._report_connection_problem)
@@ -326,6 +357,82 @@ class MainWindow(QMainWindow):
         save_start_minimized(value)
         log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
 
+    # ------------------------------------------- χρονοπρογραμματισμός λήψης
+    def _load_schedule(self) -> SyncSchedule:
+        stored = {key: self._prefs.value(key) for key in schedule_keys()}
+        return schedule_from_dict(stored)
+
+    def _on_schedule_changed(self, schedule: SyncSchedule) -> None:
+        """Αποθηκεύει το πρόγραμμα και δείχνει πότε χτυπά την επόμενη φορά.
+
+        Οι «επιλεγμένοι» παγώνουν ΕΔΩ, τη στιγμή της αλλαγής: αν διαβάζονταν την
+        ώρα της λήψης, ένα κλικ στη λίστα πελατών θα άλλαζε σιωπηλά τι κατεβαίνει
+        αύριο στις επτά.
+        """
+        if schedule.scope == "selected":
+            ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+            schedule = replace(
+                schedule, vats=tuple(sorted(v for v in self._checked if v in ready))
+            )
+            self.control._sched_vats = schedule.vats
+        for key, value in schedule_to_dict(schedule).items():
+            self._prefs.setValue(key, value)
+        self.control.show_schedule_state(schedule, self._last_scheduled_run)
+        log.info("Χρονοπρογραμματισμός λήψης: %s", schedule.describe())
+
+    def _check_schedule(self) -> None:
+        """Χτυπά το ρολόι; Καλείται μια φορά το λεπτό.
+
+        Ο έλεγχος είναι φθηνός και δεν αγγίζει δίκτυο. Ό,τι κι αν πει, δεν
+        ξεκινά δεύτερη λήψη όσο τρέχει μία (`_thread`).
+        """
+        if self._thread is not None:
+            return
+        schedule = self._load_schedule()
+        if not schedule.is_due(datetime.now(), self._last_scheduled_run):
+            return
+        self._last_scheduled_run = datetime.now()
+        self._prefs.setValue("sync_schedule/last_run", self._last_scheduled_run.isoformat())
+        self._log("── Προγραμματισμένη λήψη")
+        self._run_scheduled_sync()
+
+    def _run_scheduled_sync(self) -> None:
+        """Η ίδια λήψη με το κουμπί, αλλά με τους πελάτες του προγράμματος."""
+        if self._thread is not None:
+            self._log("Η προγραμματισμένη λήψη παραλείφθηκε: τρέχει ήδη λήψη.")
+            return
+        schedule = self._load_schedule()
+        ready = [r["vat"] for r in repo.list_clients(self.conn, only_ready=True)]
+        targets = schedule.targets(ready)
+        if not targets:
+            self._log("Προγραμματισμένη λήψη: κανένας πελάτης με κλειδί API.")
+            return
+        # Ίδια πόρτα με το κουμπί — μία διαδρομή λήψης, με τα ίδια backup, logs
+        # και ειδοποιήσεις — αλλά με ρητή λίστα, ώστε να μην αλλάξει η επιλογή
+        # που άφησε ο χρήστης στην οθόνη.
+        self.on_sync(targets)
+
+    def _on_start_minimized_requested(self, value: bool) -> None:
+        """Η ίδια ρύθμιση, ζητημένη από τις Ρυθμίσεις του e-Τιμολόγιο.
+
+        Ο διακόπτης του πίνακα ελέγχου ενημερώνεται κι αυτός: δύο οθόνες που
+        δείχνουν την ίδια ρύθμιση δεν επιτρέπεται να λένε διαφορετικά πράγματα.
+        """
+        self._on_start_minimized(value)
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.set_start_minimized(value)
+
+    def _check_updates_requested(self) -> None:
+        """Έλεγχος ενημερώσεων από τις Ρυθμίσεις του e-Τιμολόγιο.
+
+        Χρησιμοποιεί τον ΙΔΙΟ έλεγχο με το κουμπί του πίνακα ελέγχου — ένας
+        δεύτερος θα σήμαινε δεύτερο νήμα, δεύτερο παράθυρο και δύο απαντήσεις.
+        """
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.check_updates()
+
     def _notify_done(self, title: str, body: str) -> None:
         """Στο τέλος μιας εργασίας: ειδοποίηση Windows (κάτω δεξιά) + αναβόσβημα
         του εικονιδίου στη γραμμή εργασιών — ώστε να το προσέξει ο χρήστης ακόμη
@@ -422,6 +529,9 @@ class MainWindow(QMainWindow):
         self.control.set_start_minimized(load_start_minimized())
         self.control.start_minimized_changed.connect(self._on_start_minimized)
         self.control.reconnect_requested.connect(self.reload_clients)
+        self.control.schedule_changed.connect(self._on_schedule_changed)
+        self.control.schedule_run_requested.connect(self._run_scheduled_sync)
+        self.control.set_schedule(self._load_schedule())
         self.stack.addWidget(self.control)
 
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
@@ -440,6 +550,17 @@ class MainWindow(QMainWindow):
 
             log.warning("Λείπει το QtWebEngine — πτώση στις native σελίδες")
             self.etimologio = EtimologioShell(self.settings.data_dir)
+        # Οι Ρυθμίσεις του e-Τιμολόγιο δείχνουν και τις ρυθμίσεις του ΙΔΙΟΥ ΤΟΥ
+        # ΠΡΟΓΡΑΜΜΑΤΟΣ (tray, ενημερώσεις). Η σελίδα δεν τις ξέρει — τις ζητά
+        # από εδώ και καταλήγουν στους ίδιους χειριστές με το πλαϊνό μενού, ώστε
+        # η ρύθμιση να είναι μία, όπου κι αν την πειράξει ο χρήστης.
+        for signal_name, handler in (
+            ("start_minimized_changed", self._on_start_minimized_requested),
+            ("update_check_requested", self._check_updates_requested),
+        ):
+            signal = getattr(self.etimologio, signal_name, None)
+            if signal is not None:
+                signal.connect(handler)
         self.stack.addWidget(self.etimologio)
 
         # Η αρχική οθόνη επιλογής εφαρμογής. Μπαίνει τελευταία στο stack ώστε οι
@@ -831,7 +952,7 @@ class MainWindow(QMainWindow):
 
         all_rows = all_clients
         ready = sum(1 for r in all_rows if r["status"] == "ready")
-        self.status.showMessage(
+        self._set_counts_status(
             f"{len(all_rows)} πελάτες · {ready} διαθέσιμοι · "
             f"{len(all_rows) - ready} χωρίς κλειδί API · "
             f"{len(self._checked)} επιλεγμένοι για λήψη"
@@ -931,7 +1052,7 @@ class MainWindow(QMainWindow):
         """Οι δύο λίστες (Πελάτες / Λήψη) δείχνουν την ίδια επιλογή."""
         self.sync_page.set_checked(self._checked)
         self._update_selcount()
-        self.status.showMessage(
+        self._set_counts_status(
             f"{len(self._checked)} πελάτες επιλεγμένοι για λήψη"
             if self._checked else "Κανένας επιλεγμένος — η λήψη θα γίνει για όλους"
         )
@@ -1153,6 +1274,7 @@ class MainWindow(QMainWindow):
         — στο e-Τιμολόγιο η αντίστοιχη έννοια είναι η εταιρεία, που έχει δική
         της μπάρα.
         """
+        self._chrome_page = name
         chooser = name == "launcher"
         self.menu.setVisible(not chooser)
         self.active_client.setVisible(not chooser and name != "etimologio")
@@ -1165,6 +1287,21 @@ class MainWindow(QMainWindow):
             self.status.clearMessage()
         elif getattr(self, "_status_saved", ""):
             self.status.showMessage(self._status_saved)
+
+    def _set_counts_status(self, text: str) -> None:
+        """Η μέτρηση των πελατών της Λήψης — ΜΟΝΟ όπου σημαίνει κάτι.
+
+        Το `_chrome_for` την έσβηνε στην οθόνη επιλογής εφαρμογής, αλλά η λίστα
+        πελατών φορτώνει ΜΕΤΑ την εκκίνηση: το «168 πελάτες · 62 διαθέσιμοι…»
+        έγραφε από πάνω της και καθόταν κάτω-κάτω στην αρχική οθόνη, μιλώντας
+        για μια εφαρμογή που ο χρήστης δεν είχε καν διαλέξει. Κρατιέται και
+        επανέρχεται μόλις γυρίσει στη Λήψη.
+        """
+        self._status_saved = text
+        if getattr(self, "_chrome_page", "") in ("etimologio", "launcher"):
+            self.status.clearMessage()
+            return
+        self.status.showMessage(text)
 
     def _current_page(self) -> str:
         return _PAGES[self.stack.currentIndex()]
@@ -1181,15 +1318,16 @@ class MainWindow(QMainWindow):
         # ήδη επιλέξει ο χρήστης στο μενού — όχι με τις δικές του προεπιλογές.
         self._etim_call("set_theme", self._prefs.value("theme", "dark") == "light")
         self._etim_call("set_tooltips", self._tooltips_on)
+        self._etim_call("set_desktop_prefs", load_start_minimized(), APP_VERSION)
         self.menu.set_mode("etimologio")
         self.setWindowTitle("e-Τιμολόγιο Pro — Έκδοση Παραστατικών ΑΑΔΕ")
         self._set_mode_icon(etimologio=True)
         self._show_page("etimologio")
 
     def _leave_etimologio(self) -> None:
-        """Επιστροφή στη Λήψη Παραστατικών."""
+        """Επιστροφή στον Timologio Downloader."""
         self.menu.set_mode("downloader")
-        self.setWindowTitle("Λήψη Παραστατικών myDATA")
+        self.setWindowTitle("Timologio Downloader — Λήψη Παραστατικών myDATA")
         self._set_mode_icon(etimologio=False)
         self._show_page("clients")
 
@@ -1697,15 +1835,21 @@ class MainWindow(QMainWindow):
         self._log(f"Συμπλήρωση κενού {to_gr(start)} – {to_gr(end)}")
         self.on_sync()
 
-    def on_sync(self) -> None:
+    def on_sync(self, only: list[str] | None = None) -> None:
         if self._thread is not None:
             return
         # Οι επιλεγμένοι μπορεί να περιλαμβάνουν και πελάτες χωρίς κλειδί (είναι
         # επιλέξιμοι για διαγραφή)· η λήψη κρατά μόνο όσους έχουν κλειδί.
         ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
-        vats = [v for v in sorted(self._checked) if v in ready]
-        if not vats:
-            vats = sorted(ready)
+        if only is not None:
+            # Ρητή λίστα (προγραμματισμένη λήψη): ΔΕΝ πειράζουμε τα τσεκαρισμένα
+            # του χρήστη. Μια αυτόματη λήψη στις επτά το πρωί δεν επιτρέπεται να
+            # αλλάξει την επιλογή που άφησε χθες ανοιχτή στην οθόνη.
+            vats = [v for v in only if v in ready]
+        else:
+            vats = [v for v in sorted(self._checked) if v in ready]
+            if not vats:
+                vats = sorted(ready)
         if not vats:
             QMessageBox.information(
                 self, "Κανένας πελάτης",
@@ -2039,8 +2183,13 @@ class MainWindow(QMainWindow):
                 "ψηφίο, η επωνυμία έρχεται μόνη της — δεν χρειάζεται να πατήσετε "
                 "τίποτα. Αν το ΑΦΜ το ξέρουμε ήδη, μπαίνει ακαριαία· αλλιώς "
                 "ρωτιέται το VIES.\n\n"
-                "Μετά συμπληρώστε το myDATA REST API key. Στο ίδιο παράθυρο "
-                "υπάρχει και η μαζική εισαγωγή από Excel.",
+                "Μετά συμπληρώστε το myDATA REST API key και πατήστε «Δοκιμή»: "
+                "ρωτάμε την ΑΑΔΕ επιτόπου (σύνολα εξόδων του τρέχοντος μήνα) και "
+                "σας λέμε αμέσως αν τα διαπιστευτήρια περνούν. Χρήσιμο γιατί το "
+                "«Api myData» και το «Subscription key e-timologio» μοιάζουν ίδια "
+                "(32 χαρακτήρες) — και το λάθος φαινόταν ώρες αργότερα, μέσα σε "
+                "μια μαζική λήψη.\n\n"
+                "Στο ίδιο παράθυρο υπάρχει και η μαζική εισαγωγή από Excel.",
                 lambda: self.menu.button("add_client"),
             ),
             Step(
@@ -2122,6 +2271,21 @@ class MainWindow(QMainWindow):
                 "Το «Δοκιμή browser» ανοίγει αόρατα τον Edge/Chrome και ελέγχει "
                 "ότι η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά σας.",
                 lambda: self.menu.button("control"),
+                lambda: self._show_page("control"),
+            ),
+            Step(
+                "8. Αυτόματη λήψη σε ώρα που δεν ενοχλεί",
+                "Στον ίδιο πίνακα, «Χρονοπρογραμματισμός λήψης»: ορίστε ώρα και "
+                "ημέρες και η λήψη ξεκινά μόνη της.\n\n"
+                "«Όλοι με κλειδί API» ή «μόνο οι επιλεγμένοι» — οι επιλεγμένοι "
+                "παγώνουν τη στιγμή που αποθηκεύετε, ώστε ένα κλικ στη λίστα να "
+                "μην αλλάζει σιωπηλά τι κατεβαίνει αύριο. Πελάτης χωρίς κλειδί "
+                "δεν συμμετέχει ποτέ.\n\n"
+                "Η λήψη τρέχει ΜΕΣΑ στην εφαρμογή: το πρόγραμμα ισχύει όσο αυτή "
+                "είναι ανοιχτή — γι' αυτό υπάρχει από κάτω η «Εκκίνηση στο tray». "
+                "Ραντεβού που χάθηκε με τον υπολογιστή κλειστό εκτελείται μόλις "
+                "ανοίξει, την ίδια μέρα. Το «Λήψη τώρα» το δοκιμάζει αμέσως.",
+                lambda: self.control.chk_schedule,
                 lambda: self._show_page("control"),
             ),
             Step(

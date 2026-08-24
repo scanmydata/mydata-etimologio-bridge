@@ -13,7 +13,7 @@
 ; Software\scanmydata\TimologioDownloader (εκεί ζει ο φάκελος δεδομένων —
 ; μια αλλαγή εκεί θα άνοιγε την εφαρμογή σε ΑΔΕΙΑ βάση).
 #define AppName        "ScanmyData Suite"
-#define AppVersion     "0.4.9"
+#define AppVersion     "0.4.12"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -42,7 +42,7 @@ DisableWelcomePage=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
-UninstallDisplayIcon={app}\{#AppExeName}
+UninstallDisplayIcon={app}\ScanmyDataSuite.ico
 ; Στοιχεία εκδότη στο ίδιο το setup.exe. Ένα ανυπόγραφο installer ΧΩΡΙΣ VersionInfo
 ; είναι από τα πρώτα που «σηκώνει» το SmartScreen/Defender ως άγνωστο — τα πλήρη
 ; στοιχεία δίνουν ταυτότητα και μειώνουν τα ψευδώς-θετικά (και στην εγκατάσταση και
@@ -121,12 +121,18 @@ Name: "desktopicon"; Description: "Δημιουργία συντόμευσης �
 
 [Files]
 Source: "..\dist\TimologioDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Το σήμα ScanmyData ως ξεχωριστό αρχείο εικονιδίου, για τις συντομεύσεις.
+; Το exe το φοράει ήδη, αλλά τα Windows κρατούν επίμονη μνήμη εικονιδίων ανά
+; συντόμευση: μετά από αναβάθμιση (ίδιο AppId, ίδιο όνομα exe) η συντόμευση
+; συνέχιζε να δείχνει το ΠΑΛΙΟ σχέδιο. Ρητό IconFilename σε νέα διαδρομή σπάει
+; τη μνήμη και λέει ρητά τι φοράει η σουίτα.
+Source: "installer-icon.ico"; DestDir: "{app}"; DestName: "ScanmyDataSuite.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\ScanmyDataSuite.ico"
 Name: "{group}\Φάκελος παραστατικών"; Filename: "{code:GetDataDir}"
 Name: "{group}\Απεγκατάσταση {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\ScanmyDataSuite.ico"; Tasks: desktopicon
 
 [Registry]
 ; Η εφαρμογή διαβάζει από εδώ τον φάκελο δεδομένων (config.py:_data_dir_from_registry).
@@ -191,11 +197,46 @@ const
 // πάντα τις προεπιλογές (αυτόνομος, Έγγραφα) — άχρηστο για γραφείο με server.
 //   setup.exe /SILENT /ROLE=terminal /DATADIR="\\SERVER\Παραστατικά myDATA"
 //   setup.exe /SILENT /ROLE=server /TRAY=1
+// ⚠️ ΤΟ `{param:…}` ΤΟΥ INNO ΚΟΒΕΙ ΤΗΝ ΤΙΜΗ ΣΤΟ ΠΡΩΤΟ ΚΕΝΟ.
+//
+// Μετρημένο σε πραγματική εγκατάσταση: η αυτόματη ενημέρωση περνά σωστά
+//   /DATADIR="C:\…\Παραστατικά myDATA"
+// (φαίνεται αυτούσιο στο log του ίδιου του Inno), αλλά το
+// `ExpandConstant('{param:DATADIR|}')` επέστρεφε `C:\…\Παραστατικά`. Ο
+// installer έγραφε ΑΥΤΟ στο μητρώο, η επόμενη εκκίνηση άνοιγε καινούρια άδεια
+// βάση, και ο χρήστης έβλεπε την εφαρμογή «να έχασε τα πάντα» ενώ τα δεδομένα
+// κάθονταν άθικτα δίπλα. Μαζί τους έφευγε και το e-Τιμολόγιο, που ζει σε
+// υποφάκελο του ίδιου φακέλου.
+//
+// Το `ParamStr` περνά από τον parser των Windows, που σέβεται τα εισαγωγικά:
+// η διαδρομή φτάνει ΟΛΟΚΛΗΡΗ. Καμία παράμετρος δεν διαβάζεται πια με
+// `{param:…}` — ακόμη κι εκείνες που σήμερα δεν έχουν κενά.
+function CmdLineParam(const Name: String): String;
+var
+  I: Integer;
+  Prefix, S: String;
+begin
+  Result := '';
+  Prefix := '/' + Name + '=';
+  for I := 1 to ParamCount do
+  begin
+    S := ParamStr(I);
+    if CompareText(Copy(S, 1, Length(Prefix)), Prefix) = 0 then
+    begin
+      Result := Copy(S, Length(Prefix) + 1, MaxInt);
+      // Εφεδρεία: αν κάποιο κέλυφος αφήσει τα εισαγωγικά μέσα στην τιμή.
+      if (Length(Result) >= 2) and (Result[1] = '"')
+         and (Result[Length(Result)] = '"') then
+        Result := Copy(Result, 2, Length(Result) - 2);
+      Exit;
+    end;
+  end;
+end;
 procedure ApplyCommandLine;
 var
   Value: String;
 begin
-  Value := ExpandConstant('{param:ROLE|}');
+  Value := CmdLineParam('ROLE');
   if CompareText(Value, 'server') = 0 then
     RolePage.SelectedValueIndex := ROLE_SERVER
   else if CompareText(Value, 'terminal') = 0 then
@@ -203,14 +244,14 @@ begin
   else if CompareText(Value, 'standalone') = 0 then
     RolePage.SelectedValueIndex := ROLE_STANDALONE;
 
-  Value := ExpandConstant('{param:DATADIR|}');
+  Value := CmdLineParam('DATADIR');
   if Value <> '' then
   begin
     DataDirPage.Values[0] := Value;
     DataDirFromCommandLine := True;
   end;
 
-  Value := ExpandConstant('{param:TRAY|}');
+  Value := CmdLineParam('TRAY');
   if Value <> '' then
   begin
     TrayPage.Values[OPT_TRAY] := Value = '1';
@@ -539,7 +580,7 @@ begin
   // γίνεται μόνο αν ζητηθεί ρητά:  unins000.exe /VERYSILENT /DELETEDATA=1
   if UninstallSilent then
   begin
-    if ExpandConstant('{param:DELETEDATA|0}') = '1' then
+    if CmdLineParam('DELETEDATA') = '1' then
       DeleteDataDir;
     Exit;
   end;

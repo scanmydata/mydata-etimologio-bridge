@@ -39,6 +39,12 @@ FROM php:8.3-apache
 #
 # Ο βρόχος στο τέλος είναι ο φύλακας: μια επέκταση που λείπει ΡΙΧΝΕΙ ΤΟ
 # BUILD, αντί να βγάλει εικόνα που ξεκινά μια χαρά και αστοχεί αργότερα.
+#
+# Το `postgresql-client` (pg_dump) δεν είναι εργαλείο μεταγλώττισης: το τρέχει
+# ο ΙΔΙΟΣ ο server για το ημερήσιο αντίγραφο. Γι' αυτό σημειώνεται `manual`,
+# ώστε να επιβιώσει του `--auto-remove`, και ελέγχεται στο τέλος μαζί με τις
+# επεκτάσεις — αλλιώς το αντίγραφο θα αποτύγχανε στις 3 τα ξημερώματα, σιωπηλά,
+# με μια γραμμή σε ένα log που δεν διαβάζει κανείς.
 RUN set -eux; \
     savedAptMark="$(apt-mark showmanual)"; \
     apt-get update; \
@@ -48,7 +54,8 @@ RUN set -eux; \
         libzip-dev \
         libonig-dev \
         libsodium-dev \
-        ca-certificates; \
+        ca-certificates \
+        postgresql-client; \
     docker-php-ext-install -j"$(nproc)" \
         pdo_pgsql \
         pdo_sqlite \
@@ -57,6 +64,7 @@ RUN set -eux; \
     php -m | grep -qi '^sodium$' || docker-php-ext-install -j"$(nproc)" sodium; \
     apt-mark auto '.*' > /dev/null; \
     apt-mark manual $savedAptMark > /dev/null; \
+    apt-mark manual postgresql-client > /dev/null; \
     ldd "$(php -r 'echo ini_get("extension_dir");')"/*.so \
         | awk '/=>/ { print $3 }' | sort -u | grep -v '^$' \
         | xargs -r readlink -f | sort -u \
@@ -66,7 +74,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     for ext in pdo_pgsql pdo_sqlite mbstring zip sodium; do \
         php -m | grep -Eq "^${ext}$" || { echo "MISSING PHP EXTENSION: $ext" >&2; exit 1; }; \
-    done
+    done; \
+    pg_dump --version > /dev/null
 
 # Apache: rewrite/headers on, listen where Coolify and cloudflared expect (8090),
 # and a ServerName so startup does not warn on every boot.

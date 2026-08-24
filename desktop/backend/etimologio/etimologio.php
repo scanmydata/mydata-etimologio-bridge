@@ -110,6 +110,7 @@ require __DIR__ . '/auth.php';   // session + config + localdb + account resolut
 require __DIR__ . '/bankimport.php'; // bank statement (extrait) parsing → local payments
 require __DIR__ . '/zipwriter.php';   // ZIP builder (no ZipArchive dependency)
 require __DIR__ . '/serverlink.php';  // σύνδεση/συγχρονισμός με web server + αντίγραφα
+require __DIR__ . '/serverbackup.php'; // αντίγραφα ΤΟΥ SERVER (βάση + .enckey) στο Drive
 
 // --- RESPONSE HELPERS --------------------------------------------------------
 
@@ -3819,6 +3820,27 @@ if ($authAction !== '') {
             $r['linked'] = true;
             jsonResponse($r);
         }
+        // ---- Αντίγραφα ασφαλείας ΤΟΥ SERVER (μόνο διαχειριστής) ----
+        case 'srv_backup_status': case 'srv_backup_run': case 'srv_backup_settings': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            switch ($authAction) {
+                case 'srv_backup_status':
+                    jsonResponse(['success' => true] + srv_backup_status());
+                case 'srv_backup_run': {
+                    // Χειροκίνητο αντίγραφο. Αργεί (dump + κρυπτογράφηση +
+                    // ανέβασμα), γι' αυτό η οθόνη δείχνει αναμονή.
+                    $r = srv_backup_run('manual');
+                    jsonResponse(['success' => !empty($r['ok'])] + $r);
+                }
+                case 'srv_backup_settings': {
+                    $on = !empty($_POST['auto']) && $_POST['auto'] !== '0' ? '1' : '0';
+                    $hour = max(0, min(23, (int)($_POST['hour'] ?? 3)));
+                    setting_set('srvbackup.auto', $on);
+                    setting_set('srvbackup.hour', (string)$hour);
+                    jsonResponse(['success' => true, 'auto' => $on === '1', 'hour' => $hour]);
+                }
+            }
+        }
         case 'admin_set_managers': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             $uid = (int)($_POST['user_id'] ?? 0);
@@ -4160,6 +4182,24 @@ if ($authAction !== '') {
 // and resolve the requested AADE account, then fall through to the normal issue
 // dispatch below. Strictly limited to loopback callers.
 $schedTok = (string)($_POST['sched_token'] ?? $_GET['sched_token'] ?? '');
+// Κατέβασμα τοπικού αντιγράφου του server. Ο έλεγχος είναι ΔΙΠΛΟΣ: διαχειριστής
+// ΚΑΙ όνομα αρχείου που δεν βγαίνει από τον φάκελο — ένα `../../config.php` σε
+// παράμετρο διαδρομής είναι η κλασική διαρροή.
+$srvBackupFile = trim((string)($_GET['srv_backup_file'] ?? ''));
+if ($srvBackupFile !== '') {
+    if (!is_master()) { http_response_code(403); exit('forbidden'); }
+    $name = basename($srvBackupFile);
+    $path = srv_backup_dir() . '/' . $name;
+    if (!preg_match('/^server-[\w.\-]+\.zip(\.enc)?$/', $name) || !is_file($path)) {
+        http_response_code(404); exit('not found');
+    }
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . $name . '"');
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+}
+
 if ($schedTok !== '' && defined('SCHED_TOKEN') && SCHED_TOKEN !== '' && hash_equals((string)SCHED_TOKEN, $schedTok)) {
     // req_is_loopback(): loopback IP ΚΑΙ καμία κεφαλίδα proxy — ο runner τρέχει
     // μέσα στον container και χτυπά το 127.0.0.1:8090 απευθείας, ποτέ μέσω

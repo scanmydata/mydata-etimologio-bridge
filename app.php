@@ -54,11 +54,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>e-Timologio Pro</title>
-<link rel="icon" type="image/png" sizes="32x32" href="assets/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="96x96" href="assets/icons/favicon-96.png">
-<link rel="icon" href="assets/icons/favicon.ico" sizes="any">
-<link rel="apple-touch-icon" sizes="180x180" href="assets/icons/apple-touch-icon.png">
-<link rel="manifest" href="assets/icons/site.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="<?= asset_url('assets/icons/favicon-32.png') ?>">
+<link rel="icon" type="image/png" sizes="96x96" href="<?= asset_url('assets/icons/favicon-96.png') ?>">
+<link rel="icon" href="<?= asset_url('assets/icons/favicon.ico') ?>" sizes="any">
+<link rel="apple-touch-icon" sizes="180x180" href="<?= asset_url('assets/icons/apple-touch-icon.png') ?>">
+<link rel="manifest" href="<?= asset_url('assets/icons/site.webmanifest') ?>">
 <meta name="theme-color" content="#0b1220">
 <style>
   :root{
@@ -144,7 +144,9 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
      στο φωτεινό θέμα και η στήλη έμοιαζε άδεια. */
   aside{grid-area:side;background:var(--menu-bg);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
   .brand{display:flex;align-items:center;gap:9px;padding:18px 18px 10px;font-size:18px;font-weight:800;letter-spacing:.3px}
-  .brand-ic{width:28px;height:28px;border-radius:7px;flex:none}
+  /* Το νέο σήμα δεν είναι τετράγωνο (241x256) και δεν έχει πλαίσιο: με
+     καρφωμένο ύψος ΚΑΙ πλάτος πλάκωνε. object-fit το κρατά στις αναλογίες του. */
+  .brand-ic{width:28px;height:28px;object-fit:contain;flex:none}
   .brand span{color:var(--accent)}
   nav.menu{padding:8px;overflow:auto;flex:1}
   .nav-item{display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:10px;cursor:pointer;color:var(--muted);font-weight:600;margin-bottom:2px}
@@ -229,6 +231,18 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   .view.active{display:block}
   @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
   .panel{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
+  /* Πτυσσόμενες ενότητες ρυθμίσεων. Το «κεφάλι» είναι η πρώτη γραμμή του panel
+     και μένει πάντα ορατό· ό,τι ακολουθεί μπαίνει σε .sect-body. */
+  .sect-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+  .panel.sect{padding:0}
+  .panel.sect > .sect-head{padding:14px 18px;cursor:pointer;user-select:none;
+    display:flex;align-items:center;gap:10px;border-radius:var(--radius)}
+  .panel.sect > .sect-head:hover{background:var(--chip)}
+  .panel.sect > .sect-head > strong{flex:1}
+  .sect-caret{color:var(--muted);font-size:12px;transition:transform .15s ease;flex:none}
+  .panel.sect.open > .sect-head .sect-caret{transform:rotate(180deg)}
+  .panel.sect > .sect-body{display:none;padding:0 18px 18px}
+  .panel.sect.open > .sect-body{display:block}
   h2.title{margin:0 0 4px;font-size:20px}
   .sub{color:var(--muted);margin:0 0 16px;font-size:13px}
   .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
@@ -322,9 +336,14 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   #tourOverlay.on{display:block}
   #tourBackdrop{position:absolute;inset:0;background:transparent}
   #tourRing{position:absolute;border:2px solid var(--accent);border-radius:12px;box-shadow:0 0 0 9999px rgba(3,10,20,.55),0 0 22px rgba(56,189,248,.6);transition:all .25s ease;pointer-events:none}
-  #tourBox{position:absolute;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:16px 18px;z-index:201}
+  /* ΤΟ ΠΛΑΤΟΣ ΕΙΝΑΙ ΣΤΑΘΕΡΟ, όχι max-width: ένα απόλυτα τοποθετημένο κουτί
+     στενεύει μόνο του όταν το `left` του πέσει κοντά στη δεξιά άκρη, οπότε
+     μετρούσαμε πλάτος 272 και τοποθετούσαμε σαν να ήταν 340. Το ύψος έχει
+     οροφή την οθόνη — το βήμα του βοηθού είναι 381px και ξέφευγε από κάτω. */
+  #tourBox{position:absolute;width:340px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:16px 18px;z-index:201}
   #tourBox h4{margin:0 0 6px;font-size:15px}
   #tourBox p{margin:0 0 12px;font-size:13px;color:var(--muted);line-height:1.45}
+  #tourBox p b{color:var(--txt);font-weight:700}
   #tourBox .tour-actions{display:flex;gap:8px;align-items:center}
   #tourBox .tour-step{font-size:11px;color:var(--muted);margin-left:auto}
   .num{text-align:right;font-variant-numeric:tabular-nums}
@@ -358,7 +377,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   /* Το κουμπί του μενού και το σκοτεινό φόντο του συρταριού υπάρχουν μόνο σε
      στενή οθόνη — τα media queries πιο κάτω τα ανάβουν. */
   .nav-burger{display:none;align-self:center;font-size:17px;line-height:1;padding:9px 12px}
-  .hdr-logo{display:none;width:30px;height:30px;border-radius:8px;cursor:pointer;flex:none}
+  .hdr-logo{display:none;width:30px;height:30px;object-fit:contain;cursor:pointer;flex:none}
   #navScrim{position:fixed;inset:0;z-index:59;background:rgba(3,8,16,.55);
             opacity:0;transition:opacity .2s ease}
   body.nav-open #navScrim{opacity:1}
@@ -531,7 +550,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 <body class="<?= $__embedded ? 'embedded' : '' ?>">
 <div class="app">
   <aside id="sideNav">
-    <div class="brand"><img src="assets/icons/app-icon-192.png" alt="" class="brand-ic">e-Timologio <span>Pro</span></div>
+    <div class="brand"><img src="<?= asset_url('assets/brand/logo-etimologio.png') ?>" alt="" class="brand-ic">e-Timologio <span>Pro</span></div>
     <nav class="menu" id="menu">
       <div class="nav-item active" data-view="issue"><span class="ic">🧾</span> Έκδοση</div>
       <div class="nav-item" data-view="bulk"><span class="ic">📚</span> Μαζική έκδοση</div>
@@ -570,8 +589,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <?php endif; ?>
       <a id="brandMark" href="https://scanmydata.gr" target="_blank" rel="noopener noreferrer"
          title="scanmydata.gr">
-        <img src="assets/brand/scanmydata-light.png" alt="ScanmyData" class="bm-light">
-        <img src="assets/brand/scanmydata-dark.png" alt="ScanmyData" class="bm-dark">
+        <img src="<?= asset_url('assets/brand/scanmydata-light.png') ?>" alt="ScanmyData" class="bm-light">
+        <img src="<?= asset_url('assets/brand/scanmydata-dark.png') ?>" alt="ScanmyData" class="bm-dark">
       </a></div>
   </aside>
   <!-- Το σκοτεινό φόντο του συρταριού: κλείνει με ένα άγγιγμα οπουδήποτε. -->
@@ -594,7 +613,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <!-- Σε κινητό το πλαϊνό μενού είναι κρυμμένο, οπότε μαζί του χάνεται και το
          σήμα της εφαρμογής: η κεφαλίδα έμοιαζε με ανώνυμη γραμμή εργαλείων.
          Εδώ μπαίνει ξανά, αριστερά από το ☰, και ανοίγει κι αυτό το μενού. -->
-    <img class="hdr-logo" src="assets/icons/app-icon-192.png" alt="e-Timologio Pro"
+    <img class="hdr-logo" src="<?= asset_url('assets/brand/logo-etimologio.png') ?>" alt="e-Timologio Pro"
          onclick="toggleNav()">
     <button class="ghost sm nav-burger" id="navBurger" onclick="toggleNav()"
             aria-label="Μενού" aria-expanded="false" aria-controls="sideNav">☰</button>
@@ -1030,6 +1049,13 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <!-- SETTINGS -->
     <section class="view" id="view-settings">
       <h2 class="title">Ρυθμίσεις λογαριασμού</h2><p class="sub">Στοιχεία χρήστη, κωδικός πρόσβασης και συνδεδεμένοι λογαριασμοί AADE.</p>
+      <!-- Οι ενότητες είναι πτυσσόμενες (δες `setupSections`): η οθόνη είχε
+           φτάσει τα δέκα panel και ο χρήστης κύλαγε ψάχνοντας. -->
+      <div class="sect-bar">
+        <button class="ghost sm" onclick="sectAll('#view-settings',true)">⬇️ Άνοιγμα όλων</button>
+        <button class="ghost sm" onclick="sectAll('#view-settings',false)">⬆️ Κλείσιμο όλων</button>
+        <span class="hint">Πάτα σε μια ενότητα για να ανοίξει — η εφαρμογή θυμάται ποιες κρατάς ανοιχτές.</span>
+      </div>
       <div class="panel">
         <strong>🔑 Αλλαγή κωδικού</strong>
         <div class="row" style="margin-top:10px">
@@ -1264,8 +1290,32 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <div class="row" style="margin-top:6px">
           <button class="primary" onclick="backupRun()">💾 Αντίγραφο τώρα</button>
           <button class="ghost" onclick="backupDownload()" id="bkDl" data-tip="Κατεβάζει το πιο πρόσφατο αντίγραφο">⬇️ Λήψη τελευταίου</button>
+          <button class="ghost" onclick="backupRestore()" id="bkRestore" data-tip="Φέρνει πίσω βάση και κλειδί από αντίγραφο. Η τρέχουσα κατάσταση κρατιέται ως «pre-restore».">↩️ Επαναφορά από αντίγραφο</button>
           <span class="hint" id="bkFolder"></span>
         </div>
+        <p class="sub" id="bkRestoreNote" style="margin-top:6px"></p>
+      </div>
+      <?php endif; ?>
+      <?php if ($__embedded): ?>
+      <!-- ΜΟΝΟ μέσα στην εφαρμογή υπολογιστή. Αφορά το ΠΡΟΓΡΑΜΜΑ, όχι τον
+           λογαριασμό: τα ξέρει μόνο το Qt και ταξιδεύουν από τη γέφυρα
+           (QWebChannel → `window.etimHost`). Στον browser το panel δεν
+           υπάρχει καν — δεν θα είχε τι να ρυθμίσει. -->
+      <div class="panel" style="margin-top:16px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🖥️ Εφαρμογή υπολογιστή</strong>
+          <span class="pill" id="dtVersion">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">Ρυθμίσεις του ίδιου του προγράμματος σε αυτόν τον υπολογιστή. Ισχύουν και για τις δύο εφαρμογές της σουίτας.</p>
+        <div class="row" style="align-items:center;gap:16px;flex-wrap:wrap;margin-top:6px">
+          <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="dtTray" onchange="dtSetTray(this.checked)"> Εκκίνηση στο tray</label>
+          <span class="hint" style="max-width:420px">Η εφαρμογή ξεκινά χωρίς παράθυρο, ως εικονίδιο δίπλα στο ρολόι. Διπλό κλικ στο εικονίδιο την επαναφέρει.</span>
+        </div>
+        <div class="row" style="align-items:center;gap:12px;margin-top:12px">
+          <button class="ghost" onclick="dtCheckUpdates()" data-tip="Ρωτά το GitHub ποια είναι η τελευταία δημοσιευμένη έκδοση">⬇️ Έλεγχος για ενημερώσεις</button>
+          <span class="hint">Απαντά πάντα — και όταν είσαι ήδη ενημερωμένος.</span>
+        </div>
+        <div class="sub" id="dtResult" style="margin-top:8px"></div>
       </div>
       <?php endif; ?>
       <div class="panel" style="margin-top:16px">
@@ -1346,6 +1396,38 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <p class="sub" id="adminBizNote"></p>
         <table id="adminBiz"><thead><tr><th>Επωνυμία</th><th>ΑΦΜ</th><th>Χρήστης (κάτοχος)</th><th>Λογιστές</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
+
+      <?php if (!defined('DESKTOP_TOKEN') || DESKTOP_TOKEN === ''): ?>
+      <!-- Αντίγραφα ΤΟΥ SERVER — μόνο ο διαχειριστής, και μόνο ΣΤΟΝ SERVER.
+           Στην εγκατάσταση γραφείου τα αντίγραφα έχουν δική τους κάρτα στις
+           Ρυθμίσεις: εκεί τα δεδομένα είναι ήδη στον δίσκο του χρήστη, και μια
+           δεύτερη κάρτα που λέει «server» θα ήταν απλώς μπερδεμένη. -->
+      <div class="panel" id="srvBackupCard" style="margin-top:16px" hidden>
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <strong>🗄️ Αντίγραφα ασφαλείας του server</strong>
+          <span class="pill" id="sbState">—</span>
+        </div>
+        <p class="sub" style="margin-top:4px">
+          Η βάση <b>μαζί με το κλειδί κρυπτογράφησης</b> — χωρίς αυτό τα στοιχεία
+          ΑΑΔΕ των εταιρειών δεν ξαναδιαβάζονται ποτέ. Το αρχείο
+          κρυπτογραφείται με τη φράση <code>BACKUP_PASSPHRASE</code> και ανεβαίνει
+          στο Google Drive. Παίρνεται αυτόματα κάθε μέρα, χειροκίνητα από εδώ,
+          και <b>πριν από κάθε deploy</b>.
+        </p>
+        <div class="row" style="margin-top:8px;align-items:center;gap:10px">
+          <button class="primary" onclick="srvBackupRun()">💾 Αντίγραφο τώρα</button>
+          <label class="side-toggle" style="color:var(--txt)">
+            <input type="checkbox" id="sbAuto" onchange="srvBackupSaveSettings()"> Αυτόματο ημερήσιο</label>
+          <div class="field" style="max-width:120px"><label>Ώρα</label>
+            <input id="sbHour" type="number" min="0" max="23" onchange="srvBackupSaveSettings()"></div>
+          <button class="ghost" onclick="loadSrvBackup()">↻ Ανανέωση</button>
+        </div>
+        <div class="hint" id="sbInfo" style="margin-top:8px"></div>
+        <table id="sbTable"><thead><tr>
+          <th>Αρχείο</th><th>Πότε</th><th class="num">Μέγεθος</th><th>Πού</th><th class="nofilter"></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <?php endif; ?>
 
     </section>
     <?php endif; ?>
@@ -2249,7 +2331,7 @@ async function loadAdmin(){
     if(ADMIN_SCOPE.is_master){
       const d=await apost({auth:'admin_users'});renderAdmin(d.users||[]);
     }
-    loadWorkTime();loadAuditLog();
+    loadWorkTime();loadAuditLog();loadSrvBackup();
     enhanceViewTables('admin');
   }catch(e){toast('Διαχείριση: '+e.message,'err');}}
 
@@ -2275,6 +2357,65 @@ setInterval(()=>{
   if(WORK_ACC>=WORK_PING_SEC){const secs=WORK_ACC;WORK_ACC=0;
     api({work_ping:1,seconds:secs}).catch(()=>{});}
 },5000);
+
+// --- Αντίγραφα ασφαλείας του server ------------------------------------------
+// Ο λογιστής δεν τα βλέπει καν: η κάρτα ανάβει μόνο για τον διαχειριστή, και ο
+// server ελέγχει ούτως ή άλλως τον ρόλο σε κάθε κλήση.
+function fmtBytes(n){n=+n||0;return n>1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(0)+' KB';}
+async function loadSrvBackup(){
+  const card=$('#srvBackupCard');
+  if(!card||!ADMIN_SCOPE.is_master)return;
+  card.hidden=false;
+  try{
+    const d=await apost({auth:'srv_backup_status'});
+    if(!d.success)return;
+    const st=$('#sbState');
+    const ready=d.encrypted&&d.drive_ready;
+    st.textContent=ready?'ενεργά':(d.encrypted?'μόνο τοπικά':'χωρίς κρυπτογράφηση');
+    st.className='pill'+(ready?' ok':' warn');
+    $('#sbAuto').checked=!!d.auto_on;
+    $('#sbHour').value=d.auto_hour;
+    // Το «γιατί δεν ανεβαίνει» πρέπει να λέγεται ΕΔΩ. Αλλιώς ο διαχειριστής
+    // βλέπει «εντάξει» και ανακαλύπτει το κενό τη μέρα που θα το χρειαστεί.
+    const miss=[];
+    if(!d.encrypted)miss.push('λείπει το <b>BACKUP_PASSPHRASE</b> — το αντίγραφο δεν φεύγει από τον server');
+    if(!d.drive_ready)miss.push('λείπουν τα κλειδιά <b>Google Drive</b>');
+    if(!d.infisical)miss.push('χωρίς <b>Infisical</b> (τα μυστικά διαβάζονται από τα env)');
+    $('#sbInfo').innerHTML=
+      `Βάση: <b>${esc(d.engine)}</b> · φάκελος Drive: <b>${esc(d.folder)}</b>`
+      +(d.last_at?` · τελευταίο: <b>${esc(d.last_at)}</b>`:'')
+      +(miss.length?('<br><span style="color:var(--bad)">⚠ '+miss.join(' · ')+'</span>'):'');
+    const rows=[];
+    (d.local||[]).forEach(f=>rows.push({...f,where:'server',link:''}));
+    ((d.drive&&d.drive.files)||[]).forEach(f=>rows.push({...f,where:'Drive'}));
+    $('#sbTable tbody').innerHTML=rows.map(f=>`<tr>
+      <td>${esc(f.name)}</td><td>${esc(f.at||'')}</td>
+      <td class="num">${esc(fmtBytes(f.size))}</td><td>${esc(f.where)}</td>
+      <td class="right">${f.where==='server'
+        ? `<button class="ghost sm" onclick="srvBackupDownload('${q1(f.name)}')">⬇ Λήψη</button>`
+        : (f.link?`<button class="ghost sm" onclick="window.open('${q1(f.link)}','_blank')">🌐 Άνοιγμα</button>`:'')}</td></tr>`)
+      .join('')||'<tr><td colspan="5" class="muted">Κανένα αντίγραφο ακόμη.</td></tr>';
+  }catch(e){}
+}
+async function srvBackupRun(){
+  try{
+    const d=await withBusy('Αντίγραφο του server…',()=>apost({auth:'srv_backup_run'}),
+      'Dump βάσης, κρυπτογράφηση και ανέβασμα στο Drive');
+    if(d.error)toast('Αντίγραφο: '+d.error,'err');
+    else toast(`Έτοιμο: ${d.name} (${fmtBytes(d.size)})${d.uploaded?' → Drive':''}`,'ok');
+    loadSrvBackup();
+  }catch(e){toast(e.message,'err');}
+}
+function srvBackupDownload(name){
+  // Απευθείας πλοήγηση: το αρχείο είναι δεκάδες MB και δεν έχει νόημα να
+  // περάσει από fetch για να ξαναγραφτεί σε blob.
+  window.location=`etimologio.php?srv_backup_file=${encodeURIComponent(name)}`;
+}
+async function srvBackupSaveSettings(){
+  try{await apost({auth:'srv_backup_settings',auto:$('#sbAuto').checked?1:0,hour:$('#sbHour').value});
+    toast('Αποθηκεύτηκε','ok');loadSrvBackup();
+  }catch(e){toast(e.message,'err');}
+}
 
 // --- Ημερολόγιο ενεργειών ----------------------------------------------------
 const AUDIT_LABELS={login:'Σύνδεση',login_2fa:'Σύνδεση (2FA)',logout:'Αποσύνδεση',
@@ -4920,11 +5061,30 @@ function cbPickVoice(lang){
   const voices=speechSynthesis.getVoices()||[];
   return voices.find(v=>(v.lang||'').toLowerCase().startsWith(want))||null;
 }
-// Η φωνή έρχεται από ΤΟΝ SERVER ΜΑΣ (Piper, εκτός δικτύου): τα Windows δεν
-// έχουν ελληνική φωνή από προεπιλογή, οπότε το `speechSynthesis` είτε σωπαίνει
-// είτε συλλαβίζει τα ελληνικά με αγγλική φωνή. Ο browser μένει ως εφεδρεία για
-// εγκαταστάσεις server χωρίς τη μηχανή (τότε το endpoint απαντά 501).
-// `CB_TTS_OFF` σημαίνει «δεν υπάρχει φωνή σε αυτή την εγκατάσταση»· το
+// Υπάρχει φωνή του browser για αυτή τη γλώσσα;
+//   φωνή → το αντικείμενο · `false` → δεν υπάρχει · `null` → ΔΕΝ ΞΕΡΟΥΜΕ ΑΚΟΜΗ.
+// Το τρίτο δεν είναι λεπτομέρεια: οι φωνές φορτώνονται ασύγχρονα και η πρώτη
+// ματιά βρίσκει άδεια λίστα — αν το εκλάβεις ως «δεν υπάρχει», ο βοηθός σωπαίνει
+// για πάντα σε browser που είχε τη φωνή.
+function cbBrowserVoice(lang){
+  if(!window.speechSynthesis)return false;
+  if(!(speechSynthesis.getVoices()||[]).length)return null;
+  return cbPickVoice(lang)||false;
+}
+// ⚠️ ΠΟΙΑ ΜΗΧΑΝΗ ΠΡΟΗΓΕΙΤΑΙ — και γιατί διαφέρει ανά κόσμο.
+//
+// • **Στον browser προηγείται το Web Speech API.** Είναι ήδη εκεί: δεν στέλνει
+//   ήχο στον server μας, δεν φορτώνει μοντέλο, απαντά ακαριαία και δουλεύει
+//   ακόμη κι όταν η εγκατάσταση δεν κουβαλά καθόλου μηχανές (ο container του
+//   server δεν τις κουβαλά — δες voice_engine() στο etimologio.php).
+// • **Στην εφαρμογή υπολογιστή προηγείται η δική μας.** Το
+//   `webkitSpeechRecognition` του QtWebEngine ΠΑΓΩΝΕΙ την εφαρμογή (δες
+//   cbInitRec), και τα Windows δεν έχουν ελληνική φωνή από προεπιλογή.
+//
+// Ό,τι κι αν προηγείται, η άλλη μένει εφεδρεία — ποτέ δεν πέφτουμε κατευθείαν
+// στο «γράψε την εντολή» όσο υπάρχει δεύτερος δρόμος.
+function cbPreferBrowserVoice(){return !cbEmbedded();}
+// `CB_TTS_OFF` σημαίνει «ο SERVER δεν έχει φωνή σε αυτή την εγκατάσταση»· το
 // `CB_MUTED` σημαίνει «υπάρχει, αλλά ο χρήστης είπε σώπα». Δύο διαφορετικά
 // πράγματα: το πρώτο δεν ξεκλειδώνει ποτέ, το δεύτερο με μία λέξη.
 let CB_AUDIO=null, CB_TTS_OFF=false, CB_WARMED=false, CB_MUTED=false;
@@ -4947,16 +5107,23 @@ function cbWarmVoice(){
 function cbMicHint(){
   const mic=$('#cbMic');if(!mic)return;
   const browserSR=!cbEmbedded()&&!!(window.SpeechRecognition||window.webkitSpeechRecognition);
-  const ok=!CB_STT_OFF||browserSR;
+  const secure=!!window.isSecureContext;
+  const ok=secure&&(!CB_STT_OFF||browserSR);
   mic.disabled=!ok;
   mic.style.opacity=ok?'':'.45';
-  mic.title=!CB_STT_OFF
-    ? 'Φωνητική εντολή — αναγνώριση σε αυτόν τον υπολογιστή, εκτός δικτύου'
-    : browserSR
-      ? 'Φωνητική εντολή μέσω του browser (χρειάζεται σύνδεση στο internet)'
-      : 'Δεν υπάρχει φωνητική αναγνώριση σε αυτή την εγκατάσταση — γράψε την εντολή';
+  // Το tooltip λέει ΠΟΙΑ μηχανή θα δουλέψει — με τη σειρά που θα δοκιμαστούν.
+  const backup=' · εφεδρεία: η μηχανή της εφαρμογής';
+  mic.title=!secure
+    ? 'Η φωνή χρειάζεται ασφαλή σύνδεση (https) — γράψε την εντολή'
+    : browserSR&&cbPreferBrowserVoice()
+      ? 'Φωνητική εντολή μέσω του browser' + (CB_STT_OFF ? ' (χρειάζεται σύνδεση στο internet)' : backup)
+      : !CB_STT_OFF
+        ? 'Φωνητική εντολή — αναγνώριση σε αυτόν τον υπολογιστή, εκτός δικτύου'
+        : browserSR
+          ? 'Φωνητική εντολή μέσω του browser (χρειάζεται σύνδεση στο internet)'
+          : 'Δεν υπάρχει φωνητική αναγνώριση σε αυτή την εγκατάσταση — γράψε την εντολή';
 }
-function cbSpeak(t){
+function cbSpeak(t,retried){
   // Ο βοηθός μιλά ΜΟΝΟ με ανοιχτό παράθυρο. Μια απάντηση που άργησε (π.χ.
   // αναγνώριση φωνής) δεν πρέπει να ξεκινήσει να μιλά αφού έκλεισες.
   if(!cbPanelOpen())return;
@@ -4964,6 +5131,14 @@ function cbSpeak(t){
   const lang=($('#cbLang').value||'el-GR').slice(0,2);
   const text=t.replace(/[•✔🔇➕📤💾👁⏰💶🧾🚚🏢👤]/gu,'').trim();
   if(!text)return;
+  // 1η επιλογή στο web: η φωνή του ίδιου του browser.
+  if(cbPreferBrowserVoice()){
+    const voice=cbBrowserVoice(lang);
+    // Οι φωνές δεν έχουν φορτώσει ακόμη — μία ματιά αργότερα, πριν αποφασίσουμε.
+    if(voice===null&&!retried){setTimeout(()=>cbSpeak(t,true),400);return;}
+    if(voice){cbSpeakWith(voice,text);return;}
+  }
+  // 2η: η μηχανή της εγκατάστασης (Piper), όπου υπάρχει.
   if(!CB_TTS_OFF){
     try{
       if(CB_AUDIO){CB_AUDIO.pause();CB_AUDIO=null;}
@@ -4975,19 +5150,31 @@ function cbSpeak(t){
       return;
     }catch(e){CB_TTS_OFF=true;}
   }
+  // 3η: ο browser ακόμη κι όπου δεν προτιμάται (εφαρμογή υπολογιστή χωρίς Piper).
   cbSpeakBrowser(text,lang);
 }
-function cbSpeakBrowser(text,lang){try{
-  if(!window.speechSynthesis)return;
-  const voice=cbPickVoice(lang);
-  if(!voice){
-    if(!CB_VOICE_WARNED&&want_greek(lang)){CB_VOICE_WARNED=true;
-      cbAdd('🔇 Δεν υπάρχει ελληνική φωνή σε αυτή την εγκατάσταση, οπότε απαντώ μόνο γραπτά.','bot');}
-    return;
-  }
+// Η ίδια η εκφώνηση, με ΡΗΤΗ φωνή.
+function cbSpeakWith(voice,text){try{
+  // Δεν μιλούν δύο μαζί: μια εκφώνηση του server που παίζει ακόμη κόβεται.
+  if(CB_AUDIO){CB_AUDIO.pause();CB_AUDIO=null;}
   const u=new SpeechSynthesisUtterance(text);
   u.voice=voice;u.lang=voice.lang;u.rate=1.0;
   speechSynthesis.cancel();speechSynthesis.speak(u);
+}catch(e){}}
+function cbSpeakBrowser(text,lang,retried){try{
+  if(!window.speechSynthesis)return;
+  // ⚠️ Οι φωνές φορτώνονται ΑΣΥΓΧΡΟΝΑ. Στο web η πρώτη απάντηση έρχεται τη
+  // στιγμή ακριβώς που ανοίγει ο βοηθός, με τη λίστα ακόμη άδεια — και ο
+  // κώδικας συμπέραινε «δεν υπάρχει ελληνική φωνή» ΜΙΑ ΦΟΡΑ ΚΑΙ ΓΙΑ ΠΑΝΤΑ
+  // (`CB_VOICE_WARNED`). Ο βοηθός έμενε βουβός σε browser που είχε τη φωνή.
+  const voice=cbBrowserVoice(lang);
+  if(voice===null&&!retried){setTimeout(()=>cbSpeakBrowser(text,lang,true),400);return;}
+  if(!voice){
+    if(!CB_VOICE_WARNED&&want_greek(lang)){CB_VOICE_WARNED=true;
+      cbAdd('🔇 Ο browser δεν έχει ελληνική φωνή σε αυτόν τον υπολογιστή, οπότε απαντώ μόνο γραπτά. (Windows: Ρυθμίσεις → Ώρα & γλώσσα → Ομιλία → προσθήκη ελληνικής φωνής.)','bot');}
+    return;
+  }
+  cbSpeakWith(voice,text);
 }catch(e){}}
 function want_greek(lang){return (lang||'').toLowerCase().startsWith('el');}
 // Οι φωνές φορτώνονται ασύγχρονα — χωρίς αυτό, η πρώτη απάντηση βρίσκει κενή λίστα.
@@ -5007,23 +5194,77 @@ function cbSubmitText(){const t=$('#cbInput').value.trim();if(!t)return;$('#cbIn
 // όπου δεν υπάρχει μηχανή, το endpoint απαντά 501 και πέφτουμε στον browser.
 let CB_MEDIA=null,CB_CHUNKS=[],CB_CTXA=null,CB_STT_OFF=false;
 const cbEmbedded=isEmbedded;   // ίδιος έλεγχος, παλιό όνομα στον βοηθό
+// ⚠️ ΤΟ ΜΙΚΡΟΦΩΝΟ ΣΤΟ WEB ΑΠΟΤΥΓΧΑΝΕ ΣΙΩΠΗΛΑ. Ο server δεν κουβαλά τις μηχανές
+// φωνής (`voice_caps` → stt:false), οπότε ο browser αναλαμβάνει — και εκεί ο
+// παλιός κώδικας απλώς έσβηνε το κόκκινο λαμπάκι σε κάθε `onerror`. Ο χρήστης
+// πατούσε το μικρόφωνο και «δεν γινόταν τίποτα»: ούτε ένδειξη ότι ακούει, ούτε
+// λόγος όταν ο browser έλεγε όχι. Κάθε κατάσταση λέει πλέον τι συνέβη.
+const CB_SR_MSG={
+  'not-allowed':'Ο browser δεν έδωσε πρόσβαση στο μικρόφωνο. Πάτα το εικονίδιο δίπλα στη διεύθυνση → «Μικρόφωνο» → «Να επιτρέπεται» και δοκίμασε ξανά.',
+  'service-not-allowed':'Ο browser μπλόκαρε την υπηρεσία αναγνώρισης φωνής. Έλεγξε τα δικαιώματα του μικροφώνου για αυτή τη σελίδα.',
+  'audio-capture':'Δεν βρέθηκε μικρόφωνο σε αυτόν τον υπολογιστή.',
+  'network':'Η αναγνώριση φωνής του browser χρειάζεται σύνδεση στο internet και δεν τη βρήκε.',
+  'no-speech':'Δεν άκουσα κάτι — δοκίμασε ξανά ή γράψε την εντολή.',
+  'aborted':''
+};
+// Σφάλματα ΤΗΣ ΜΗΧΑΝΗΣ, όχι του μικροφώνου: εδώ έχει νόημα να δοκιμάσουμε τη
+// δεύτερη μηχανή. Το `not-allowed`/`audio-capture` αφορούν το ίδιο το μικρόφωνο
+// — εκεί θα σκόνταφτε και το whisper, οπότε απλώς το λέμε.
+const CB_SR_FALLBACK=['network','service-not-allowed','language-not-supported'];
+let CB_SR_HEARD=false,CB_SR_ERR='',CB_SR_HANDOFF=false;
 function cbInitRec(){
   if(cbEmbedded())return null;                 // βλ. παραπάνω — παγώνει
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return null;
   const r=new SR();r.interimResults=false;r.maxAlternatives=1;
-  r.onresult=e=>{const t=e.results[0][0].transcript;$('#cbInput').value=t;cbSubmitText();};
-  r.onend=()=>{cbRecOn=false;$('#cbMic').classList.remove('rec');};
-  r.onerror=()=>{cbRecOn=false;$('#cbMic').classList.remove('rec');};return r;}
+  // Το λαμπάκι ανάβει στο ΠΡΑΓΜΑΤΙΚΟ ξεκίνημα, όχι αισιόδοξα μετά το `start()`:
+  // ανάμεσά τους μεσολαβεί το ερώτημα δικαιώματος, που μπορεί και να αρνηθεί.
+  r.onstart=()=>{CB_SR_HEARD=false;CB_SR_ERR='';cbRecOn=true;$('#cbMic').classList.add('rec');
+    cbAdd('🎙 Ακούω… πες την εντολή (ή πάτα ξανά το μικρόφωνο).','bot');};
+  r.onresult=e=>{CB_SR_HEARD=true;const t=e.results[0][0].transcript;$('#cbInput').value=t;cbSubmitText();};
+  r.onerror=e=>{cbRecOn=false;$('#cbMic').classList.remove('rec');
+    CB_SR_ERR=e.error||'unknown';
+    if(CB_SR_FALLBACK.indexOf(CB_SR_ERR)>=0&&!CB_STT_OFF){
+      // Η εγκατάσταση έχει δική της μηχανή — δεν στέλνουμε τον χρήστη στο
+      // πληκτρολόγιο επειδή δεν απάντησε η υπηρεσία του browser.
+      CB_SR_HANDOFF=true;
+      cbAdd('Η αναγνώριση του browser δεν απάντησε — δοκιμάζω τη μηχανή της εφαρμογής.','bot');
+      cbStartLocalRec();return;}
+    const msg=(CB_SR_ERR in CB_SR_MSG)?CB_SR_MSG[CB_SR_ERR]
+      :('Η φωνητική αναγνώριση σταμάτησε ('+CB_SR_ERR+'). Γράψε την εντολή εδώ.');
+    if(msg)cbBot(msg);};
+  r.onend=()=>{
+    // Το `onend` έρχεται ΜΕΤΑ το `onerror`. Αν εκείνο παρέδωσε τη σκυτάλη στη
+    // δική μας μηχανή, εδώ δεν σβήνουμε το λαμπάκι της ηχογράφησης που μόλις
+    // ξεκίνησε ούτε λέμε «δεν άκουσα κάτι».
+    if(CB_SR_HANDOFF){CB_SR_HANDOFF=false;CB_SR_ERR='';return;}
+    cbRecOn=false;$('#cbMic').classList.remove('rec');
+    if(!CB_SR_HEARD&&!CB_SR_ERR)cbBot('Δεν άκουσα κάτι — δοκίμασε ξανά ή γράψε την εντολή.');
+    CB_SR_ERR='';};
+  return r;}
+// Επιστρέφει true μόνο αν ΞΕΚΙΝΗΣΕ όντως η αναγνώριση του browser.
+function cbStartBrowserRec(){
+  if(!cbRec)cbRec=cbInitRec();
+  if(!cbRec)return false;
+  cbRec.lang=$('#cbLang').value;
+  try{cbRec.start();return true;}
+  catch(e){cbRecOn=false;$('#cbMic').classList.remove('rec');return false;}
+}
 function cbToggleMic(){
   if(cbRecOn){cbStopLocalRec();if(cbRec){try{cbRec.stop();}catch(e){}}return;}
-  if(!CB_STT_OFF){cbStartLocalRec();return;}
-  if(!cbRec)cbRec=cbInitRec();
-  if(!cbRec){
-    cbBot(cbEmbedded()
-      ? 'Η αναγνώριση φωνής δεν είναι εγκατεστημένη σε αυτόν τον υπολογιστή. Γράψε την εντολή εδώ.'
-      : 'Αυτός ο browser δεν έχει φωνητική αναγνώριση. Δοκίμασε Chrome ή Edge, ή γράψε την εντολή εδώ.');
+  // Χωρίς https (ή localhost) ΚΑΝΕΝΑΣ browser δεν δίνει μικρόφωνο, και το
+  // μήνυμα που βγάζει μόνος του δεν φτάνει ποτέ στη σελίδα.
+  if(!window.isSecureContext){
+    cbBot('Η φωνή χρειάζεται ασφαλή σύνδεση: άνοιξε την εφαρμογή με https:// (ή από τον ίδιο τον υπολογιστή) και δοκίμασε ξανά. Μέχρι τότε γράψε την εντολή εδώ.');
     return;}
-  cbRec.lang=$('#cbLang').value;try{cbRec.start();cbRecOn=true;$('#cbMic').classList.add('rec');}catch(e){}}
+  // Σειρά προτίμησης — δες cbPreferBrowserVoice(). Η δεύτερη μηχανή είναι
+  // πάντα εφεδρεία της πρώτης.
+  for(const engine of (cbPreferBrowserVoice()?['browser','server']:['server','browser'])){
+    if(engine==='browser'&&cbStartBrowserRec())return;
+    if(engine==='server'&&!CB_STT_OFF){cbStartLocalRec();return;}
+  }
+  cbBot(cbEmbedded()
+    ? 'Η αναγνώριση φωνής δεν είναι εγκατεστημένη σε αυτόν τον υπολογιστή. Γράψε την εντολή εδώ.'
+    : 'Αυτός ο browser δεν έχει φωνητική αναγνώριση και η εγκατάσταση δεν κουβαλά δική της. Δοκίμασε Chrome ή Edge, ή γράψε την εντολή εδώ.');}
 async function cbStartLocalRec(){
   let stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,noiseSuppression:true,echoCancellation:true}});}
@@ -5415,6 +5656,83 @@ $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').val
 async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions','drafts'];
   for(const k of kinds){try{await api({sync:k});}catch(e){}}}
 
+// --- Πτυσσόμενες ενότητες ρυθμίσεων -------------------------------------------
+//
+// Η οθόνη των Ρυθμίσεων έφτασε τα δέκα panel (κωδικός, 2FA, email, IBAN,
+// αυτόματη αποστολή, server, αντίγραφα, λογαριασμοί ΑΑΔΕ, εφαρμογή υπολογιστή).
+// Όλα ανοιχτά μαζί σήμαιναν κύλιση για να βρεις οτιδήποτε.
+//
+// Γίνεται με κώδικα και όχι με markup επίτηδες: κάθε νέο panel που θα μπει στην
+// οθόνη γίνεται ενότητα από μόνο του, χωρίς να το θυμηθεί κανείς.
+function setupSections(sel){
+  const view=$(sel);if(!view)return;
+  [...view.children].filter(el=>el.classList.contains('panel')).forEach((panel,i)=>{
+    if(panel.classList.contains('sect'))return;
+    const strong=panel.querySelector('strong');if(!strong)return;
+    // Το κεφάλι είναι η πρώτη γραμμή: το `.row` που κρατά τον τίτλο (μαζί με το
+    // pill κατάστασης ή το κουμπί «➕»), αλλιώς το σκέτο <strong>.
+    let head=strong.closest('.row');
+    if(!head||head.parentElement!==panel){
+      // Panel που ξεκινά με σκέτο <strong>: του δίνουμε δικό του κεφάλι, ώστε
+      // όλες οι ενότητες να έχουν την ίδια δομή (και το ίδιο CSS).
+      head=document.createElement('div');
+      panel.insertBefore(head,strong);
+      head.appendChild(strong);
+    }
+    const body=document.createElement('div');
+    body.className='sect-body';
+    while(head.nextSibling)body.appendChild(head.nextSibling);
+    panel.appendChild(body);
+    head.classList.add('sect-head');
+    head.insertAdjacentHTML('beforeend','<span class="sect-caret">▾</span>');
+    panel.classList.add('sect');
+    panel.dataset.sect=sel.replace(/\W/g,'')+'_'+i;
+    // Κλειστές από προεπιλογή: ο χρήστης ανοίγει ΜΟΝΟ ό,τι ήρθε να αλλάξει.
+    if(localStorage.getItem('etim_sect_'+panel.dataset.sect)==='1')panel.classList.add('open');
+    head.addEventListener('click',e=>{
+      // Τα χειριστήρια του κεφαλιού δουλεύουν κανονικά — δεν διπλώνουν την ενότητα.
+      if(e.target.closest('button,input,select,a,label'))return;
+      sectSet(panel,!panel.classList.contains('open'));
+    });
+  });
+}
+function sectSet(panel,open){
+  panel.classList.toggle('open',open);
+  if(panel.dataset.sect)localStorage.setItem('etim_sect_'+panel.dataset.sect,open?'1':'0');
+}
+function sectAll(sel,open){document.querySelectorAll(sel+' > .panel.sect').forEach(p=>sectSet(p,open));}
+// Η ξενάγηση δείχνει πεδία που ζουν ΜΕΣΑ σε ενότητες. Κλειστή ενότητα σημαίνει
+// στοιχείο με μηδενικές διαστάσεις — δηλαδή δείκτη στη γωνία της οθόνης.
+function sectReveal(el){const p=el&&el.closest('.panel.sect');if(p&&!p.classList.contains('open'))sectSet(p,true);}
+
+// --- Ρυθμίσεις της εφαρμογής υπολογιστή ---------------------------------------
+//
+// Η σελίδα είναι η ίδια στο web και στον υπολογιστή, αλλά «εκκίνηση στο tray»
+// και «έλεγχος για ενημερώσεις» δεν είναι ρυθμίσεις του λογαριασμού: τις ξέρει
+// μόνο το Qt. Η γέφυρα είναι το QWebChannel — το `window.etimHost` το φυτεύει
+// το κέλυφος (webshell.py) και υπάρχει ΜΟΝΟ στην ενσωματωμένη εφαρμογή.
+function dtHost(){return window.etimHost||null;}
+// Το Qt μας λέει την τρέχουσα κατάσταση μόλις φορτώσει η σελίδα.
+function applyDesktopPrefs(p){
+  p=p||{};
+  const tray=$('#dtTray');if(tray&&typeof p.tray==='boolean')tray.checked=p.tray;
+  const v=$('#dtVersion');if(v&&p.version)v.textContent='έκδοση '+p.version;
+}
+function dtSetTray(on){
+  const h=dtHost();
+  if(!h){$('#dtResult').textContent='Η ρύθμιση αλλάζει μόνο μέσα από την εφαρμογή υπολογιστή.';return;}
+  h.setStartMinimized(!!on);
+  $('#dtResult').textContent=on
+    ? 'Από την επόμενη εκκίνηση η εφαρμογή θα ξεκινά μαζεμένη στο tray.'
+    : 'Η εφαρμογή θα ξεκινά με το παράθυρο ανοιχτό.';
+}
+function dtCheckUpdates(){
+  const h=dtHost();
+  if(!h){$('#dtResult').textContent='Ο έλεγχος γίνεται μόνο μέσα από την εφαρμογή υπολογιστή.';return;}
+  h.checkUpdates();
+  $('#dtResult').textContent='Έλεγχος για ενημερώσεις… το αποτέλεσμα έρχεται σε παράθυρο της εφαρμογής.';
+}
+
 // --- Guided page tour ---------------------------------------------------------
 const TOUR=[
   {sel:'[data-view="issue"]',view:'issue',title:'🧾 Έκδοση',text:'Ξεκίνα εδώ. Ένας οδηγός σε ρωτά τι θέλεις να εκδώσεις (Τιμολόγιο/Απόδειξη ή Δελτίο) και αν ο πελάτης είναι επαγγελματίας ή ιδιώτης, και προσαρμόζει τη φόρμα.'},
@@ -5429,9 +5747,8 @@ const TOUR=[
   {sel:'[data-view="drafts"]',title:'📝 Πρόχειρα',text:'Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ): προεπισκόπηση PDF και μαζική διαγραφή με τα checkboxes.'},
   {sel:'[data-view="schedule"]',title:'⏰ Προγραμματισμός',text:'Προγραμμάτισε την αυτόματη έκδοση παραστατικών (μεμονωμένων ή μαζικών) σε μελλοντική ώρα, με προαιρετική επανάληψη. Εδώ βλέπεις κατάσταση & ιστορικό.'},
   {sel:'#account',title:'🏢 Επιλογή εταιρίας',text:'Διάλεξε εδώ την επιχείρηση με την οποία δουλεύεις. Ο <b>διαχειριστής</b> βλέπει κάθε εταιρία· ο <b>λογιστής</b> μόνο τις δικές του — και τις ανοίγει μόνος του από τη Διαχείριση, χωρίς να περιμένει ανάθεση.'},
-  {sel:'[data-view="admin"]',title:'🛡️ Διαχείριση',text:'Πάνω-πάνω γράφει τι ακριβώς βλέπεις. Κάθε εταιρία έχει <b>δική της καρτέλα</b>: ΑΦΜ, ετικέτα, διαπιστευτήρια ΑΑΔΕ και ποιοι λογιστές έχουν πρόσβαση. Το «➕ Νέα εταιρία» την προσθέτει αμέσως στο γραφείο σου.'},
   {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.'},
-  {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις & προτιμήσεις email',text:'Αλλαγή κωδικού, ενεργοποίηση 2FA με authenticator, και — για λογιστή/διαχειριστή — επιλογή για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις email ειδοποιήσεων.'},
+  {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις',text:'Η οθόνη είναι χωρισμένη σε <b>πτυσσόμενες ενότητες</b>: πάτα τον τίτλο μιας ενότητας για να ανοίξει, και η εφαρμογή θυμάται ποιες κρατάς ανοιχτές. Πάνω-πάνω υπάρχουν «Άνοιγμα όλων» και «Κλείσιμο όλων».<br><br>Μέσα θα βρεις: κωδικό, 2FA με authenticator, πάροχο email, και — για λογιστή/διαχειριστή — για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις ειδοποιήσεις.'},
   {sel:'#bkTable',view:'settings',title:'🏦 Λογαριασμοί & αυτόματη αποστολή',text:'Καταχώρησε τα IBAN της επιχείρησης — η τράπεζα βγαίνει από λίστα και το IBAN ελέγχεται πραγματικά (mod-97), οπότε λάθος ψηφίο δεν περνά. Όσα έχουν ✓ «στο email» γράφονται στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο· μπορείς και να ανεβάσεις PDF με τους λογαριασμούς.'},
   {sel:'#bkAutoSend',view:'settings',title:'📤 Να φεύγει μόνο του',text:'Με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ στέλνεται αμέσως στον πελάτη με το PDF συνημμένο. Παρακάτω ορίζεις και <b>προγραμματισμένη αποστολή καρτελών</b>: ημέρα του μήνα, μόνο σε όσους χρωστούν, πάνω από ένα ποσό.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα Ctrl+K οποιαδήποτε στιγμή για να βρεις πελάτη αστραπιαία.'},
@@ -5440,28 +5757,72 @@ const TOUR=[
   {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'},
   {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Πάνω από κάθε πίνακα υπάρχει και το «<b>⚙ Στήλες</b>»: διαλέγεις τι φαίνεται. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'},
   {sel:'#lkTable',view:'settings',title:'☁️ Σύνδεση με web server',text:'Έχει το γραφείο server; Επικόλλησε εδώ το <b>κλειδί πρόσβασης</b> που σου έδωσε ο διαχειριστής — τη διεύθυνση την κουβαλά το ίδιο το κλειδί. Μετά, τα δεδομένα ζουν <b>και</b> στον server, ο πελάτης δουλεύει από browser με τον σύνδεσμο που αντιγράφεις από εδώ, και το «🔄 Συγχρονισμός τώρα» στέλνει ό,τι έγινε εδώ ΚΑΙ φέρνει ό,τι έγινε εκεί.'},
-  {sel:'#bkState',view:'settings',title:'💾 Αντίγραφα ασφαλείας',text:'Ένα zip με τη <b>βάση</b> και το <b>κλειδί κρυπτογράφησης</b> μαζί. Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη: πάτα «Αντίγραφο τώρα», κατέβασέ το και κράτα το <b>εκτός</b> υπολογιστή.'}
+  {sel:'#dtTray',view:'settings',title:'🖥️ Ρυθμίσεις της εφαρμογής',text:'Μέσα στην εφαρμογή υπολογιστή, οι Ρυθμίσεις κρατούν και ό,τι αφορά το ΠΡΟΓΡΑΜΜΑ: «<b>Εκκίνηση στο tray</b>» (ξεκινά χωρίς παράθυρο, δίπλα στο ρολόι) και «<b>Έλεγχος για ενημερώσεις</b>». Είναι οι ίδιοι διακόπτες με τον Πίνακα ελέγχου — μία ρύθμιση, όπου κι αν την πειράξεις.'},
+  {sel:'#bkState',view:'settings',title:'💾 Αντίγραφα & επαναφορά',text:'Ένα zip με τη <b>βάση</b> και το <b>κλειδί κρυπτογράφησης</b> μαζί. Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη: πάτα «Αντίγραφο τώρα», κατέβασέ το και κράτα το <b>εκτός</b> υπολογιστή.<br><br>Η «<b>↩️ Επαναφορά από αντίγραφο</b>» κάνει τον δρόμο ανάποδα — γράφει πίσω βάση ΚΑΙ κλειδί, κρατώντας την τρέχουσα κατάσταση ως «pre-restore». Και αν δείξεις την εγκατάσταση σε φάκελο που κουβαλάς από αλλού, το νεότερο αντίγραφο φορτώνεται <b>μόνο του</b> όσο η βάση είναι ακόμη άδεια.'}
 ];
-let tourI=0;
-function startTour(){tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
+let tourI=0,TOUR_STEPS=[];
+// ΜΟΝΟ τα βήματα που υπάρχουν σε ΑΥΤΗ την εγκατάσταση και σε αυτόν τον ρόλο:
+// η «Διαχείριση» λείπει από τον πελάτη, η «Σύνδεση με server» και τα
+// «Αντίγραφα» υπάρχουν μόνο στην εγκατάσταση γραφείου. Ένα βήμα που δείχνει
+// στο πουθενά έδειχνε κείμενο στη μέση της οθόνης, χωρίς δαχτυλίδι.
+function tourSteps(){return TOUR.filter(s=>document.querySelector(s.sel));}
+function startTour(){TOUR_STEPS=tourSteps();if(!TOUR_STEPS.length)return;
+  tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
 function endTour(){$('#tourOverlay').classList.remove('on');}
 function tourPrev(){if(tourI>0)tourShow(tourI-1);}
-function tourNext(){if(tourI<TOUR.length-1)tourShow(tourI+1);else endTour();}
-function tourShow(i){tourI=i;const s=TOUR[i];if(s.view)showView(s.view);
-  $('#tourTitle').textContent=s.title;$('#tourText').textContent=s.text;$('#tourStep').textContent=(i+1)+' / '+TOUR.length;
-  $('#tourPrev').style.visibility=i===0?'hidden':'visible';$('#tourNext').textContent=i===TOUR.length-1?'Τέλος':'Επόμενο →';
-  const el=document.querySelector(s.sel),ring=$('#tourRing'),box=$('#tourBox');
-  setTimeout(()=>{
-    if(!el){ring.style.display='none';box.style.left='50%';box.style.top='40%';box.style.transform='translate(-50%,-50%)';return;}
-    el.scrollIntoView({block:'center',behavior:'smooth'});
-    const r=el.getBoundingClientRect();
-    ring.style.display='block';ring.style.left=(r.left-6)+'px';ring.style.top=(r.top-6)+'px';ring.style.width=(r.width+12)+'px';ring.style.height=(r.height+12)+'px';
-    box.style.transform='none';let bx=r.right+16,by=r.top;
-    if(bx+340>window.innerWidth){bx=Math.max(14,r.left);by=r.bottom+14;}
-    if(by+190>window.innerHeight)by=Math.max(14,window.innerHeight-200);
-    box.style.left=Math.max(14,bx)+'px';box.style.top=by+'px';
-  },s.view?60:0);
+function tourNext(){if(tourI<TOUR_STEPS.length-1)tourShow(tourI+1);else endTour();}
+function tourShow(i){
+  if(!TOUR_STEPS.length)TOUR_STEPS=tourSteps();
+  const s=TOUR_STEPS[i];if(!s)return;
+  tourI=i;
+  if(s.view)showView(s.view);
+  // innerHTML και όχι textContent: τα κείμενα είναι γραμμένα με <b>/<br> και
+  // ο χρήστης έβλεπε τις ίδιες τις ετικέτες μέσα στην πρόταση.
+  $('#tourTitle').innerHTML=s.title;$('#tourText').innerHTML=s.text;
+  $('#tourStep').textContent=(i+1)+' / '+TOUR_STEPS.length;
+  $('#tourPrev').style.visibility=i===0?'hidden':'visible';
+  $('#tourNext').textContent=i===TOUR_STEPS.length-1?'Τέλος':'Επόμενο →';
+  setTimeout(()=>tourPlace(s),s.view?60:0);
 }
+// Δαχτυλίδι + κουτί, ΜΕΣΑ στα όρια της οθόνης.
+//
+// Δύο λάθη ζούσαν εδώ: το κουτί τοποθετούνταν με σταθερές υποθέσεις (340
+// πλάτος, 190 ύψος) ενώ τα βήματα με πολλές γραμμές φτάνουν τα 380, και η
+// κύλιση ήταν `smooth` — το `getBoundingClientRect` μετριόταν ΠΡΙΝ φτάσει το
+// στοιχείο στη θέση του, οπότε ο δείκτης κάθονταν αλλού από ό,τι έδειχνε.
+function tourPlace(s){
+  const el=document.querySelector(s.sel),ring=$('#tourRing'),box=$('#tourBox');
+  sectReveal(el);
+  box.style.transform='none';
+  // Μηδενισμός πριν τη μέτρηση: από θέση κοντά στη δεξιά άκρη το κουτί
+  // στενεύει και θα μετρούσαμε λάθος πλάτος.
+  box.style.left='0px';box.style.top='0px';
+  const M=12,bw=box.offsetWidth,bh=box.offsetHeight;
+  const clamp=(v,size,max)=>Math.round(Math.min(Math.max(M,v),Math.max(M,max-size-M)));
+  if(!el){
+    ring.style.display='none';
+    box.style.left=clamp((innerWidth-bw)/2,bw,innerWidth)+'px';
+    box.style.top=clamp((innerHeight-bh)/2,bh,innerHeight)+'px';
+    return;
+  }
+  el.scrollIntoView({block:'center',behavior:'auto'});
+  const r=el.getBoundingClientRect();
+  ring.style.display='block';
+  ring.style.left=(r.left-6)+'px';ring.style.top=(r.top-6)+'px';
+  ring.style.width=(r.width+12)+'px';ring.style.height=(r.height+12)+'px';
+  let bx,by;
+  if(r.right+M+bw+M<=innerWidth){bx=r.right+M;by=r.top;}        // δεξιά του στοιχείου
+  else if(r.left-M-bw>=M){bx=r.left-M-bw;by=r.top;}             // αριστερά του
+  else if(r.bottom+M+bh+M<=innerHeight){bx=r.left;by=r.bottom+M;} // από κάτω
+  else {bx=r.left;by=r.top-M-bh;}                                // από πάνω
+  box.style.left=clamp(bx,bw,innerWidth)+'px';
+  box.style.top=clamp(by,bh,innerHeight)+'px';
+}
+// Αλλαγή μεγέθους παραθύρου με ανοιχτή ξενάγηση: το κουτί ξαναβρίσκει θέση
+// αντί να μείνει καρφωμένο έξω από τη νέα οθόνη.
+addEventListener('resize',()=>{
+  if($('#tourOverlay').classList.contains('on')&&TOUR_STEPS[tourI])tourPlace(TOUR_STEPS[tourI]);
+});
 
 // --- User manual (PDF) --------------------------------------------------------
 const MANUAL=[
@@ -5745,6 +6106,20 @@ function backupDownload(){
   // παράθυρο της εφαρμογής (δεν υπάρχει Explorer εκεί).
   window.open(API+'?backup_file=1'+(ACCOUNT?('&account='+encodeURIComponent(ACCOUNT)):''),'_blank');
 }
+// ⚠️ Η ΕΠΑΝΑΦΟΡΑ ΔΕΝ ΓΙΝΕΤΑΙ ΑΠΟ ΕΔΩ. Αντικαθιστά τη βάση πάνω στην οποία
+// τρέχει ο ίδιος ο server που εξυπηρετεί αυτή τη σελίδα: πρέπει πρώτα να
+// σταματήσει, και αυτό το ξέρει μόνο η εφαρμογή υπολογιστή. Το ζητάμε από τη
+// γέφυρα, εκείνη ρωτά ποιο αντίγραφο, κάνει τη δουλειά και ξαναφορτώνει.
+function backupRestore(){
+  const h=dtHost();
+  const note=$('#bkRestoreNote');
+  if(!h){
+    if(note)note.textContent='Η επαναφορά γίνεται μόνο μέσα από την εφαρμογή υπολογιστή — εκεί ζουν η βάση και το κλειδί.';
+    return;
+  }
+  h.restoreBackup();
+  if(note)note.textContent='Άνοιξε το παράθυρο επιλογής αντιγράφου στην εφαρμογή.';
+}
 function linkCopy(url){
   if(!url)return;
   try{navigator.clipboard.writeText(url);toast('Ο σύνδεσμος αντιγράφηκε','ok');}
@@ -5917,7 +6292,7 @@ function addEyes(root){
   });
 }
 
-(async()=>{addEyes();loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+(async()=>{addEyes();setupSections('#view-settings');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
   // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε μισή ώρα.
