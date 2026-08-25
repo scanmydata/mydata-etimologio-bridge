@@ -106,11 +106,11 @@
 //
 // ============================================================================
 
-require __DIR__ . '/auth.php';   // session + config + localdb + account resolution
-require __DIR__ . '/bankimport.php'; // bank statement (extrait) parsing → local payments
-require __DIR__ . '/zipwriter.php';   // ZIP builder (no ZipArchive dependency)
-require __DIR__ . '/serverlink.php';  // σύνδεση/συγχρονισμός με web server + αντίγραφα
-require __DIR__ . '/serverbackup.php'; // αντίγραφα ΤΟΥ SERVER (βάση + .enckey) στο Drive
+require_once __DIR__ . '/auth.php';   // session + config + localdb + account resolution
+require_once __DIR__ . '/bankimport.php'; // bank statement (extrait) parsing → local payments
+require_once __DIR__ . '/zipwriter.php';   // ZIP builder (no ZipArchive dependency)
+require_once __DIR__ . '/serverlink.php';  // σύνδεση/συγχρονισμός με web server + αντίγραφα
+require_once __DIR__ . '/serverbackup.php'; // αντίγραφα ΤΟΥ SERVER (βάση + .enckey) στο Drive
 
 // --- RESPONSE HELPERS --------------------------------------------------------
 
@@ -285,6 +285,142 @@ function getFromTaxisnet(\CurlHandle $ch, string $afm): ?array {
 }
 
 /**
+ * Επωνυμία από το μητρώο ΦΠΑ της ΕΕ (VIES), ΧΩΡΙΣ σύνδεση στην ΑΑΔΕ.
+ *
+ * Γιατί χρειάζεται ξεχωριστός δρόμος: το `getFromTaxisnet` περνά μέσα από
+ * συνεδρία e-timologio, δηλαδή θέλει εταιρεία ΗΔΗ επιλεγμένη με έγκυρα
+ * διαπιστευτήρια. Ακριβώς αυτό ΔΕΝ υπάρχει στο παράθυρο «Νέα εταιρεία»: εκεί
+ * καταχωρείς την πρώτη σου εταιρεία, οπότε η αυτόματη συμπλήρωση επωνυμίας
+ * αποτύγχανε πάντα — σιωπηλά, γιατί η αποτυχία καταπινόταν ως «δεν βρέθηκε».
+ *
+ * Το VIES είναι δημόσιο και δωρεάν. Επιστρέφει `''` για ό,τι δεν ξέρει· ποτέ
+ * δεν ρίχνει σφάλμα, γιατί μια συμπλήρωση πεδίου δεν αξίζει να μπλοκάρει φόρμα.
+ */
+function viesName(string $afm): string {
+    $afm = preg_replace('/\\D/', '', $afm);
+    if (!preg_match('/^\\d{9}$/', $afm)) return '';
+    $ch = curl_init('https://ec.europa.eu/taxation_customs/vies/rest-api/ms/EL/vat/' . $afm);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+        CURLOPT_TIMEOUT        => 20,
+        CURLOPT_CONNECTTIMEOUT => 8,
+    ]);
+    $body = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+    if ($body === false || $code !== 200) return '';
+    $data = json_decode((string)$body, true);
+    if (!is_array($data) || empty($data['isValid'])) return '';
+    $name = (string)($data['name'] ?? '');
+    // Κατά τόπους το VIES δίνει πολλές επωνυμίες χωρισμένες με «||» — κρατάμε
+    // την πρώτη. Το «---» σημαίνει «δεν δίνεται όνομα», όχι όνομα.
+    if (strpos($name, '||') !== false) $name = explode('||', $name)[0];
+    $name = trim(preg_replace('/\\s+/u', ' ', $name));
+    return trim($name, '-') === '' ? '' : $name;
+}
+
+/**
+ * Δοκιμή διαπιστευτηρίων ΑΑΔΕ, ΠΡΙΝ αποθηκευτεί η εταιρεία.
+ *
+ * Ελέγχονται ΔΥΟ διαφορετικά πράγματα, γιατί το ίδιο ζευγάρι username/key
+ * χρησιμοποιείται σε δύο υπηρεσίες που μπορούν να διαφωνήσουν:
+ *
+ *   1. **myDATA REST** (`RequestMyExpenses`, §4.2.9 του API v2.0.1) — μια μικρή
+ *      σελίδα συνόλων για τον τρέχοντα μήνα. **Μηδέν γραμμές ΔΕΝ είναι
+ *      αποτυχία**: μπορεί απλώς να μην έχει έξοδα ο μήνας. Το HTTP 200 είναι
+ *      από μόνο του η απόδειξη ότι το κλειδί έγινε δεκτό.
+ *   2. **e-timologio** — η υπηρεσία που πραγματικά χρησιμοποιεί αυτή η
+ *      εφαρμογή για να εκδώσει. Ένα πράσινο myDATA ΔΕΝ αποδεικνύει ότι θα
+ *      μπεις στο e-timologio: είναι άλλη πύλη, με δική της εγγραφή.
+ *
+ * Γι' αυτό επιστρέφονται δύο αποτελέσματα και όχι ένα «ΟΚ»: αν συμπληρωθεί
+ * κατά λάθος το κλειδί myDATA στη θέση του e-timologio (έχουν την ΙΔΙΑ μορφή
+ * και μπερδεύονται συνέχεια), ο ένας έλεγχος περνά και ο άλλος όχι — και αυτό
+ * ακριβώς είναι η πληροφορία που χρειάζεσαι.
+ */
+function aadeCredentialTest(string $vat, string $username, string $subkey): array {
+    $out = [];
+
+    // --- 1. myDATA REST ----------------------------------------------------
+    $from = date('01/m/Y');
+    $to   = date('d/m/Y');
+    $url  = 'https://mydatapi.aade.gr/myDATA/RequestMyExpenses?'
+          . http_build_query(['dateFrom' => $from, 'dateTo' => $to]);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => [
+            'aade-user-id: ' . $username,
+            'ocp-apim-subscription-key: ' . $subkey,
+        ],
+        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_CONNECTTIMEOUT => 8,
+    ]);
+    $body = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $cerr = curl_error($ch);
+    curl_close($ch);
+    if ($body === false) {
+        $out['mydata'] = ['ok' => false, 'msg' => 'Δεν απάντησε η ΑΑΔΕ: ' . $cerr];
+    } elseif ($code === 200) {
+        $rows = 0;
+        $prev = libxml_use_internal_errors(true);
+        $xml  = simplexml_load_string((string)$body);
+        libxml_clear_errors();
+        libxml_use_internal_errors($prev);
+        if ($xml !== false) $rows = $xml->count();
+        $out['mydata'] = ['ok' => true, 'rows' => $rows, 'msg' => $rows > 0
+            ? "Έγκυρα — $rows εγγραφές για $from–$to."
+            : "Έγκυρα — ο μήνας $from–$to είναι χωρίς έξοδα."];
+    } elseif ($code === 401 || $code === 403) {
+        $out['mydata'] = ['ok' => false, 'msg' =>
+            'Απορρίφθηκαν (HTTP ' . $code . '). Έλεγξε το «Όνομα χρήστη» και το κλειδί '
+            . '«Api myData» στο myDATA REST API της ΑΑΔΕ.'];
+    } else {
+        $out['mydata'] = ['ok' => false, 'msg' => 'myDATA: HTTP ' . $code];
+    }
+
+    // --- 2. e-timologio ----------------------------------------------------
+    // Η ίδια φόρμα σύνδεσης με το `login()`, αλλά με τα ΥΠΟ ΔΟΚΙΜΗ στοιχεία και
+    // σε δικό της cookie jar: δεν πειράζουμε τη ζωντανή συνεδρία του χρήστη.
+    $jar = tempnam(sys_get_temp_dir(), 'etimtest');
+    $ch  = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_COOKIEJAR      => $jar,
+        CURLOPT_COOKIEFILE     => $jar,
+        CURLOPT_USERAGENT      => 'Mozilla/5.0',
+        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_CONNECTTIMEOUT => 8,
+    ]);
+    $token = getToken($ch, BASE_URL . '/Account/Login');
+    if ($token === '') {
+        $out['etimologio'] = ['ok' => false, 'msg' =>
+            'Δεν απάντησε το e-timologio της ΑΑΔΕ — δοκίμασε ξανά σε λίγο.'];
+    } else {
+        curlPost($ch, BASE_URL . '/Account/Login', [
+            'UserName'                   => $username,
+            'VatNumber'                  => $vat,
+            'SubscriptionKey'            => $subkey,
+            'ReturnUrl'                  => '/timologio',
+            '__RequestVerificationToken' => $token,
+        ]);
+        $final = (string)curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+        $out['etimologio'] = strpos($final, 'Login') !== false
+            ? ['ok' => false, 'msg' =>
+                'Απορρίφθηκαν. Το e-timologio θέλει το ΔΙΚΟ ΤΟΥ «Subscription key» '
+                . 'για τον ΑΦΜ ' . $vat . ' — δεν είναι πάντα το ίδιο με το myDATA.']
+            : ['ok' => true, 'msg' => 'Έγκυρα — η σύνδεση στο e-timologio πέτυχε.'];
+    }
+    curl_close($ch);
+    @unlink($jar);
+
+    $out['ok'] = !empty($out['etimologio']['ok']) && !empty($out['mydata']['ok']);
+    return $out;
+}
+
+/**
  * Στοιχεία πελάτη από ΑΦΜ, με σειρά αξιοπιστίας: Taxisnet πρώτα (επίσημα και
  * πάντα ενημερωμένα), αλλιώς η ίδια η καρτέλα πελάτη του e-timologio.
  *
@@ -296,6 +432,14 @@ function customerInfo(\CurlHandle $ch, string $afm): array {
     if ($info && trim((string)($info['name'] ?? '')) !== '') return $info;
 
     $rows = listCustomers($ch, $afm)['customers'] ?? [];
+    // Το VIES μπαίνει ΤΕΛΕΥΤΑΙΟ, μετά τα δύο μητρώα της ΑΑΔΕ: δίνει μόνο
+    // επωνυμία (όχι διεύθυνση/ΔΟΥ) και είναι ξένη υπηρεσία με όριο ρυθμού.
+    // Αλλά είναι η διαφορά ανάμεσα σε «συμπληρώθηκε το όνομα» και «γράψ' το
+    // μόνος σου» για κάθε ΑΦΜ που η ΑΑΔΕ δεν ονομάζει.
+    $viesFallback = static function () use ($afm): array {
+        $n = viesName($afm);
+        return $n === '' ? [] : ['name' => $n, 'address' => '', 'city' => '', 'zip' => '', 'doy' => ''];
+    };
     foreach ($rows as $row) {
         if ((string)($row['vat'] ?? '') !== $afm) continue;
         return [
@@ -306,7 +450,7 @@ function customerInfo(\CurlHandle $ch, string $afm): array {
             'doy'     => (string)($row['doy'] ?? ''),
         ];
     }
-    return $info ?: [];
+    return $info ?: $viesFallback();
 }
 
 // --- 2b. GET CUSTOMER FROM E-TIMOLOGIO DATABASE (for foreign clients) --------
@@ -3758,6 +3902,42 @@ if ($authAction !== '') {
             }
             jsonResponse(['success' => true]);
         }
+        // Επωνυμία από ΑΦΜ χωρίς συνεδρία ΑΑΔΕ. Ζητείται από το παράθυρο
+        // «Νέα εταιρεία», όπου καμία εταιρεία δεν είναι ακόμη επιλεγμένη.
+        case 'vies_name': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            $vat = preg_replace('/\\D/', '', (string)($_POST['vat'] ?? $_GET['vat'] ?? ''));
+            if (strlen($vat) !== 9) jsonError('ΑΦΜ 9 ψηφίων');
+            $name = viesName($vat);
+            if ($name === '') jsonError('Το VIES δεν έχει επωνυμία για το ΑΦΜ ' . $vat, 404);
+            jsonResponse(['success' => true, 'vat' => $vat, 'name' => $name]);
+        }
+        // Δοκιμή διαπιστευτηρίων πριν την αποθήκευση.
+        case 'account_test': {
+            $u = current_user();
+            if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+            if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
+            $vat = preg_replace('/\\D/', '', (string)($_POST['vat'] ?? ''));
+            if (strlen($vat) !== 9) jsonError('ΑΦΜ 9 ψηφίων');
+            $username = trim((string)($_POST['username'] ?? ''));
+            $subkey   = trim((string)($_POST['subkey'] ?? ''));
+            // Σε ΕΠΕΞΕΡΓΑΣΙΑ εταιρείας το κλειδί μένει κενό όταν δεν αλλάζει:
+            // τότε δοκιμάζουμε το αποθηκευμένο, αλλιώς ο έλεγχος θα ήταν
+            // άχρηστος ακριβώς εκεί που τον θέλεις («γιατί δεν συνδέεται;»).
+            $accountId = (int)($_POST['account_id'] ?? 0);
+            if ($subkey === '' && $accountId > 0) {
+                $acc = account_get($accountId);
+                $mine = $acc && (is_master()
+                        || in_array((int)$u['id'], account_manager_ids($accountId), true));
+                if ($mine) {
+                    $subkey = (string)($acc['subkey'] ?? '');
+                    if ($username === '') $username = (string)($acc['username'] ?? '');
+                }
+            }
+            if ($username === '' || $subkey === '') jsonError('Συμπλήρωσε username και subscription key');
+            jsonResponse(['success' => true] + aadeCredentialTest($vat, $username, $subkey));
+        }
         case 'staff_add_company': {
             // Ο λογιστής ανοίγει ΜΟΝΟΣ του εταιρεία. Μέχρι τώρα έπρεπε να
             // περάσει από τον διαχειριστή για μια ανάθεση που ούτως ή άλλως
@@ -3821,7 +4001,8 @@ if ($authAction !== '') {
             jsonResponse($r);
         }
         // ---- Αντίγραφα ασφαλείας ΤΟΥ SERVER (μόνο διαχειριστής) ----
-        case 'srv_backup_status': case 'srv_backup_run': case 'srv_backup_settings': {
+        case 'srv_backup_status': case 'srv_backup_run': case 'srv_backup_settings':
+        case 'srv_backup_restore': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             switch ($authAction) {
                 case 'srv_backup_status':
@@ -3830,6 +4011,43 @@ if ($authAction !== '') {
                     // Χειροκίνητο αντίγραφο. Αργεί (dump + κρυπτογράφηση +
                     // ανέβασμα), γι' αυτό η οθόνη δείχνει αναμονή.
                     $r = srv_backup_run('manual');
+                    jsonResponse(['success' => !empty($r['ok'])] + $r);
+                }
+                case 'srv_backup_restore': {
+                    // Η μόνη ενέργεια της εφαρμογής που ΣΒΗΝΕΙ δουλειά όλων.
+                    // Ένα διπλό confirm() στη σελίδα δεν αρκεί: ένα κακόβουλο
+                    // ή λανθασμένο αίτημα δεν περνά από κανένα confirm. Το
+                    // endpoint ζητά ρητή λέξη, ώστε να μην ΓΙΝΕΤΑΙ κατά λάθος.
+                    if ((string)($_POST['confirm'] ?? '') !== 'ΕΠΑΝΑΦΟΡΑ') {
+                        jsonError('Λείπει η επιβεβαίωση.', 400);
+                    }
+                    $src = (string)($_POST['source'] ?? 'local');
+                    if (!in_array($src, ['local', 'drive', 'upload'], true)) jsonError('Άγνωστη πηγή.');
+                    $blob = '';
+                    if ($src === 'upload') {
+                        $up = $_FILES['backup'] ?? null;
+                        // Το πιο συχνό «δεν δουλεύει» εδώ δεν είναι σφάλμα του
+                        // κώδικα αλλά όριο της PHP: ένα αντίγραφο δεκάδων MB
+                        // κόβεται σιωπηλά από το `upload_max_filesize` και
+                        // φτάνει άδειο. Το λέμε ονομαστικά.
+                        if (!$up || ($up['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                            $code = (int)($up['error'] ?? UPLOAD_ERR_NO_FILE);
+                            $why = in_array($code, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                                ? 'Το αρχείο ξεπερνά το όριο μεταφόρτωσης του server ('
+                                  . ini_get('upload_max_filesize') . '). Ανέβασέ το στο Drive, '
+                                  . 'ή αύξησε το PHP_UPLOAD_MAX_FILESIZE.'
+                                : 'Δεν ανέβηκε αρχείο.';
+                            jsonError($why, 400);
+                        }
+                        $blob = (string)@file_get_contents($up['tmp_name']);
+                        @unlink($up['tmp_name']);
+                        if ($blob === '') jsonError('Το αρχείο ήρθε άδειο.', 400);
+                        $ref = (string)($up['name'] ?? 'upload');
+                    } else {
+                        $ref = trim((string)($_POST['ref'] ?? ''));
+                        if ($ref === '') jsonError('Λείπει το αρχείο.');
+                    }
+                    $r = srv_backup_restore($src, $ref, $blob);
                     jsonResponse(['success' => !empty($r['ok'])] + $r);
                 }
                 case 'srv_backup_settings': {

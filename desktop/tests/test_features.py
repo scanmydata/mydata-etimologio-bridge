@@ -295,9 +295,50 @@ def test_update_check_raises_when_every_repo_is_down(monkeypatch):
         updates.check("0.1.0")
 
 
-def test_schedule_via_task_builds_correct_schtasks_call(monkeypatch):
-    """Ο φρουρός auto-update περνά από Task Scheduler: /Create με το script και
-    μετά /Run για άμεση πυροδότηση — έξω από το job της εφαρμογής."""
+def test_update_task_xml_does_not_refuse_to_start_on_battery():
+    """Ο λόγος που η αυτόματη ενημέρωση δεν ξεκινούσε ΠΟΤΕ σε φορητό.
+
+    Το `schtasks /Create` με σκέτες παραμέτρους φτιάχνει task με «Μην ξεκινάς
+    με μπαταρία» αναμμένο, και ΔΕΝ υπάρχει flag να το σβήσεις: το `/Run`
+    απαντούσε SUCCESS, το «Last Result» 0, και το task έμενε για πάντα σε
+    «Queued». Μετρημένο ζωντανά (25/8/2026): με `/TR` έμεινε Queued πάνω από 36
+    δευτερόλεπτα· με το ίδιο action μέσω XML έτρεξε σε 0,5.
+    """
+    from pathlib import Path
+    from xml.dom import minidom
+
+    from timologio import updates
+
+    xml = updates._task_xml("C:/Windows/System32/powershell.exe", Path("C:/Temp/upd.ps1"))
+    minidom.parseString(xml)          # έγκυρο XML — αλλιώς το schtasks το απορρίπτει
+    assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml
+    assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml
+    # Το πρώτο το αφήνει να ξεκινήσει, το δεύτερο να τελειώσει.
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml
+    # Ποτέ δεύτερη ταυτόχρονη εγκατάσταση.
+    assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
+    assert "upd.ps1" in xml
+
+
+def test_update_task_xml_escapes_paths_with_ampersand():
+    """Διαδρομή με `&` («Backup & Data») δεν πρέπει να σπάει το XML."""
+    from pathlib import Path
+    from xml.dom import minidom
+
+    from timologio import updates
+
+    xml = updates._task_xml("C:/ps.exe", Path("C:/A & B/upd.ps1"))
+    minidom.parseString(xml)
+    assert "&amp;" in xml
+
+
+def test_schedule_via_task_registers_from_xml(monkeypatch, tmp_path):
+    """Ο φρουρός auto-update περνά από Task Scheduler: /Create ΜΕ XML και μετά
+    /Run για άμεση πυροδότηση — έξω από το job της εφαρμογής.
+
+    Το `/XML` δεν είναι λεπτομέρεια υλοποίησης: είναι ο ΜΟΝΟΣ τρόπος να σβήσεις
+    το «μην ξεκινάς με μπαταρία» που κρατούσε το task σε «Queued» για πάντα.
+    """
     from timologio import updates
 
     calls: list[list[str]] = []
@@ -311,11 +352,20 @@ def test_schedule_via_task_builds_correct_schtasks_call(monkeypatch):
         return _R()
 
     monkeypatch.setattr(updates.subprocess, "run", fake_run)
-    ok = updates._schedule_via_task("powershell.exe", Path(r"C:\Temp\u.ps1"))
-    assert ok is True
-    assert any("/Create" in c and updates.UPDATE_TASK_NAME in c for c in calls)
+    script = tmp_path / "timologio_update.ps1"
+    script.write_text("# test", encoding="utf-8")
+
+    assert updates._schedule_via_task("powershell.exe", script) is True
+
+    create = next(c for c in calls if "/Create" in c)
+    assert "/XML" in create and updates.UPDATE_TASK_NAME in create
+    xml_path = tmp_path / "timologio_update_task.xml"
+    assert str(xml_path) in create
+    # UTF-16 με BOM: μόνο έτσι το δέχεται το schtasks.
+    assert xml_path.read_bytes()[:2] == b"\xff\xfe"
+    assert "DisallowStartIfOnBatteries" in xml_path.read_text(encoding="utf-16")
+
     assert any("/Run" in c and updates.UPDATE_TASK_NAME in c for c in calls)
-    # Το /Create προηγείται του /Run.
     create_i = next(i for i, c in enumerate(calls) if "/Create" in c)
     run_i = next(i for i, c in enumerate(calls) if "/Run" in c)
     assert create_i < run_i

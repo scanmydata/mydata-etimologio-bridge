@@ -142,6 +142,10 @@ class SideMenu(QWidget):
     tooltips_toggled = Signal(bool)
     theme_toggled = Signal(bool)  # True = φωτεινό
     collapsed_changed = Signal(bool)
+    #: Κλικ στον αριθμό έκδοσης. Είναι η πρώτη πληροφορία που κοιτά όποιος
+    #: αναρωτιέται «τρέχω την τελευταία;» — άρα είναι και το φυσικό σημείο για
+    #: να ρωτήσει. Ο έλεγχος τον κάνει το παράθυρο, ένας και μοναδικός.
+    version_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -275,6 +279,12 @@ class SideMenu(QWidget):
              "Διαγραφή ληφθέντων παραστατικών και αρχείων — οι πελάτες μένουν"),
         ]:
             self._add(box, name, text, tip)
+
+        box.addSpacing(10)
+        box.addWidget(self._separator("ΑΥΤΟΜΑΤΑ"))
+        self._add(box, "schedule", "Χρονοπρογραμματισμός",
+                  "Αυτόματη λήψη σε ώρα και ημέρες που ορίζεις, για επιλεγμένους "
+                  "ή για όλους τους πελάτες με κλειδί API")
 
         box.addSpacing(10)
         box.addWidget(self._separator("ΣΥΣΤΗΜΑ"))
@@ -453,9 +463,16 @@ class SideMenu(QWidget):
 
         self.version = QLabel(f"έκδοση {APP_VERSION}")
         self.version.setObjectName("menuVersion")
+        self.version.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.version.setToolTip("Έλεγχος για νεότερη έκδοση")
+        self.version.mousePressEvent = self._version_pressed
         row.addWidget(self.version)
         row.addStretch()
         return holder
+
+    def _version_pressed(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.version_clicked.emit()
 
     def _open_brand_site(self, event) -> None:
         """Το σήμα είναι σύνδεσμος. Ανοίγει στον ΚΑΝΟΝΙΚΟ browser, όχι μέσα

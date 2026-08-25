@@ -12,6 +12,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from xml.sax.saxutils import escape as xml_escape
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -292,13 +293,16 @@ def launch_detached(
     def started() -> bool:
         if run_log is None or start_token is None:
             return True  # χωρίς log δεν γίνεται επαλήθευση — δεχόμαστε το «ξεκίνησε»
-        return _wait_for_marker(run_log, start_token, since, timeout=6.0)
+        # 6 δευτ. ήταν λίγα: μια «κρύα» εκκίνηση PowerShell με antivirus από πάνω
+        # θέλει άνετα 10-15. Και δεν κοστίζει τίποτα να περιμένουμε — η εφαρμογή
+        # ούτως ή άλλως κλείνει.
+        return _wait_for_marker(run_log, start_token, since, timeout=25.0)
 
     if _schedule_via_task(ps, script_path):
         if started():
             log.info("Ενημέρωση: ξεκίνησε μέσω Task Scheduler.")
             return True
-        log.warning("Ενημέρωση: το task έμεινε σε αναμονή/δεν έτρεξε — δοκιμή απευθείας.")
+        log.warning("Ενημέρωση: το task δεν έτρεξε (%s) — δοκιμή απευθείας.", _task_status())
         _delete_update_task()
 
     if _launch_via_popen(ps, script_path):
@@ -344,29 +348,92 @@ def _delete_update_task() -> None:
         pass
 
 
+def _task_xml(powershell: str, script_path: Path) -> str:
+    """Ο ορισμός του task σε XML.
+
+    ⚠️ ΓΙΑΤΙ XML ΚΑΙ ΟΧΙ `/TR`: το `schtasks /Create` με σκέτες παραμέτρους
+    φτιάχνει task με **«Μην ξεκινάς με μπαταρία»** αναμμένο — είναι το default
+    του και ΔΕΝ υπάρχει flag να το σβήσεις. Σε κάθε φορητό (ή σε σταθερό με
+    UPS που δηλώνεται ως μπαταρία), το `/Run` επιστρέφει «SUCCESS», το
+    «Last Result» γράφει 0, και το task μένει για πάντα σε κατάσταση
+    **Queued**: η ενημέρωση «ξεκινούσε» και δεν εγκαθιστούσε ποτέ τίποτα.
+    Μετρημένο ζωντανά (25/8/2026): με `/TR` το task έμεινε Queued >36 δευτ.,
+    με το ίδιο ακριβώς action μέσω XML έτρεξε σε **0,5 δευτ.**
+
+    Το `<StartWhenAvailable>` καλύπτει και το σενάριο «ο υπολογιστής κοιμήθηκε»,
+    και το `IgnoreNew` εμποδίζει δεύτερη εγκατάσταση αν κάτι ξαναπυροδοτηθεί.
+    """
+    args = (f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden '
+            f'-NonInteractive -File "{script_path}"')
+    domain = os.environ.get("USERDOMAIN", "")
+    user = os.environ.get("USERNAME", "")
+    who = f"{domain}\\{user}" if domain and user else (user or "")
+    start = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    principal = (f"<UserId>{xml_escape(who)}</UserId>"
+                 "<LogonType>InteractiveToken</LogonType>"
+                 "<RunLevel>LeastPrivilege</RunLevel>") if who else (
+                 "<LogonType>InteractiveToken</LogonType>")
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+        "<RegistrationInfo><Description>Ενημέρωση ScanmyData Suite</Description></RegistrationInfo>"
+        f"<Triggers><TimeTrigger><StartBoundary>{start}</StartBoundary>"
+        "<Enabled>true</Enabled></TimeTrigger></Triggers>"
+        f'<Principals><Principal id="Author">{principal}</Principal></Principals>'
+        "<Settings>"
+        "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"
+        "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
+        "<StartWhenAvailable>true</StartWhenAvailable>"
+        "<RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>"
+        "<RunOnlyIfIdle>false</RunOnlyIfIdle>"
+        "<AllowStartOnDemand>true</AllowStartOnDemand>"
+        "<Enabled>true</Enabled>"
+        "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>"
+        "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"
+        "</Settings>"
+        '<Actions Context="Author"><Exec>'
+        f"<Command>{xml_escape(powershell)}</Command>"
+        f"<Arguments>{xml_escape(args)}</Arguments>"
+        "</Exec></Actions></Task>"
+    )
+
+
+def _task_status() -> str:
+    """Η κατάσταση του task σε μία γραμμή, για το log.
+
+    Χωρίς αυτό, ένα task που μένει «Queued» είναι αόρατο: το `/Run` λέει
+    SUCCESS και μετά σιωπή. Με αυτό, το log γράφει «Queued» και ξέρεις αμέσως
+    ότι φταίει συνθήκη του χρονοπρογραμματιστή, όχι το script.
+    """
+    try:
+        out = subprocess.run(
+            ["schtasks", "/Query", "/TN", UPDATE_TASK_NAME, "/FO", "LIST", "/V"],
+            capture_output=True, timeout=20,
+        ).stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError):
+        return "άγνωστη"
+    keep = [ln.strip() for ln in out.splitlines()
+            if ln.strip().startswith(("Status:", "Last Result:", "Κατάσταση:"))]
+    return " · ".join(keep) or "άγνωστη"
+
+
 def _schedule_via_task(powershell: str, script_path: Path) -> bool:
     """Καταχωρεί ένα εφάπαξ task που τρέχει το script και το πυροδοτεί αμέσως."""
-    tr = (
-        f'"{powershell}" -NoProfile -ExecutionPolicy Bypass '
-        f'-WindowStyle Hidden -NonInteractive -File "{script_path}"'
-    )
-    # Το schtasks απορρίπτει /TR πάνω από 261 χαρακτήρες (π.χ. μεγάλο όνομα
-    # χρήστη ή βαθύ %TEMP%). Μη σπαταλάμε χρόνο σε σίγουρη αποτυχία — πάμε
-    # κατευθείαν στον detached τρόπο.
-    if len(tr) > 261:
-        log.warning("Ενημέρωση: /TR %d χαρ. (>261) — παράλειψη Task Scheduler.", len(tr))
+    xml_path = script_path.with_name("timologio_update_task.xml")
+    try:
+        # UTF-16: το schtasks /XML δέχεται ΜΟΝΟ αυτό (αλλιώς «Το αρχείο XML
+        # περιέχει μη έγκυρο χαρακτήρα»), και οι ελληνικές διαδρομές το θέλουν.
+        xml_path.write_text(_task_xml(powershell, script_path), encoding="utf-16")
+    except OSError as exc:
+        log.warning("Ενημέρωση: δεν γράφτηκε το XML του task: %s", exc)
         return False
-    # Το /ST είναι υποχρεωτικό αλλά το /Run το πυροδοτεί ούτως ή άλλως αμέσως·
-    # βάζουμε ένα έγκυρο μελλοντικό HH:MM για να μη γκρινιάξει το schtasks.
-    start_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")
     try:
         created = subprocess.run(
-            ["schtasks", "/Create", "/TN", UPDATE_TASK_NAME, "/TR", tr,
-             "/SC", "ONCE", "/ST", start_time, "/F"],
+            ["schtasks", "/Create", "/TN", UPDATE_TASK_NAME, "/XML", str(xml_path), "/F"],
             capture_output=True, timeout=20,
         )
         if created.returncode != 0:
-            log.warning("schtasks /Create: %s",
+            log.warning("schtasks /Create /XML: %s",
                         created.stderr.decode("utf-8", "replace").strip())
             return False
         ran = subprocess.run(

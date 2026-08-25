@@ -40,14 +40,28 @@ FROM php:8.3-apache
 # Ο βρόχος στο τέλος είναι ο φύλακας: μια επέκταση που λείπει ΡΙΧΝΕΙ ΤΟ
 # BUILD, αντί να βγάλει εικόνα που ξεκινά μια χαρά και αστοχεί αργότερα.
 #
-# Το `postgresql-client` (pg_dump) δεν είναι εργαλείο μεταγλώττισης: το τρέχει
+# Το `postgresql-client-18` (pg_dump) δεν είναι εργαλείο μεταγλώττισης: το τρέχει
 # ο ΙΔΙΟΣ ο server για το ημερήσιο αντίγραφο. Γι' αυτό σημειώνεται `manual`,
 # ώστε να επιβιώσει του `--auto-remove`, και ελέγχεται στο τέλος μαζί με τις
 # επεκτάσεις — αλλιώς το αντίγραφο θα αποτύγχανε στις 3 τα ξημερώματα, σιωπηλά,
 # με μια γραμμή σε ένα log που δεν διαβάζει κανείς.
+#
+# ΚΑΙ ΕΡΧΕΤΑΙ ΑΠΟ ΤΟ PGDG, όχι από το Debian. Το `postgresql-client` του trixie
+# είναι 17.11 και η Postgres του Coolify 18.6· το pg_dump ΑΡΝΕΙΤΑΙ να πάρει
+# αντίγραφο από νεότερο server («aborting because of server version mismatch»).
+# Το είδαμε ζωντανά, στο πρώτο pre-deploy. Ο φύλακας ελέγχει πλέον την ΕΚΔΟΣΗ:
+# αν κάποτε η βάση πάει σε 19, το build σταματά εδώ αντί να χαλάσει το αντίγραφο.
 RUN set -eux; \
     savedAptMark="$(apt-mark showmanual)"; \
     apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    install -d /usr/share/keyrings; \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo $VERSION_CODENAME)-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-client-18; \
     apt-get install -y --no-install-recommends \
         libpq-dev \
         libsqlite3-dev \
@@ -55,7 +69,7 @@ RUN set -eux; \
         libonig-dev \
         libsodium-dev \
         ca-certificates \
-        postgresql-client; \
+        gnupg; \
     docker-php-ext-install -j"$(nproc)" \
         pdo_pgsql \
         pdo_sqlite \
@@ -64,7 +78,7 @@ RUN set -eux; \
     php -m | grep -qi '^sodium$' || docker-php-ext-install -j"$(nproc)" sodium; \
     apt-mark auto '.*' > /dev/null; \
     apt-mark manual $savedAptMark > /dev/null; \
-    apt-mark manual postgresql-client > /dev/null; \
+    apt-mark manual postgresql-client-18 ca-certificates > /dev/null; \
     ldd "$(php -r 'echo ini_get("extension_dir");')"/*.so \
         | awk '/=>/ { print $3 }' | sort -u | grep -v '^$' \
         | xargs -r readlink -f | sort -u \
@@ -75,7 +89,7 @@ RUN set -eux; \
     for ext in pdo_pgsql pdo_sqlite mbstring zip sodium; do \
         php -m | grep -Eq "^${ext}$" || { echo "MISSING PHP EXTENSION: $ext" >&2; exit 1; }; \
     done; \
-    pg_dump --version > /dev/null
+    pg_dump --version | grep -Eq "pg_dump [(]PostgreSQL[)] 18"
 
 # Apache: rewrite/headers on, listen where Coolify and cloudflared expect (8090),
 # and a ServerName so startup does not warn on every boot.

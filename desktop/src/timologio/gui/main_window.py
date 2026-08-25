@@ -118,7 +118,10 @@ _COL_LAST = 9
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
 
 #: Η σειρά τους είναι η σειρά τους στο QStackedWidget.
-_PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher")
+# Η σειρά ΕΙΝΑΙ ο δείκτης στο QStackedWidget: κάθε νέα σελίδα μπαίνει στο
+# ΤΕΛΟΣ, ώστε οι δείκτες των υπαρχουσών να μείνουν αμετάβλητοι.
+_PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher",
+          "schedule")
 
 #: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
 #: εσόδων/εξόδων κόβεται στα δεξιά.
@@ -362,22 +365,41 @@ class MainWindow(QMainWindow):
         stored = {key: self._prefs.value(key) for key in schedule_keys()}
         return schedule_from_dict(stored)
 
+    def _open_schedule(self) -> None:
+        """Η σελίδα του προγράμματος, με φρέσκια λίστα πελατών."""
+        self._refresh_schedule_clients()
+        self.schedule_page.set_schedule(self._load_schedule())
+        self._show_page("schedule")
+
+    def _refresh_schedule_clients(self) -> None:
+        """Μόνο όσοι έχουν κλειδί API: οι υπόλοιποι δεν κατεβάζουν ποτέ, και μια
+        λίστα με ονόματα που δεν συμμετέχουν είναι σκέτη παραπλάνηση."""
+        # `sqlite3.Row` δεν έχει `.get()`: το `row["name"]` σκάει με KeyError
+        # αν λείψει η στήλη, οπότε ρωτάμε τα κλειδιά που όντως γύρισαν.
+        rows = repo.list_clients(self.conn, only_ready=True)
+        pairs = []
+        for row in rows:
+            keys = row.keys() if hasattr(row, "keys") else ()
+            vat = str(row["vat"])
+            name = str(row["name"]) if "name" in keys and row["name"] else vat
+            pairs.append((vat, name))
+        self.schedule_page.set_clients(pairs)
+
     def _on_schedule_changed(self, schedule: SyncSchedule) -> None:
         """Αποθηκεύει το πρόγραμμα και δείχνει πότε χτυπά την επόμενη φορά.
 
-        Οι «επιλεγμένοι» παγώνουν ΕΔΩ, τη στιγμή της αλλαγής: αν διαβάζονταν την
-        ώρα της λήψης, ένα κλικ στη λίστα πελατών θα άλλαζε σιωπηλά τι κατεβαίνει
-        αύριο στις επτά.
+        Οι «επιλεγμένοι» έρχονται από τη ΛΙΣΤΑ ΤΗΣ ΣΕΛΙΔΑΣ και μόνο. Παλιά τους
+        διάβαζε από τα τσεκαρισμένα κουτάκια της οθόνης «Λήψη» — μια λίστα που ο
+        χρήστης δεν έβλεπε από εδώ, και που άλλαζε με ένα κλικ αλλού.
         """
         if schedule.scope == "selected":
             ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
             schedule = replace(
-                schedule, vats=tuple(sorted(v for v in self._checked if v in ready))
+                schedule, vats=tuple(sorted(v for v in schedule.vats if v in ready))
             )
-            self.control._sched_vats = schedule.vats
         for key, value in schedule_to_dict(schedule).items():
             self._prefs.setValue(key, value)
-        self.control.show_schedule_state(schedule, self._last_scheduled_run)
+        self.schedule_page.show_state(schedule, self._last_scheduled_run)
         log.info("Χρονοπρογραμματισμός λήψης: %s", schedule.describe())
 
     def _check_schedule(self) -> None:
@@ -424,10 +446,12 @@ class MainWindow(QMainWindow):
             control.set_start_minimized(value)
 
     def _check_updates_requested(self) -> None:
-        """Έλεγχος ενημερώσεων από τις Ρυθμίσεις του e-Τιμολόγιο.
+        """Έλεγχος ενημερώσεων — από όπου κι αν ζητηθεί.
 
-        Χρησιμοποιεί τον ΙΔΙΟ έλεγχο με το κουμπί του πίνακα ελέγχου — ένας
-        δεύτερος θα σήμαινε δεύτερο νήμα, δεύτερο παράθυρο και δύο απαντήσεις.
+        Τρία σημεία τον καλούν: το κουμπί του πίνακα ελέγχου, οι Ρυθμίσεις του
+        e-Τιμολόγιο, και ο αριθμός έκδοσης (αρχική οθόνη + πλαϊνό μενού).
+        Χρησιμοποιούν τον ΙΔΙΟ έλεγχο: ένας δεύτερος θα σήμαινε δεύτερο νήμα,
+        δεύτερο παράθυρο και δύο απαντήσεις για την ίδια ερώτηση.
         """
         control = getattr(self, "control", None)
         if control is not None:
@@ -480,6 +504,7 @@ class MainWindow(QMainWindow):
         self.menu.triggered.connect(self._on_menu)
         self.menu.tooltips_toggled.connect(self._apply_tooltips)
         self.menu.theme_toggled.connect(self._on_theme)
+        self.menu.version_clicked.connect(self._check_updates_requested)
         self.menu.collapsed_changed.connect(
             lambda value: self._prefs.setValue("menu_collapsed", value)
         )
@@ -529,9 +554,6 @@ class MainWindow(QMainWindow):
         self.control.set_start_minimized(load_start_minimized())
         self.control.start_minimized_changed.connect(self._on_start_minimized)
         self.control.reconnect_requested.connect(self.reload_clients)
-        self.control.schedule_changed.connect(self._on_schedule_changed)
-        self.control.schedule_run_requested.connect(self._run_scheduled_sync)
-        self.control.set_schedule(self._load_schedule())
         self.stack.addWidget(self.control)
 
         # e-Τιμολόγιο Pro — δεύτερη εφαρμογή στο ίδιο παράθυρο. Το backend (PHP)
@@ -569,7 +591,17 @@ class MainWindow(QMainWindow):
 
         self.launcher = Launcher(APP_VERSION)
         self.launcher.chosen.connect(self._choose_app)
+        self.launcher.update_check_requested.connect(self._check_updates_requested)
         self.stack.addWidget(self.launcher)
+
+        # Ο χρονοπρογραμματισμός: δική του σελίδα, με δική του λίστα πελατών.
+        from .schedule_page import SchedulePage
+
+        self.schedule_page = SchedulePage()
+        self.schedule_page.schedule_changed.connect(self._on_schedule_changed)
+        self.schedule_page.run_requested.connect(self._run_scheduled_sync)
+        self.schedule_page.refresh_requested.connect(self._refresh_schedule_clients)
+        self.stack.addWidget(self.schedule_page)
         root.addWidget(self.stack, 1)
 
         root.addWidget(self._progress_strip())
@@ -1407,6 +1439,7 @@ class MainWindow(QMainWindow):
             "wipe": lambda: self.on_wipe(),
             "password": self.on_password,
             "control": lambda: self._show_page("control"),
+            "schedule": self._open_schedule,
             "etimologio": self._open_etimologio,
             "downloader": self._leave_etimologio,
             "tour": self.start_tour,
@@ -1447,7 +1480,9 @@ class MainWindow(QMainWindow):
         name = "light" if light else "dark"
         apply_theme(QApplication.instance(), name)
         self._prefs.setValue("theme", name)
-        paint_title_bar(self, not light)
+        for window in QApplication.topLevelWidgets():
+            if window.isWindow():
+                paint_title_bar(window, not light)
         # Τα εικονίδια είναι bitmaps βαμμένα σε χρώμα και οι πίνακες βάφουν
         # κελιά προγραμματιστικά — τίποτα από τα δύο δεν αλλάζει μόνο του από
         # το νέο stylesheet.
@@ -2275,18 +2310,19 @@ class MainWindow(QMainWindow):
             ),
             Step(
                 "8. Αυτόματη λήψη σε ώρα που δεν ενοχλεί",
-                "Στον ίδιο πίνακα, «Χρονοπρογραμματισμός λήψης»: ορίστε ώρα και "
-                "ημέρες και η λήψη ξεκινά μόνη της.\n\n"
-                "«Όλοι με κλειδί API» ή «μόνο οι επιλεγμένοι» — οι επιλεγμένοι "
-                "παγώνουν τη στιγμή που αποθηκεύετε, ώστε ένα κλικ στη λίστα να "
-                "μην αλλάζει σιωπηλά τι κατεβαίνει αύριο. Πελάτης χωρίς κλειδί "
-                "δεν συμμετέχει ποτέ.\n\n"
+                "«Χρονοπρογραμματισμός» στο μενού: ορίστε ώρα και ημέρες, και η "
+                "λήψη ξεκινά μόνη της.\n\n"
+                "«Όλοι με κλειδί API», ή «μόνο οι επιλεγμένοι» — και τότε "
+                "τσεκάρετε ΠΟΙΟΥΣ, εδώ, σε λίστα με αναζήτηση. Η επιλογή ανήκει "
+                "στο πρόγραμμα: δεν αλλάζει από τα κουτάκια της οθόνης «Λήψη». "
+                "Πελάτης χωρίς κλειδί δεν εμφανίζεται καν.\n\n"
                 "Η λήψη τρέχει ΜΕΣΑ στην εφαρμογή: το πρόγραμμα ισχύει όσο αυτή "
-                "είναι ανοιχτή — γι' αυτό υπάρχει από κάτω η «Εκκίνηση στο tray». "
-                "Ραντεβού που χάθηκε με τον υπολογιστή κλειστό εκτελείται μόλις "
-                "ανοίξει, την ίδια μέρα. Το «Λήψη τώρα» το δοκιμάζει αμέσως.",
-                lambda: self.control.chk_schedule,
-                lambda: self._show_page("control"),
+                "είναι ανοιχτή — γι' αυτό υπάρχει η «Εκκίνηση στο tray» στον "
+                "Πίνακα ελέγχου. Ραντεβού που χάθηκε με τον υπολογιστή κλειστό "
+                "εκτελείται μόλις ανοίξει, την ίδια μέρα. Το «Λήψη τώρα» το "
+                "δοκιμάζει αμέσως.",
+                lambda: self.schedule_page.chk_enabled,
+                lambda: self._open_schedule(),
             ),
             Step(
                 "Ασφάλεια και βοήθεια",

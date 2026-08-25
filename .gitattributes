@@ -4,3 +4,9 @@
 *.sh text eol=lf
 Dockerfile text eol=lf
 .dockerignore text eol=lf
+
+# Βιβλιοθήκες τρίτων: μένουν ΑΚΡΙΒΩΣ όπως κατέβηκαν. Ένα minified .js που
+# περνά από μετατροπή γραμμών δεν σπάει, αλλά παύει να είναι byte-identical με
+# την πηγή του — και τότε δεν μπορείς να το επαληθεύσεις ξανακατεβάζοντάς το.
+assets/vendor/** -text
+desktop/backend/etimologio/assets/vendor/** -text
