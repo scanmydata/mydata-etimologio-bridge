@@ -256,7 +256,9 @@ function srv_backup_decrypt(string $blob, string $passphrase): array {
 /**
  * Επαναφορά της βάσης ΤΟΥ SERVER από αντίγραφο.
  *
- * `$source` = «local» (αρχείο στο /data/backups) ή «drive» (id αρχείου).
+ * `$source` = «local» (αρχείο στο /data/backups), «drive» (id αρχείου), ή
+ * «upload» (bytes που μόλις ανέβασε ο διαχειριστής από τον υπολογιστή του —
+ * η περίπτωση «ο server χάθηκε ολόκληρος και κρατάω το zip στο laptop»).
  *
  * Η σειρά των βημάτων είναι όλη η ουσία:
  *   1. **αντίγραφο ΤΟΥ ΤΩΡΑ** («pre-restore») — η επαναφορά είναι η πιο
@@ -268,13 +270,15 @@ function srv_backup_decrypt(string $blob, string $passphrase): array {
  *      χωρίς το κλειδί της είναι θόρυβος, ενώ ένα κλειδί χωρίς τη βάση του
  *      είναι απλώς αχρησιμοποίητο.
  */
-function srv_backup_restore(string $source, string $ref): array {
+function srv_backup_restore(string $source, string $ref, string $blob = ''): array {
     // --- 1. δίχτυ ---------------------------------------------------------
     $safety = srv_backup_run('pre-restore');
     $safetyName = (string)($safety['name'] ?? '');
 
     // --- 2. τα bytes ------------------------------------------------------
-    if ($source === 'drive') {
+    if ($source === 'upload') {
+        if ($blob === '') return ['ok' => false, 'error' => 'Το αρχείο δεν έφτασε.'];
+    } elseif ($source === 'drive') {
         if (!gdrive_configured()) return ['ok' => false, 'error' => 'Το Google Drive δεν είναι ρυθμισμένο.'];
         $d = gdrive_download($ref);
         if (!$d['ok']) return ['ok' => false, 'error' => 'Drive: ' . $d['error']];
@@ -352,9 +356,15 @@ function srv_backup_restore(string $source, string $ref): array {
     } else {
         $path = defined('LOCAL_DB') ? (string)LOCAL_DB : '';
         if ($path === '') return ['ok' => false, 'error' => 'δεν βρέθηκε η βάση'];
-        // Το WAL της ΠΑΛΙΑΣ βάσης θα ξαναπαιζόταν πάνω στη νέα και θα την
-        // χαλούσε. Πρώτα το κλείνουμε, μετά σβήνουμε ό,τι έμεινε.
+        // Δύο πράγματα, με αυτή τη σειρά, και τα δύο υποχρεωτικά:
+        //   1. το WAL της ΠΑΛΙΑΣ βάσης να μπει μέσα της και να αδειάσει —
+        //      αλλιώς ξαναπαίζεται πάνω στη νέα και τη χαλάει,
+        //   2. η σύνδεση να **κλείσει**. Γράψιμο πάνω σε ανοιχτή SQLite αφήνει
+        //      τη βάση «malformed» για το ίδιο αίτημα: η επαναφορά λέει
+        //      «επιτυχία» και η επόμενη οθόνη λέει «η βάση δεν είναι
+        //      διαθέσιμη».
         try { localdb()->exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (Throwable $e) {}
+        localdb(true);
         if (@file_put_contents($path, $files['local.sqlite']) === false) {
             return ['ok' => false, 'error' => 'δεν γράφτηκε η βάση', 'safety' => $safetyName];
         }
@@ -366,7 +376,7 @@ function srv_backup_restore(string $source, string $ref): array {
     return ['ok' => true,
             'engine'   => $isPg ? 'postgres' : 'sqlite',
             'enckey'   => $keyBack,
-            'from'     => $source === 'drive' ? 'Google Drive' : 'τοπικό αρχείο',
+            'from'     => ['drive' => 'Google Drive', 'upload' => 'ανεβασμένο αρχείο'][$source] ?? 'τοπικό αρχείο',
             'taken_at' => (string)($manifest['at'] ?? ''),
             'reason'   => (string)($manifest['reason'] ?? ''),
             'safety'   => $safetyName];

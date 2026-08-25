@@ -44,8 +44,22 @@ function db_insert(string $sql, array $params): int {
     return (int)$pdo->lastInsertId();
 }
 
-function localdb(): \PDO {
+/**
+ * Η σύνδεση με τη βάση.
+ *
+ * Με `$close = true` **κλείνει** τη σύνδεση και επιστρέφει `null`. Χρειάζεται
+ * σε ένα ακριβώς σημείο, και για σοβαρό λόγο: η επαναφορά αντιγράφου γράφει
+ * πάνω στο ίδιο το αρχείο της SQLite. Αν τη στιγμή εκείνη υπάρχει ανοιχτή
+ * σύνδεση, η βάση μένει **μισοχαλασμένη** — το αρχείο διαβάζεται από νέα
+ * σύνδεση αλλά η υπάρχουσα σκάει με «database disk image is malformed», και ο
+ * χρήστης βλέπει «η βάση δεν είναι διαθέσιμη» ακριβώς μετά από μια επαναφορά
+ * που του είπε «επιτυχία». Μετρημένο, όχι θεωρητικό.
+ *
+ * Η επόμενη κλήση `localdb()` ανοίγει καθαρή σύνδεση στο ΝΕΟ αρχείο.
+ */
+function localdb(bool $close = false): ?\PDO {
     static $pdo = null;
+    if ($close) { $pdo = null; return null; }
     if ($pdo !== null) return $pdo;
 
     // Local/offline default = SQLite file; central server sets DB_DSN to a

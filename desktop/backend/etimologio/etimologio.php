@@ -4022,10 +4022,32 @@ if ($authAction !== '') {
                         jsonError('Λείπει η επιβεβαίωση.', 400);
                     }
                     $src = (string)($_POST['source'] ?? 'local');
-                    if (!in_array($src, ['local', 'drive'], true)) jsonError('Άγνωστη πηγή.');
-                    $ref = trim((string)($_POST['ref'] ?? ''));
-                    if ($ref === '') jsonError('Λείπει το αρχείο.');
-                    $r = srv_backup_restore($src, $ref);
+                    if (!in_array($src, ['local', 'drive', 'upload'], true)) jsonError('Άγνωστη πηγή.');
+                    $blob = '';
+                    if ($src === 'upload') {
+                        $up = $_FILES['backup'] ?? null;
+                        // Το πιο συχνό «δεν δουλεύει» εδώ δεν είναι σφάλμα του
+                        // κώδικα αλλά όριο της PHP: ένα αντίγραφο δεκάδων MB
+                        // κόβεται σιωπηλά από το `upload_max_filesize` και
+                        // φτάνει άδειο. Το λέμε ονομαστικά.
+                        if (!$up || ($up['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                            $code = (int)($up['error'] ?? UPLOAD_ERR_NO_FILE);
+                            $why = in_array($code, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                                ? 'Το αρχείο ξεπερνά το όριο μεταφόρτωσης του server ('
+                                  . ini_get('upload_max_filesize') . '). Ανέβασέ το στο Drive, '
+                                  . 'ή αύξησε το PHP_UPLOAD_MAX_FILESIZE.'
+                                : 'Δεν ανέβηκε αρχείο.';
+                            jsonError($why, 400);
+                        }
+                        $blob = (string)@file_get_contents($up['tmp_name']);
+                        @unlink($up['tmp_name']);
+                        if ($blob === '') jsonError('Το αρχείο ήρθε άδειο.', 400);
+                        $ref = (string)($up['name'] ?? 'upload');
+                    } else {
+                        $ref = trim((string)($_POST['ref'] ?? ''));
+                        if ($ref === '') jsonError('Λείπει το αρχείο.');
+                    }
+                    $r = srv_backup_restore($src, $ref, $blob);
                     jsonResponse(['success' => !empty($r['ok'])] + $r);
                 }
                 case 'srv_backup_settings': {

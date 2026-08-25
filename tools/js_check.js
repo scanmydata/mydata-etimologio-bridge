@@ -29,7 +29,11 @@ const keepLines = (text) => '0' + '\n'.repeat((text.match(/\n/g) || []).length);
 let failed = 0;
 
 for (const file of process.argv.slice(2)) {
-  const src = fs.readFileSync(file, 'utf8');
+  // Τα μπλοκ PHP φεύγουν ΠΡΩΤΑ, από ΟΛΟ το αρχείο. Όσο έφευγαν μόνο μέσα στο
+  // σώμα του script, ένα `<script src="<?= asset_url(...) ?>">` έσπαγε τον
+  // εντοπισμό: το `[^>]*` σταματούσε στο `>` του `?>`, κι έτσι ο ελεγκτής
+  // «έβλεπε» σώμα εκεί που δεν υπήρχε και ανέφερε σφάλμα σε καθαρό αρχείο.
+  const src = fs.readFileSync(file, 'utf8').replace(/<\?(?:php|=)[\s\S]*?\?>/g, keepLines);
   const re = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
   let m;
   let blocks = 0;
@@ -39,7 +43,7 @@ for (const file of process.argv.slice(2)) {
     if (!m[1].trim()) continue;
     blocks++;
     const startLine = src.slice(0, m.index).split('\n').length;
-    const code = m[1].replace(/<\?(?:php|=)[\s\S]*?\?>/g, keepLines);
+    const code = m[1];
     try {
       new vm.Script(code, { filename: file });
     } catch (err) {

@@ -183,7 +183,7 @@ def test_restore_needs_a_typed_word_not_just_a_click() -> None:
     body = php[php.index("case 'srv_backup_restore':"):]
     body = body[:body.index("case 'srv_backup_settings':")]
     assert "'ΕΠΑΝΑΦΟΡΑ'" in body
-    assert "in_array($src, ['local', 'drive'], true)" in body
+    assert "in_array($src, ['local', 'drive', 'upload'], true)" in body
 
 
 def test_restore_is_master_only() -> None:

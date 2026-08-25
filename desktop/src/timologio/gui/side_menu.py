@@ -281,6 +281,12 @@ class SideMenu(QWidget):
             self._add(box, name, text, tip)
 
         box.addSpacing(10)
+        box.addWidget(self._separator("ΑΥΤΟΜΑΤΑ"))
+        self._add(box, "schedule", "Χρονοπρογραμματισμός",
+                  "Αυτόματη λήψη σε ώρα και ημέρες που ορίζεις, για επιλεγμένους "
+                  "ή για όλους τους πελάτες με κλειδί API")
+
+        box.addSpacing(10)
         box.addWidget(self._separator("ΣΥΣΤΗΜΑ"))
         self._add(box, "control", "Πίνακας ελέγχου",
                   "Συνδέσεις δικτύου, κατάσταση βάσης και ρυθμίσεις")
