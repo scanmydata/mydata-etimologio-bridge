@@ -352,7 +352,8 @@ QLabel#menuSubtitle {{ font-size: 10px; color: {p.muted}; }}
 QLabel#menuSection {{
     font-size: 10px; font-weight: 700; color: {p.muted}; letter-spacing: 1px;
 }}
-QLabel#menuVersion {{ font-size: 10px; color: {p.line}; }}
+QLabel#menuVersion {{ font-size: 12px; color: {p.muted}; padding: 2px 4px; border-radius: 6px; }}
+QLabel#menuVersion:hover {{ color: {p.accent}; background: {p.tile_hover}; }}
 
 QPushButton#menuButton {{
     background: transparent; border: none; border-radius: 8px;
@@ -409,39 +410,68 @@ def apply_theme(app, name: str) -> Palette:
     return palette
 
 
+def _colorref(hex_color: str) -> int:
+    """#RRGGBB -> COLORREF (0x00BBGGRR). Τα Windows θέλουν ΑΝΑΠΟΔΑ bytes."""
+    value = hex_color.lstrip("#")
+    r, g, b = int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+    return (b << 16) | (g << 8) | r
+
+
 def paint_title_bar(window, dark: bool) -> bool:
-    """Βάφει τη γραμμή τίτλου (minimize/close) στο χρώμα του θέματος.
+    """Βάφει τη γραμμή τίτλου (minimize/close) στα χρώματα ΤΟΥ ΘΕΜΑΤΟΣ.
 
     Η γραμμή τίτλου ανήκει στα Windows, όχι στο Qt: κανένα stylesheet δεν τη
-    φτάνει, γι' αυτό έμενε λευκή πάνω από σκούρα εφαρμογή. Το DWM δέχεται τη
-    ρύθμιση από το Windows 10 20H1 και μετά — σε παλιότερα απλώς αγνοείται και
-    επιστρέφουμε False.
+    φτάνει, γι' αυτό έμενε λευκή πάνω από σκούρα εφαρμογή.
 
-    Επιστρέφει αν εφαρμόστηκε.
+    Δύο βήματα, και το δεύτερο είναι που λείπει συνήθως:
+
+    * **σκούρη λειτουργία** (attribute 20, Windows 10 20H1+) — δίνει τη γκρίζα
+      γραμμή του συστήματος, `#202020`. Καλύτερη από λευκή, αλλά ΔΕΝ είναι το
+      χρώμα της εφαρμογής: πάνω από το ναυτικό μπλε του μενού φαίνεται σαν
+      ξένο κομμάτι κολλημένο στην κορυφή.
+    * **ρητά χρώματα** (34/35/36, Windows 11 22000+) — φόντο, κείμενο και
+      περίγραμμα παίρνουν ΤΙΣ ΤΙΜΕΣ ΤΗΣ ΠΑΛΕΤΑΣ, οπότε το παράθυρο διαβάζεται
+      σαν ένα πράγμα.
+
+    Σε παλιότερα Windows τα 34/35/36 γυρίζουν σφάλμα και αγνοούνται σιωπηλά —
+    μένει η σκούρη λειτουργία, που είναι ήδη σωστή. Επιστρέφει αν εφαρμόστηκε
+    οτιδήποτε.
     """
     if os.name != "nt":
         return False
+    palette = DARK if dark else LIGHT
+    done = False
     try:
         import ctypes
 
+        handle = ctypes.c_void_p(int(window.winId()))
+        dwm = ctypes.windll.dwmapi
+
+        def send(attribute: int, value) -> bool:
+            return dwm.DwmSetWindowAttribute(
+                handle, ctypes.c_int(attribute), ctypes.byref(value), ctypes.sizeof(value)
+            ) == 0
+
         # 20 από το build 19041· 19 στα πρώτα insider builds. Δοκιμάζουμε και τα
         # δύο: το λάθος attribute απλώς γυρίζει σφάλμα, δεν χαλάει το παράθυρο.
-        handle = int(window.winId())
-        value = ctypes.c_int(1 if dark else 0)
+        mode = ctypes.c_int(1 if dark else 0)
         for attribute in (20, 19):
-            ok = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                ctypes.c_void_p(handle),
-                ctypes.c_int(attribute),
-                ctypes.byref(value),
-                ctypes.sizeof(value),
-            )
-            if ok == 0:
-                return True
+            if send(attribute, mode):
+                done = True
+                break
+
+        for attribute, color in (
+            (35, palette.menu_bg),   # DWMWA_CAPTION_COLOR — ίδιο με το πλαϊνό μενού
+            (36, palette.txt),       # DWMWA_TEXT_COLOR
+            (34, palette.line),      # DWMWA_BORDER_COLOR
+        ):
+            if send(attribute, ctypes.c_uint(_colorref(color))):
+                done = True
     except (OSError, AttributeError, ValueError):
         # Χωρίς dwmapi (Wine, παλιά Windows) η εφαρμογή δουλεύει μια χαρά με
         # λευκή γραμμή τίτλου — δεν είναι λόγος να μην ανοίξει.
         pass
-    return False
+    return done
 
 
 def money(value: float) -> str:

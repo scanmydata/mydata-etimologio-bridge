@@ -424,10 +424,12 @@ class MainWindow(QMainWindow):
             control.set_start_minimized(value)
 
     def _check_updates_requested(self) -> None:
-        """Έλεγχος ενημερώσεων από τις Ρυθμίσεις του e-Τιμολόγιο.
+        """Έλεγχος ενημερώσεων — από όπου κι αν ζητηθεί.
 
-        Χρησιμοποιεί τον ΙΔΙΟ έλεγχο με το κουμπί του πίνακα ελέγχου — ένας
-        δεύτερος θα σήμαινε δεύτερο νήμα, δεύτερο παράθυρο και δύο απαντήσεις.
+        Τρία σημεία τον καλούν: το κουμπί του πίνακα ελέγχου, οι Ρυθμίσεις του
+        e-Τιμολόγιο, και ο αριθμός έκδοσης (αρχική οθόνη + πλαϊνό μενού).
+        Χρησιμοποιούν τον ΙΔΙΟ έλεγχο: ένας δεύτερος θα σήμαινε δεύτερο νήμα,
+        δεύτερο παράθυρο και δύο απαντήσεις για την ίδια ερώτηση.
         """
         control = getattr(self, "control", None)
         if control is not None:
@@ -480,6 +482,7 @@ class MainWindow(QMainWindow):
         self.menu.triggered.connect(self._on_menu)
         self.menu.tooltips_toggled.connect(self._apply_tooltips)
         self.menu.theme_toggled.connect(self._on_theme)
+        self.menu.version_clicked.connect(self._check_updates_requested)
         self.menu.collapsed_changed.connect(
             lambda value: self._prefs.setValue("menu_collapsed", value)
         )
@@ -569,6 +572,7 @@ class MainWindow(QMainWindow):
 
         self.launcher = Launcher(APP_VERSION)
         self.launcher.chosen.connect(self._choose_app)
+        self.launcher.update_check_requested.connect(self._check_updates_requested)
         self.stack.addWidget(self.launcher)
         root.addWidget(self.stack, 1)
 
@@ -1447,7 +1451,9 @@ class MainWindow(QMainWindow):
         name = "light" if light else "dark"
         apply_theme(QApplication.instance(), name)
         self._prefs.setValue("theme", name)
-        paint_title_bar(self, not light)
+        for window in QApplication.topLevelWidgets():
+            if window.isWindow():
+                paint_title_bar(window, not light)
         # Τα εικονίδια είναι bitmaps βαμμένα σε χρώμα και οι πίνακες βάφουν
         # κελιά προγραμματιστικά — τίποτα από τα δύο δεν αλλάζει μόνο του από
         # το νέο stylesheet.

@@ -73,6 +73,8 @@ class Launcher(QWidget):
     """Δύο κάρτες: Timologio Downloader ή e-Τιμολόγιο Pro."""
 
     chosen = Signal(str)   # "downloader" | "etimologio"
+    #: Κλικ στην έκδοση, κάτω από τις δύο κάρτες.
+    update_check_requested = Signal()
 
     def __init__(self, version: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -131,8 +133,15 @@ class Launcher(QWidget):
         if version:
             self._version_label = QLabel(f"έκδοση {version}")
             self._version_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            self._version_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._version_label.setToolTip("Έλεγχος για νεότερη έκδοση")
+            self._version_label.mousePressEvent = self._version_pressed
             self._paint_version()
             root.addWidget(self._version_label)
+
+    def _version_pressed(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.update_check_requested.emit()
 
     def _paint_version(self) -> None:
         if self._version_label is not None:

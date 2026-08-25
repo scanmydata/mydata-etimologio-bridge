@@ -196,6 +196,34 @@ function gdrive_list(int $limit = 50): array {
     return ['ok' => true, 'files' => (array)($r['data']['files'] ?? [])];
 }
 
+/**
+ * Τα bytes ενός αρχείου του Drive.
+ *
+ * Ξεχωριστή συνάρτηση από το `gdrive_call`: εκείνο περιμένει JSON και το
+ * περνά από `json_decode`. Ένα κρυπτογραφημένο αντίγραφο δεν είναι JSON.
+ */
+function gdrive_download(string $fileId): array {
+    $t = gdrive_token();
+    if (!$t['ok']) return ['ok' => false, 'error' => $t['error']];
+    $ch = curl_init('https://www.googleapis.com/drive/v3/files/'
+        . rawurlencode($fileId) . '?alt=media');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 300,
+        CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $t['token']],
+    ]);
+    $resp = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_close($ch);
+    if ($resp === false) return ['ok' => false, 'error' => $err ?: 'δίκτυο'];
+    if ($code >= 300) {
+        $d = json_decode((string)$resp, true);
+        return ['ok' => false, 'error' => (string)($d['error']['message'] ?? "HTTP $code")];
+    }
+    return ['ok' => true, 'bytes' => (string)$resp];
+}
+
 function gdrive_delete(string $fileId): array {
     return gdrive_call('DELETE', 'https://www.googleapis.com/drive/v3/files/' . rawurlencode($fileId), [], null, 30);
 }

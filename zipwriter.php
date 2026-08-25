@@ -97,6 +97,52 @@ function zip_build(array $files): string
         . pack('v', 0);                        // comment length
 }
 
+/**
+ * Read an archive built by `zip_build` back into `name => bytes`.
+ *
+ * NOT named `zip_read`: that is a REAL PHP function from ext/zip (the old
+ * procedural API, alongside `zip_open`/`zip_entry_read`). The zip extension is
+ * loaded here for reading .xlsx bank statements, so declaring `zip_read()`
+ * fataled the whole application with «Cannot redeclare» — on the server, not
+ * on the portable PHP, which is the worst place to find out.
+ *
+ * Walks the central directory (never the local headers): only the central
+ * directory is authoritative about offsets and sizes. Every entry's CRC is
+ * verified — a backup that unpacks to garbage without complaining is worse
+ * than one that refuses to unpack.
+ */
+function zip_unpack(string $bytes): array
+{
+    $out = [];
+    $p = 0;
+    while (($p = strpos($bytes, "\x50\x4b\x01\x02", $p)) !== false) {
+        $method  = unpack('v', substr($bytes, $p + 10, 2))[1];
+        $crc     = unpack('V', substr($bytes, $p + 16, 4))[1];
+        $csize   = unpack('V', substr($bytes, $p + 20, 4))[1];
+        $size    = unpack('V', substr($bytes, $p + 24, 4))[1];
+        $nameLen = unpack('v', substr($bytes, $p + 28, 2))[1];
+        $extraLen = unpack('v', substr($bytes, $p + 30, 2))[1];
+        $cmtLen  = unpack('v', substr($bytes, $p + 32, 2))[1];
+        $offset  = unpack('V', substr($bytes, $p + 42, 4))[1];
+        $name    = substr($bytes, $p + 46, $nameLen);
+        $p += 46 + $nameLen + $extraLen + $cmtLen;
+
+        if (substr($bytes, $offset, 4) !== "\x50\x4b\x03\x04") continue;
+        // Το ΤΟΠΙΚΟ header έχει δικά του μήκη ονόματος/extra — και το extra
+        // ΔΕΝ είναι πάντα ίδιο με του κεντρικού καταλόγου.
+        $lNameLen  = unpack('v', substr($bytes, $offset + 26, 2))[1];
+        $lExtraLen = unpack('v', substr($bytes, $offset + 28, 2))[1];
+        $data = substr($bytes, $offset + 30 + $lNameLen + $lExtraLen, $csize);
+        if ($method === 8) {
+            $data = @gzinflate($data);
+            if ($data === false) continue;
+        }
+        if (strlen($data) !== $size || sprintf('%u', crc32($data)) !== sprintf('%u', $crc)) continue;
+        $out[$name] = $data;
+    }
+    return $out;
+}
+
 /** Convert a unix timestamp to the DOS (time, date) pair ZIP stores. */
 function zip_dos_time(int $ts): array
 {

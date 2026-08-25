@@ -321,15 +321,21 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   #colFilterPop{position:fixed;z-index:210;width:290px;max-width:92vw;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;box-shadow:var(--shadow);padding:14px;display:none}
   #colFilterPop.on{display:block}
-  #colFilterPop h5 h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
-  #colFilterPop .cf-search .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px}
-  #colFilterPop .cf-search:focus .cf-search:focus{outline:none;border-color:var(--accent)}
-  #colFilterPop .cf-list .cf-list{max-height:230px;overflow:auto;display:flex;flex-direction:column;gap:1px}
-  #colFilterPop .cf-item .cf-item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #colFilterPop .cf-item:hover .cf-item:hover{background:var(--hover)}
-  #colFilterPop .cf-item input .cf-item input{accent-color:var(--accent);flex:0 0 auto}
-  #colFilterPop .cf-actions .cf-actions{display:flex;gap:8px;margin-top:12px}
-  #colFilterPop .cf-actions button .cf-actions button{flex:1}
+  #colFilterPop h5{margin:0 0 10px;font-size:14px;color:var(--accent);font-weight:700}
+  #colFilterPop .cf-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--txt);font-size:13px;margin-bottom:10px;box-sizing:border-box}
+  #colFilterPop .cf-search:focus{outline:none;border-color:var(--accent)}
+  #colFilterPop .cf-list{max-height:250px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+  /* Μία επιλογή = μία ΓΡΑΜΜΗ. Το κουτάκι δεν συρρικνώνεται ποτέ και το κείμενο
+     κόβεται με «…» — αλλιώς μια μακριά επωνυμία στήλης έσπαγε τη στοίχιση. */
+  #colFilterPop .cf-item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;
+    font-size:13px;line-height:1.25;cursor:pointer;min-width:0}
+  #colFilterPop .cf-item:hover{background:var(--hover)}
+  #colFilterPop .cf-item input{accent-color:var(--accent);flex:0 0 auto;margin:0;width:15px;height:15px}
+  /* Το `text-overflow` θέλει στοιχείο δικό του: πάνω στο flex container δεν
+     πιάνει ποτέ, και ήταν γραμμένο ακριβώς εκεί. */
+  #colFilterPop .cf-item span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #colFilterPop .cf-actions{display:flex;gap:8px;margin-top:12px}
+  #colFilterPop .cf-actions button{flex:1}
   th.grid-check,td.grid-check{width:34px;text-align:center;padding-left:6px;padding-right:6px}
   /* Guided page tour */
   #tourOverlay{position:fixed;inset:0;z-index:200;display:none}
@@ -546,6 +552,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   body.embedded .app{grid-template-columns:minmax(0,1fr);grid-template-areas:"top" "main"}
   body.embedded .app.offline{grid-template-rows:auto auto 1fr;grid-template-areas:"net" "top" "main"}
 </style>
+<script>const APP_VER=<?= json_encode($__version ?: '') ?>;</script>
 </head>
 <body class="<?= $__embedded ? 'embedded' : '' ?>">
 <div class="app">
@@ -1664,6 +1671,10 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   <div class="row" style="margin-top:8px">
     <div class="field grow"><label>e-timologio username *</label><input id="coUser"></div>
     <div class="field grow"><label>Subscription key</label><input id="coKey" type="password" placeholder="(αμετάβλητο)"></div>
+    <div class="field" style="flex:0 0 auto;justify-content:flex-end">
+      <button class="ghost" onclick="testCompanyCreds()"
+              data-tip="Ρωτά την ΑΑΔΕ επιτόπου: myDATA (σύνολα εξόδων τρέχοντος μήνα) και e-timologio">🔑 Δοκιμή κωδικών</button>
+    </div>
   </div>
   <div class="hint" id="coKeyHint" style="margin-top:4px"></div>
   <?php if ($__role === 'master'): ?>
@@ -2384,6 +2395,7 @@ async function loadSrvBackup(){
     $('#sbInfo').innerHTML=
       `Βάση: <b>${esc(d.engine)}</b> · φάκελος Drive: <b>${esc(d.folder)}</b>`
       +(d.last_at?` · τελευταίο: <b>${esc(d.last_at)}</b>`:'')
+      +(d.restored_at?` · τελευταία επαναφορά: <b>${esc(d.restored_at)}</b>`:'')
       +(miss.length?('<br><span style="color:var(--bad)">⚠ '+miss.join(' · ')+'</span>'):'');
     const rows=[];
     (d.local||[]).forEach(f=>rows.push({...f,where:'server',link:''}));
@@ -2393,7 +2405,9 @@ async function loadSrvBackup(){
       <td class="num">${esc(fmtBytes(f.size))}</td><td>${esc(f.where)}</td>
       <td class="right">${f.where==='server'
         ? `<button class="ghost sm" onclick="srvBackupDownload('${q1(f.name)}')">⬇ Λήψη</button>`
-        : (f.link?`<button class="ghost sm" onclick="window.open('${q1(f.link)}','_blank')">🌐 Άνοιγμα</button>`:'')}</td></tr>`)
+        : (f.link?`<button class="ghost sm" onclick="window.open('${q1(f.link)}','_blank')">🌐 Άνοιγμα</button>`:'')}
+        <button class="danger sm" onclick="srvBackupRestore('${f.where==='server'?'local':'drive'}','${q1(f.where==='server'?f.name:(f.id||''))}','${q1(f.name)}')"
+          data-tip="Γράφει ΠΑΝΩ στη ζωντανή βάση του server">↩️ Επαναφορά</button></td></tr>`)
       .join('')||'<tr><td colspan="5" class="muted">Κανένα αντίγραφο ακόμη.</td></tr>';
   }catch(e){}
 }
@@ -2405,6 +2419,37 @@ async function srvBackupRun(){
     else toast(`Έτοιμο: ${d.name} (${fmtBytes(d.size)})${d.uploaded?' → Drive':''}`,'ok');
     loadSrvBackup();
   }catch(e){toast(e.message,'err');}
+}
+// Η επαναφορά αντικαθιστά τη βάση ΟΛΩΝ των χρηστών του server. Δεν είναι
+// «άλλο ένα κουμπί»: ζητάμε να γραφτεί η λέξη, γιατί ένα ναι/όχι πατιέται
+// αντανακλαστικά και αυτό εδώ δεν ξεγίνεται με Ctrl+Z. Δίχτυ υπάρχει (η
+// εφαρμογή κρατά «pre-restore» πριν αγγίξει οτιδήποτε) αλλά το δίχτυ δεν
+// είναι λόγος να πέσεις.
+async function srvBackupRestore(source,ref,name){
+  if(!ref){toast('Το αρχείο του Drive δεν έχει αναγνωριστικό — ανανέωσε τη λίστα.','err');return;}
+  const typed=prompt(
+    'ΕΠΑΝΑΦΟΡΑ ΤΗΣ ΒΑΣΗΣ ΤΟΥ SERVER\n\n'+
+    'Αρχείο: '+name+'\n'+
+    'Πηγή: '+(source==='drive'?'Google Drive':'τοπικό αντίγραφο')+'\n\n'+
+    'Ό,τι έχει καταχωρηθεί ΜΕΤΑ από αυτό το αντίγραφο χάνεται — παραστατικά, '+
+    'πελάτες, πληρωμές, χρήστες. Πριν γίνει οτιδήποτε κρατιέται αντίγραφο της '+
+    'τωρινής κατάστασης («pre-restore»).\n\n'+
+    'Γράψε ΕΠΑΝΑΦΟΡΑ για να συνεχίσεις:');
+  if((typed||'').trim()!=='ΕΠΑΝΑΦΟΡΑ'){toast('Ακυρώθηκε.','warn');return;}
+  try{
+    const d=await withBusy('Επαναφορά…',
+      ()=>apost({auth:'srv_backup_restore',source,ref,confirm:'ΕΠΑΝΑΦΟΡΑ'}),
+      'Αντίγραφο ασφαλείας, αποκρυπτογράφηση και γράψιμο της βάσης');
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    toast('Η βάση επανήλθε'+(d.taken_at?' στην κατάσταση της '+String(d.taken_at).slice(0,16):'')
+          +'. Κάνε αποσύνδεση και ξανασυνδέσου.','ok');
+    $('#sbInfo').innerHTML='<span style="color:var(--ok)">✅ Επαναφορά ολοκληρωμένη'
+      +(d.enckey?' (μαζί με το κλειδί κρυπτογράφησης)':'')
+      +(d.safety?' · κρατήθηκε το <b>'+esc(d.safety)+'</b>':'')
+      +'.</span><br>Οι ανοιχτές συνεδρίες δείχνουν ακόμη τα παλιά δεδομένα — '
+      +'κάνε επανεκκίνηση της εφαρμογής στο Coolify για να καθαρίσουν.';
+    loadSrvBackup();
+  }catch(err){toast('Επαναφορά: '+err.message,'err');}
 }
 function srvBackupDownload(name){
   // Απευθείας πλοήγηση: το αρχείο είναι δεκάδες MB και δεν έχει νόημα να
@@ -2523,8 +2568,33 @@ async function openCompany(id){
   }catch(e){toast('Εταιρεία: '+e.message,'err');}}
 let coVatT;
 function coVatLookup(){clearTimeout(coVatT);coVatT=setTimeout(async()=>{const vat=$('#coVat').value.trim();
-  if(!/^\d{9}$/.test(vat))return;const name=await nameForVat(vat);
-  if(name&&!$('#coLabel').value.trim())$('#coLabel').value=name;},400);}
+  if(!/^\d{9}$/.test(vat))return;
+  if($('#coLabel').value.trim())return;         // ό,τι έγραψε ο χρήστης δεν το πειράζουμε
+  const name=await withBusy('Αναζήτηση επωνυμίας…',()=>nameForVat(vat),'ΑΦΜ '+vat+' — ΑΑΔΕ και VIES');
+  if(name&&!$('#coLabel').value.trim())$('#coLabel').value=name;
+  else if(!name)$('#coResult').innerHTML='<span class="muted">Δεν βρέθηκε επωνυμία για το ΑΦΜ '+esc(vat)+' — γράψ\' την μόνος σου.</span>';},400);}
+
+// --- Δοκιμή διαπιστευτηρίων ------------------------------------------------
+// Δύο έλεγχοι, δύο απαντήσεις. Ένα σκέτο «ΟΚ» θα έκρυβε ακριβώς την περίπτωση
+// που γεννά τα περισσότερα λάθη: το «Api myData» και το «Subscription key» του
+// e-timologio έχουν ΤΗΝ ΙΔΙΑ ΜΟΡΦΗ, οπότε το λάθος κλειδί μπαίνει «σωστά» και
+// φαίνεται αργότερα, ως αποτυχία έκδοσης.
+async function testCompanyCreds(){
+  const vat=$('#coVat').value.trim();
+  if(!/^\d{9}$/.test(vat)){$('#coResult').textContent='ΑΦΜ 9 ψηφίων.';return;}
+  const username=$('#coUser').value.trim(),subkey=$('#coKey').value;
+  if(!username||(!subkey&&!CO_ID)){$('#coResult').textContent='Συμπλήρωσε username και subscription key.';return;}
+  const box=$('#coResult');
+  try{
+    const d=await withBusy('Δοκιμή στην ΑΑΔΕ…',
+      ()=>apost({auth:'account_test',vat,username,subkey,account_id:CO_ID||0}),
+      'myDATA (σύνολα εξόδων τρέχοντος μήνα) + e-timologio');
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    const line=(icon,title,r)=>`<div style="margin-top:4px">${icon} <b>${title}</b> — ${esc((r||{}).msg||'—')}</div>`;
+    box.innerHTML=line(d.mydata&&d.mydata.ok?'✅':'❌','myDATA REST',d.mydata)
+                 +line(d.etimologio&&d.etimologio.ok?'✅':'❌','e-timologio',d.etimologio);
+  }catch(err){box.textContent='Δοκιμή: '+err.message;}
+}
 async function saveCompany(){
   const vat=$('#coVat').value.trim();
   if(!/^\d{9}$/.test(vat)){$('#coResult').textContent='ΑΦΜ 9 ψηφίων.';return;}
@@ -2622,7 +2692,15 @@ async function setStatus(id,s){const d=await apost({auth:'admin_set_status',user
 async function resetPw(id){const d=await apost({auth:'admin_reset_pw',user_id:id});if(d.success){prompt('Σύνδεσμος επαναφοράς (δώστε τον στον χρήστη — ισχύει 24ω):',d.reset_link);}else toast(d.error||'Αποτυχία','err');}
 function openUserModal(){['uVat','uName','uUsername','uKey','uEmail','uPass'].forEach(i=>$('#'+i).value='');$('#uErr').textContent='';userModal.showModal();}
 // Look up the company name from the ΑΦΜ (via the admin's AADE session)
-async function nameForVat(vat){try{const d=await api({taxis_name:1,vat});return d.success?d.name:'';}catch(e){return'';}}
+// Δύο μητρώα, με σειρά. Το Taxisnet είναι το ακριβέστερο αλλά περνά μέσα από
+// συνεδρία e-timologio: θέλει εταιρεία ΗΔΗ επιλεγμένη με έγκυρα στοιχεία. Στο
+// «Νέα εταιρεία» δεν υπάρχει καμία — γι' αυτό εκεί δεν συμπληρωνόταν ΠΟΤΕ
+// τίποτα. Το VIES δεν ξέρει από συνεδρίες.
+async function nameForVat(vat){
+  try{const d=await api({taxis_name:1,vat});if(d.success&&d.name)return d.name;}catch(e){}
+  try{const d=await apost({auth:'vies_name',vat});if(d.success&&d.name)return d.name;}catch(e){}
+  return'';
+}
 let uVatT;
 function uVatLookup(){clearTimeout(uVatT);uVatT=setTimeout(async()=>{const vat=$('#uVat').value.trim();if(!/^\d{9}$/.test(vat))return;
   const name=await nameForVat(vat);if(name&&!$('#uName').value.trim())$('#uName').value=name;},400);}
@@ -2781,7 +2859,7 @@ function attachColumnFilters(tableId){
     if(!label||th.classList.contains('nofilter')||th.classList.contains('grid-check'))return;
     const b=document.createElement('span');b.className='filter-btn';b.innerHTML=FUNNEL_SVG;b.title='Φίλτρο στήλης';b.dataset.col=logical;
     th.style.paddingRight='30px';
-    b.onclick=(e)=>{e.stopPropagation();openColFilter(tableId,logical,th,label);};
+    b.onclick=(e)=>{e.stopPropagation();openColFilter(tableId,logical,th,colLabel(th));};
     th.appendChild(b);
     if(gridState(tableId)[logical])b.classList.add('active');
   });
@@ -2931,6 +3009,12 @@ function setColumnHidden(tableId,logical,hidden){
   L.hidden=[...set];
   applyHidden(tableId);saveGridLayout(tableId);markColsButton(tableId);
 }
+/** Το όνομα της στήλης, χωρίς το βελάκι ταξινόμησης και τη λαβή πλάτους. */
+function colLabel(th){
+  const c=th.cloneNode(true);
+  c.querySelectorAll('.sort-ind,.col-grip,.filter-btn').forEach(n=>n.remove());
+  return (c.textContent||'').trim();
+}
 function openColumnChooser(tableId,anchor){
   if(window.event&&window.event.stopPropagation)window.event.stopPropagation();
   const table=$('#'+tableId);if(!table||!table.tHead)return;
@@ -2938,9 +3022,10 @@ function openColumnChooser(tableId,anchor){
   const cells=[...table.tHead.rows[0].cells];
   const items=cells.map(th=>{
     const lc=+th.dataset.lc;
-    const label=(th.textContent||'').trim()||'(χωρίς τίτλο)';
     if(th.classList.contains('grid-check'))return '';
-    return `<label class="cf-item"><input type="checkbox" data-lc="${lc}" ${hide.has(lc)?'':'checked'}> ${esc(label)}</label>`;
+    const label=colLabel(th);
+    if(!label)return '';   // στήλη ενεργειών: δεν έχει όνομα, δεν έχει νόημα
+    return `<label class="cf-item"><input type="checkbox" data-lc="${lc}" ${hide.has(lc)?'':'checked'}><span>${esc(label)}</span></label>`;
   }).join('');
   pop.innerHTML=`<h5>Στήλες</h5><div class="cf-list">${items}</div>
     <div class="cf-actions"><button class="ghost sm cf-clear">Όλες</button><button class="primary sm cf-close">Κλείσιμο</button></div>`;
@@ -3083,14 +3168,12 @@ function openColFilter(tableId,col,th,label){
     <input class="cf-search" placeholder="Αναζήτηση τιμής…" autocomplete="off">
     <div class="cf-list"></div>
     <div class="cf-actions"><button class="ghost sm cf-clear">Καθαρισμός</button>
-      <button class="ghost sm cf-hide" title="Κρύβει τη στήλη· επαναφορά από το «⚙ Στήλες»">🚫 Απόκρυψη</button>
       <button class="primary sm cf-close">Κλείσιμο</button></div>`;
   const listEl=pop.querySelector('.cf-list');
-  pop.querySelector('.cf-hide').onclick=()=>{setColumnHidden(tableId,col,true);closeColFilter();};
   function render(term){term=(term||'').toLowerCase();
     const shown=values.filter(v=>!term||v.toLowerCase().includes(term));
-    listEl.innerHTML=`<label class="cf-item" data-all="1"><input type="checkbox" ${!st[col]?'checked':''}> <b>(Όλα)</b></label>`+
-      shown.map(v=>`<label class="cf-item"><input type="checkbox" data-v="${esc(v)}" ${isAllowed(v)?'checked':''}> ${esc(v)}</label>`).join('')
+    listEl.innerHTML=`<label class="cf-item" data-all="1"><input type="checkbox" ${!st[col]?'checked':''}><span><b>(Όλα)</b></span></label>`+
+      shown.map(v=>`<label class="cf-item"><input type="checkbox" data-v="${esc(v)}" ${isAllowed(v)?'checked':''}><span>${esc(v)}</span></label>`).join('')
       ||'<div class="muted" style="padding:6px">—</div>';
   }
   render('');
@@ -5938,22 +6021,151 @@ const MANUAL=[
   ['12. Χρήσιμα & συντομεύσεις','h2'],
   ['• Ctrl+K: αστραπιαία αναζήτηση πελάτη από παντού.  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']
 ];
+// --- Εγχειρίδιο σε PDF -------------------------------------------------------
+// Η διάταξη είναι ΤΟΥ DOWNLOADER (`gui/manual.py`): εξώφυλλο με σήμα και
+// έκδοση, γραμμή, εισαγωγή σε γκρι, κεφαλίδες στο χρώμα της εφαρμογής, κουκκίδες
+// με κρεμαστή εσοχή. Τα δύο εγχειρίδια είναι του ίδιου προϊόντος και ο χρήστης
+// τα ανοίγει το ένα μετά το άλλο.
+//
+// Τρία πράγματα που έλειπαν και φαίνονταν στο τυπωμένο χαρτί:
+//   * τα `<b>` του κειμένου τυπώνονταν **ως κείμενο**, «<b>έτσι</b>»,
+//   * κουκκίδες και παράγραφοι έβγαιναν ολόιδιες — όλα γκρι, χωρίς εσοχή,
+//   * δεν υπήρχε ούτε σήμα ούτε αρίθμηση σελίδων.
+
+// Το έντονο θέλει ΔΕΥΤΕΡΟ αρχείο γραμματοσειράς. Αν δεν κατέβει (χωρίς δίκτυο),
+// το έντονο γίνεται ΧΡΩΜΑ αντί για πάχος: το κείμενο μένει σωστό και το
+// εγχειρίδιο βγαίνει, αντί να σκάσει επειδή έλειψε ένα font.
+let FONT_B_B64='';
+let FONT_B_TRIED=false;
+async function loadBoldFont(){
+  if(FONT_B_TRIED)return !!FONT_B_B64;
+  FONT_B_TRIED=true;
+  try{const r=await fetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans-Bold.ttf');
+    if(r.ok)FONT_B_B64=abToB64(await r.arrayBuffer());}catch(e){}
+  return !!FONT_B_B64;
+}
+
+// Το σήμα ως data URL. Το jsPDF θέλει bytes, όχι διαδρομή.
+async function manualLogo(){
+  try{
+    const r=await fetch(<?= json_encode(asset_url('assets/brand/logo-etimologio.png')) ?>);
+    if(!r.ok)return'';
+    const blob=await r.blob();
+    return await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=()=>res('');fr.readAsDataURL(blob);});
+  }catch(e){return'';}
+}
+
+// Σπάει «κείμενο με <b>έντονα</b>» σε κομμάτια {t,b}. Ό,τι άλλο tag πέφτει έξω:
+// στο χαρτί δεν έχει νόημα, και τυπωμένο σαν κείμενο είναι σκέτο σκουπίδι.
+function mnRuns(text){
+  const out=[];
+  const re=/<b>([\s\S]*?)<\/b>/g;let last=0,m;
+  const plain=s=>s.replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ')
+                  .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+  while((m=re.exec(text))!==null){
+    if(m.index>last)out.push({t:plain(text.slice(last,m.index)),b:false});
+    out.push({t:plain(m[1]),b:true});
+    last=m.index+m[0].length;
+  }
+  if(last<text.length)out.push({t:plain(text.slice(last)),b:false});
+  return out.filter(r=>r.t!=='');
+}
+
 async function downloadManual(){
   if(!window.jspdf){toast('Η βιβλιοθήκη PDF δεν φόρτωσε','err');return;}
   toast('Δημιουργία εγχειριδίου…','ok');
-  try{await ensureFont();
+  try{
+    await ensureFont();
+    const hasBold=await loadBoldFont();
+    const logo=await manualLogo();
     const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'pt',format:'a4'});
-    doc.addFileToVFS('DejaVuSans.ttf',FONT_B64);doc.addFont('DejaVuSans.ttf','DejaVu','normal');doc.setFont('DejaVu');
-    const W=doc.internal.pageSize.getWidth(),H=doc.internal.pageSize.getHeight();const AC=[14,165,233],DK=[35,45,60],MUT=[90,100,120];const L=48,R=W-48;
-    doc.setFillColor(...AC);doc.rect(0,0,W,6,'F');
-    let y=64;
-    const nl=(h)=>{if(y+h>H-48){doc.addPage();doc.setFillColor(...AC);doc.rect(0,0,W,6,'F');y=64;}};
+    doc.addFileToVFS('DejaVuSans.ttf',FONT_B64);doc.addFont('DejaVuSans.ttf','DejaVu','normal');
+    if(hasBold){doc.addFileToVFS('DejaVuSans-Bold.ttf',FONT_B_B64);doc.addFont('DejaVuSans-Bold.ttf','DejaVu','bold');}
+    doc.setFont('DejaVu','normal');
+
+    const W=doc.internal.pageSize.getWidth(),H=doc.internal.pageSize.getHeight();
+    const AC=[14,165,233],DK=[26,38,55],MUT=[95,110,130],LN=[213,222,234];
+    const L=48,R=W-48,BOT=H-52;
+    let y=0,page=0;
+
+    const newPage=()=>{
+      if(page++)doc.addPage();          // η πρώτη σελίδα υπάρχει ήδη
+      doc.setFillColor(...AC);doc.rect(0,0,W,5,'F');
+      y=62;
+    };
+    const room=h=>{if(y+h>BOT)newPage();};
+    // Ένα «run» τη φορά, με αναδίπλωση ΜΕΣΑ στη γραμμή: αλλιώς κάθε έντονη
+    // λέξη θα ξεκινούσε δική της γραμμή.
+    const flow=(runs,x,width,size,color,lead,bullet)=>{
+      doc.setFontSize(size);
+      let line=[],w=0,first=true;
+      const put=()=>{
+        room(lead);let cx=x;
+        if(first&&bullet){
+          doc.setFont('DejaVu','normal');doc.setTextColor(...color);
+          doc.text(bullet,x-14,y);
+          doc.setFontSize(size);
+        }
+        first=false;
+        for(const r of line){
+          doc.setFont('DejaVu',r.b&&hasBold?'bold':'normal');
+          doc.setTextColor(...(r.b&&!hasBold?AC:color));
+          doc.text(r.t,cx,y);cx+=doc.getTextWidth(r.t);
+        }
+        y+=lead;line=[];w=0;
+      };
+      for(const run of runs){
+        for(const word of run.t.split(/(\s+)/)){
+          if(word==='')continue;
+          doc.setFont('DejaVu',run.b&&hasBold?'bold':'normal');
+          const ww=doc.getTextWidth(word);
+          if(w+ww>width&&line.length){put();if(/^\s+$/.test(word))continue;}
+          line.push({t:word,b:run.b});w+=ww;
+        }
+      }
+      if(line.length)put();
+    };
+
+    // ---- Εξώφυλλο ----
+    newPage();
+    if(logo){try{doc.addImage(logo,'PNG',L,y-16,64,64);}catch(e){}}
+    const tx=logo?L+80:L;
+    doc.setFont('DejaVu',hasBold?'bold':'normal');doc.setFontSize(24);doc.setTextColor(...AC);
+    doc.text('e-Τιμολόγιο Pro',tx,y+12);
+    doc.setFont('DejaVu','normal');doc.setFontSize(11);doc.setTextColor(...MUT);
+    doc.text('Εγχειρίδιο χρήσης'+(APP_VER?' · έκδοση '+APP_VER:''),tx,y+30);
+    y+=64;
+    doc.setDrawColor(...LN);doc.line(L,y,R,y);y+=22;
+
+    let firstPara=true;
     for(const [txt,kind] of MANUAL){
-      if(kind==='h1'){nl(30);doc.setTextColor(...DK);doc.setFontSize(20);doc.text(txt,L,y);y+=30;}
-      else if(kind==='h2'){nl(26);doc.setTextColor(...AC);doc.setFontSize(14);doc.text(txt,L,y);y+=20;}
-      else{doc.setTextColor(...MUT);doc.setFontSize(11);const lines=doc.splitTextToSize(txt,R-L);for(const ln of lines){nl(16);doc.text(ln,L,y);y+=16;}y+=8;}
+      if(kind==='h1')continue;                       // ζει στο εξώφυλλο
+      if(kind==='h2'){
+        room(40);y+=10;
+        doc.setFont('DejaVu',hasBold?'bold':'normal');doc.setFontSize(14);doc.setTextColor(...AC);
+        doc.text(mnRuns(txt).map(r=>r.t).join(''),L,y);y+=18;
+        continue;
+      }
+      if(kind==='li'){
+        flow(mnRuns(txt),L+18,R-L-18,10.5,DK,15,'•');
+        y+=4;
+        continue;
+      }
+      // Η πρώτη παράγραφος είναι η περιγραφή του προϊόντος: γκρι, όπως στον
+      // Downloader, ώστε να διαβάζεται ως υπότιτλος και όχι ως βήμα.
+      flow(mnRuns(txt),L,R-L,10.5,firstPara?MUT:DK,15);
+      firstPara=false;
+      y+=8;
     }
-    doc.setTextColor(...MUT);doc.setFontSize(8);doc.text('e-Timologio Pro · '+new Date().toLocaleDateString('el-GR'),L,H-24);
+
+    // ---- Υποσέλιδο σε ΚΑΘΕ σελίδα ----
+    const total=doc.internal.getNumberOfPages();
+    for(let i=1;i<=total;i++){
+      doc.setPage(i);
+      doc.setFont('DejaVu','normal');doc.setFontSize(8);doc.setTextColor(...MUT);
+      doc.text('ScanmyData Suite · e-Τιμολόγιο Pro'+(APP_VER?' '+APP_VER:''),L,H-30);
+      doc.text(i+' / '+total,R,H-30,{align:'right'});
+    }
     doc.save('e-timologio-egheiridio.pdf');
   }catch(e){toast('Εγχειρίδιο: '+e.message,'err');}
 }

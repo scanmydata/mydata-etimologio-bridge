@@ -230,6 +230,65 @@ cp .enckey /data/.enckey                                   # ΚΡΙΣΙΜΟ
 
 ---
 
+## 3δ. Αν κάνεις το repo **private**
+
+Δύο πράγματα σπάνε, και **μόνο το ένα** είναι στο Coolify.
+
+### α) Ο auto-updater των εγκαταστάσεων — αυτό είναι το σοβαρό
+
+Η εφαρμογή υπολογιστή ρωτά το GitHub **χωρίς διαπιστευτήρια**
+(`api.github.com/repos/…/releases/latest`, `desktop/src/timologio/updates.py`).
+Σε private repo αυτό γυρίζει **404**: κάθε εγκατεστημένη έκδοση παύει να βλέπει
+ενημερώσεις, και ο σύνδεσμος του installer δεν κατεβάζει. Δεν σκάει τίποτα —
+απλώς δεν ενημερώνεται ποτέ κανείς ξανά, σιωπηλά.
+
+Υπάρχει ήδη έτοιμος δρόμος: ο updater ρωτά **δύο** repos και κρατά τη νεότερη
+κυκλοφορία.
+
+```python
+OWNER_REPOS = (
+    "scanmydata/mydata-etimologio-bridge",
+    "scanmydata/MyData-Invoice-Downloader",
+)
+```
+
+Άρα: **άφησε δημόσιο ένα από τα δύο και δημοσίευε εκεί τα releases.** Ο κώδικας
+μένει ιδιωτικός· δημόσιο μένει μόνο το `setup.exe` και οι σημειώσεις έκδοσης,
+που ούτως ή άλλως τα κατεβάζει ο κάθε πελάτης.
+
+> Το `MyData-Invoice-Downloader` είναι ήδη δημόσιο και ήδη στη λίστα. Αν βάλεις
+> εκεί τα επόμενα releases, **και οι ήδη εγκατεστημένες 0.4.x** συνεχίζουν να
+> ενημερώνονται — δεν χρειάζεται καμία αλλαγή στον κώδικα και κανένας πελάτης
+> δεν μένει πίσω.
+
+Αν αντίθετα τα βάλεις **μόνο** στο ιδιωτικό, θα χρειαστεί ο updater να μάθει να
+στέλνει token — δηλαδή token σε κάθε εγκατάσταση πελάτη. Μην το κάνεις.
+
+### β) Το Coolify δεν θα μπορεί πια να κάνει clone
+
+Αν η εφαρμογή φτιάχτηκε ως **Public Repository** (σκέτο URL), το Coolify
+κλωνοποιεί ανώνυμα και μετά την αλλαγή το deploy σκάει με «Authentication
+failed». Δύο τρόποι:
+
+| Τρόπος | Πώς | Πότε |
+|---|---|---|
+| **GitHub App** *(προτεινόμενο)* | Coolify → *Sources* → **+ Add** → GitHub App → install στο repo. Μετά στην εφαρμογή: *Configuration → Source* → διάλεξε το App και ξαναδιάλεξε repo + branch `deploy/server` | Διαχειρίζεται **μόνο του** και τον webhook |
+| **Deploy key** | Coolify → *Keys & Tokens* → *Private Keys* → νέο ζεύγος. Το δημόσιο μισό μπαίνει στο repo → *Settings → Deploy keys* (read-only αρκεί). Στην εφαρμογή: source **Private Repository (with deploy key)** και URL σε μορφή `git@github.com:scanmydata/mydata-etimologio-bridge.git` | Αν δεν θέλεις GitHub App |
+
+⚠️ Με το **GitHub App** το Coolify φτιάχνει δικό του webhook. Ο χειροκίνητος
+webhook της §3β πρέπει τότε να **σβηστεί**, αλλιώς κάθε push χτίζει δύο φορές.
+Με **deploy key** ο χειροκίνητος webhook μένει ως έχει: δουλεύει και σε private
+repo, το secret δεν αλλάζει.
+
+### Τι ΔΕΝ αλλάζει
+
+- Τα μυστικά (Infisical, env του Coolify), το volume `/data`, το cloudflared και
+  τα αντίγραφα στο Drive — τίποτα από αυτά δεν κοιτά το GitHub.
+- Το `git clone` της §1 (χωρίς Coolify) θα ζητά πλέον διαπιστευτήρια. Χρησιμοποίησε
+  `gh repo clone` ή SSH.
+
+---
+
 ## 4. Το volume `/data` — μη το χάσεις
 
 | Αρχείο | Τι είναι |

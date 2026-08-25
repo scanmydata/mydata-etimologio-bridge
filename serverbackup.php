@@ -226,6 +226,152 @@ function srv_backup_run(string $reason = 'manual'): array {
     return $out;
 }
 
+/** Το αντίστροφο του `srv_backup_encrypt`. */
+function srv_backup_decrypt(string $blob, string $passphrase): array {
+    if (!function_exists('sodium_crypto_secretbox_open')) {
+        return ['ok' => false, 'error' => 'λείπει η επέκταση sodium'];
+    }
+    if ($passphrase === '') {
+        return ['ok' => false, 'error' => 'Το αντίγραφο είναι κρυπτογραφημένο και λείπει η φράση-κλειδί.'];
+    }
+    $off    = strlen('etimbk1');
+    $salt   = substr($blob, $off, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    $nonce  = substr($blob, $off + SODIUM_CRYPTO_PWHASH_SALTBYTES, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $cipher = substr($blob, $off + SODIUM_CRYPTO_PWHASH_SALTBYTES + SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $key = sodium_crypto_pwhash(
+        SODIUM_CRYPTO_SECRETBOX_KEYBYTES, $passphrase, $salt,
+        SODIUM_CRYPTO_PWHASH_OPSLIMIT_INTERACTIVE,
+        SODIUM_CRYPTO_PWHASH_MEMLIMIT_INTERACTIVE
+    );
+    $plain = sodium_crypto_secretbox_open($cipher, $nonce, $key);
+    sodium_memzero($key);
+    if ($plain === false) {
+        // Η ίδια απάντηση για λάθος φράση και για χαλασμένο αρχείο — από έξω
+        // δεν ξεχωρίζουν, και δεν έχει νόημα να μαντεύουμε.
+        return ['ok' => false, 'error' => 'Λάθος φράση-κλειδί, ή χαλασμένο αρχείο.'];
+    }
+    return ['ok' => true, 'bytes' => $plain];
+}
+
+/**
+ * Επαναφορά της βάσης ΤΟΥ SERVER από αντίγραφο.
+ *
+ * `$source` = «local» (αρχείο στο /data/backups) ή «drive» (id αρχείου).
+ *
+ * Η σειρά των βημάτων είναι όλη η ουσία:
+ *   1. **αντίγραφο ΤΟΥ ΤΩΡΑ** («pre-restore») — η επαναφορά είναι η πιο
+ *      επικίνδυνη ενέργεια της εφαρμογής, και ένα λάθος αρχείο θα έσβηνε
+ *      δουλειά που δεν ζήτησε κανείς να σβηστεί,
+ *   2. αποκρυπτογράφηση + άνοιγμα + ΕΛΕΓΧΟΣ ότι μέσα υπάρχει βάση — πριν
+ *      πειραχτεί οτιδήποτε,
+ *   3. το `.enckey` ΠΡΩΤΑ και η βάση μετά: αν κάτι κοπεί ενδιάμεσα, μια βάση
+ *      χωρίς το κλειδί της είναι θόρυβος, ενώ ένα κλειδί χωρίς τη βάση του
+ *      είναι απλώς αχρησιμοποίητο.
+ */
+function srv_backup_restore(string $source, string $ref): array {
+    // --- 1. δίχτυ ---------------------------------------------------------
+    $safety = srv_backup_run('pre-restore');
+    $safetyName = (string)($safety['name'] ?? '');
+
+    // --- 2. τα bytes ------------------------------------------------------
+    if ($source === 'drive') {
+        if (!gdrive_configured()) return ['ok' => false, 'error' => 'Το Google Drive δεν είναι ρυθμισμένο.'];
+        $d = gdrive_download($ref);
+        if (!$d['ok']) return ['ok' => false, 'error' => 'Drive: ' . $d['error']];
+        $blob = $d['bytes'];
+    } else {
+        $name = basename($ref);
+        if (!preg_match('/^server-[\w.\-]+\.zip(\.enc)?$/', $name)) {
+            return ['ok' => false, 'error' => 'Μη έγκυρο όνομα αρχείου.'];
+        }
+        $path = srv_backup_dir() . '/' . $name;
+        if (!is_file($path)) return ['ok' => false, 'error' => 'Το αντίγραφο δεν βρέθηκε.'];
+        $blob = (string)@file_get_contents($path);
+        if ($blob === '') return ['ok' => false, 'error' => 'Το αντίγραφο δεν διαβάζεται.'];
+    }
+
+    if (strncmp($blob, 'etimbk1', 7) === 0) {
+        $dec = srv_backup_decrypt($blob, srv_backup_passphrase());
+        if (!$dec['ok']) return $dec;
+        $blob = $dec['bytes'];
+    }
+
+    $files = zip_unpack($blob);
+    if (!$files) return ['ok' => false, 'error' => 'Το αρχείο δεν είναι αντίγραφο αυτής της εφαρμογής.'];
+
+    $isPg   = srv_backup_is_pg();
+    $member = $isPg ? 'db.dump' : 'local.sqlite';
+    if (!isset($files[$member])) {
+        // Το ανάποδο ζευγάρι είναι το συνηθισμένο λάθος: αντίγραφο από
+        // εγκατάσταση SQLite πάνω σε server Postgres, ή το αντίστροφο.
+        $has = isset($files['db.dump']) ? 'Postgres' : (isset($files['local.sqlite']) ? 'SQLite' : 'άγνωστη');
+        return ['ok' => false, 'error' =>
+            "Το αντίγραφο είναι $has, ο server τρέχει " . ($isPg ? 'Postgres' : 'SQLite') . '.'];
+    }
+
+    // --- 3. το κλειδί ------------------------------------------------------
+    $keyFile = defined('ENC_KEY_FILE') ? (string)ENC_KEY_FILE : '';
+    $keyBack = false;
+    if (isset($files['.enckey']) && $keyFile !== '') {
+        if (is_file($keyFile)) @copy($keyFile, $keyFile . '.pre-restore');
+        $keyBack = @file_put_contents($keyFile, $files['.enckey']) !== false;
+        if (!$keyBack) return ['ok' => false, 'error' => 'Δεν γράφτηκε το .enckey — τίποτα δεν άλλαξε.'];
+    }
+
+    // --- 4. η βάση ---------------------------------------------------------
+    if ($isPg) {
+        $dsn = [];
+        foreach (explode(';', substr((string)DB_DSN, strlen('pgsql:'))) as $part) {
+            [$k, $v] = array_pad(explode('=', $part, 2), 2, '');
+            if ($k !== '') $dsn[trim($k)] = trim($v);
+        }
+        // `--clean --if-exists`: το dump γράφεται ΠΑΝΩ σε βάση που ήδη έχει
+        // πίνακες. Χωρίς αυτά, το pg_restore σκάει σε κάθε «already exists»
+        // και αφήνει τη βάση μισή.
+        $cmd = sprintf('pg_restore --clean --if-exists --no-owner --no-privileges -h %s -p %s -U %s -d %s',
+            escapeshellarg($dsn['host'] ?? 'localhost'),
+            escapeshellarg((string)($dsn['port'] ?? '5432')),
+            escapeshellarg((string)(defined('DB_USER') ? DB_USER : '')),
+            escapeshellarg((string)($dsn['dbname'] ?? 'postgres')));
+        $env = $_ENV;
+        $env['PGPASSWORD'] = defined('DB_PASS') ? (string)DB_PASS : '';
+        $proc = @proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                           $pipes, null, $env);
+        if (!is_resource($proc)) return ['ok' => false, 'error' => 'δεν ξεκίνησε το pg_restore'];
+        fwrite($pipes[0], $files['db.dump']);
+        fclose($pipes[0]);
+        $out = stream_get_contents($pipes[1]); fclose($pipes[1]);
+        $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+        $code = proc_close($proc);
+        // Το pg_restore βγάζει προειδοποιήσεις («does not exist, skipping»)
+        // ακόμη και όταν πετυχαίνει απόλυτα — γι' αυτό κρίνει ο κωδικός εξόδου.
+        if ($code !== 0) {
+            return ['ok' => false, 'error' => 'pg_restore: ' . trim(substr((string)($err ?: $out), 0, 400)),
+                    'safety' => $safetyName];
+        }
+    } else {
+        $path = defined('LOCAL_DB') ? (string)LOCAL_DB : '';
+        if ($path === '') return ['ok' => false, 'error' => 'δεν βρέθηκε η βάση'];
+        // Το WAL της ΠΑΛΙΑΣ βάσης θα ξαναπαιζόταν πάνω στη νέα και θα την
+        // χαλούσε. Πρώτα το κλείνουμε, μετά σβήνουμε ό,τι έμεινε.
+        try { localdb()->exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (Throwable $e) {}
+        if (@file_put_contents($path, $files['local.sqlite']) === false) {
+            return ['ok' => false, 'error' => 'δεν γράφτηκε η βάση', 'safety' => $safetyName];
+        }
+        foreach (['-wal', '-shm'] as $suffix) @unlink($path . $suffix);
+    }
+
+    $manifest = isset($files['manifest.json']) ? json_decode($files['manifest.json'], true) : null;
+    setting_set('srvbackup.restored_at', date('Y-m-d H:i'));
+    return ['ok' => true,
+            'engine'   => $isPg ? 'postgres' : 'sqlite',
+            'enckey'   => $keyBack,
+            'from'     => $source === 'drive' ? 'Google Drive' : 'τοπικό αρχείο',
+            'taken_at' => (string)($manifest['at'] ?? ''),
+            'reason'   => (string)($manifest['reason'] ?? ''),
+            'safety'   => $safetyName];
+}
+
 /** Κρατά τα νεότερα στο Drive — αλλιώς ο δίσκος του διαχειριστή γεμίζει. */
 function srv_backup_prune_drive(): void {
     $list = gdrive_list(200);
@@ -249,6 +395,7 @@ function srv_backup_status(): array {
         $r = gdrive_list(20);
         $drive = $r['ok']
             ? ['ok' => true, 'files' => array_map(fn($f) => [
+                    'id'   => (string)($f['id'] ?? ''),
                     'name' => (string)($f['name'] ?? ''),
                     'size' => (int)($f['size'] ?? 0),
                     'at'   => substr((string)($f['createdTime'] ?? ''), 0, 16),
@@ -267,6 +414,7 @@ function srv_backup_status(): array {
         'auto_hour'   => (int)setting_get('srvbackup.hour', '3'),
         'last'        => $lastRaw !== '' ? json_decode($lastRaw, true) : null,
         'last_at'     => setting_get('srvbackup.last_at'),
+        'restored_at' => setting_get('srvbackup.restored_at'),
         'local'       => $local,
         'drive'       => $drive,
     ];
