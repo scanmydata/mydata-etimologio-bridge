@@ -10,3 +10,8 @@ Dockerfile text eol=lf
 # την πηγή του — και τότε δεν μπορείς να το επαληθεύσεις ξανακατεβάζοντάς το.
 assets/vendor/** -text
 desktop/backend/etimologio/assets/vendor/** -text
+
+# Τα vendored bundles (jsPDF κ.λπ.) δεν τα αγγίζει κανείς: χωρίς αυτό, το
+# autocrlf τα ξαναγράφει ανά κλάδο και οι δύο γραμμές «διαφέρουν» χωρίς λόγο.
+assets/vendor/** -text
+desktop/backend/etimologio/assets/vendor/** -text
