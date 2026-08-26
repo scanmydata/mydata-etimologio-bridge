@@ -531,6 +531,12 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   .notif-item.unread{background:var(--chip);border-color:var(--line)}
   .notif-item .nt-top{display:flex;align-items:baseline;gap:6px}
   .notif-item .nt-amt{margin-left:auto;font-weight:700;color:var(--accent)}
+  /* Το ✕ ζει ΜΕΣΑ στην πρώτη γραμμή, μετά το ποσό: ως absolute θα καθόταν
+     πάνω του. Φαίνεται πάντα (αλλιώς δεν το βρίσκει κανείς σε οθόνη αφής) και
+     κοκκινίζει στο πέρασμα. */
+  .notif-item .nt-x{flex:0 0 auto;background:none;border:0;padding:0 2px;margin-left:4px;
+    color:var(--muted);font-size:14px;line-height:1;cursor:pointer;border-radius:6px;opacity:.6}
+  .notif-item .nt-x:hover{color:var(--bad);opacity:1;background:rgba(239,68,68,.14)}
   .notif-item .nt-sub{font-size:11px;color:var(--muted);margin-top:2px}
   .notif-item .nt-mark{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;color:var(--muted);word-break:break-all}
   .notif-empty{padding:18px;text-align:center;color:var(--muted)}
@@ -6055,7 +6061,7 @@ const TOUR=[
   {sel:'[data-view="drafts"]',title:'📝 Πρόχειρα',text:'Προσωρινά αποθηκευμένα (χωρίς ΜΑΡΚ): προεπισκόπηση PDF και μαζική διαγραφή με τα checkboxes.'},
   {sel:'[data-view="schedule"]',title:'⏰ Προγραμματισμός',text:'Προγραμμάτισε την αυτόματη έκδοση παραστατικών (μεμονωμένων ή μαζικών) σε μελλοντική ώρα, με προαιρετική επανάληψη. Εδώ βλέπεις κατάσταση & ιστορικό.'},
   {sel:'#account',title:'🏢 Επιλογή εταιρίας',text:'Διάλεξε εδώ την επιχείρηση με την οποία δουλεύεις. Ο <b>διαχειριστής</b> βλέπει κάθε εταιρία· ο <b>λογιστής</b> μόνο τις δικές του — και τις ανοίγει μόνος του από τη Διαχείριση, χωρίς να περιμένει ανάθεση.'},
-  {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.'},
+  {sel:'.bell-btn',title:'🔔 Ειδοποιήσεις',text:'Κάθε πραγματική έκδοση (ΜΑΡΚ) ειδοποιεί τον λογιστή/διαχειριστή. Το κουδουνάκι δείχνει τις αδιάβαστες και ποιος εξέδωσε τι.<br><br>Κλικ σε μια ειδοποίηση τη σημαίνει <b>διαβασμένη</b>· το «<b>✕</b>» πάνω δεξιά της τη <b>σβήνει οριστικά</b>. Είναι δύο διαφορετικά πράγματα: «διαβασμένη» σημαίνει «το είδα», «σβησμένη» σημαίνει «δεν το θέλω άλλο στη λίστα».'},
   {sel:'[data-view="settings"]',title:'⚙️ Ρυθμίσεις',text:'Η οθόνη είναι χωρισμένη σε <b>πτυσσόμενες ενότητες</b>: πάτα τον τίτλο μιας ενότητας για να ανοίξει, και η εφαρμογή θυμάται ποιες κρατάς ανοιχτές. Πάνω-πάνω υπάρχουν «Άνοιγμα όλων» και «Κλείσιμο όλων».<br><br>Μέσα θα βρεις: κωδικό, 2FA με authenticator, πάροχο email, και — για λογιστή/διαχειριστή — για ΠΟΙΕΣ εταιρίες και ΠΟΙΕΣ κινήσεις θα λαμβάνεις ειδοποιήσεις.'},
   {sel:'#bkTable',view:'settings',title:'🏦 Λογαριασμοί & αυτόματη αποστολή',text:'Καταχώρησε τα IBAN της επιχείρησης — η τράπεζα βγαίνει από λίστα και το IBAN ελέγχεται πραγματικά (mod-97), οπότε λάθος ψηφίο δεν περνά. Όσα έχουν ✓ «στο email» γράφονται στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο· μπορείς και να ανεβάσεις PDF με τους λογαριασμούς.'},
   {sel:'#bkAutoSend',view:'settings',title:'📤 Να φεύγει μόνο του',text:'Με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ στέλνεται αμέσως στον πελάτη με το PDF συνημμένο. Παρακάτω ορίζεις και <b>προγραμματισμένη αποστολή καρτελών</b>: ημέρα του μήνα, μόνο σε όσους χρωστούν, πάνω από ένα ποσό.'},
@@ -6101,8 +6107,14 @@ function tourShow(i){
 // κύλιση ήταν `smooth` — το `getBoundingClientRect` μετριόταν ΠΡΙΝ φτάσει το
 // στοιχείο στη θέση του, οπότε ο δείκτης κάθονταν αλλού από ό,τι έδειχνε.
 function tourPlace(s){
-  const el=document.querySelector(s.sel),ring=$('#tourRing'),box=$('#tourBox');
+  let el=document.querySelector(s.sel);
+  const ring=$('#tourRing'),box=$('#tourBox');
   sectReveal(el);
+  // Υπάρχει στο DOM ΔΕΝ σημαίνει φαίνεται: μια κάρτα που δεν έχει φορτώσει
+  // ακόμη (ή δεν αφορά αυτόν τον ρόλο) είναι `hidden`, δηλαδή στοιχείο
+  // μηδενικών διαστάσεων — και το δαχτυλίδι πήγαινε στη γωνία της οθόνης,
+  // δείχνοντας το τίποτα. Καλύτερα κεντραρισμένο κείμενο χωρίς δείκτη.
+  if(el){const r0=el.getBoundingClientRect();if(!r0.width||!r0.height)el=null;}
   box.style.transform='none';
   // Μηδενισμός πριν τη μέτρηση: από θέση κοντά στη δεξιά άκρη το κουτί
   // στενεύει και θα μετρούσαμε λάθος πλάτος.
@@ -6245,6 +6257,8 @@ const MANUAL=[
   ['11ι. Ειδοποιήσεις και για ό,τι δεν εκδόθηκε από εδώ','h2'],
   ['Η καμπάνα δεν δείχνει πια μόνο τις δικές σου εκδόσεις. Κάθε φορά που υπάρχει internet, η εφαρμογή συγκρίνει τα αποθηκευμένα της με την <b>πλατφόρμα της ΑΑΔΕ</b> και γράφει ειδοποίηση (🛰️) για κάθε νέο ΜΑΡΚ: παραστατικά που εκδόθηκαν από άλλον υπολογιστή, από τον λογιστή, ή απευθείας στο e-Τιμολόγιο της ΑΑΔΕ.','p'],
   ['Ο έλεγχος τρέχει μόνος του λίγο μετά το άνοιγμα και κάθε μισή ώρα· με το «🛰️ Έλεγχος ΑΑΔΕ» μέσα στην καμπάνα τον ζητάς αμέσως. Την πρώτη φορά δεν ειδοποιεί για ό,τι υπάρχει ήδη — μόνο για ό,τι εμφανίζεται από εκεί και πέρα.','li'],
+  ['<b>Το «✕» πάνω δεξιά σβήνει την ειδοποίηση.</b> Το κλικ πάνω στη γραμμή τη σημαίνει απλώς διαβασμένη — «το είδα» και «δεν το θέλω άλλο» δεν είναι το ίδιο πράγμα, και μέχρι τώρα η λίστα κρατούσε για πάντα κάθε ΜΑΡΚ που πέρασε.','li'],
+  ['Τα ποσά των ειδοποιήσεων του ελέγχου ΑΑΔΕ διαβάζονταν λάθος όταν ήταν πάνω από χίλια: το «12.100,00» γινόταν 12,10. Διορθώθηκε, και όσες ειδοποιήσεις είχαν ήδη γραφτεί με το λάθος νούμερο <b>διορθώνονται μόνες τους</b> στον επόμενο έλεγχο ΑΑΔΕ.','li'],
 
   ['11ια. Επαναφορά του server από αντίγραφο','h2'],
   ['Στη <b>Διαχείριση → 🗄️ Αντίγραφα ασφαλείας του server</b>, κάθε γραμμή της λίστας έχει «<b>↩️ Επαναφορά</b>»: δουλεύει και για τα τοπικά αντίγραφα του server και για όσα κάθονται στο <b>Google Drive</b>. Υπάρχει και «<b>📁 Επαναφορά από αρχείο…</b>» για zip που κρατάς στον υπολογιστή σου — η περίπτωση «ο server ξαναστήθηκε από το μηδέν».','p'],
@@ -6675,13 +6689,31 @@ function renderNotifications(items){const list=$('#notifList');
     const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':(n.source==='aade'?' 🛰️':''));
     const acct=(IS_STAFF&&n.account_vat)?(' · ΑΦΜ '+esc(n.account_vat)):'';
     const seri=n.series?(' · Σειρά '+esc(n.series)+(n.aa?('/'+esc(n.aa)):'')):'';
-    return `<div class="notif-item ${n.is_read?'':'unread'}" onclick="notifRead(${n.id},this)">
-      <div class="nt-top"><b>${esc(n.doc_label||n.doc_type)}</b>${src}<span class="nt-amt">${amt}</span></div>
+    return `<div class="notif-item ${n.is_read?'':'unread'}" data-nid="${n.id}" onclick="notifRead(${n.id},this)">
+      <div class="nt-top"><b>${esc(n.doc_label||n.doc_type)}</b>${src}<span class="nt-amt">${amt}</span>
+        <button class="nt-x" title="Διαγραφή ειδοποίησης" aria-label="Διαγραφή ειδοποίησης"
+                onclick="notifDelete(event,${n.id})">✕</button></div>
       <div class="nt-sub">${buyer?('Πελάτης: '+buyer):''}${who?(' · από '+who):''}${acct}</div>
       <div class="nt-sub">${esc(n.created_at||'')}${seri}</div>
       <div class="nt-mark">ΜΑΡΚ ${esc(n.mark)}</div>
     </div>`;}).join('');}
 async function notifRead(id,el){if(el)el.classList.remove('unread');try{const d=await api({notif_read:1,id});setBell(d.unread||0);}catch(e){}}
+// Το ✕ ΔΕΝ πρέπει να μετρήσει και ως «διάβασέ το»: το κλικ ανεβαίνει στη
+// γραμμή, που έχει δικό της onclick. Χωρίς stopPropagation θα έφευγαν δύο
+// αιτήματα, και το δεύτερο θα ζητούσε ανάγνωση σε ειδοποίηση που δεν υπάρχει.
+async function notifDelete(ev,id){
+  if(ev){ev.stopPropagation();ev.preventDefault();}
+  const row=document.querySelector('.notif-item[data-nid="'+id+'"]');
+  try{
+    const d=await api({notif_delete:1,id});
+    if(!d.success)throw new Error(d.error||'σφάλμα');
+    setBell(d.unread||0);
+    if(row)row.remove();
+    // Άδειασε η λίστα; Το μήνυμα το γράφει ο renderer — ξαναζητάμε μόνο τότε.
+    const list=$('#notifList');
+    if(list&&!list.querySelector('.notif-item'))renderNotifications([]);
+  }catch(e){toast('Διαγραφή ειδοποίησης: '+e.message,'err');}
+}
 async function notifMarkAll(){try{await api({notif_read_all:1});setBell(0);await loadNotifications();}catch(e){}}
 
 // ===== Scheduled issuance (TODO 90) ==========================================

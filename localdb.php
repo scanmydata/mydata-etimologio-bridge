@@ -1572,6 +1572,54 @@ function notification_mark_read(int $id, $scope = ''): void {
     $st->execute($args + [':id' => $id]);
 }
 
+/**
+ * Σβήνει μία ειδοποίηση. Επιστρέφει αν όντως έσβησε κάτι.
+ *
+ * Το `$scope` δεν είναι διακοσμητικό: είναι ο μόνος λόγος που ένας λογιστής δεν
+ * μπορεί να σβήσει ειδοποίηση εταιρείας που δεν του έχει ανατεθεί, στέλνοντας
+ * ένα id στην τύχη.
+ */
+/**
+ * Διορθώνει το ποσό μιας ΗΔΗ αποθηκευμένης ειδοποίησης του ελέγχου ΑΑΔΕ.
+ *
+ * Γιατί χρειάζεται: όσες γράφτηκαν πριν τη διόρθωση του `parseMoney` κρατούν
+ * λάθος νούμερο (12.100 → 12,10) και δεν ξαναγράφονται ποτέ — το
+ * `notification_exists` τις προσπερνά. Χωρίς αυτό, ο χρήστης θα έβλεπε το λάθος
+ * για πάντα, ή θα έπρεπε να τις σβήσει μία-μία.
+ *
+ * ΜΟΝΟ για `source = 'aade'`: εκείνες προέρχονται από το ίδιο το scrape, οπότε
+ * το scrape είναι η αυθεντία τους. Μια ειδοποίηση έκδοσης κρατά το ποσό που
+ * υπολόγισε η εφαρμογή, και δεν την ακουμπάμε.
+ *
+ * Επιστρέφει αν άλλαξε κάτι.
+ */
+function notification_fix_amount(string $accountVat, string $mark, float $amount): bool {
+    if ($mark === '') return false;
+    $st = localdb()->prepare(
+        "SELECT id, amount_total FROM issue_notifications
+          WHERE account_vat = :a AND mark = :m AND source = 'aade'");
+    $st->execute([':a' => $accountVat, ':m' => $mark]);
+    $changed = false;
+    foreach ($st->fetchAll() as $row) {
+        $stored = $row['amount_total'] !== '' ? round(dec_num($row['amount_total']), 2) : null;
+        if ($stored !== null && abs($stored - round($amount, 2)) < 0.005) continue;
+        $up = localdb()->prepare(
+            "UPDATE issue_notifications SET amount_total = :amt WHERE id = :id");
+        $up->execute([':amt' => enc_num(round($amount, 2)), ':id' => (int)$row['id']]);
+        $changed = true;
+    }
+    return $changed;
+}
+
+function notification_delete(int $id, $scope = ''): bool {
+    [$where, $args] = db_scope_clause($scope);
+    $sql = "DELETE FROM issue_notifications WHERE id = :id"
+         . ($where !== '' ? " AND $where" : '');
+    $st = localdb()->prepare($sql);
+    $st->execute($args + [':id' => $id]);
+    return $st->rowCount() > 0;
+}
+
 function notifications_mark_all_read($scope = ''): void {
     [$where, $args] = db_scope_clause($scope);
     $sql = "UPDATE issue_notifications SET is_read = 1 WHERE is_read = 0"

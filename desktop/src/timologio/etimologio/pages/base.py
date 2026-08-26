@@ -38,20 +38,32 @@ _MONEY_RE = re.compile(r"[^0-9,.\-]")
 ROW_ROLE = int(Qt.ItemDataRole.UserRole) + 7
 
 
-def parse_money(value: Any) -> float:
-    """Parse a Greek-formatted money string (``1.234,56 €``) to a float.
+#: Σκέτες τελείες που χωρίζουν ΑΚΡΙΒΩΣ τριάδες ψηφίων: «12.100», «1.234.567».
+_THOUSANDS_ONLY = re.compile(r"^-?\d{1,3}(\.\d{3})+$")
 
-    Returns ``0.0`` for blanks or garbage — totals must never raise while a
-    table is being filled from whatever the AADE HTML scrape produced.
+
+def parse_money(value: Any) -> float:
+    """Ποσό από κείμενο, ελληνικό ή αγγλικό.
+
+    ``1.234,56`` → 1234.56 · ``1234.56`` → 1234.56 · ``12.100`` → 12100.0
+
+    Το τελευταίο είναι που έλειπε: όταν το ποσό είναι στρογγυλό, δεν υπάρχει
+    κόμμα για να πει ότι η τελεία είναι χιλιάδες, και το ``float("12.100")``
+    δίνει **12.1** — ένα τιμολόγιο 12.100 € εμφανιζόταν ως 12,10 €.
+
+    Επιστρέφει ``0.0`` για κενά ή σκουπίδια: ένα σύνολο δεν επιτρέπεται να
+    ρίξει τον πίνακα ενώ γεμίζει από ό,τι έβγαλε το scrape της ΑΑΔΕ.
     """
     if isinstance(value, (int, float)):
         return float(value)
     text = _MONEY_RE.sub("", str(value or "")).strip()
     if not text:
         return 0.0
-    # Greek grouping: dot = thousands, comma = decimals. Drop dots, comma→dot.
     if "," in text:
+        # Ελληνική μορφή: τελεία = χιλιάδες, κόμμα = υποδιαστολή.
         text = text.replace(".", "").replace(",", ".")
+    elif _THOUSANDS_ONLY.match(text):
+        text = text.replace(".", "")
     try:
         return float(text)
     except ValueError:

@@ -3096,14 +3096,30 @@ function vatCategoryFromRate(float $rate, bool $isZeroVat = false): int {
     return $map[$pct] ?? 1;
 }
 
+/**
+ * Ποσό από κείμενο, ελληνικό ή αγγλικό.
+ *
+ * «1.234,56» → 1234.56 · «1234.56» → 1234.56 · «12.100» → 12100.0
+ *
+ * Το τελευταίο είναι που έλειπε, και κόστισε: όταν η ΑΑΔΕ δίνει στρογγυλό ποσό
+ * χωρίς δεκαδικά, δεν υπάρχει κόμμα για να μας πει ότι η τελεία είναι
+ * χιλιάδες. Το `(float)"12.100"` της PHP σταματά στην τελεία και δίνει **12.1**
+ * — ένα τιμολόγιο 12.100 € εμφανιζόταν ως 12,10 €.
+ *
+ * Ο κανόνας: σκέτες τελείες που χωρίζουν ΑΚΡΙΒΩΣ τριάδες ψηφίων είναι
+ * χιλιάδες. Ό,τι άλλο («1234.56») είναι υποδιαστολή.
+ */
 function parseMoney(string $s): float {
     $s = trim($s);
     if ($s === '') return 0.0;
-    // Greek format: 1.234,56 -> 1234.56 ; also tolerate 1234.56
     $s = preg_replace('/[^\d,.\-]/', '', $s);
     if (strpos($s, ',') !== false) {
-        $s = str_replace('.', '', $s);   // remove thousands sep
-        $s = str_replace(',', '.', $s);  // decimal comma -> dot
+        // Ελληνική μορφή: η τελεία είναι χιλιάδες, το κόμμα υποδιαστολή.
+        $s = str_replace('.', '', $s);
+        $s = str_replace(',', '.', $s);
+    } elseif (preg_match('/^-?\d{1,3}(\.\d{3})+$/', $s)) {
+        // Μόνο τελείες, και όλες χωρίζουν τριάδες: χιλιάδες, όχι υποδιαστολή.
+        $s = str_replace('.', '', $s);
     }
     return (float)$s;
 }
@@ -4843,6 +4859,17 @@ if (!empty($_GET['notif_read_all'] ?? $_POST['notif_read_all'] ?? '')) {
     notifications_mark_all_read($__acctScope);
     jsonResponse(['success' => true, 'unread' => 0]);
 }
+// Οριστική διαγραφή μίας ειδοποίησης. «Διαβασμένη» και «δεν τη θέλω» είναι
+// διαφορετικά πράγματα: η καμπάνα κρατούσε για πάντα κάθε ΜΑΡΚ που πέρασε ποτέ.
+if (!empty($_GET['notif_delete'] ?? $_POST['notif_delete'] ?? '')) {
+    $id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
+    if ($id <= 0) jsonError('Λείπει η ειδοποίηση');
+    // Το scope είναι ο φύλακας: χωρίς αυτό ένας χρήστης θα έσβηνε ειδοποιήσεις
+    // εταιρείας που δεν βλέπει καν.
+    $gone = notification_delete($id, $__acctScope);
+    jsonResponse(['success' => true, 'deleted' => $gone,
+                  'unread' => notifications_unread_count($__acctScope)]);
+}
 
 // --- Scheduled jobs (TODO 90) ---
 if (!empty($_GET['sched_list'] ?? $_POST['sched_list'] ?? '')) {
@@ -5374,7 +5401,12 @@ if ($syncKind !== '') {
             $mk = (string)($inv['mark'] ?? '');
             if ($mk === '' || isset($known[$mk])) continue;
             // Ό,τι εκδόθηκε από την εφαρμογή έχει ήδη ειδοποίηση με το ίδιο ΜΑΡΚ.
-            if (notification_exists(COMPANY_VAT, $mk)) continue;
+            if (notification_exists(COMPANY_VAT, $mk)) {
+                // Περνώντας από δίπλα, διορθώνουμε ό,τι γράφτηκε με το παλιό,
+                // χαλασμένο parse — αλλιώς το λάθος ποσό μένει για πάντα.
+                notification_fix_amount(COMPANY_VAT, $mk, parseMoney((string)($inv['total'] ?? '0')));
+                continue;
+            }
             $bv = trim((string)($inv['buyer_vat'] ?? ''));
             notification_add(COMPANY_VAT, [
                 'actor_user_id' => 0,
@@ -5387,7 +5419,9 @@ if ($syncKind !== '') {
                 'mark'          => $mk,
                 'buyer_vat'     => $bv,
                 'buyer_name'    => $custNames[$bv] ?? '',
-                'amount_total'  => (float)str_replace([',', ' '], ['.', ''], (string)($inv['total'] ?? 0)),
+                // ΟΧΙ χειροκίνητο str_replace: το «12.100,00» γινόταν
+                // «12.100.00» και η PHP το διάβαζε 12.1. Ένας parser για όλους.
+                'amount_total'  => parseMoney((string)($inv['total'] ?? '0')),
                 'source'        => 'aade',
             ]);
             // Όριο ανά σάρωση: μια εβδομάδα εκτός σύνδεσης δεν πρέπει να ρίξει
