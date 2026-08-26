@@ -301,24 +301,12 @@ _ARROW_SVG = (
     'stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>'
 )
 
-_arrow_cache: dict[tuple[str, int], str] = {}
+_arrow_cache: dict[tuple[str, str, int], str] = {}
 
 
-def arrow_image(color: str, size: int = 12) -> str:
-    """Γράφει το βελάκι «κάτω» ως PNG και επιστρέφει διαδρομή για το `image:`.
-
-    Χρησιμοποιείται στο QSS του θέματος για να ξαναφανεί ο δείκτης του
-    drop-down στα QComboBox/QDateEdit: όταν το QSS ορίζει `::drop-down`, το Qt
-    σταματά να ζωγραφίζει το native βελάκι και το πεδίο έμοιαζε χωρίς
-    ημερολόγιο.
-    """
-    key = (color, size)
-    if key in _arrow_cache:
-        return _arrow_cache[key]
-
-    stem = f"arrow-{color.lstrip('#')}-{size}"
+def _qss_png(stem: str, svg: str, size: int) -> str:
+    """Γράφει ένα SVG ως PNG (1x και 2x) και επιστρέφει διαδρομή για το QSS."""
     target = _ui_cache_dir() / f"{stem}.png"
-    svg = _ARROW_SVG.format(color=color)
     for scale, path in ((1, target), (2, target.with_name(f"{stem}@2x.png"))):
         pixmap = QPixmap(QSize(size * scale, size * scale))
         pixmap.fill(Qt.GlobalColor.transparent)
@@ -327,10 +315,38 @@ def arrow_image(color: str, size: int = 12) -> str:
         QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(painter)
         painter.end()
         pixmap.save(str(path), "PNG")
+    return str(target).replace("\\", "/")
 
-    result = str(target).replace("\\", "/")
-    _arrow_cache[key] = result
-    return result
+
+def arrow_image(color: str, size: int = 12) -> str:
+    """Γράφει το βελάκι «κάτω» ως PNG και επιστρέφει διαδρομή για το `image:`.
+
+    Χρησιμοποιείται στο QSS του θέματος για να ξαναφανεί ο δείκτης του
+    drop-down στα QComboBox: όταν το QSS ορίζει `::drop-down`, το Qt σταματά να
+    ζωγραφίζει το native βελάκι και το πεδίο έμοιαζε χωρίς λίστα.
+    """
+    key = ("arrow", color, size)
+    if key not in _arrow_cache:
+        _arrow_cache[key] = _qss_png(
+            f"arrow-{color.lstrip('#')}-{size}", _ARROW_SVG.format(color=color), size
+        )
+    return _arrow_cache[key]
+
+
+def calendar_image(color: str, size: int = 14) -> str:
+    """Το ίδιο, αλλά ημερολόγιο — για τα πεδία ημερομηνίας.
+
+    Ένα βελάκι «κάτω» λέει «λίστα»· τα πεδία ημερομηνίας ανοίγουν ημερολόγιο και
+    πρέπει να το δείχνουν. Ο χρήστης δεν έχει λόγο να μαντέψει ότι το ίδιο
+    σύμβολο σημαίνει άλλο πράγμα σε άλλο πεδίο.
+    """
+    key = ("calendar", color, size)
+    if key not in _arrow_cache:
+        svg = _TEMPLATE.format(color=color, body=_SVG["calendar"])
+        _arrow_cache[key] = _qss_png(
+            f"calendar-{color.lstrip('#')}-{size}", svg, size
+        )
+    return _arrow_cache[key]
 
 
 _logo_cache: dict[tuple[int, bool], QPixmap] = {}

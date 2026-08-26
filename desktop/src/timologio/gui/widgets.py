@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from PySide6.QtCore import (
     Property,
     QDate,
+    QDateTime,
     QEasingCurve,
     QEvent,
     QObject,
@@ -15,9 +17,10 @@ from PySide6.QtCore import (
     QSettings,
     QSize,
     Qt,
+    QTime,
     QTimer,
 )
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QPainter, QValidator
 from PySide6.QtWidgets import QCheckBox, QDateEdit, QHeaderView, QLineEdit, QTableWidget
 
 from .theme import CURRENT
@@ -164,12 +167,45 @@ class ToggleSwitch(QCheckBox):
         painter.end()
 
 
+#: Χαλαρή μορφή ημερομηνίας: 1-2 ψηφία ημέρα, 1-2 μήνας, 2 ή 4 έτος, με
+#: οποιονδήποτε από τους τρεις συνηθισμένους διαχωριστές.
+_LOOSE_DATE = re.compile(r"^\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{2}|\d{4})\s*$")
+
+#: Ό,τι θα *μπορούσε* να γίνει ημερομηνία αν συνεχίσει να πληκτρολογεί.
+_DATE_PREFIX = re.compile(r"^[\d/.\-\s]*$")
+
+
+def parse_gr_date(text: str) -> QDate | None:
+    """«26/8/26» → 26/08/2026. Δεκτά και «26-8-2026», «26.08.26».
+
+    Το QDateEdit από μόνο του δέχεται **μόνο** την ακριβή μορφή που δείχνει
+    (ηη/μμ/εεεε): γράφοντας «26/8/26» ο χρήστης έπαιρνε ή σκουπίδια ή το πεδίο
+    αρνιόταν το πάτημα. Στη χώρα που γράφει «26/8/26» στο χαρτί, αυτό είναι
+    λάθος του προγράμματος, όχι του χρήστη.
+
+    Το διψήφιο έτος διαβάζεται ως 20xx: η εφαρμογή αφορά παραστατικά myDATA και
+    το myDATA ξεκίνησε το 2019 — «26» δεν σημαίνει ποτέ 1926.
+    """
+    match = _LOOSE_DATE.match(text or "")
+    if not match:
+        return None
+    day, month, year = (int(g) for g in match.groups())
+    if len(match.group(3)) == 2:
+        year += 2000
+    parsed = QDate(year, month, day)
+    return parsed if parsed.isValid() else None
+
+
 class GrDateEdit(QDateEdit):
     """Ημερομηνία με ημερολόγιο και ελληνική μορφή ηη/μμ/εεεε.
 
     Αντικατέστησε τα QLineEdit: το QDateEdit βάζει μόνο του τις καθέτους καθώς
     πληκτρολογεί ο χρήστης και δεν επιτρέπει να γραφτεί άκυρη ημερομηνία, οπότε
     το «31/02» δεν φτάνει ποτέ ως αίτημα στην ΑΑΔΕ.
+
+    Δέχεται επιπλέον **συντομογραφίες**: «26/8/26», «26-8-2026», «26.08.26»
+    διαβάζονται όλα ως 26/08/2026 και ξαναγράφονται στην πλήρη μορφή μόλις
+    φύγει ο κέρσορας.
     """
 
     def __init__(self, initial: date | None = None, parent=None) -> None:
@@ -197,6 +233,53 @@ class GrDateEdit(QDateEdit):
             event.ignore()
             return
         super().wheelEvent(event)
+
+    # --- χαλαρή πληκτρολόγηση ------------------------------------------
+    def validate(self, text: str, pos: int):  # noqa: N802 (Qt API)
+        """Αφήνει το «26/8/26» να γραφτεί.
+
+        Το QDateEdit απορρίπτει κάθε πάτημα που δεν ταιριάζει ακριβώς στη μορφή
+        που δείχνει — και ο μονοψήφιος μήνας δεν ταιριάζει ποτέ. Επιστρέφουμε
+        **Intermediate** (όχι Acceptable) επίτηδες: έτσι το Qt καλεί το `fixup`
+        όταν φύγει ο κέρσορας, και η ημερομηνία γράφεται μία φορά ολόκληρη αντί
+        να αναδιατάσσεται κάτω από τα δάχτυλα του χρήστη σε κάθε πλήκτρο.
+        """
+        state, fixed, position = super().validate(text, pos)
+        if state == QValidator.State.Acceptable:
+            return state, fixed, position
+        if parse_gr_date(text) is not None or _DATE_PREFIX.match(text or ""):
+            return QValidator.State.Intermediate, text, pos
+        return state, fixed, position
+
+    def fixup(self, text: str) -> str:
+        """Η συντομογραφία γίνεται πλήρης ημερομηνία μόλις τελειώσει η γραφή."""
+        parsed = parse_gr_date(text)
+        if parsed is not None:
+            return parsed.toString("dd/MM/yyyy")
+        return super().fixup(text)
+
+    def commit_typed(self) -> None:
+        """Διαβάζει ό,τι έγραψε ο χρήστης και το κάνει ημερομηνία.
+
+        Το `fixup` του Qt **δεν** καλείται αξιόπιστα σε κάθε διαδρομή (το
+        QAbstractSpinBox κρατά cache της τελευταίας επικύρωσης και σε κάποιες
+        περιπτώσεις επαναφέρει σιωπηλά την προηγούμενη τιμή). Το αποτέλεσμα θα
+        ήταν το χειρότερο δυνατό: η ημερομηνία που πληκτρολόγησε ο χρήστης να
+        αγνοείται **χωρίς μήνυμα** και το πεδίο να δείχνει την παλιά. Οπότε το
+        κάνουμε ρητά, εμείς, όταν φύγει ο κέρσορας ή πατηθεί Enter.
+        """
+        parsed = parse_gr_date(self.lineEdit().text())
+        if parsed is not None and parsed != self.date():
+            self.setDate(parsed)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        self.commit_typed()
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.commit_typed()
+        super().keyPressEvent(event)
 
     def gr(self) -> str:
         return self.date().toString("dd/MM/yyyy")

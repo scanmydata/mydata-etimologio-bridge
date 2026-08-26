@@ -37,7 +37,7 @@ def test_tour_skips_steps_whose_target_is_missing(tour: str) -> None:
 
     Ένα βήμα χωρίς στόχο έδειχνε κείμενο στη μέση της οθόνης, χωρίς δείκτη.
     """
-    assert "TOUR.filter(s=>document.querySelector(s.sel))" in tour
+    assert ".filter(s=>document.querySelector(s.sel))" in tour
     assert '{sel:\'[data-view="admin"]\'' not in tour, "το βήμα της Διαχείρισης επέστρεψε"
 
 

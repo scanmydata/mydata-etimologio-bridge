@@ -560,6 +560,24 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     display:flex;align-items:center;justify-content:center;background:none;border:0;cursor:pointer;
     color:var(--muted);font-size:15px;line-height:1;padding:0;border-radius:7px}
   .pw .eye:hover{color:var(--accent);background:rgba(56,189,248,.12)}
+  /* Ημερολόγιο σε ΚΑΘΕ πεδίο ημερομηνίας — ίδια ιδέα με το «ματάκι». Το πεδίο
+     μένει κείμενο (ώστε να δέχεται «26/8/26») και δίπλα του κάθεται το κουμπί
+     που ανοίγει τον native επιλογέα. */
+  /* Το min-width δεν είναι καλλωπισμός: το `.field` είναι στήλη flex και το
+     πλάτος του βγαίνει από το περιεχόμενο. Με `width:100%` στο input, ο
+     τυλιγμένος καμβάς δεν έχει πια δικό του φυσικό πλάτος και μάζευε στο πλάτος
+     της ετικέτας («Από» = 51px) — οπότε το κουμπί του ημερολογίου κάθισε στη
+     μέση του πεδίου. 132px είναι όσο θέλει το «ηη/μμ/εεεε» μαζί με το κουμπί. */
+  .dtwrap{position:relative;display:flex;min-width:132px}
+  .dtwrap input{flex:1 1 auto;min-width:0;padding-right:38px}
+  .dtwrap .dtcal{position:absolute;top:50%;right:5px;transform:translateY(-50%);width:28px;height:28px;
+    display:flex;align-items:center;justify-content:center;background:none;border:0;cursor:pointer;
+    color:var(--muted);font-size:15px;line-height:1;padding:0;border-radius:7px}
+  .dtwrap .dtcal:hover{color:var(--accent);background:rgba(56,189,248,.12)}
+  /* Ο native επιλογέας δεν πρέπει να φαίνεται — τον ανοίγουμε μόνο
+     προγραμματιστικά. Όχι display:none: το showPicker() απαιτεί ορατό στοιχείο. */
+  .dtwrap .dtnative{position:absolute;right:8px;bottom:0;width:1px;height:1px;
+    opacity:0;pointer-events:none;border:0;padding:0}
   /* Μέσα στην desktop εφαρμογή το πλαϊνό μενού υπάρχει ήδη (native, με τα δικά
      του εικονίδια και συντομεύσεις). Δύο μενού δίπλα-δίπλα είναι σκέτη σύγχυση:
      κρύβουμε το δικό μας και αφήνουμε όλο το πλάτος στο περιεχόμενο. */
@@ -3417,9 +3435,72 @@ async function saveCustomer(){
 // Dates are shown to the user as dd/mm/yyyy (text inputs) but stored & sent to the
 // API as ISO yyyy-mm-dd. isoToDmy=display, di=read-as-ISO, dset=write, dtMask=typing.
 function isoToDmy(v){if(!v)return'';const m=/^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(v);return m?String(m[3]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0')+'/'+m[1]:v;}
-function di(id){const el=$('#'+id);const v=((el&&el.value)||'').trim();if(/^\d{4}-\d{2}-\d{2}/.test(v))return v.slice(0,10);const m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);return m?m[3]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[1]).padStart(2,'0'):'';}
+// «26/8/26», «26-8-2026», «26.08.26» → ISO. Ο χρήστης γράφει την ημερομηνία
+// όπως τη γράφει και στο χαρτί· η αυστηρή μορφή ηη/μμ/εεεε ήταν απαίτηση του
+// προγράμματος, όχι της ΑΑΔΕ. Το διψήφιο έτος είναι 20xx: το myDATA ξεκίνησε
+// το 2019, «26» δεν σημαίνει ποτέ 1926.
+function dtParse(v){
+  const s=(v||'').trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+  const m=/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2}|\d{4})$/.exec(s);
+  if(!m)return '';
+  const d=+m[1],mo=+m[2],y=m[3].length===2?2000+ +m[3]:+m[3];
+  // Έλεγχος υπαρκτής ημερομηνίας: το «31/02» δεν φτάνει ποτέ στην ΑΑΔΕ.
+  const dt=new Date(y,mo-1,d);
+  if(dt.getFullYear()!==y||dt.getMonth()!==mo-1||dt.getDate()!==d)return '';
+  return y+'-'+String(mo).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+}
+function di(id){const el=$('#'+id);return dtParse((el&&el.value)||'');}
 function dset(id,iso){const el=$('#'+id);if(el)el.value=isoToDmy(iso);}
-function dtMask(el){let v=el.value.replace(/[^\d]/g,'').slice(0,8);if(v.length>4)v=v.slice(0,2)+'/'+v.slice(2,4)+'/'+v.slice(4);else if(v.length>2)v=v.slice(0,2)+'/'+v.slice(2);el.value=v;}
+// Βοηθά όποιον γράφει σκέτα ψηφία (26082026 → 26/08/2026) ΧΩΡΙΣ να εμποδίζει
+// όποιον βάζει μόνος του καθέτους: η παλιά έκδοση πετούσε κάθε μη-ψηφίο και
+// ξανακολλούσε τις καθέτους σε σταθερές θέσεις, οπότε το «26/8/26» γινόταν
+// «26/82/6» — δηλαδή ήταν αδύνατο να γραφτεί.
+function dtMask(el){
+  const raw=el.value.replace(/[^\d\/.\-]/g,'').replace(/[.\-]/g,'/').replace(/\/{2,}/g,'/');
+  const parts=raw.split('/'),caps=[2,2,4],out=[];
+  let carry='';
+  for(let i=0;i<3;i++){
+    let g=carry+(parts[i]||'');
+    carry=g.slice(caps[i]);
+    out.push(g.slice(0,caps[i]));
+    // Σταματάμε εκεί που σταμάτησε ο χρήστης: δεν του κολλάμε άδειες ομάδες.
+    if(!carry&&i>=parts.length-1)break;
+  }
+  el.value=out.join('/').slice(0,10);
+}
+// Στο φύγε-από-το-πεδίο η συντομογραφία γίνεται πλήρης ημερομηνία, ώστε να
+// φαίνεται ρητά τι κατάλαβε το πρόγραμμα.
+function dtFix(el){const iso=dtParse(el.value);if(iso)el.value=isoToDmy(iso);}
+// Κουμπί ημερολογίου σε κάθε πεδίο ημερομηνίας, χωρίς να πειραχτεί καμία φόρμα
+// ξεχωριστά — και χωρίς εξωτερική βιβλιοθήκη (το CSP δεν επιτρέπει CDN).
+function addDatePickers(root){
+  (root||document).querySelectorAll('input.dt').forEach(inp=>{
+    if(inp.parentElement&&inp.parentElement.classList.contains('dtwrap'))return;
+    inp.addEventListener('blur',()=>dtFix(inp));
+    const wrap=document.createElement('div');wrap.className='dtwrap';
+    inp.parentNode.insertBefore(wrap,inp);wrap.appendChild(inp);
+    const native=document.createElement('input');
+    native.type='date';native.className='dtnative';native.tabIndex=-1;
+    native.setAttribute('aria-hidden','true');
+    wrap.appendChild(native);
+    native.addEventListener('change',()=>{
+      if(!native.value)return;
+      inp.value=isoToDmy(native.value);
+      inp.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    const btn=document.createElement('button');
+    btn.type='button';btn.className='dtcal';btn.textContent='📅';
+    btn.title='Επιλογή από ημερολόγιο';btn.setAttribute('aria-label','Επιλογή από ημερολόγιο');
+    btn.onclick=()=>{
+      const iso=dtParse(inp.value);if(iso)native.value=iso;
+      // Το showPicker δεν υπάρχει σε παλιότερες μηχανές: τότε ένα κλικ στο ίδιο
+      // το πεδίο ανοίγει τον native επιλογέα.
+      try{native.showPicker();}catch(e){native.style.pointerEvents='auto';native.click();}
+    };
+    wrap.appendChild(btn);
+  });
+}
 function defaultRange(){const y=new Date().getFullYear();if(!$('#cardFrom').value)dset('cardFrom',y+'-01-01');if(!$('#cardTo').value)dset('cardTo',y+'-12-31');}
 function openCard(vat,name){showView('card');$('#cardVat').value=vat;$('#cardCust').value=name||vat;defaultRange();loadCard();}
 // Customer selector on the Καρτέλα tab (search by name/ΑΦΜ)
@@ -6081,7 +6162,27 @@ let tourI=0,TOUR_STEPS=[];
 // η «Διαχείριση» λείπει από τον πελάτη, η «Σύνδεση με server» και τα
 // «Αντίγραφα» υπάρχουν μόνο στην εγκατάσταση γραφείου. Ένα βήμα που δείχνει
 // στο πουθενά έδειχνε κείμενο στη μέση της οθόνης, χωρίς δαχτυλίδι.
-function tourSteps(){return TOUR.filter(s=>document.querySelector(s.sel));}
+//: Βήματα που μιλούν για το ΠΛΑΪΝΟ ΜΕΝΟΥ ΤΟΥ WEB. Μέσα στην εφαρμογή
+//: υπολογιστή το μενού είναι native και το δικό μας κρύβεται
+//: (`body.embedded aside{display:none}`), οπότε αυτά τα βήματα δεν έχουν τι να
+//: δείξουν — και το κείμενό τους («πάνω από τους διακόπτες») θα ήταν ψέμα.
+const TOUR_WEB_ONLY=['.side-actions','#themeToggle'];
+// Τα υπόλοιπα βήματα έδειχναν σε σύνδεσμο του κρυμμένου μενού: υπήρχε στο DOM
+// (άρα περνούσε το φίλτρο) αλλά με μηδενικές διαστάσεις, οπότε η ξενάγηση
+// έβγαινε **χωρίς δαχτυλίδι** — «δεν κάνει highlight τα σημεία». Τα γυρίζουμε
+// στον τίτλο της ίδιας της οθόνης, που φαίνεται και στις δύο εκδοχές.
+function tourEmbedFix(s){
+  if(!isEmbedded())return s;
+  const m=/^\[data-view="([a-z]+)"\]$/.exec(s.sel);
+  return m?Object.assign({},s,{sel:'#view-'+m[1]+' h2.title',view:m[1]}):s;
+}
+function tourSteps(){
+  const embedded=isEmbedded();
+  return TOUR
+    .filter(s=>!(embedded&&TOUR_WEB_ONLY.includes(s.sel)))
+    .map(tourEmbedFix)
+    .filter(s=>document.querySelector(s.sel));
+}
 function startTour(){TOUR_STEPS=tourSteps();if(!TOUR_STEPS.length)return;
   tourI=0;$('#tourOverlay').classList.add('on');localStorage.setItem('etim_tour_done','1');tourShow(0);}
 function endTour(){$('#tourOverlay').classList.remove('on');}
@@ -6264,6 +6365,9 @@ const MANUAL=[
   ['Στη <b>Διαχείριση → 🗄️ Αντίγραφα ασφαλείας του server</b>, κάθε γραμμή της λίστας έχει «<b>↩️ Επαναφορά</b>»: δουλεύει και για τα τοπικά αντίγραφα του server και για όσα κάθονται στο <b>Google Drive</b>. Υπάρχει και «<b>📁 Επαναφορά από αρχείο…</b>» για zip που κρατάς στον υπολογιστή σου — η περίπτωση «ο server ξαναστήθηκε από το μηδέν».','p'],
   ['Η σειρά είναι σκόπιμη: πρώτα κρατιέται αντίγραφο της <b>τωρινής</b> κατάστασης («pre-restore»), μετά αποκρυπτογραφείται το αρχείο, μετά ελέγχεται ότι μέσα υπάρχει βάση <b>της σωστής μηχανής</b>, και τελευταία γράφονται το κλειδί κρυπτογράφησης και η βάση. Ζητά να γραφτεί η λέξη ΕΠΑΝΑΦΟΡΑ: σβήνει δουλειά όλων και δεν αναιρείται.','li'],
   ['Ένα ανεβασμένο αρχείο περνά από το όριο μεταφόρτωσης της PHP. Αν το αντίγραφο είναι μεγαλύτερο, η εφαρμογή το λέει ονομαστικά και προτείνει τον δρόμο του Drive.','li'],
+
+  ['11ιβ. Ημερομηνίες','h2'],
+  ['Κάθε πεδίο ημερομηνίας έχει εικονίδιο <b>ημερολογίου</b> στα δεξιά του: ένα κλικ ανοίγει τον επιλογέα. Μπορείς όμως και να τη γράψεις κατευθείαν, ακόμη και <b>σύντομα</b> — το «26/8/26» γίνεται 26/08/2026 μόλις φύγεις από το πεδίο. Δεκτές και οι μορφές με τελεία ή παύλα (26.8.26, 26-8-2026). Ημερομηνία που δεν υπάρχει (π.χ. 31/2) δεν γίνεται δεκτή: το πεδίο κρατά την προηγούμενη τιμή.','p'],
 
   ['12. Χρήσιμα & συντομεύσεις','h2'],
   ['• <b>Ctrl+K</b>: γρήγορη αναζήτηση σε ΟΛΗ την εφαρμογή — πελάτες, ενότητες, ρυθμίσεις, είδη, σειρές και παραστατικά (με ΜΑΡΚ ανοίγει κατευθείαν το PDF).  • Κάτω αριστερά στο πλαϊνό μενού: τα κουμπιά «🧭 Ξενάγηση» και «📄 Εγχειρίδιο», και οι διακόπτες φωτεινού/σκοτεινού θέματος και επεξηγήσεων (tooltips).  • Αλλαγή κωδικού από «Ρυθμίσεις».  • Όλα τα τοπικά δεδομένα (πληρωμές, ρυθμίσεις, προγράμματα, ειδοποιήσεις, μυστικά 2FA, διαπιστευτήρια AADE) αποθηκεύονται τοπικά και κρυπτογραφημένα.','p']
@@ -6831,7 +6935,7 @@ function addEyes(root){
   });
 }
 
-(async()=>{addEyes();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+(async()=>{addEyes();addDatePickers();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
   // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε μισή ώρα.

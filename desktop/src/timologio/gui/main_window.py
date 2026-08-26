@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QProgressDialog,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -123,9 +124,15 @@ _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "
 _PAGES = ("clients", "sync", "documents", "control", "etimologio", "launcher",
           "schedule")
 
-#: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
-#: εσόδων/εξόδων κόβεται στα δεξιά.
+#: Πλάτος του δεξιού panel την **πρώτη** φορά. Από εκεί και πέρα μετρά ό,τι
+#: άφησε ο χρήστης σέρνοντας το χώρισμα (`panel/width`).
 _PANEL_W = 440
+
+#: Και το ελάχιστο στο οποίο μπορεί να το μαζέψει. Ήταν 440 — δηλαδή ίσο με το
+#: κανονικό πλάτος, που σημαίνει ότι το χώρισμα δεν σερνόταν καθόλου προς τα
+#: δεξιά. Κάτω από ~240 ο πίνακας εσόδων/εξόδων γίνεται δυσανάγνωστος, οπότε
+#: εκεί βάζουμε το κατώφλι· όποιος θέλει λιγότερο, κλείνει το panel.
+_PANEL_MIN = 240
 
 
 
@@ -201,6 +208,9 @@ class MainWindow(QMainWindow):
         self._last_db_mtime: float = 0.0
         self._tooltips_on = True
         self._tour: Tour | None = None
+        #: Θέλει ο χρήστης το δεξί panel; Διαβάζεται πριν χτιστεί η σελίδα
+        #: πελατών, γιατί το κουμπί «Λεπτομέρειες» ξεκινά από αυτό.
+        self._panel_wanted = bool(self._prefs.value("panel/open", True, type=bool))
         self._stale: set[str] = set()
         self._title_bar_done = False
         self._reload_timer: QTimer | None = None
@@ -698,6 +708,24 @@ class MainWindow(QMainWindow):
         self.btn_clients_refresh.setToolTip("Ξαναδιαβάζει τη λίστα πελατών από τη βάση")
         self.btn_clients_refresh.clicked.connect(self.reload_clients)
         filters.addWidget(self.btn_clients_refresh)
+
+        # Διακόπτης για το δεξί panel. Μέχρι τώρα άνοιγε και έκλεινε μόνο του με
+        # την επιλογή πελάτη και ο χρήστης δεν είχε κανέναν τρόπο να πει «άσε με
+        # να δω τον πίνακα ολόκληρο». Η επιλογή του θυμάται.
+        #
+        # Ζει σε ΑΥΤΗ τη γραμμή και όχι στη μπάρα επιλογής από κάτω: εκείνη έχει
+        # ήδη τέσσερα κουμπιά και μια επεξήγηση, και όταν ο χρήστης στενεύει τον
+        # πίνακα (κάτι που τώρα επιτρέπεται) τα κείμενα κόβονταν στη μέση.
+        self.btn_panel = QPushButton("  Λεπτομέρειες")
+        self.btn_panel.setCheckable(True)
+        self.btn_panel.setChecked(self._panel_wanted)
+        self.btn_panel.setIcon(icon("info", CURRENT.muted))
+        self.btn_panel.setToolTip(
+            "Δείχνει ή κρύβει το πλαϊνό panel με τα στοιχεία του πελάτη.\n"
+            "Το πλάτος του αλλάζει σέρνοντας το χώρισμα και το θυμάται η εφαρμογή."
+        )
+        self.btn_panel.toggled.connect(self._on_panel_toggled)
+        filters.addWidget(self.btn_panel)
         layout.addLayout(filters)
 
         # --- μπάρα επιλογής, ακριβώς πάνω από τον πίνακα
@@ -710,6 +738,10 @@ class MainWindow(QMainWindow):
 
         hint = QLabel("Κλικ στο κουτάκι για επιλογή · διπλό κλικ: επιλογή/αποεπιλογή")
         hint.setObjectName("muted")
+        # Η επεξήγηση δίνει χώρο πρώτη. Τώρα που ο πίνακας μπορεί να στενέψει
+        # (το χώρισμα με το panel σέρνεται), χωρίς αυτό το Qt μοίραζε τη ζημιά
+        # στα κουμπιά και το «Αποεπιλογή όλων» έβγαινε «ποεπιλογή όλω».
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         selbar.addWidget(hint)
 
         self.btn_check_all = QPushButton("Επιλογή όλων")
@@ -736,6 +768,11 @@ class MainWindow(QMainWindow):
         # ώστε η μπάρα να κάθεται ΑΚΡΙΒΩΣ πάνω από τον πίνακα και όχι πάνω από
         # ολόκληρο το splitter (που θα σκέπαζε και το panel ανάλυσης).
         table_holder = QWidget()
+        # Ρητό (μικρό) ελάχιστο: αλλιώς το QSplitter σέβεται το minimumSizeHint
+        # του πίνακα με τις δέκα στήλες, που ξεπερνά τα χίλια pixel — και τότε
+        # το χώρισμα δεν σέρνεται καθόλου προς τα αριστερά, όσο κι αν το τραβά ο
+        # χρήστης. Ο πίνακας έχει δική του οριζόντια μπάρα κύλισης.
+        table_holder.setMinimumWidth(320)
         holder_box = QVBoxLayout(table_holder)
         holder_box.setContentsMargins(0, 0, 0, 0)
         holder_box.setSpacing(6)
@@ -787,9 +824,13 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.analysis)
         # Ο πίνακας παίρνει τη μερίδα του λέοντος: με 9 στήλες, ό,τι δώσουμε στην
         # ανάλυση το πληρώνει η στήλη της επωνυμίας.
-        splitter.setSizes([840, _PANEL_W])
+        splitter.setSizes([840, self._panel_width()])
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
+        # Το πλάτος που θα διαλέξει ο χρήστης σέρνοντας το χώρισμα είναι δικό
+        # του και επιβιώνει: αλλιώς κάθε άνοιγμα το επανέφερε στα 440.
+        self._panel_splitter = splitter
+        splitter.splitterMoved.connect(lambda *_: self._remember_panel_width())
         layout.addWidget(splitter)
 
         # Κλειστό μέχρι να επιλεγεί πελάτης: χωρίς επιλογή δεν έχει τι να δείξει,
@@ -1171,8 +1212,10 @@ class MainWindow(QMainWindow):
             else:
                 self.analysis.show_placeholder(f"{len(vats)} πελάτες επιλεγμένοι.")
             already = self._panel_open
-            self._set_panel_open(True, animate=animate)
-            if already and animate:
+            # Αν ο χρήστης το έκλεισε ρητά, μια νέα επιλογή ΔΕΝ του το ξαναρίχνει
+            # στα μούτρα: ο διακόπτης είναι δικός του.
+            self._set_panel_open(self._panel_wanted, animate=animate)
+            if already and animate and self._panel_wanted:
                 self._nudge_panel()
         else:
             # Καμία επιλογή: το panel κλείνει αντί να δείχνει άδειο κουτί.
@@ -1195,6 +1238,37 @@ class MainWindow(QMainWindow):
             )
             self.active_client.setStyleSheet(f"color:{CURRENT.muted};")
 
+    def _panel_width(self) -> int:
+        """Το πλάτος που άφησε ο χρήστης — ή το προεπιλεγμένο την πρώτη φορά."""
+        try:
+            saved = int(self._prefs.value("panel/width", _PANEL_W))
+        except (TypeError, ValueError):
+            saved = _PANEL_W
+        return max(_PANEL_MIN, min(saved, 1200))
+
+    def _remember_panel_width(self) -> None:
+        """Κρατά το πλάτος μόνο όταν το panel είναι όντως ανοιχτό.
+
+        Χωρίς τον έλεγχο, το κλείσιμο (πλάτος 0) θα γραφόταν ως προτίμηση και το
+        panel δεν θα ξανάνοιγε ποτέ σε ορατό μέγεθος.
+        """
+        if self._panel_anim is not None or not self.analysis.isVisible():
+            return
+        width = self.analysis.width()
+        if width >= _PANEL_MIN:
+            self._prefs.setValue("panel/width", width)
+
+    def _on_panel_toggled(self, checked: bool) -> None:
+        """Ο χρήστης πάτησε «Λεπτομέρειες»."""
+        self._panel_wanted = checked
+        self._prefs.setValue("panel/open", checked)
+        if checked:
+            # Ανοίγει μόνο αν υπάρχει κάτι να δείξει· αλλιώς περιμένει επιλογή.
+            if self._selected_vats(only_ready=False):
+                self._set_panel_open(True)
+        else:
+            self._set_panel_open(False)
+
     def _set_panel_open(self, open_: bool, *, animate: bool = True) -> None:
         """Ανοίγει/κλείνει το δεξί panel με συρόμενο εφέ.
 
@@ -1212,9 +1286,10 @@ class MainWindow(QMainWindow):
             return
         self._panel_open = open_
 
+        target = self._panel_width()
         if not animate:
             self.analysis.setVisible(open_)
-            self.analysis.setMinimumWidth(_PANEL_W if open_ else 0)
+            self.analysis.setMinimumWidth(_PANEL_MIN if open_ else 0)
             self.analysis.setMaximumWidth(16777215 if open_ else 0)
             return
 
@@ -1228,7 +1303,7 @@ class MainWindow(QMainWindow):
         animation = QPropertyAnimation(self.analysis, b"maximumWidth", self)
         animation.setDuration(200)
         animation.setStartValue(start)
-        animation.setEndValue(_PANEL_W if open_ else 0)
+        animation.setEndValue(target if open_ else 0)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         animation.finished.connect(lambda: self._panel_settled(open_))
         self._panel_anim = animation
@@ -1238,9 +1313,18 @@ class MainWindow(QMainWindow):
         self._panel_anim = None
         if open_:
             # Ξεκλειδώνουμε το πλάτος ώστε ο χρήστης να σύρει το χώρισμα όπως
-            # θέλει, και ξαναβάζουμε το κατώφλι αναγνωσιμότητας.
+            # θέλει. Το κατώφλι είναι το ελάχιστο αναγνώσιμο — όχι το πλήρες
+            # πλάτος: με 440 ως ελάχιστο, το χώρισμα ΔΕΝ σερνόταν προς τα δεξιά
+            # και το panel ήταν στην πράξη κλειδωμένο σε ένα μέγεθος.
             self.analysis.setMaximumWidth(16777215)
-            self.analysis.setMinimumWidth(_PANEL_W)
+            self.analysis.setMinimumWidth(_PANEL_MIN)
+            # Και ρητά το πλάτος στο splitter: μόλις ξεκλειδώσει το maximumWidth,
+            # το splitter μοιράζει ξανά τον χώρο με βάση ό,τι θυμάται — και
+            # θυμάται μηδέν, από όσο ήταν κλειστό. Χωρίς αυτό το panel «άνοιγε»
+            # και αμέσως μάζευε στο ελάχιστο.
+            target = self._panel_width()
+            total = self._panel_splitter.width()
+            self._panel_splitter.setSizes([max(0, total - target), target])
         else:
             self.analysis.setVisible(False)
 
@@ -2258,7 +2342,10 @@ class MainWindow(QMainWindow):
                 "Για τον επιλεγμένο πελάτη βλέπετε έσοδα, έξοδα, τι κατέβηκε "
                 "και τι έμεινε αχαρακτήριστο.\n\n"
                 "Κάθε πλακίδιο είναι κουμπί: πατήστε το και ο πίνακας "
-                "παραστατικών ανοίγει φιλτραρισμένος σε αυτό ακριβώς.",
+                "παραστατικών ανοίγει φιλτραρισμένος σε αυτό ακριβώς.\n\n"
+                "Το panel είναι δικό σας: το κουμπί «Λεπτομέρειες» πάνω από τον "
+                "πίνακα το ανοιγοκλείνει, και σέρνοντας το χώρισμα του δίνετε "
+                "όποιο πλάτος θέλετε. Και τα δύο τα θυμάται η εφαρμογή.",
                 lambda: self.analysis,
                 self._tour_show_analysis,
             ),
@@ -2290,6 +2377,12 @@ class MainWindow(QMainWindow):
                 "Όσα ο πάροχος δείχνει «μόνο online» δεν έχουν PDF: με το εικονίδιο "
                 "συνδέσμου ανοίγει οδηγός που τα κατεβάζει μέσω του browser σας και "
                 "τα αρχειοθετεί μόνος του.\n\n"
+                "Η στήλη «Τύπος» δείχνει τον κωδικό myDATA μαζί με την ονομασία "
+                "του («2.1 Τιμολόγιο Παροχής Υπηρεσιών»), και η αναζήτηση τον "
+                "βρίσκει και με τις δύο μορφές: «2.1» ή «υπηρεσι».\n\n"
+                "Η «Ανανέωση» ελέγχει τον ΦΑΚΕΛΟ του πελάτη, όχι μόνο τη βάση: "
+                "ό,τι έχει ήδη κατέβει αλλά δείχνει «σε αναμονή» διορθώνεται "
+                "επιτόπου.\n\n"
                 "Συμβουλές: διπλό κλικ σε γραμμή «σε αναμονή» την κατεβάζει "
                 "επιτόπου· και κάθε στήλη έχει γρήγορο φίλτρο (το χωνί στην "
                 "επικεφαλίδα) για να δείτε π.χ. μόνο έναν προμηθευτή ή μία ημερομηνία.",
@@ -2354,6 +2447,13 @@ class MainWindow(QMainWindow):
             self._panel_anim = None
         if self.table.rowCount():
             self._panel_open = True
+            # Η ξενάγηση δείχνει το panel ακόμη κι αν ο χρήστης το έχει κλειστό —
+            # αλλιώς το βήμα θα μιλούσε για κάτι αόρατο. Ο διακόπτης ακολουθεί,
+            # ώστε να μη λέει «κλειστό» ενώ είναι ανοιχτό.
+            self._panel_wanted = True
+            self.btn_panel.blockSignals(True)
+            self.btn_panel.setChecked(True)
+            self.btn_panel.blockSignals(False)
             self.analysis.setVisible(True)
             self._panel_settled(True)
 

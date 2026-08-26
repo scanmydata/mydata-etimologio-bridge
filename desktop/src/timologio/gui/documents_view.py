@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import subprocess
@@ -9,7 +10,7 @@ import unicodedata
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .. import repo
 from ..config import Settings
+from ..doctypes import type_label, type_name
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
     count_without_pdf,
@@ -44,6 +46,8 @@ from .icons import icon
 from .table_filter import FilterHeader
 from .theme import CURRENT, money
 from .widgets import GrDateEdit, resort, setup_columns
+
+log = logging.getLogger(__name__)
 
 def _gr_upper(text: str) -> str:
     """Κεφαλαία ελληνικά χωρίς τόνους — όπως γράφονται τα ονόματα σε κεφαλαία
@@ -60,7 +64,9 @@ _COLS: list[tuple[str, int, str]] = [
     ("", 30, "Επιλέξτε παραστατικά για εξαγωγή σε ZIP"),
     ("Ημ/νία", 88, "Ημερομηνία έκδοσης"),
     ("Ε/Ξ", 64, "Έσοδο (το εξέδωσε ο πελάτης) ή Έξοδο"),
-    ("Τύπος", 54, "Τύπος παραστατικού κατά myDATA"),
+    # Με ονομασία, όχι σκέτο «2.1»: ο κωδικός από μόνος του δεν λέει τίποτα σε
+    # όποιον δεν τον ξέρει απ' έξω, και δεν αναζητείται με λέξη.
+    ("Τύπος", 240, "Τύπος παραστατικού κατά myDATA (κωδικός και ονομασία)"),
     ("Αντισυμβαλλόμενος", 0, "Ο εκδότης (στα έξοδα) ή ο πελάτης του (στα έσοδα)"),
     ("ΑΦΜ", 82, ""),
     ("Σειρά", 66, ""),
@@ -145,6 +151,22 @@ _SORT_ROLE = Qt.ItemDataRole.UserRole + 1
 _MARK_ROLE = Qt.ItemDataRole.UserRole + 2
 
 
+def _type_sort_key(code: str) -> str:
+    """Ταξινόμηση τύπων κατά αριθμό, όχι κατά αλφάβητο.
+
+    Σκέτο κείμενο θα έβαζε το «11.1» πριν από το «2.1» — ο χρήστης περιμένει τη
+    σειρά του Παραρτήματος. Γεμίζουμε κάθε τμήμα με μηδενικά: «2.1» → «002.001».
+    """
+    parts = (code or "").split(".")
+    return ".".join(p.zfill(3) if p.isdigit() else p for p in parts)
+
+
+#: Τι κάνει το κλικ στη στήλη ανοίγματος. Ζει σε data role του κελιού αντί για
+#: κουμπί-widget: ένα QWidget ανά γραμμή κόστιζε ~3 δευτερόλεπτα σε 8.000
+#: παραστατικά, και τόσα κρατούσε το «κόλλημα» κάθε φορά που άνοιγε ο πίνακας.
+_ACT_ROLE = Qt.ItemDataRole.UserRole + 3
+
+
 def _cls_color(cls: Classification) -> str:
     # Συνάρτηση και όχι σταθερό dict: τα χρώματα αλλάζουν με το θέμα.
     return {
@@ -224,8 +246,11 @@ class DocumentsView(QWidget):
 
         self.btn_refresh = QPushButton("  Ανανέωση")
         self.btn_refresh.setIcon(icon("refresh", CURRENT.muted))
-        self.btn_refresh.setToolTip("Ξαναδιαβάζει τα παραστατικά από τη βάση")
-        self.btn_refresh.clicked.connect(self.reload)
+        self.btn_refresh.setToolTip(
+            "Ελέγχει τον φάκελο του πελάτη και ενημερώνει την κατάσταση:\n"
+            "ό,τι έχει ήδη κατέβει αλλά φαίνεται «σε αναμονή» διορθώνεται."
+        )
+        self.btn_refresh.clicked.connect(self._refresh_clicked)
         bar.addWidget(self.btn_refresh)
 
         for text, value, tip in [
@@ -305,10 +330,15 @@ class DocumentsView(QWidget):
 
         second.addWidget(QLabel("Τύπος:"))
         self.combo_type = QComboBox()
-        self.combo_type.setFixedWidth(94)
+        # Όχι σταθερό πλάτος 94px: με την ονομασία δίπλα στον κωδικό, το
+        # «2.1 Τιμολόγιο Παροχής Υπηρεσιών» δεν χωρούσε πουθενά.
+        self.combo_type.setMinimumWidth(220)
+        self.combo_type.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
         self.combo_type.setToolTip("Μόνο ένας τύπος παραστατικού")
         self.combo_type.currentIndexChanged.connect(lambda _: self.reload())
-        second.addWidget(self.combo_type)
+        second.addWidget(self.combo_type, 1)
 
         self.chk_dates = QCheckBox("Διάστημα:")
         self.chk_dates.setToolTip("Ενεργοποίηση φίλτρου ημερομηνιών")
@@ -347,9 +377,19 @@ class DocumentsView(QWidget):
         root.addWidget(self.banner)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Αναζήτηση επωνυμίας, ΑΦΜ, ΜΑΡΚ, σειράς…")
+        self.search.setPlaceholderText(
+            "Αναζήτηση επωνυμίας, ΑΦΜ, ΜΑΡΚ, σειράς, τύπου παραστατικού…"
+        )
         self.search.setToolTip("Φιλτράρει όσα δείχνει ήδη ο πίνακας")
-        self.search.textChanged.connect(lambda _: self._fill())
+        # Καθυστέρηση πριν το ξαναγέμισμα: με μερικές χιλιάδες παραστατικά ο
+        # πίνακας θέλει αισθητό χρόνο να χτιστεί, και ένα ξαναγέμισμα ανά
+        # πλήκτρο πάγωνε την εφαρμογή όσο πληκτρολογούσε ο χρήστης. Τώρα
+        # χτίζεται μία φορά, όταν σταματήσει να γράφει.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(220)
+        self._search_timer.timeout.connect(self._fill)
+        self.search.textChanged.connect(lambda _: self._search_timer.start())
         root.addWidget(self.search)
 
         self.table = QTableWidget(0, len(_COLS))
@@ -364,7 +404,17 @@ class DocumentsView(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setSortingEnabled(True)
         setup_columns(self.table, _COLS, self._prefs, "documents")
+        # Η στήλη «Τύπος» δείχνει πλέον και την ονομασία, όχι μόνο τον κωδικό.
+        # Όποιος έχει ήδη χρησιμοποιήσει την εφαρμογή κουβαλά αποθηκευμένο πλάτος
+        # 54px — δηλαδή θα έβλεπε «2.1 …» και θα νόμιζε ότι δεν άλλαξε τίποτα.
+        # Το φαρδαίνουμε **μία φορά** και μόνο αν δεν το έχει ήδη φαρδύνει ο
+        # ίδιος· από εκεί και πέρα το πλάτος είναι δικό του.
+        if not self._prefs.value("documents/type_col_widened", False, type=bool):
+            self._prefs.setValue("documents/type_col_widened", True)
+            if self.table.columnWidth(_COL_TYPE) < _COLS[_COL_TYPE][1]:
+                self.table.setColumnWidth(_COL_TYPE, _COLS[_COL_TYPE][1])
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_context_menu)
         self.table.itemChanged.connect(self._on_item_changed)
@@ -452,6 +502,11 @@ class DocumentsView(QWidget):
         self._select_data(self.combo_type, invoice_type)
         for widget in combos:
             widget.blockSignals(False)
+        # Πριν δείξουμε οτιδήποτε, συμφωνούν βάση και φάκελος: αλλιώς η πρώτη
+        # εικόνα που βλέπει ο χρήστης μετά από μια λήψη μπορεί να λέει «Αναμονή»
+        # για παραστατικά που είναι ήδη στον δίσκο του. Σιωπηλά — η αναφορά
+        # ανήκει στο κουμπί «Ανανέωση», που το ζήτησε ρητά.
+        self._reconcile_quietly()
         self.reload()
 
     @staticmethod
@@ -470,7 +525,7 @@ class DocumentsView(QWidget):
         self.combo_type.clear()
         self.combo_type.addItem("Όλοι", "")
         for itype, count in invoice_types_of(self._conn, self._vat):
-            self.combo_type.addItem(f"{itype} ({count})", itype)
+            self.combo_type.addItem(f"{type_label(itype)} ({count})", itype)
 
     def _on_dates_toggled(self, enabled: bool) -> None:
         self.date_from.setEnabled(enabled)
@@ -521,6 +576,67 @@ class DocumentsView(QWidget):
     def _update_clear_visibility(self) -> None:
         self.btn_clear.setVisible(self._any_filter_active())
 
+    def _reconcile_quietly(self) -> int:
+        """Έλεγχος φακέλου χωρίς μήνυμα — και χωρίς να ρίξει τη σελίδα.
+
+        Ένα σφάλμα δίσκου (π.χ. δικτυακός φάκελος που δεν απαντά) δεν επιτρέπεται
+        να εμποδίσει το άνοιγμα των Παραστατικών: χειρότερα δεδομένα είναι
+        προτιμότερα από καθόλου σελίδα.
+        """
+        if self._conn is None or not self._vat:
+            return 0
+        from ..sync import reconcile_downloads
+
+        try:
+            fixed, _ = reconcile_downloads(self._conn, self._settings, self._vat)
+        except Exception:  # noqa: BLE001
+            log.warning("Ο έλεγχος φακέλου απέτυχε", exc_info=True)
+            return 0
+        return fixed
+
+    def _refresh_clicked(self) -> None:
+        """«Ανανέωση» = κοίτα τον φάκελο, όχι μόνο τη βάση.
+
+        Η παλιά ανανέωση ξαναέτρεχε το ίδιο query: αν η βάση έλεγε «Αναμονή» για
+        ένα PDF που ήδη βρισκόταν στον δίσκο, θα το έλεγε ξανά και ξανά. Τώρα
+        πρώτα συμφωνούν βάση και φάκελος, και μετά ξαναγεμίζει ο πίνακας.
+        """
+        if self._conn is None or not self._vat:
+            return
+        from ..sync import reconcile_downloads
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            fixed, missing = reconcile_downloads(
+                self._conn, self._settings, self._vat
+            )
+        except Exception as exc:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(
+                self, "Ανανέωση",
+                f"Ο έλεγχος του φακέλου δεν ολοκληρώθηκε:\n{exc}",
+            )
+            self.reload()
+            return
+        finally:
+            if QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+        self.reload()
+        if fixed or missing:
+            parts = []
+            if fixed:
+                parts.append(
+                    f"{fixed} παραστατικά βρέθηκαν στον φάκελο και σημειώθηκαν "
+                    "ως «Ελήφθη»."
+                )
+            if missing:
+                parts.append(
+                    f"{missing} παραστατικά είναι σημειωμένα ως «Ελήφθη» αλλά το "
+                    "αρχείο τους δεν βρίσκεται πια στον φάκελο (μετακινήθηκε ή "
+                    "διαγράφηκε). Δεν αλλάχθηκε τίποτα γι' αυτά."
+                )
+            QMessageBox.information(self, "Ανανέωση", "\n\n".join(parts))
+
     def reload(self) -> None:
         if self._conn is None or not self._vat:
             return
@@ -566,7 +682,8 @@ class DocumentsView(QWidget):
             r["mark"], r["series"] or "", r["aa"] or "",
             r["issuer_name"] or "", r["counter_name"] or "",
             r["issuer_vat"] or "", r["counter_vat"] or "",
-            r["invoice_type"] or "",
+            # Και ο κωδικός και η ονομασία: «2.1» και «υπηρεσι» βρίσκουν το ίδιο.
+            r["invoice_type"] or "", type_name(r["invoice_type"]),
             r["issue_date"] or "", _gr_date(r["issue_date"]),
             "έσοδο" if is_income else "έξοδο",
             money(r["net_value"] or 0), money(r["vat_amount"] or 0),
@@ -587,7 +704,7 @@ class DocumentsView(QWidget):
         if col == _COL_KIND:
             return "Έσοδο" if is_income else "Έξοδο"
         if col == _COL_TYPE:
-            return r["invoice_type"] or "—"
+            return type_label(r["invoice_type"])
         if col == _COL_PARTY:
             return (r["counter_name"] if is_income else r["issuer_name"]) or "—"
         if col == _COL_VATNO:
@@ -643,6 +760,7 @@ class DocumentsView(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         net = vat_sum = gross = 0.0
+        root = self._settings.storage_root
 
         for i, r in enumerate(rows):
             net += r["net_value"] or 0
@@ -683,7 +801,7 @@ class DocumentsView(QWidget):
             cells = {
                 _COL_DATE: _gr_date(r["issue_date"]),
                 _COL_KIND: "Έσοδο" if is_income else "Έξοδο",
-                3: r["invoice_type"] or "—",
+                _COL_TYPE: type_label(r["invoice_type"]),
                 4: other_name or "—", 5: other_vat or "—",
                 6: r["series"] or "—", 7: r["aa"] or "—",
                 _COL_NET: money(r["net_value"] or 0),
@@ -696,6 +814,8 @@ class DocumentsView(QWidget):
             for col, text in cells.items():
                 if col == _COL_DATE:
                     item = SortableItem(text, r["issue_date"] or "")
+                elif col == _COL_TYPE:
+                    item = SortableItem(text, _type_sort_key(r["invoice_type"]))
                 elif col == _COL_PRINTED:
                     item = SortableItem(text, printed_iso)
                 elif col in (_COL_NET, _COL_VAT, _COL_GROSS):
@@ -719,7 +839,11 @@ class DocumentsView(QWidget):
                 item.setToolTip(tip)
                 self.table.setItem(i, col, item)
 
-            self.table.setCellWidget(i, _COL_OPEN, self._open_button(r))
+            rel = r["local_path"] or r["xml_path"]
+            self.table.setItem(
+                i, _COL_OPEN,
+                self._open_item(r, bool(rel) and (root / rel).exists()),
+            )
 
         self.table.setSortingEnabled(True)
         resort(self.table, _COL_DATE)
@@ -1036,46 +1160,64 @@ class DocumentsView(QWidget):
                 "Κανένα από τα επιλεγμένα PDF δεν μπόρεσε να διαβαστεί.",
             )
 
-    def _open_button(self, row: sqlite3.Row) -> QWidget:
-        """Κουμπί ανοίγματος — ενεργό μόνο όταν υπάρχει όντως αρχείο."""
-        path = row["local_path"] or row["xml_path"]
-        holder = QWidget()
-        box = QHBoxLayout(holder)
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    def _open_item(self, row: sqlite3.Row, has_file: bool) -> QTableWidgetItem:
+        """Το κελί «άνοιγμα» — εικονίδιο σε κελί, όχι κουμπί-widget.
 
-        button = QPushButton()
-        button.setObjectName("rowButton")
-        button.setFixedSize(QSize(26, 24))
+        Ήταν `QWidget` με layout και `QPushButton` μέσα, δηλαδή **δύο widgets
+        ανά γραμμή**. Σε πελάτη με 8.000 παραστατικά αυτά μόνα τους έτρωγαν
+        περίπου τρία δευτερόλεπτα κάθε φορά που γέμιζε ο πίνακας — και ο
+        πίνακας γεμίζει σε κάθε αναζήτηση, φίλτρο και ανανέωση. Ένα κελί με
+        εικονίδιο κάνει την ίδια δουλειά με το κλικ (δείτε `_on_cell_clicked`)
+        και κοστίζει όσο κάθε άλλο κελί.
+        """
+        item = QTableWidgetItem()
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        path = row["local_path"] or row["xml_path"]
         online_url = (
             row["downloading_invoice_url"]
             if row["status"] == DocStatus.VIEWER_ONLY.value else ""
         )
-        if path and (self._settings.storage_root / path).exists():
+        if path and has_file:
             is_pdf = bool(row["local_path"])
-            button.setIcon(
+            item.setIcon(
                 icon("pdf" if is_pdf else "csv",
                      CURRENT.ok if is_pdf else CURRENT.muted)
             )
-            button.setToolTip(
+            item.setToolTip(
                 "Άνοιγμα του PDF" if is_pdf
                 else "Άνοιγμα του XML (δεν υπάρχει PDF παρόχου)"
             )
-            button.clicked.connect(lambda _=False, p=path: self._open(p))
+            item.setData(_ACT_ROLE, "open")
         elif online_url:
             # Μόνο online: καθοδηγούμενη λήψη μέσω του browser, με αυτόματη
             # αρχειοθέτηση — ίδια ροή/αποθήκευση με το popup «Λήψη μόνο-online».
-            button.setIcon(icon("link", CURRENT.accent))
-            button.setToolTip(
+            item.setIcon(icon("link", CURRENT.accent))
+            item.setToolTip(
                 "Λήψη μόνο-online μέσω του browser σας (αποθηκεύεται αυτόματα)"
             )
-            button.clicked.connect(lambda _=False, r=row: self._download_online_row(r))
+            item.setData(_ACT_ROLE, "online")
         else:
-            button.setIcon(icon("cancel", CURRENT.muted))
-            button.setEnabled(False)
-            button.setToolTip("Δεν υπάρχει αρχείο για αυτό το παραστατικό")
-        box.addWidget(button)
-        return holder
+            item.setIcon(icon("cancel", CURRENT.muted))
+            item.setToolTip("Δεν υπάρχει αρχείο για αυτό το παραστατικό")
+        return item
+
+    def _on_cell_clicked(self, table_row: int, col: int) -> None:
+        """Ένα κλικ στη στήλη ανοίγματος κάνει ό,τι έκανε το παλιό κουμπί."""
+        if col != _COL_OPEN:
+            return
+        item = self.table.item(table_row, col)
+        if item is None:
+            return
+        action = item.data(_ACT_ROLE)
+        mark = self._mark_at_row(table_row)
+        row = self._row_by_mark(mark) if mark else None
+        if row is None:
+            return
+        if action == "open":
+            self._open(row["local_path"] or row["xml_path"])
+        elif action == "online":
+            self._download_online_row(row)
 
     def _download_online_row(self, row: sqlite3.Row) -> None:
         """Λήψη ενός «μόνο online» παραστατικού μέσω του browser (όπως το popup).

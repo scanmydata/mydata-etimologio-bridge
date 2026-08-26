@@ -76,20 +76,37 @@ _TOOLBAR_ICONS = {
 def _fix_toolbar_combos(dialog: QPrintPreviewDialog) -> None:
     """Κάνει ορατά το dropdown του ζουμ και το πεδίο αριθμού σελίδας.
 
-    Στο σκούρο θέμα το popup του combo έβγαινε με κείμενο στο χρώμα του φόντου —
-    ο χρήστης έβλεπε ένα άδειο κουτί. Δίνουμε ρητά χρώματα κειμένου/φόντου (και
-    στη λίστα του popup) χωρίς να αγγίξουμε την ίδια την προεπισκόπηση."""
+    Δύο ξεχωριστά προβλήματα, και τα δύο άφηναν ένα **άδειο κουτί**:
+
+    * Χρώμα: στο σκούρο θέμα το popup του combo έβγαινε με κείμενο στο χρώμα του
+      φόντου. Δίνουμε ρητά χρώματα κειμένου/φόντου, και στη λίστα του popup.
+    * Ύψος: το γενικό stylesheet της εφαρμογής δίνει στα πεδία `padding: 6px 9px`.
+      Μέσα στη χαμηλή γραμμή εργαλείων της προεπισκόπησης, αυτό το padding
+      έτρωγε το κείμενο — το «100,0%» φαινόταν κομμένο στη μέση ή καθόλου, κι
+      έτσι το πεδίο του ζουμ έμοιαζε κενό. Το μικραίνουμε **μόνο εδώ**.
+
+    Το combo δεν έχει ετικέτα πουθενά: χωρίς tooltip κανείς δεν μπορεί να
+    μαντέψει ότι είναι το ζουμ της προεπισκόπησης.
+    """
     field_qss = (
         f"color:{CURRENT.txt}; background:{CURRENT.panel};"
+        f"padding:1px 4px; border-radius:6px;"
         f"selection-background-color:{CURRENT.accent}; selection-color:{CURRENT.on_accent};"
     )
     for combo in dialog.findChildren(QComboBox):
         combo.setStyleSheet(
             f"QComboBox {{ {field_qss} }}"
             f"QComboBox QAbstractItemView {{ {field_qss} }}"
+            f"QComboBox QAbstractItemView::item {{ color:{CURRENT.txt};"
+            f" padding:2px 6px; }}"
         )
+        combo.setToolTip("Μεγέθυνση της προεπισκόπησης")
+        if combo.lineEdit() is not None:
+            combo.lineEdit().setToolTip("Μεγέθυνση της προεπισκόπησης")
     for edit in dialog.findChildren(QLineEdit):
         edit.setStyleSheet(f"QLineEdit {{ {field_qss} }}")
+        if not edit.toolTip():
+            edit.setToolTip("Αριθμός σελίδας")
 
 
 def _fix_toolbar_icons(dialog: QPrintPreviewDialog) -> None:

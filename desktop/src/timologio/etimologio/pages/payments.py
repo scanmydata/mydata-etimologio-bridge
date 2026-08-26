@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
-    QDateEdit,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from ..codes import PAYMENT_LABELS as _METHODS
 from ..codes import PAYMENT_METHODS_CASH
+from ...gui.widgets import GrDateEdit
 from . import ui
 from .base import ROW_ROLE, EtimPage, fmt_money, parse_money
 from .pickers import customer_picker
@@ -66,9 +66,7 @@ class NewPaymentDialog(QDialog):
         self.vat = QLineEdit()
         self.name = QLineEdit()
         self.amount = QLineEdit("0")
-        self.date = QDateEdit(QDate.currentDate())
-        self.date.setCalendarPopup(True)
-        self.date.setDisplayFormat("dd/MM/yyyy")
+        self.date = GrDateEdit()
         self.method = QComboBox()
         # Εισπράξεις — όχι ο πλήρης κατάλογος: το «επί πιστώσει» είναι τρόπος
         # πληρωμής παραστατικού, δεν είναι είσπραξη. Η προηγούμενη έκδοση

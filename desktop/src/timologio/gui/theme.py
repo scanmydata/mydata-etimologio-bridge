@@ -147,10 +147,11 @@ def build(p: Palette) -> str:
     # Το ✓ γεννιέται εδώ γιατί το χρώμα του εξαρτάται από το θέμα. Η εισαγωγή
     # είναι τοπική: το icons.py χρειάζεται QGuiApplication, ενώ αυτό το module
     # φορτώνεται και από κώδικα χωρίς GUI (π.χ. tests του CLI).
-    from .icons import arrow_image, indicator_image
+    from .icons import arrow_image, calendar_image, indicator_image
 
     check = indicator_image(p.on_accent)
     arrow = arrow_image(p.muted)
+    cal = calendar_image(p.accent)
     return f"""
 QWidget {{ background: {p.bg}; color: {p.txt}; font-size: 13px; }}
 QMainWindow, QDialog {{ background: {p.bg}; }}
@@ -214,8 +215,14 @@ QComboBox::drop-down, QDateEdit::drop-down {{
     border: none; width: 20px;
     subcontrol-origin: padding; subcontrol-position: center right;
 }}
-QComboBox::down-arrow, QDateEdit::down-arrow {{
+QComboBox::down-arrow {{
     image: url("{arrow}"); width: 12px; height: 12px;
+}}
+/* Ημερολόγιο, όχι βελάκι: το πεδίο ανοίγει ημερολόγιο και το βελάκι «κάτω»
+   υπόσχεται λίστα. Στο χρώμα του τόνου, ώστε να διαβάζεται ως κουμπί. */
+QDateEdit::drop-down {{ width: 24px; }}
+QDateEdit::down-arrow {{
+    image: url("{cal}"); width: 14px; height: 14px;
 }}
 QComboBox QAbstractItemView {{
     background: {p.panel};
@@ -472,6 +479,49 @@ def paint_title_bar(window, dark: bool) -> bool:
         # λευκή γραμμή τίτλου — δεν είναι λόγος να μην ανοίξει.
         pass
     return done
+
+
+def install_title_bar_painter(app) -> object:
+    """Βάφει τη γραμμή τίτλου **κάθε** παραθύρου, όχι μόνο του κεντρικού.
+
+    Το `paint_title_bar` καλούνταν στο `showEvent` του κύριου παραθύρου. Κάθε
+    διάλογος όμως είναι δικό του παράθυρο με δική του γραμμή τίτλου, οπότε η
+    προεπισκόπηση εκτύπωσης, τα μηνύματα και οι φόρμες άνοιγαν με **λευκή**
+    μπάρα πάνω από σκούρα εφαρμογή — σαν ξένο κομμάτι κολλημένο στην κορυφή.
+
+    Στήνεται ως φίλτρο συμβάντων στην εφαρμογή: ό,τι παράθυρο εμφανιστεί,
+    βάφεται. Δεν χρειάζεται να το θυμάται κανείς σε κάθε νέο διάλογο.
+
+    Κρατήστε την επιστροφή ζωντανή — αλλιώς τον μαζεύει ο garbage collector και
+    το φίλτρο παύει σιωπηλά.
+    """
+    from PySide6.QtCore import QEvent, QObject
+
+    class Painter(QObject):
+        def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt API)
+            if event.type() == QEvent.Type.Show:
+                try:
+                    if watched.isWindow():
+                        paint_title_bar(watched, CURRENT.name != "light")
+                except (RuntimeError, AttributeError):
+                    # Widget που μόλις καταστράφηκε, ή αντικείμενο χωρίς
+                    # isWindow (το φίλτρο βλέπει ΚΑΘΕ QObject της εφαρμογής).
+                    pass
+            return False
+
+    painter = Painter()
+    app.installEventFilter(painter)
+    app._title_bar_painter = painter  # noqa: SLF001
+    return painter
+
+
+def repaint_title_bars(dark: bool) -> None:
+    """Ξαναβάφει ό,τι είναι ήδη ανοιχτό, μετά από αλλαγή θέματος."""
+    from PySide6.QtWidgets import QApplication
+
+    for window in QApplication.topLevelWidgets():
+        if window.isWindow():
+            paint_title_bar(window, dark)
 
 
 def money(value: float) -> str:

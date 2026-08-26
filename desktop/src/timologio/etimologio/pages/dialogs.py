@@ -12,10 +12,9 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from PySide6.QtCore import QDate, QTime
+from PySide6.QtCore import QTime
 from PySide6.QtWidgets import (
     QComboBox,
-    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...gui.widgets import GrDateEdit
 from ..codes import INVOICE_TYPES
 from .base import fmt_money, parse_money
 
@@ -242,9 +242,7 @@ class ScheduleDialog(QDialog):
         box.addLayout(form)
 
         tomorrow = date.today() + timedelta(days=1)
-        self.date = QDateEdit(QDate(tomorrow.year, tomorrow.month, tomorrow.day))
-        self.date.setCalendarPopup(True)
-        self.date.setDisplayFormat("dd/MM/yyyy")
+        self.date = GrDateEdit(tomorrow)
         form.addRow("Ημερομηνία", self.date)
 
         self.time = QTimeEdit(QTime(9, 0))

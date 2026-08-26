@@ -13,10 +13,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QDate, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QDateEdit,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...gui.widgets import GrDateEdit
 from . import ui
 from .base import ROW_ROLE, EtimPage, cached_then_live, fmt_money, parse_money
 from .pickers import customer_picker
@@ -85,11 +85,8 @@ class CreditNotePage(EtimPage):
         search.addWidget(QLabel("Πελάτης:"))
         search.addWidget(self._customer, 2)
         year = date.today().year
-        self._from = QDateEdit(QDate(year, 1, 1))
-        self._to = QDateEdit(QDate.currentDate())
-        for field in (self._from, self._to):
-            field.setCalendarPopup(True)
-            field.setDisplayFormat("dd/MM/yyyy")
+        self._from = GrDateEdit(date(year, 1, 1))
+        self._to = GrDateEdit(date.today())
         search.addWidget(QLabel("Από:"))
         search.addWidget(self._from)
         search.addWidget(QLabel("Έως:"))

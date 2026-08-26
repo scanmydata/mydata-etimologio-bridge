@@ -6,6 +6,7 @@ debug surface.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import random
@@ -32,7 +33,7 @@ from .download import (
     target_path,
     write_atomic,
 )
-from .download.storage import long_path
+from .download.storage import client_folder, find_client_folder, long_path
 from .models import (
     Client,
     Direction,
@@ -401,6 +402,148 @@ def download_single(
     )
     conn.commit()
     return DocStatus.DOWNLOADED, f"Ελήφθη το PDF ({size:,} B)."
+
+
+#: Τι βρήκε ο έλεγχος φακέλων: (πόσα διορθώθηκαν, πόσα αρχεία λείπουν).
+ReconcileResult = tuple[int, int]
+
+
+def _dirs_for(issue_date: str, folders: set[Path]) -> set[str]:
+    """Πού ΘΑ μπορούσε να ζει το αρχείο ενός παραστατικού: `φάκελος/έτος/μήνας`.
+
+    Ίδιος κανόνας με το `target_path` (partition κατά ημερομηνία έκδοσης), αλλά
+    χωρίς να χτιστεί όνομα αρχείου — και τα ονόματα είναι το ακριβό κομμάτι.
+    """
+    year, month = "0000", "00"
+    if len(issue_date or "") >= 7 and issue_date[4] == "-":
+        year, month = issue_date[:4], issue_date[5:7]
+    return {str(folder / year / month) for folder in folders}
+
+
+def _files_under(folder: Path, root: Path) -> set[str]:
+    """Κάθε αρχείο κάτω από τον φάκελο, ως διαδρομή σχετική με τη ρίζα.
+
+    Μία σάρωση αντί για ένα ερώτημα στον δίσκο ανά παραστατικό: ο φάκελος ενός
+    πελάτη έχει δεκάδες υποφακέλους (έτος/μήνας) και μερικές χιλιάδες αρχεία,
+    ενώ τα παραστατικά στη βάση είναι το ίδιο πλήθος — η σάρωση κοστίζει όσο
+    ΕΝΑ πέρασμα, τα stat κόστιζαν όσο δύο ανά γραμμή.
+    """
+    if not folder.is_dir():
+        return set()
+    found: set[str] = set()
+    for path in folder.rglob("*"):
+        if path.is_file():
+            try:
+                found.add(str(path.relative_to(root)))
+            except ValueError:  # symlink έξω από τη ρίζα — δεν μας αφορά
+                continue
+    return found
+
+
+def reconcile_downloads(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    client_vat: str,
+    *,
+    progress: ProgressFn = _noop,
+) -> ReconcileResult:
+    """Συμφωνεί τη βάση με ό,τι υπάρχει **όντως στον φάκελο**.
+
+    Υπάρχει γιατί η βάση και ο δίσκος μπορούν να ξεφύγουν μεταξύ τους: το PDF
+    γράφεται πρώτο και η εγγραφή «ελήφθη» δεύτερη, οπότε ένα κλείσιμο της
+    εφαρμογής (ή διακοπή ρεύματος) ανάμεσα στα δύο αφήνει αρχείο στον δίσκο και
+    «Αναμονή» στην οθόνη. Ο χρήστης βλέπει κατεβασμένα παραστατικά που η λίστα
+    επιμένει ότι δεν κατέβηκαν, και καμία «Ανανέωση» δεν το άλλαζε: ξαναδιάβαζε
+    την ίδια, λάθος βάση.
+
+    Δύο περάσματα, με **σκόπιμη ασυμμετρία**:
+
+    * Ό,τι δεν είναι «ελήφθη» αλλά το αρχείο του υπάρχει → γίνεται «ελήφθη».
+    * Ό,τι είναι «ελήφθη» αλλά λείπει το αρχείο → **μόνο μετριέται**. Ένα
+      μεταφερμένο ή αρχειοθετημένο PDF δεν είναι λόγος να ξανακατέβει ο μισός
+      χρόνος του πελάτη· το λέμε στον χρήστη και αποφασίζει εκείνος.
+
+    Επιστρέφει ``(διορθώθηκαν, λείπουν)``.
+    """
+    # Σκέτο query αντί για `repo.get_client`: εκείνο ζητά `Crypto` για να
+    # ξεκλειδώσει τα κλειδιά API, που εδώ δεν χρειάζονται καθόλου.
+    client = conn.execute(
+        "SELECT id, vat, label FROM clients WHERE vat = ?", (client_vat,)
+    ).fetchone()
+    if client is None:
+        return 0, 0
+    client_id, vat, label = client["id"], client["vat"], client["label"] or ""
+    root = settings.storage_root
+    rows = list(conn.execute(
+        "SELECT * FROM documents WHERE client_id = ?", (client_id,)
+    ))
+    # Ποιο αρχείο ανήκει ήδη σε ποιο παραστατικό. Δύο παραστατικά μπορούν να
+    # δείχνουν στο ίδιο όνομα αρχείου (ίδιος εκδότης, κενή σειρά/ΑΑ): χωρίς
+    # αυτόν τον έλεγχο ένα και μόνο PDF θα σήμαινε δέκα παραστατικά ως
+    # «ελήφθη» — και ο χρήστης θα νόμιζε ότι τα έχει όλα.
+    claimed = {r["local_path"] for r in rows if r["local_path"]}
+
+    # ΜΙΑ σάρωση του φακέλου, όχι δύο stat ανά παραστατικό. Ο έλεγχος τρέχει σε
+    # κάθε άνοιγμα των Παραστατικών: με 8.000 εκκρεμή, το «χτίσε τη διαδρομή και
+    # ρώτα τον δίσκο» κόστιζε σχεδόν δύο δευτερόλεπτα **για να μη βρει τίποτα**.
+    # Και οι δύο φάκελοι: το `target_path` γράφει πάντα με τη ΣΗΜΕΡΙΝΗ επωνυμία,
+    # ενώ τα παλιά αρχεία μπορεί να κάθονται σε φάκελο με την προηγούμενη (η
+    # επωνυμία αλλάζει από VIES ή από νέο import). Χωρίς την ένωση, όσα ζουν
+    # στον παλιό φάκελο θα μετριόνταν λανθασμένα ως «λείπουν».
+    folders = {client_folder(root, vat, label), find_client_folder(root, vat, label)}
+    on_disk: set[str] = set()
+    for folder in folders:
+        on_disk |= _files_under(folder, root)
+    missing = sum(
+        1 for r in rows
+        if r["status"] == DocStatus.DOWNLOADED.value
+        and (r["local_path"] or r["xml_path"])
+        and (r["local_path"] or r["xml_path"]) not in on_disk
+    )
+    # Αν κάθε αρχείο του φακέλου έχει ήδη ιδιοκτήτη, δεν υπάρχει τίποτα να
+    # βρεθεί — και δεν χτίζουμε ούτε μία διαδρομή.
+    orphans = on_disk - claimed
+    if not orphans:
+        return 0, missing
+
+    # Ένα παραστατικό μπορεί να ταιριάξει ΜΟΝΟ με αρχείο του δικού του φακέλου
+    # έτους/μήνα. Κρατάμε ποιοι φάκελοι έχουν αδέσποτο αρχείο και προσπερνάμε τα
+    # υπόλοιπα χωρίς να χτίσουμε διαδρομή: το `target_path` δεν είναι φθηνό, και
+    # σε 8.000 γραμμές το «χτίσε και ρώτα» κόστιζε δευτερόλεπτα για ένα αρχείο.
+    orphan_dirs = {str(Path(rel).parent) for rel in orphans}
+    # Σχετικά με τη ρίζα, όπως και τα κλειδιά του `on_disk`.
+    rel_folders = {folder.relative_to(root) for folder in folders}
+
+    fixed = 0
+    for row in rows:
+        if row["status"] == DocStatus.DOWNLOADED.value:
+            continue
+        if not _dirs_for(row["issue_date"], rel_folders) & orphan_dirs:
+            continue
+        doc = _doc_from_row(row)
+        # Και οι δύο υποψήφιες διαδρομές: η κανονική και εκείνη με το ΜΑΡΚ στο
+        # τέλος, που χρησιμοποιεί το `resolve_path` όταν βρει σύγκρουση ονόματος.
+        for path in (
+            target_path(root, vat, doc, client_label=label),
+            target_path(root, vat, doc, disambiguate=True, client_label=label),
+        ):
+            relative = str(path.relative_to(root))
+            if relative not in on_disk or relative in claimed:
+                continue
+            if not is_complete_pdf(path):
+                continue
+            payload = path.read_bytes()
+            size, sha = len(payload), hashlib.sha256(payload).hexdigest()
+            repo.mark_downloaded(
+                conn, client_id, row["mark"], relative, size, sha,
+            )
+            claimed.add(relative)
+            fixed += 1
+            progress(f"  ✓ {row['mark']}: βρέθηκε στον φάκελο")
+            break
+    if fixed:
+        conn.commit()
+    return fixed, missing
 
 
 def rename_existing(

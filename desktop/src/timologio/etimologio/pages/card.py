@@ -23,7 +23,6 @@ from typing import Any
 from PySide6.QtCore import QDate, QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
-    QDateEdit,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -37,6 +36,7 @@ from ...gui.printing import print_pdfs
 from ..bulkpdf import export_zip, fetch_pdfs
 from ..codes import PAYMENT_LABELS
 from ..ledgerpdf import build_ledger_pdf, entries_from
+from ...gui.widgets import GrDateEdit
 from . import ui
 from .base import EtimPage, cached_then_live, fmt_date, fmt_money, parse_money
 from .customers import _cust_value
@@ -137,11 +137,8 @@ class CustomerCard(EtimPage):
         period.addWidget(QLabel("Διάστημα:"))
         period.addWidget(self._period)
         year = date.today().year
-        self._from = QDateEdit(QDate(year, 1, 1))
-        self._to = QDateEdit(QDate.currentDate())
-        for field in (self._from, self._to):
-            field.setCalendarPopup(True)
-            field.setDisplayFormat("dd/MM/yyyy")
+        self._from = GrDateEdit(date(year, 1, 1))
+        self._to = GrDateEdit(date.today())
         period.addWidget(QLabel("Από:"))
         period.addWidget(self._from)
         period.addWidget(QLabel("Έως:"))
