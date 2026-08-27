@@ -112,6 +112,33 @@ require_once __DIR__ . '/zipwriter.php';   // ZIP builder (no ZipArchive depende
 require_once __DIR__ . '/serverlink.php';  // σύνδεση/συγχρονισμός με web server + αντίγραφα
 require_once __DIR__ . '/serverbackup.php'; // αντίγραφα ΤΟΥ SERVER (βάση + .enckey) στο Drive
 
+// --- ΣΦΑΛΜΑΤΑ PHP ΕΚΤΟΣ ΤΟΥ ΣΩΜΑΤΟΣ ------------------------------------------
+// Ένα και μόνο warning της PHP τυπωμένο στην απάντηση («<br /><b>Warning</b>…»)
+// αχρηστεύει ΟΛΟΚΛΗΡΗ τη JSON: ο browser σκάει με «Unexpected token '<'» και ο
+// χρήστης βλέπει έναν γρίφο αντί για την αιτία. Τα στέλνουμε στο αρχείο
+// καταγραφής, ποτέ στο σώμα.
+@ini_set('display_errors', '0');
+@ini_set('html_errors', '0');
+@ini_set('log_errors', '1');
+
+// Και το μοιραίο σφάλμα βγαίνει ως JSON, με το πραγματικό μήνυμα: αλλιώς η
+// απάντηση θα ήταν άδεια και το UI θα έλεγε πάλι κάτι που δεν εξηγεί τίποτα.
+register_shutdown_function(function (): void {
+    $e = error_get_last();
+    if (!$e || !in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR,
+                                      E_COMPILE_ERROR, E_USER_ERROR], true)) {
+        return;
+    }
+    if (headers_sent()) return;
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode([
+        'success' => false,
+        'error'   => 'Εσωτερικό σφάλμα: ' . $e['message']
+                   . ' (' . basename((string)$e['file']) . ':' . $e['line'] . ')',
+    ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+});
+
 // --- RESPONSE HELPERS --------------------------------------------------------
 
 function jsonResponse(array $data, int $status = 200): void {
@@ -384,7 +411,15 @@ function aadeCredentialTest(string $vat, string $username, string $subkey): arra
     // --- 2. e-timologio ----------------------------------------------------
     // Η ίδια φόρμα σύνδεσης με το `login()`, αλλά με τα ΥΠΟ ΔΟΚΙΜΗ στοιχεία και
     // σε δικό της cookie jar: δεν πειράζουμε τη ζωντανή συνεδρία του χρήστη.
-    $jar = tempnam(sys_get_temp_dir(), 'etimtest');
+    // Δικός μας φάκελος, όχι ο temp του συστήματος: το `tempnam` προειδοποιεί
+    // δυνατά («file created in the system's temporary directory») όταν το TMP
+    // δεν είναι εγγράψιμο — και μια προειδοποίηση εδώ κατέστρεφε ολόκληρη τη
+    // JSON της δοκιμής. Ο φάκελος των cookies υπάρχει ήδη και είναι δικός μας.
+    $dir = defined('COOKIE_DIR') && is_dir(COOKIE_DIR) ? COOKIE_DIR : sys_get_temp_dir();
+    $jar = @tempnam($dir, 'etimtest');
+    if (!is_string($jar) || $jar === '') {
+        $jar = rtrim($dir, "/\\") . DIRECTORY_SEPARATOR . 'etimtest-' . bin2hex(random_bytes(8));
+    }
     $ch  = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,

@@ -893,7 +893,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <div class="wiz-q">2️⃣ Ο πελάτης είναι;</div>
           <div class="wiz-opts">
             <button class="wiz-card" onclick="wizWho('pro')"><span class="wic">🏢</span><b>Επαγγελματίας</b><small>Έχει ΑΦΜ → Τιμολόγιο (πώλησης / παροχής)</small></button>
-            <button class="wiz-card" onclick="wizWho('idiot')"><span class="wic">👤</span><b>Ιδιώτης</b><small>Χωρίς ΑΦΜ → Απόδειξη λιανικής</small></button>
+            <button class="wiz-card" onclick="wizWho('idiot')"><span class="wic">👤</span><b>Ιδιώτης</b><small>ΑΦΜ προαιρετικό → Απόδειξη λιανικής</small></button>
           </div>
           <button class="ghost sm" style="margin-top:12px" onclick="wizReset()">← Πίσω</button>
         </div>
@@ -1526,7 +1526,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   <div class="modal-head">👤 <span id="custModalTitle">Νέος πελάτης</span></div>
   <div class="tabset" id="custTabs">
     <button class="on" data-t="afm" onclick="custTab('afm')">Με ΑΦΜ (Taxisnet)</button>
-    <button data-t="personal" onclick="custTab('personal')">Ιδιώτης (χωρίς ΑΦΜ)</button>
+    <button data-t="personal" onclick="custTab('personal')">Ιδιώτης</button>
   </div>
   <div id="custTabAfm">
     <div class="row"><div class="field grow"><label>ΑΦΜ</label><input id="cmAfm" placeholder="9 ψηφία"></div>
@@ -1542,7 +1542,12 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <p class="hint">Αποθήκευση δημιουργεί τον πελάτη στο e-timologio (αν δεν υπάρχει).</p>
   </div>
   <div id="custTabPersonal" style="display:none">
-    <div class="row"><div class="field grow"><label>Ονοματεπώνυμο *</label><input id="cpName"></div></div>
+    <div class="row"><div class="field grow"><label>Ονοματεπώνυμο *</label><input id="cpName"></div>
+      <!-- Προαιρετικό, και όχι αντίφαση με τον τίτλο της καρτέλας: ένας ιδιώτης
+           μπορεί κάλλιστα να έχει ΑΦΜ (μισθωτός, συνταξιούχος, αγρότης) και να
+           ζητά να αναγράφεται. Η ΑΑΔΕ το δέχεται σε πελάτη τύπου «ιδιώτης». -->
+      <div class="field"><label>ΑΦΜ <span class="muted">(προαιρετικό)</span></label>
+        <input id="cpVat" style="width:140px" placeholder="9 ψηφία" inputmode="numeric"></div></div>
     <div class="row"><div class="field grow"><label>Διεύθυνση</label><input id="cpAddress"></div>
       <div class="field"><label>Πόλη *</label><input id="cpCity"></div><div class="field"><label>Τ.Κ. *</label><input id="cpZip"></div></div>
     <div class="row"><div class="field grow"><label>Επάγγελμα</label><input id="cpJob" value="ΙΔΙΩΤΗΣ"></div>
@@ -2106,12 +2111,30 @@ function toggleTips(){const on=!document.documentElement.classList.contains('tip
   localStorage.setItem('etim_tips',on?'1':'0');applyTips(on);}
 applyTips((localStorage.getItem('etim_tips')||'1')==='1');
 
+// Ό,τι δεν είναι JSON γίνεται ΑΝΑΓΝΩΣΙΜΟ μήνυμα. Το «Unexpected token '<'» του
+// browser λέει μόνο ότι η απάντηση δεν ήταν JSON — όχι τι πήγε στραβά. Ο server
+// στέλνει HTML μόνο όταν έχει σκάσει (σφάλμα PHP) ή όταν δεν είναι καν εκεί
+// (404/502): και στις δύο περιπτώσεις η αιτία είναι ΜΕΣΑ στο κείμενο, και εδώ
+// τη βγάζουμε έξω.
+function apiText(txt,status){
+  const plain=String(txt||'')
+    .replace(/<br\s*\/?>/gi,' ')
+    .replace(/<[^>]*>/g,' ')
+    .replace(/&nbsp;/gi,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+  if(!plain)return 'Ο server απάντησε HTTP '+status+' χωρίς περιεχόμενο.';
+  return 'HTTP '+status+' — '+plain.slice(0,300);
+}
+async function apiParse(r){
+  const txt=await r.text();
+  try{return JSON.parse(txt);}catch(e){throw new Error(apiText(txt,r.status));}
+}
 async function api(params){const q=new URLSearchParams(params);if(ACCOUNT)q.set('account',ACCOUNT);
   let r;
   try{r=await fetch(API+'?'+q.toString());}
   catch(e){if(netIsFetchFailure(e))netSetOffline(true,'Ο υπολογιστής δεν έχει σύνδεση στο internet.');throw e;}
-  const txt=await r.text();
-  let d;try{d=JSON.parse(txt);}catch(e){throw new Error(txt.slice(0,200));}
+  const d=await apiParse(r);
   netNoteReply(d);
   return d;}
 
@@ -2392,7 +2415,7 @@ async function disable2fa(){const v=$('#twofaOff').value.trim();if(!v){$('#twofa
   try{const d=await apost({auth:'totp_disable',verify:v});
     if(d.success){toast('Το 2FA απενεργοποιήθηκε','ok');TWOFA_ENABLED=false;$('#twofaOff').value='';render2fa();}
     else $('#twofaResult').textContent=d.error||'Αποτυχία';}catch(e){$('#twofaResult').textContent='Σφάλμα δικτύου';}}
-async function apost(params){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(params)});return r.json();}
+async function apost(params){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(params)});return apiParse(r);}
 // Η Διαχείριση δουλεύει και για τον λογιστή, με ΑΛΛΟ περιεχόμενο: ο διαχειριστής
 // βλέπει μέλη + κάθε εταιρεία, ο λογιστής μόνο τις δικές του και χωρίς μέλη.
 let ADMIN_SCOPE={is_master:false,accounts:[],accountants:[]};
@@ -3355,12 +3378,12 @@ function renderCustomers(){
       <button class="ghost sm" onclick="event.stopPropagation();openCard('${q1(c.vat)}','${q1(c.name)}')">Καρτέλα →</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">Κανένα αποτέλεσμα.</td></tr>';
   applyColumnFilters('custTable');
 }
-async function loadCustomers(){await cachedThenSync('customers',rows=>{ALL_CUSTOMERS=rows;renderCustomers();});}
+async function loadCustomers(){await cachedThenSync('customers',rows=>{ALL_CUSTOMERS=rows;renderCustomers();if(ALL_DOCS.length&&$('#docTable'))renderDocs();});}
 
 // Customer modal (create/edit)
 let CUST_ONSAVED=null;
 function custTab(t){$('#custTabAfm').style.display=t==='afm'?'':'none';$('#custTabPersonal').style.display=t==='personal'?'':'none';document.querySelectorAll('#custTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));}
-function openCustomerModal(onSaved,prefillAfm){CUST_ONSAVED=(typeof onSaved==='function')?onSaved:null;$('#custModalTitle').textContent='Νέος πελάτης';['cmAfm','cmName','cmAddress','cmCity','cmZip','cmEmail','cmPhone1','cmPhone2','cpName','cpAddress','cpCity','cpZip','cpEmail','cpPhone'].forEach(id=>$('#'+id).value='');$('#cpJob').value='ΙΔΙΩΤΗΣ';custTab('afm');if(prefillAfm)$('#cmAfm').value=prefillAfm;$('#custModal').showModal();}
+function openCustomerModal(onSaved,prefillAfm){CUST_ONSAVED=(typeof onSaved==='function')?onSaved:null;$('#custModalTitle').textContent='Νέος πελάτης';['cmAfm','cmName','cmAddress','cmCity','cmZip','cmEmail','cmPhone1','cmPhone2','cpName','cpVat','cpAddress','cpCity','cpZip','cpEmail','cpPhone'].forEach(id=>$('#'+id).value='');$('#cpJob').value='ΙΔΙΩΤΗΣ';custTab('afm');if(prefillAfm)$('#cmAfm').value=prefillAfm;$('#custModal').showModal();}
 // Επεξεργασία = δική της φόρμα, με ό,τι κρατά η ΑΑΔΕ για τον πελάτη.
 let CE_VAT='';
 function editCustomer(vat){
@@ -3408,8 +3431,12 @@ async function saveCustomer(){
     // Η επεξεργασία έχει δική της φόρμα (`custEditModal`) — εδώ μόνο νέοι πελάτες.
     if($('#custTabPersonal').style.display!=='none'){
       if(!$('#cpName').value||!$('#cpCity').value||!$('#cpZip').value){toast('Συμπλήρωσε όνομα/πόλη/ΤΚ','err');return;}
-      d=await api({create_personal_customer:1,cust_name:$('#cpName').value,cust_address:$('#cpAddress').value,cust_city:$('#cpCity').value,cust_zip:$('#cpZip').value,cust_job_description:$('#cpJob').value,cust_email:$('#cpEmail').value,cust_phone1:$('#cpPhone').value});
-      saved={vat:'',name:$('#cpName').value,address:$('#cpAddress').value,city:$('#cpCity').value,zip:$('#cpZip').value};
+      // Το ΑΦΜ είναι προαιρετικό — αλλά αν γραφτεί, γράφεται σωστά: μισό ΑΦΜ
+      // στην καρτέλα είναι χειρότερο από καθόλου, γιατί φαίνεται έγκυρο.
+      const cpv=($('#cpVat').value||'').replace(/\D/g,'');
+      if(cpv&&cpv.length!==9){toast('Το ΑΦΜ θέλει 9 ψηφία — ή άφησέ το κενό','err');return;}
+      d=await api({create_personal_customer:1,cust_name:$('#cpName').value,cust_address:$('#cpAddress').value,cust_city:$('#cpCity').value,cust_zip:$('#cpZip').value,cust_job_description:$('#cpJob').value,cust_email:$('#cpEmail').value,cust_phone1:$('#cpPhone').value,cust_vat:cpv});
+      saved={vat:cpv,name:$('#cpName').value,address:$('#cpAddress').value,city:$('#cpCity').value,zip:$('#cpZip').value};
     }else{const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}
       // Το `afmDetails` κάνει ΚΑΙ την καταχώρηση (`?afm=`) ΚΑΙ το δεύτερο βήμα.
       const c=(await afmDetails(afm,{busy:true}))||{};d={success:true};
@@ -4661,16 +4688,36 @@ function docsInit(){if(!$('#docFrom').value||!$('#docTo').value){docsYear();retu
 async function loadDocs(){
   if(!$('#docFrom').value||!$('#docTo').value){const y=new Date().getFullYear();dset('docFrom',y+'-01-01');dset('docTo',y+'-12-31');}
   $('#docTable tbody').innerHTML='<tr><td colspan="11"><span class="spin"></span></td></tr>';
+  // Το πελατολόγιο ΠΡΩΤΑ: η αναζήτηση παραστατικών της ΑΑΔΕ επιστρέφει μόνο
+  // ΑΦΜ αγοραστή — η επωνυμία υπάρχει μόνο εδώ (βλ. docWho). Μόνο η κρυφή
+  // μνήμη: ένας πλήρης συγχρονισμός θα κρατούσε τον πίνακα κλειστό για
+  // δευτερόλεπτα, και η στήλη ενημερώνεται μόνη της όταν αυτός τελειώσει.
+  if(!ALL_CUSTOMERS.length){
+    try{const c=await api({cached:'customers'});if(c.rows&&c.rows.length)ALL_CUSTOMERS=c.rows;}catch(e){}
+    if(!ALL_CUSTOMERS.length)loadCustomers();
+  }
   try{const d=await api({search_invoices:1,issue_date_from:di('docFrom'),issue_date_to:di('docTo')});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
     ALL_DOCS=(d.invoices||[]).filter(i=>i.mark);
     renderDocs();
   }catch(e){$('#docTable tbody').innerHTML='';toast('Παραστατικά: '+e.message,'err');}
 }
+// Ποιος είναι ο πελάτης της γραμμής. Ο πίνακας της ΑΑΔΕ έχει ΜΟΝΟ το ΑΦΜ του
+// αγοραστή (11 στήλες, καμία με όνομα), οπότε ο λογιστής έβλεπε μια κολόνα
+// εννιαψήφιων και έπρεπε να τα αναγνωρίσει απ' έξω. Η επωνυμία βγαίνει από το
+// δικό μας πελατολόγιο· αν ο πελάτης δεν είναι καταχωρημένος, μένει το ΑΦΜ.
+function docWho(i){
+  const direct=i.counterpart_name||i.counterpart||'';
+  if(direct)return direct;
+  const vat=String(i.counterpart_vat||i.buyer_vat||'').trim();
+  if(!vat)return '—';
+  const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===vat);
+  return (c&&c.name)?c.name:vat;
+}
 function docRows(){
   const term=($('#docSearch').value||'').toLowerCase().trim();
   if(!term)return ALL_DOCS;
-  return ALL_DOCS.filter(i=>[i.mark,i.series,i.aa,i.type,i.counterpart_vat,i.buyer_vat,i.counterpart,i.counterpart_name]
+  return ALL_DOCS.filter(i=>[i.mark,i.series,i.aa,i.type,i.counterpart_vat,i.buyer_vat,i.counterpart,i.counterpart_name,docWho(i)]
     .join(' ').toLowerCase().includes(term));
 }
 function renderDocs(){
@@ -4678,7 +4725,7 @@ function renderDocs(){
   $('#docCount').textContent=rows.length+' / '+ALL_DOCS.length+' παραστατικά · '+
     fmt(rows.reduce((s,i)=>s+elNum(i.total||0),0))+' € σύνολο';
   $('#docTable tbody').innerHTML=rows.map(i=>{
-    const who=i.counterpart_name||i.counterpart||i.counterpart_vat||i.buyer_vat||'—';
+    const who=docWho(i),whoVat=String(i.counterpart_vat||i.buyer_vat||'');
     // Ο τύπος έρχεται από την ΑΑΔΕ ήδη σαν «11.2 - ΑΠΥ (…)»: δεύτερη φορά το
     // ίδιο κείμενο δίπλα του ήταν σκέτη επανάληψη που φάρδαινε τη στήλη.
     return `<tr><td class="grid-check"><input type="checkbox" class="doc-cb" value="${esc(i.mark)}" onchange="docSelChanged()"></td>
@@ -4686,7 +4733,7 @@ function renderDocs(){
       <td title="${esc(i.type||'')}">${esc(i.type||'')}</td>
       <td>${esc(i.series||'')}</td>
       <td>${esc(i.aa||'')}</td>
-      <td title="${esc(who)}">${esc(who)}</td>
+      <td title="${esc(who===whoVat?who:who+' · ΑΦΜ '+whoVat)}">${esc(who)}</td>
       <td class="num">${esc(i.net_value||'')}</td>
       <td class="num">${esc(i.vat_value||'')}</td>
       <td class="num">${esc(i.total||'')}</td>

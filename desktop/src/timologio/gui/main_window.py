@@ -384,14 +384,19 @@ class MainWindow(QMainWindow):
     def _refresh_schedule_clients(self) -> None:
         """Μόνο όσοι έχουν κλειδί API: οι υπόλοιποι δεν κατεβάζουν ποτέ, και μια
         λίστα με ονόματα που δεν συμμετέχουν είναι σκέτη παραπλάνηση."""
-        # `sqlite3.Row` δεν έχει `.get()`: το `row["name"]` σκάει με KeyError
-        # αν λείψει η στήλη, οπότε ρωτάμε τα κλειδιά που όντως γύρισαν.
+        # Η στήλη λέγεται `label`. Ζητούσαμε `name` — που δεν υπάρχει — οπότε
+        # κάθε πελάτης έπεφτε στο fallback και η λίστα έδειχνε το ΑΦΜ δύο
+        # φορές. `sqlite3.Row` δεν έχει `.get()`, γι' αυτό ρωτάμε τα κλειδιά.
         rows = repo.list_clients(self.conn, only_ready=True)
         pairs = []
         for row in rows:
             keys = row.keys() if hasattr(row, "keys") else ()
             vat = str(row["vat"])
-            name = str(row["name"]) if "name" in keys and row["name"] else vat
+            name = ""
+            for column in ("label", "name"):
+                if column in keys and row[column]:
+                    name = str(row[column])
+                    break
             pairs.append((vat, name))
         self.schedule_page.set_clients(pairs)
 
@@ -685,8 +690,11 @@ class MainWindow(QMainWindow):
         filters.addWidget(self.combo_filter)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Αναζήτηση ΑΦΜ ή επωνυμίας…")
-        self.search.setToolTip("Φιλτράρει τη λίστα καθώς πληκτρολογείτε")
+        self.search.setPlaceholderText("Αναζήτηση σε όλες τις στήλες…")
+        self.search.setToolTip(
+            "Φιλτράρει τη λίστα καθώς πληκτρολογείτε. Ψάχνει σε ΚΑΘΕ στήλη: "
+            "ΑΦΜ, επωνυμία, κατάσταση, πλήθη, ποσά και τελευταία λήψη."
+        )
         self.search.textChanged.connect(self.reload_clients)
         self.search.textChanged.connect(lambda _: self._update_client_filter_ui())
         filters.addWidget(self.search)
@@ -901,6 +909,31 @@ class MainWindow(QMainWindow):
         self.search.clear()  # πυροδοτεί reload_clients
         self._update_client_filter_ui()
 
+    @staticmethod
+    def _client_haystack(row, stats: dict, last_dl: dict) -> str:
+        """Ό,τι ΒΛΕΠΕΙ ο χρήστης σε μια γραμμή, ως ένα πεζό κείμενο.
+
+        Η αναζήτηση κοίταζε μόνο ΑΦΜ και επωνυμία, ενώ ο πίνακας δείχνει δέκα
+        στήλες: το «διαθέσιμος», ο αριθμός παραστατικών ή η ημερομηνία της
+        τελευταίας λήψης ήταν μπροστά στα μάτια του χρήστη και δεν βρίσκονταν.
+        Τα ποσά μπαίνουν και όπως εμφανίζονται και ακατέργαστα, ώστε το «1234»
+        να βρίσκει και το «1.234,56».
+        """
+        s = stats.get(row["id"])
+        income = (s["income"] if s else 0.0) or 0.0
+        expense = (s["expense"] if s else 0.0) or 0.0
+        parts = [
+            row["vat"], row["label"] or "",
+            _STATUS_READY if row["status"] == "ready" else _STATUS_NO_KEY,
+            str((s["c"] if s else 0) or 0),
+            str((s["dn"] if s else 0) or 0),
+            str((s["u"] if s else 0) or 0),
+            money(income), f"{income:.2f}",
+            money(expense), f"{expense:.2f}",
+            last_dl.get(row["id"], ("—", 0.0))[0],
+        ]
+        return " ".join(parts).lower()
+
     # ------------------------------------------------------------- δεδομένα
     def reload_clients(self) -> None:
         self._update_client_filter_ui()
@@ -943,7 +976,7 @@ class MainWindow(QMainWindow):
                     if stats.get(r["id"]) and (stats[r["id"]]["u"] or 0) > 0]
         if needle:
             rows = [r for r in rows
-                    if needle in r["vat"].lower() or needle in (r["label"] or "").lower()]
+                    if needle in self._client_haystack(r, stats, last_dl)]
 
         # Ο ενεργός / μόλις προστεθείς πελάτης πάει στην κορυφή, εφόσον ο
         # χρήστης δεν έχει διαλέξει δική του ταξινόμηση (τότε σεβόμαστε αυτήν).

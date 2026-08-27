@@ -250,6 +250,16 @@ const NOTIFY_ADMIN_EMAIL = '';
             # Absolute, and on the command line: see resolve_cacert() for why the
             # ini's relative value is not enough.
             cmd += ["-d", f"curl.cainfo={cacert}", "-d", f"openssl.cafile={cacert}"]
+        # Τα warnings της PHP ΔΕΝ επιτρέπεται να τυπωθούν μέσα στην απάντηση:
+        # ένα και μόνο «<br /><b>Warning</b>…» πριν από τη JSON την αχρηστεύει
+        # ολόκληρη και ο χρήστης βλέπει «Unexpected token '<'» αντί για αιτία.
+        # Πάνε στο δικό τους αρχείο, δίπλα στο log του server.
+        cmd += [
+            "-d", "display_errors=0",
+            "-d", "html_errors=0",
+            "-d", "log_errors=1",
+            "-d", f"error_log={self.data_dir / 'php-errors.log'}",
+        ]
         cmd += ["-S", f"127.0.0.1:{self._port}", "-t", str(root)]
         self._proc = subprocess.Popen(
             cmd,

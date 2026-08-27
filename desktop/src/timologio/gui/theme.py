@@ -253,8 +253,8 @@ QCalendarWidget QMenu {{ background: {p.panel}; color: {p.txt}; }}
 
 QCheckBox {{ spacing: 7px; }}
 QCheckBox::indicator {{
-    width: 15px; height: 15px;
-    border: 1px solid {p.line};
+    width: 16px; height: 16px;
+    border: 2px solid {p.muted};
     border-radius: 4px;
     background: {p.panel};
 }}
@@ -279,17 +279,36 @@ QTableWidget {{
 QTableWidget::item {{ padding: 5px 7px; border: none; }}
 QTableWidget::item:selected {{ background: {p.chip}; }}
 QTableWidget::indicator {{
-    width: 15px; height: 15px;
-    border: 1px solid {p.line};
+    width: 16px; height: 16px;
+    border: 2px solid {p.muted};
     border-radius: 4px;
     background: {p.panel};
 }}
+QTableWidget::indicator:hover {{ border-color: {p.accent}; }}
 QTableWidget::indicator:checked {{
     background: {p.accent_deep};
     border-color: {p.accent};
     image: url({check});
 }}
 QTableWidget::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
+
+/* Οι λίστες με κουτάκια (π.χ. «Πελάτες» στον Χρονοπρογραμματισμό) δεν είχαν
+   ΚΑΝΕΝΑΝ κανόνα: το κουτάκι έμενε στο προεπιλεγμένο του Qt, ένα αχνό
+   περίγραμμα που πάνω στο σκοτεινό θέμα μόλις που διακρινόταν. */
+QListWidget::indicator {{
+    width: 16px; height: 16px;
+    border: 2px solid {p.muted};
+    border-radius: 4px;
+    background: {p.panel};
+}}
+QListWidget::indicator:hover {{ border-color: {p.accent}; }}
+QListWidget::indicator:checked {{
+    background: {p.accent_deep};
+    border-color: {p.accent};
+    image: url({check});
+}}
+QListWidget::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
+QListWidget::item {{ padding: 4px 2px; }}
 QHeaderView::section {{
     background: {p.bg};
     color: {p.muted};

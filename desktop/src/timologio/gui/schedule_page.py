@@ -132,7 +132,7 @@ class SchedulePage(QWidget):
         return box
 
     def _who_box(self) -> QWidget:
-        box = QGroupBox("Ποιοι πελάτες")
+        box = QGroupBox("Πελάτες")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
@@ -224,12 +224,13 @@ class SchedulePage(QWidget):
     def set_clients(self, clients) -> None:
         """Οι πελάτες με κλειδί API, ως (ΑΦΜ, επωνυμία)."""
         chosen = set(self.selected_vats())
-        self._clients = [(str(v), str(n or v)) for v, n in clients]
+        self._clients = [(str(v), str(n or "")) for v, n in clients]
         self._loading = True
         try:
             self.list.clear()
             for vat, name in self._clients:
-                item = QListWidgetItem(f"{name}  ·  {vat}")
+                shown = f"{vat} — {name}" if name and name != vat else vat
+                item = QListWidgetItem(shown)
                 item.setData(Qt.ItemDataRole.UserRole, vat)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(

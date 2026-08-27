@@ -38,6 +38,20 @@ _COLS: list[tuple[str, int, str]] = [
     ("Τελευταία", 100, "Πότε έγινε η τελευταία λήψη"),
 ]
 
+def _row_haystack(r) -> str:
+    """Όλες οι στήλες της γραμμής σε ένα πεζό κείμενο.
+
+    Η αναζήτηση έπιανε ΑΦΜ και επωνυμία· ο πίνακας δείχνει και το πλήθος
+    παραστατικών και την τελευταία λήψη. Η ημερομηνία μπαίνει και στις δύο
+    μορφές, ώστε να βρίσκεται είτε γραφτεί «2026-08» είτε «08/2026».
+    """
+    last = (r["last_run"] or "")[:10]
+    shown = f"{last[8:10]}/{last[5:7]}/{last[:4]}" if len(last) == 10 else ""
+    return " ".join([
+        r["vat"] or "", r["label"] or "", str(r["docs"] or 0), last, shown,
+    ]).lower()
+
+
 #: Γρήγορες περίοδοι — ο λογιστής δουλεύει σχεδόν πάντα σε μία από αυτές.
 _PRESETS: list[tuple[str, str]] = [
     ("Τρέχων μήνας", "month"),
@@ -240,7 +254,7 @@ class SyncPage(QWidget):
         head.addWidget(caption2)
         head.addStretch()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Αναζήτηση…")
+        self.search.setPlaceholderText("Αναζήτηση σε όλες τις στήλες…")
         self.search.setFixedWidth(200)
         self.search.setToolTip("Φιλτράρει τη λίστα καθώς πληκτρολογείτε")
         self.search.textChanged.connect(lambda _: self._fill())
@@ -323,7 +337,7 @@ class SyncPage(QWidget):
         needle = self.search.text().strip().lower()
         rows = [
             r for r in getattr(self, "_rows", [])
-            if not needle or needle in r["vat"] or needle in (r["label"] or "").lower()
+            if not needle or needle in _row_haystack(r)
         ]
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
