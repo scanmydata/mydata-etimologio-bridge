@@ -115,8 +115,8 @@ def test_documents_table_shows_the_customer_name():
     assert "i.counterpart_name||i.counterpart" in who
     assert "ALL_CUSTOMERS.map(custFields).find" in who
     assert "return (c&&c.name)?c.name:vat;" in who
-    # Η αναζήτηση βλέπει ό,τι βλέπει το μάτι.
-    rows = src[src.index("function docRows()"):]
+    # Η αναζήτηση βλέπει ό,τι βλέπει το μάτι (από την 0.4.20 μέσω του `docHay`).
+    rows = src[src.index("function docHay(i)"):]
     rows = rows[: rows.index("function renderDocs()")]
     assert "docWho(i)" in rows
 

@@ -102,6 +102,11 @@ function localdb(bool $close = false): ?\PDO {
         )
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_pay_acc_cust ON payments(account_vat, customer_vat)");
+    // Πού μπήκαν τα χρήματα. Με έναν λογαριασμό δεν λείπει σε κανέναν· με τρεις,
+    // η ερώτηση «σε ποια τράπεζα ήρθε αυτή η κατάθεση;» δεν απαντιέται από
+    // πουθενά αλλού — και είναι η πρώτη που κάνει ο λογιστής στη συμφωνία.
+    try { $tr("ALTER TABLE payments ADD COLUMN bank TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $tr("ALTER TABLE payments ADD COLUMN bank_account TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
 
     // Encrypted snapshot cache of AADE data (customers/products/invoices) so the
     // UI can render instantly and only re-fetch/compare in the background.
@@ -1086,6 +1091,8 @@ function payment_row(array $r): array {
         'amount'        => round(dec_num($r['amount']), 2),
         'method'        => (int)$r['method'],
         'pay_date'      => $r['pay_date'],
+        'bank'          => (string)($r['bank'] ?? ''),
+        'bank_account'  => (string)($r['bank_account'] ?? ''),
         'mark'          => $r['mark'],
         'notes'         => dec($r['notes']),
         'created_at'    => $r['created_at'],
@@ -1114,15 +1121,37 @@ function payments_list(string $accountVat, string $customerVat = '', string $fro
  */
 function payment_date_iso(string $value): string {
     $value = trim($value);
-    if (preg_match('#^(\d{2})/(\d{2})/(\d{4})#', $value, $m)) return "$m[3]-$m[2]-$m[1]";
-    if (preg_match('#^(\d{4})-(\d{2})-(\d{2})#', $value, $m)) return "$m[1]-$m[2]-$m[3]";
-    return $value !== '' ? $value : date('Y-m-d');
+    if (preg_match('#^(\d{4})-(\d{1,2})-(\d{1,2})#', $value, $m)) {
+        return sprintf('%04d-%02d-%02d', (int)$m[1], (int)$m[2], (int)$m[3]);
+    }
+    // «13/08/2026», αλλά και «13/8/2026», «13-8-26», «13.08.2026»: ό,τι δέχεται
+    // η φόρμα πρέπει να δέχεται και η βάση. Το μονοψήφιο «13/8/2026» περνούσε
+    // ΑΥΤΟΥΣΙΟ και η πληρωμή γινόταν αόρατη — αλλά όχι χαμένη, που είναι
+    // χειρότερο: μειώνει το υπόλοιπο πουθενά.
+    // ΠΡΟΣΟΧΗ στη σειρά: `(\d{2}|\d{4})` δοκιμάζει ΠΡΩΤΑ τα δύο ψηφία, οπότε το
+    // «13/08/2026» έδινε έτος **2020**. Το τετραψήφιο πρώτο, και μόνο τότε
+    // πέφτουμε στο διψήφιο.
+    if (preg_match('#^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}|\d{2})(?!\d)#', $value, $m)) {
+        $y = strlen($m[3]) === 2 ? 2000 + (int)$m[3] : (int)$m[3];
+        if (checkdate((int)$m[2], (int)$m[1], $y)) {
+            return sprintf('%04d-%02d-%02d', $y, (int)$m[2], (int)$m[1]);
+        }
+    }
+    // Ό,τι δεν αναγνωρίστηκε γίνεται ΣΗΜΕΡΑ, ποτέ σκουπίδι: μια ημερομηνία που
+    // δεν συγκρίνεται σαν ISO κρύβει την πληρωμή από κάθε φίλτρο διαστήματος.
+    return date('Y-m-d');
+}
+
+/** ISO → ηη/μμ/εεεε, η μορφή που δείχνει όλη η υπόλοιπη εφαρμογή. */
+function payment_date_gr(string $iso): string {
+    return preg_match('#^(\d{4})-(\d{2})-(\d{2})#', trim($iso), $m)
+        ? "$m[3]/$m[2]/$m[1]" : trim($iso);
 }
 
 function payment_add(string $accountVat, array $d): int {
     return db_insert("
-        INSERT INTO payments (account_vat, customer_vat, customer_code, customer_name, amount, method, pay_date, mark, notes)
-        VALUES (:acc, :cv, :cc, :cn, :amt, :m, :dt, :mk, :nt)
+        INSERT INTO payments (account_vat, customer_vat, customer_code, customer_name, amount, method, pay_date, bank, bank_account, mark, notes)
+        VALUES (:acc, :cv, :cc, :cn, :amt, :m, :dt, :bk, :ba, :mk, :nt)
     ", [
         ':acc' => $accountVat,
         ':cv'  => trim($d['customer_vat']  ?? ''),
@@ -1131,6 +1160,8 @@ function payment_add(string $accountVat, array $d): int {
         ':amt' => enc_num(round((float)($d['amount'] ?? 0), 2)),
         ':m'   => (int)($d['method'] ?? 3),
         ':dt'  => payment_date_iso((string)($d['pay_date'] ?? '')),
+        ':bk'  => trim($d['bank'] ?? ''),
+        ':ba'  => iban_normalize((string)($d['bank_account'] ?? '')),
         ':mk'  => trim($d['mark'] ?? ''),
         ':nt'  => enc(trim($d['notes'] ?? '')),
     ]);
@@ -1146,7 +1177,8 @@ function payment_update(string $accountVat, int $id, array $d): bool {
     $st = localdb()->prepare("
         UPDATE payments
            SET customer_vat = :cv, customer_name = :cn, amount = :amt,
-               method = :m, pay_date = :dt, notes = :nt
+               method = :m, pay_date = :dt, notes = :nt,
+               bank = :bk, bank_account = :ba
          WHERE account_vat = :acc AND id = :id
     ");
     $st->execute([
@@ -1158,6 +1190,8 @@ function payment_update(string $accountVat, int $id, array $d): bool {
         ':m'   => (int)($d['method'] ?? 3),
         ':dt'  => payment_date_iso((string)($d['pay_date'] ?? '')),
         ':nt'  => enc(trim($d['notes'] ?? '')),
+        ':bk'  => trim($d['bank'] ?? ''),
+        ':ba'  => iban_normalize((string)($d['bank_account'] ?? '')),
     ]);
     return $st->rowCount() > 0;
 }

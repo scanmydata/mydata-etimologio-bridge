@@ -180,6 +180,88 @@ function bi_parse_xlsx(string $raw): array {
     return $rows;
 }
 
+// --- Ποια τράπεζα, ποιος λογαριασμός ----------------------------------------
+//
+// Μέχρι τώρα η τράπεζα βγαινε ΜΟΝΟ από το όνομα του αρχείου. Ένα «extrait.xlsx»
+// —που είναι ό,τι κατεβάζει ο μισός κόσμος— δεν έλεγε τίποτα, και ο αριθμός
+// λογαριασμού δεν διαβαζόταν ποτέ. Και τα δύο γράφονται μέσα στο ίδιο το
+// αρχείο, στις γραμμές πάνω από τα δεδομένα.
+
+/** Οι πρώτες γραμμές του αρχείου ως ένα κείμενο — εκεί ζουν τα στοιχεία. */
+function bi_preamble(array $matrix, int $rows = 20): string {
+    $out = [];
+    foreach (array_slice($matrix, 0, $rows) as $row) {
+        foreach ((array)$row as $cell) {
+            $c = trim((string)$cell);
+            if ($c !== '') $out[] = $c;
+        }
+    }
+    return implode(' | ', $out);
+}
+
+/** Ο κωδικός τράπεζας ενός ελληνικού IBAN (ψηφία 5-7). */
+function bi_iban_bank_code(string $iban): string {
+    $iban = strtoupper(preg_replace('/[^0-9A-Za-z]/', '', $iban) ?? '');
+    return (strncmp($iban, 'GR', 2) === 0 && strlen($iban) >= 7) ? substr($iban, 4, 3) : '';
+}
+
+/**
+ * Ο λογαριασμός στον οποίο ήρθαν τα χρήματα.
+ *
+ * Πρώτα IBAN (μονοσήμαντος, ελέγξιμος), αλλιώς ένας μακρύς αριθμός λογαριασμού
+ * δίπλα στη λέξη «λογαριασμός». Ποτέ σκέτος μεγάλος αριθμός: θα μπορούσε να
+ * είναι ΑΦΜ, ΑΜΚΑ ή αριθμός συναλλαγής.
+ */
+function bi_find_account(string $text): array {
+    if (preg_match('/\bGR[\s]?\d{2}[\s]?[0-9\s]{15,30}\b/u', $text, $m)) {
+        $iban = strtoupper(preg_replace('/\s+/', '', $m[0]));
+        if (strlen($iban) >= 20) return ['iban' => $iban, 'account' => $iban];
+    }
+    if (preg_match('/(?:λογαριασμ|account|ιban|iban)[^0-9]{0,20}([0-9][0-9\s\-]{8,30})/ui', $text, $m)) {
+        $acc = preg_replace('/[^0-9]/', '', $m[1]);
+        if (strlen($acc) >= 9) return ['iban' => '', 'account' => $acc];
+    }
+    return ['iban' => '', 'account' => ''];
+}
+
+/**
+ * Ποια τράπεζα. Τρεις πηγές, με αυτή τη σειρά εμπιστοσύνης:
+ * ο κωδικός του IBAN (δεν λέει ψέματα), το κείμενο του αρχείου, το όνομά του.
+ */
+function bi_detect_bank(string $text, string $filename = ''): array {
+    $acc  = bi_find_account($text);
+    $code = bi_iban_bank_code($acc['iban']);
+    if ($code !== '') {
+        foreach (bank_list() as $b) {
+            if ($b['code'] !== '' && $b['code'] === $code) {
+                return ['bank' => $b['name'], 'source' => 'iban'] + $acc;
+            }
+        }
+    }
+    $hay = mb_strtoupper($text . ' ' . $filename, 'UTF-8');
+    // Οι ονομασίες όπως τις γράφουν τα ίδια τα extrait, ελληνικά και αγγλικά.
+    $names = [
+        'Τράπεζα Eurobank'            => ['EUROBANK', 'ΕUROBANK', 'ΕΥΡΩΠΑΪΚΗ ΠΙΣΤΗ'],
+        'Optima bank'                 => ['OPTIMA', 'ACCOUNTTRANSACTION'],
+        'Εθνική Τράπεζα της Ελλάδος'  => ['ΕΘΝΙΚΗ', 'NATIONAL BANK', 'IBANK', 'NBG'],
+        'Τράπεζα Πειραιώς'            => ['ΠΕΙΡΑΙΩΣ', 'PIRAEUS', 'WINBANK'],
+        'Alpha Bank'                  => ['ALPHA BANK', 'ALPHA ΤΡΑΠΕΖΑ', 'MYALPHA'],
+        'CrediaBank (πρώην Attica Bank)' => ['CREDIA', 'ATTICA BANK'],
+        'Viva.com (VivaBank)'         => ['VIVA.COM', 'VIVABANK', 'VIVA WALLET'],
+        'Revolut Bank'                => ['REVOLUT'],
+        'Wise'                        => ['WISE.COM', 'TRANSFERWISE'],
+        'Τράπεζα Κύπρου'              => ['ΤΡΑΠΕΖΑ ΚΥΠΡΟΥ', 'BANK OF CYPRUS'],
+    ];
+    foreach ($names as $label => $needles) {
+        foreach ($needles as $needle) {
+            if (mb_strpos($hay, $needle, 0, 'UTF-8') !== false) {
+                return ['bank' => $label, 'source' => 'text'] + $acc;
+            }
+        }
+    }
+    return ['bank' => '', 'source' => ''] + $acc;
+}
+
 // --- Column detection + normalisation ---------------------------------------
 
 function bi_norm_header(string $s): string {
@@ -217,8 +299,12 @@ function bi_detect_columns(array $matrix): array {
 }
 
 // Turn the raw matrix into normalised transactions.
-function bi_normalize(array $matrix, string $bank = ''): array {
-    if (!$matrix) return ['bank' => $bank, 'header_row' => -1, 'columns' => [], 'transactions' => []];
+function bi_normalize(array $matrix, string $bank = '', string $filename = ''): array {
+    if (!$matrix) return ['bank' => $bank, 'bank_label' => '', 'iban' => '', 'account' => '',
+                          'header_row' => -1, 'columns' => [], 'transactions' => []];
+    // Η ταυτότητα διαβάζεται ΠΡΙΝ κοπούν οι γραμμές επικεφαλίδας: εκεί ακριβώς
+    // γράφει η τράπεζα ποια είναι και ποιος λογαριασμός είναι.
+    $ident = bi_detect_bank(bi_preamble($matrix), $filename);
     $det = bi_detect_columns($matrix);
     $map = $det['map'];
     $hr  = $det['header_row'];
@@ -279,7 +365,12 @@ function bi_normalize(array $matrix, string $bank = ''): array {
     }
 
     return [
+        // `bank` = η υπόδειξη/επιλογή του χρήστη· `bank_label` = τι εντοπίστηκε.
         'bank'        => $bank,
+        'bank_label'  => $ident['bank'],
+        'bank_source' => $ident['source'],
+        'iban'        => $ident['iban'],
+        'account'     => $ident['account'],
         'header_row'  => $hr,
         'columns'     => $map,
         'count'       => count($txs),
@@ -306,5 +397,5 @@ function bank_parse(string $raw, string $filename = '', string $bankHint = ''): 
     } else {
         $matrix = bi_parse_csv($raw);
     }
-    return bi_normalize($matrix, $bank);
+    return bi_normalize($matrix, $bank, $filename);
 }

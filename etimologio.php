@@ -1352,6 +1352,28 @@ function tempLinesToForm($lines): array {
     return $out;
 }
 
+/** Οι φόροι ενός προχείρου, στη μορφή που περιμένει η φόρμα. */
+function tempTaxesToForm($taxes, $fallback = null): array {
+    if (!is_array($taxes) || !$taxes) $taxes = is_array($fallback) ? $fallback : [];
+    $out = [];
+    $id  = 1;
+    foreach ($taxes as $t) {
+        if (!is_array($t)) continue;
+        $amount = round((float)($t['taxAmount'] ?? 0), 2);
+        $type   = (int)($t['taxType'] ?? 0);
+        if ($amount <= 0 || $type < 1 || $type > 5) continue;
+        $out[] = [
+            'id'              => $id++,
+            'taxType'         => $type,
+            'taxCategory'     => (string)($t['taxCategory'] ?? ''),
+            'underlyingValue' => (float)($t['underlyingValue'] ?? 0),
+            'taxAmount'       => (string)$amount,
+            'taxNotes'        => (string)($t['taxNotes'] ?? ''),
+        ];
+    }
+    return $out;
+}
+
 function previewTempInvoice(\CurlHandle $ch, string $encId): array {
     if ($encId === '') return ['success' => false, 'error' => 'Λείπει το αναγνωριστικό προχείρου'];
     $resp = curlGet($ch, BASE_URL . '/Invoice/TempInvoice?encTempInvoiceId=' . rawurlencode($encId));
@@ -1395,6 +1417,11 @@ function previewTempInvoice(\CurlHandle $ch, string $encId): array {
         ],
         'issuer'       => ['vatNumber' => '', 'branch' => '0', 'country' => 'GR'],
         'counterpart'  => tempCounterpartToForm($raw['counterpart'] ?? null),
+        // Οι φόροι του προχείρου ΔΕΝ επιτρέπεται να χαθούν στην προεπισκόπηση:
+        // το `ccr_grossValue` παραπάνω τους περιλαμβάνει ήδη (έρχεται από το
+        // `invoiceSummary`), οπότε χωρίς αυτούς το PDF δεν βγαίνει καν σωστά.
+        'invoiceTaxes' => tempTaxesToForm($raw['invoiceTaxes'] ?? null,
+                                          $raw['taxesTotals']['taxes'] ?? null),
         'invoiceLines' => tempLinesToForm($raw['invoiceLines'] ?? null),
         // Τα δύο πεδία που η φόρμα στέλνει πάντα (κενά) και το μοντέλο δεν έχει.
         'invoiceNotes'        => $sv($raw['invoiceNotes'] ?? ''),
@@ -2586,16 +2613,25 @@ function createInvoice(
     // Build invoice taxes. Legacy single withholding params still work; the general
     // $taxes array carries any mix of withheld/fees/other/digital/deductions.
     $invoiceTaxes = [];
+    // Το ΠΛΗΡΩΤΕΟ δεν είναι πάντα «καθαρή + ΦΠΑ»: οι παρακρατούμενοι φόροι και
+    // οι κρατήσεις το ΜΕΙΩΝΟΥΝ, τα τέλη / το χαρτόσημο / οι λοιποί φόροι το
+    // αυξάνουν. Το `ccr_grossValue` παρακάτω είναι ακριβώς αυτό το πληρωτέο —
+    // και σε ένα πιστωτικό είναι το νούμερο με το οποίο η ΑΑΔΕ το συγκρίνει με
+    // το συσχετιζόμενο. Στέλνοντας 12.400 € για τιμολόγιο 12.100 € πιστώναμε
+    // 300 € που ο πελάτης δεν είχε ποτέ χρεωθεί.
+    $taxAdjust = 0.0;
     $tid = 1;
     if ($withholdingCategory > 0 && $withholdingAmount > 0) {
+        $whAmount = round($withholdingAmount, 2);
         $invoiceTaxes[] = [
             'id'              => $tid++,
             'taxType'         => 1,
             'taxCategory'     => $withholdingCategory,
             'underlyingValue' => $netValue,
-            'taxAmount'       => (string)round($withholdingAmount, 2),
+            'taxAmount'       => (string)$whAmount,
             'taxNotes'        => '',
         ];
+        $taxAdjust -= $whAmount;
     }
     foreach ($taxes as $t) {
         $ttype = (int)($t['type'] ?? 0);
@@ -2609,7 +2645,16 @@ function createInvoice(
             'taxAmount'       => (string)$tamt,
             'taxNotes'        => (string)($t['notes'] ?? ''),
         ];
+        // 1 = παρακρατούμενοι, 5 = κρατήσεις: μειώνουν. 2 = τέλη, 3 = λοιποί
+        // φόροι, 4 = ψηφιακό τέλος: αυξάνουν. Όταν αντιγράφουμε παραστατικό, η
+        // ίδια η ΑΑΔΕ μας λέει την κατεύθυνση ανά φόρο (`taxDecreaseTotalPaid`)
+        // — μια κράτηση μπορεί να μη μειώνει το πληρωτέο — και τη σεβόμαστε.
+        $down = array_key_exists('decrease', $t)
+            ? !empty($t['decrease'])
+            : in_array($ttype, [1, 5], true);
+        $taxAdjust += $down ? -$tamt : $tamt;
     }
+    $payable = round($total + $taxAdjust, 2);
 
     $invoice = [
         '_invoiceType'              => $invoiceType,
@@ -2633,7 +2678,7 @@ function createInvoice(
         // συσχετιζόμενου». (Confirmed by diffing our request against the live form's
         // working PrintPreview body — these two empty fields were the ONLY difference.)
         'ccr_totalNetValueWithDisc' => (string)$netValue,
-        'ccr_grossValue'            => (string)$total,
+        'ccr_grossValue'            => (string)$payable,
 
         'invoiceHeader' => [
             'series'                     => ($series !== '' ? $series : 'A'),
@@ -2937,6 +2982,7 @@ function createCreditNote(
     // μεγαλύτερη του συσχετιζόμενου». For a partial credit the lines are scaled pro-rata.
     $corr = getCorrelatedInvoice($ch, $originalMark, $creditType);
     $mirrorLines = [];
+    $mirrorTaxes = [];
     $counterName = '';
     // Mirror the ORIGINAL's payment TYPE (5=επί πιστώσει, 3=μετρητά …). The credit note
     // is correlated to the original via the top-level `CorrelatedInvoice` = MARK scalar,
@@ -2972,13 +3018,34 @@ function createCreditNote(
                 'cls'   => $cls,
             ];
         }
+        // ΚΑΙ οι φόροι του πρωτοτύπου. Χωρίς αυτούς, ένα τιμολόγιο 10.000 € με
+        // 3% παρακράτηση (πληρωτέο 12.100 €) ακυρωνόταν με πιστωτικό 12.400 €:
+        // η παρακράτηση εξαφανιζόταν και το πιστωτικό ήταν μεγαλύτερο από αυτό
+        // που ακύρωνε. Σε μερική πίστωση μοιράζονται αναλογικά, όπως οι γραμμές.
+        $rawTaxes = $corr['invoiceTaxes'] ?? null;
+        if (!is_array($rawTaxes) || !$rawTaxes) {
+            $rawTaxes = $corr['taxesTotals']['taxes'] ?? [];
+        }
+        foreach ((array)$rawTaxes as $t) {
+            $tamt = round((float)($t['taxAmount'] ?? 0) * $factor, 2);
+            $ttyp = (int)($t['taxType'] ?? 0);
+            if ($tamt <= 0 || $ttyp < 1 || $ttyp > 5) continue;
+            $mirrorTaxes[] = [
+                'type'     => $ttyp,
+                'category' => (string)($t['taxCategory'] ?? ''),
+                'amount'   => $tamt,
+                'notes'    => (string)($t['taxNotes'] ?? ''),
+                // Η κατεύθυνση έρχεται από την ΑΑΔΕ, δεν τη μαντεύουμε.
+                'decrease' => !empty($t['taxDecreaseTotalPaid']),
+            ];
+        }
     }
 
     $result = createInvoice(
         $ch, round($net, 2), $creditType, $payType, $description, '',
         $buyer, $counterName, '', '', '', 'GR', '0',
         0, 0.0, $live, $originalMark, $notes, $rate, $vatCat,
-        [], $mirrorLines, $creditSeries, [], $preview, $issueLang, [], $reuseTempId
+        [], $mirrorLines, $creditSeries, $mirrorTaxes, $preview, $issueLang, [], $reuseTempId
     );
 
     $result['credit_note']     = true;
@@ -2990,6 +3057,10 @@ function createCreditNote(
         'net'       => round($net, 2),
         'vat'       => round($origVat, 2),
         'vat_rate'  => $rate >= 0 ? $rate : null,
+        // Ό,τι αντιγράφηκε πέρα από τις γραμμές, ώστε να φαίνεται στην οθόνη:
+        // ένα πιστωτικό που «ξέχασε» μια παρακράτηση δεν διαφέρει οπτικά από
+        // ένα σωστό, και το λάθος βγαίνει μήνες μετά.
+        'taxes'     => $mirrorTaxes,
     ];
     return $result;
 }
@@ -3159,17 +3230,73 @@ function parseMoney(string $s): float {
     return (float)$s;
 }
 
-function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to): array {
+/**
+ * Ποιον αφορά μια απόδειξη χωρίς ΑΦΜ αγοραστή.
+ *
+ * Η λίστα παραστατικών της ΑΑΔΕ έχει έντεκα στήλες και ΚΑΜΙΑ δεν ταυτοποιεί
+ * τον ιδιώτη: η στήλη «ΑΦΜ αγοραστή» είναι κενή σε κάθε απόδειξη λιανικής. Ο
+ * κωδικός πελάτη όμως υπάρχει μέσα στο ίδιο το παραστατικό, μία κλήση μακριά.
+ */
+function counterpartOfMark(\CurlHandle $ch, string $mark, string $typeLabel = ''): array {
+    $creditType = preg_match('#(^|\s)11\.#', $typeLabel) ? '61' : '50';
+    $corr = getCorrelatedInvoice($ch, $mark, $creditType);
+    $cp   = is_array($corr) ? ($corr['counterpart'] ?? []) : [];
+    return [
+        'code' => trim((string)($cp['customerCode'] ?? '')),
+        'name' => trim((string)($cp['name'] ?? '')),
+    ];
+}
+
+/**
+ * Τα παραστατικά μιας καρτέλας. Το κλειδί είναι είτε ΑΦΜ είτε `#<κωδικός>`.
+ *
+ * Για τον ιδιώτη πληρώνουμε μία κλήση ανά ΑΠΟΔΕΙΞΗ ΧΩΡΙΣ ΑΦΜ — όχι ανά
+ * παραστατικό — και τη θυμόμαστε: το ΜΑΡΚ δεν αλλάζει ποτέ κάτοχο, οπότε η
+ * απάντηση ισχύει για πάντα και η δεύτερη φόρτωση της καρτέλας είναι ακαριαία.
+ */
+function ledgerInvoices(\CurlHandle $ch, string $ledgerKey, string $from, string $to): array {
     // ΠΡΟΣΟΧΗ: το φίλτρο BuyerVatNumber της ΑΑΔΕ **αγνοείται σιωπηλά για τις
     // ΑΠΥ (11.2)** — η αναζήτηση γυρίζει άδεια παρότι τα παραστατικά υπάρχουν
     // με ακριβώς αυτό το ΑΦΜ αγοραστή (επαληθεύτηκε ζωντανά σε 4 περιπτώσεις).
     // Γι' αυτό ζητάμε ΟΛΑ τα παραστατικά του διαστήματος και φιλτράρουμε εδώ:
     // ίδιο κόστος (μία κλήση), σωστό αποτέλεσμα για κάθε τύπο.
-    $inv = searchInvoices($ch, $from, $to, '', '', '', '', '0');
-    $invoices = [];
-    foreach (($inv['invoices'] ?? []) as $iv) {
-        if (trim((string)($iv['buyer_vat'] ?? '')) === $buyerVat) $invoices[] = $iv;
+    $inv  = searchInvoices($ch, $from, $to, '', '', '', '', '0');
+    $rows = $inv['invoices'] ?? [];
+
+    if (strncmp($ledgerKey, '#', 1) !== 0) {
+        $out = [];
+        foreach ($rows as $iv) {
+            if (trim((string)($iv['buyer_vat'] ?? '')) === $ledgerKey) $out[] = $iv;
+        }
+        return $out;
     }
+
+    $code = substr($ledgerKey, 1);
+    if ($code === '') return [];
+    $known = [];
+    foreach ((cache_get(COMPANY_VAT, 'ledger_counterparts')['rows'] ?? []) as $r) {
+        $m = (string)($r['mark'] ?? '');
+        if ($m !== '') $known[$m] = $r;
+    }
+    $out = [];
+    $dirty = false;
+    foreach ($rows as $iv) {
+        if (trim((string)($iv['buyer_vat'] ?? '')) !== '') continue;   // έχει ΑΦΜ: άλλος
+        $mark = trim((string)($iv['mark'] ?? ''));
+        if ($mark === '') continue;
+        if (!isset($known[$mark])) {
+            $cp = counterpartOfMark($ch, $mark, (string)($iv['type'] ?? ''));
+            $known[$mark] = ['mark' => $mark, 'code' => $cp['code'], 'name' => $cp['name']];
+            $dirty = true;
+        }
+        if ((string)($known[$mark]['code'] ?? '') === $code) $out[] = $iv;
+    }
+    if ($dirty) cache_set(COMPANY_VAT, 'ledger_counterparts', array_values($known));
+    return $out;
+}
+
+function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to): array {
+    $invoices = ledgerInvoices($ch, $buyerVat, $from, $to);
 
     $entries = [];
     $totalDebit = 0.0; // invoiced (customer owes)
@@ -3194,13 +3321,18 @@ function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to
         $totalCredit += (float)$p['amount'];
         $entries[] = [
             'kind'       => 'payment',
-            'date'       => $p['pay_date'],
+            // Ηη/μμ/εεεε, όπως ΚΑΘΕ άλλη ημερομηνία της εφαρμογής. Η στήλη
+            // ανακάτευε «24/08/2026» (τιμολόγιο) με «2026-08-24» (πληρωμή) στην
+            // ίδια λίστα — δύο μορφές, μία στήλη, ο ίδιος αναγνώστης.
+            'date'       => payment_date_gr((string)$p['pay_date']),
             // Το UI ανοίγει τη γραμμή για επεξεργασία με διπλό κλικ και πρέπει
             // να ξαναγεμίσει το πεδίο ημερομηνίας· το `pay_date` είναι μορφή
             // εμφάνισης, το ISO είναι αυτό που καταλαβαίνει η φόρμα.
             'date_iso'   => $p['pay_date_iso'] ?? payment_date_iso((string)$p['pay_date']),
             'payment_id' => (int)$p['id'],
             'method'     => (int)$p['method'],
+            'bank'       => (string)($p['bank'] ?? ''),
+            'bank_account' => (string)($p['bank_account'] ?? ''),
             'notes'      => $p['notes'],
             'debit'      => 0.0,
             'credit'     => round((float)$p['amount'], 2),
@@ -3222,7 +3354,11 @@ function buildLedger(\CurlHandle $ch, string $buyerVat, string $from, string $to
     return [
         'success'         => true,
         'account_vat'     => COMPANY_VAT,
-        'customer_vat'    => $buyerVat,
+        // Το κλειδί μπορεί να είναι `#<κωδικός>` (ιδιώτης χωρίς ΑΦΜ): το ΑΦΜ
+        // που δείχνει η οθόνη πρέπει να μείνει κενό, όχι να γράψει «#34».
+        'customer_key'    => $buyerVat,
+        'customer_code'   => strncmp($buyerVat, '#', 1) === 0 ? substr($buyerVat, 1) : '',
+        'customer_vat'    => strncmp($buyerVat, '#', 1) === 0 ? '' : $buyerVat,
         'customer_name'   => $meta['customer_name'] ?? '',
         'opening_balance' => round($opening, 2),
         'total_invoiced'  => round($totalDebit, 2),
@@ -3472,7 +3608,7 @@ function ledgerBalancesAll(\CurlHandle $ch, string $from, string $to): array {
         $acc[$vat]['credit'] += (float)$p['amount'];
         if ($acc[$vat]['name'] === '') $acc[$vat]['name'] = trim((string)$p['customer_name']);
         $acc[$vat]['entries'][] = [
-            'kind' => 'payment', 'date' => (string)$p['pay_date'],
+            'kind' => 'payment', 'date' => payment_date_gr((string)$p['pay_date']),
             'series' => '', 'aa' => '',
             'debit' => 0.0, 'credit' => round((float)$p['amount'], 2),
         ];
@@ -5151,6 +5287,8 @@ if ($addPaymentFlag) {
         // Η μορφή της ημερομηνίας κανονικοποιείται μέσα στο payment_add — ένα
         // σημείο για κάθε καλούντα (χειροκίνητη καταχώρηση, extrait τράπεζας).
         'pay_date'      => trim($_GET['pay_date'] ?? $_POST['pay_date'] ?? ''),
+        'bank'          => trim($_GET['pay_bank'] ?? $_POST['pay_bank'] ?? ''),
+        'bank_account'  => trim($_GET['pay_bank_account'] ?? $_POST['pay_bank_account'] ?? ''),
         'mark'          => $mark,
         'notes'         => trim($_GET['pay_notes'] ?? $_POST['pay_notes'] ?? ''),
     ]);
@@ -5208,6 +5346,20 @@ if (!empty($_GET['bank_preview'] ?? $_POST['bank_preview'] ?? '')) {
             'code' => (string)($c['code'] ?? $c['customer_code'] ?? ''),
         ];
     }
+    // Ταίριασμα με τους ΔΙΚΟΥΣ ΣΟΥ λογαριασμούς (Ρυθμίσεις → 🏦): όταν το IBAN
+    // του extrait είναι ένα από αυτούς, ξέρουμε την τράπεζα με βεβαιότητα και
+    // με το όνομα που της έδωσες εσύ — όχι με ό,τι έτυχε να γράφει το αρχείο.
+    $mine = bank_accounts_get(COMPANY_VAT);
+    $res['my_accounts'] = $mine;
+    $ibanIn = iban_normalize((string)($res['iban'] ?? ''));
+    foreach ($mine as $a) {
+        if ($ibanIn !== '' && $a['iban'] === $ibanIn) {
+            $res['bank_label']  = $a['bank'] !== '' ? $a['bank'] : ($res['bank_label'] ?? '');
+            $res['bank_source'] = 'settings';
+            $res['matched']     = true;
+            break;
+        }
+    }
     $res['success']   = true;
     $res['customers'] = $customers;
     jsonResponse($res);
@@ -5231,6 +5383,10 @@ if (!empty($_GET['bank_import'] ?? $_POST['bank_import'] ?? '')) {
                 'amount'        => (float)($it['amount'] ?? 0),
                 'method'        => (int)($it['method'] ?? 1), // 1 = Επαγγ. Λογ. Πληρωμών (τράπεζα)
                 'pay_date'      => trim((string)($it['pay_date'] ?? date('Y-m-d'))),
+                // Πού μπήκαν τα χρήματα: με έναν λογαριασμό είναι περιττό, με
+                // τρεις είναι η μόνη απάντηση στο «σε ποια τράπεζα ήρθε αυτό;».
+                'bank'          => trim((string)($it['bank'] ?? '')),
+                'bank_account'  => trim((string)($it['bank_account'] ?? '')),
                 'mark'          => trim((string)($it['mark'] ?? '')),
                 'notes'         => trim((string)($it['notes'] ?? '')),
             ]);
@@ -5483,6 +5639,10 @@ if ($syncKind !== '') {
 
 if ($ledgerFlag) {
     $cv = trim($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? $afm);
+    // Ο ιδιώτης δεν έχει ΑΦΜ. Ταυτοποιείται από τον κωδικό πελάτη, με πρόθεμα
+    // «#» ώστε το ίδιο κλειδί να κρατά και τις τοπικές πληρωμές του.
+    $cc = trim((string)($_GET['customer_code'] ?? $_POST['customer_code'] ?? ''));
+    if ($cv === '' && $cc !== '') $cv = '#' . $cc;
     if ($cv === '') { curl_close($ch); jsonError('Missing buyer_vat for ledger'); }
     $result = buildLedger($ch, $cv, $issueDateFrom, $issueDateTo);
     curl_close($ch);
@@ -5895,13 +6055,18 @@ if (!empty($_GET['invoices_zip'] ?? $_POST['invoices_zip'] ?? '')) {
         $zipName = 'ΠΑΡΑΣΤΑΤΙΚΑ ' . date('Y-m-d') . '.zip';
     } else {
         $bv = $buyerVatFilter !== '' ? $buyerVatFilter : $afm;
-        $r  = searchInvoices($ch, $issueDateFrom, $issueDateTo, $searchInvoiceType, '', $seriesFilter, $bv, '0');
+        // Το ZIP της καρτέλας ξεκινά από το ίδιο κλειδί με την καρτέλα: αν αυτή
+        // δείχνει ιδιώτη, το ZIP δεν επιτρέπεται να γυρίσει άδειο.
+        $r  = strncmp($bv, '#', 1) === 0
+            ? ['invoices' => ledgerInvoices($ch, $bv, $issueDateFrom, $issueDateTo)]
+            : searchInvoices($ch, $issueDateFrom, $issueDateTo, $searchInvoiceType, '', $seriesFilter, $bv, '0');
         foreach (($r['invoices'] ?? []) as $iv) {
             if (empty($iv['mark'])) continue;
             $marks[] = $iv['mark'];
             $meta[(string)$iv['mark']] = $iv;
         }
-        $zipName = $bv !== '' ? (preg_replace('/\D/', '', $bv) . ' ΠΑΡΑΣΤΑΤΙΚΑ.zip') : ('ΠΑΡΑΣΤΑΤΙΚΑ ' . date('Y-m-d') . '.zip');
+        $zipTag  = strncmp($bv, '#', 1) === 0 ? ('ΠΕΛΑΤΗΣ ' . substr($bv, 1)) : preg_replace('/\D/', '', $bv);
+        $zipName = $bv !== '' ? ($zipTag . ' ΠΑΡΑΣΤΑΤΙΚΑ.zip') : ('ΠΑΡΑΣΤΑΤΙΚΑ ' . date('Y-m-d') . '.zip');
     }
     if (empty($marks)) { curl_close($ch); jsonError('Δεν βρέθηκαν παραστατικά για ZIP'); }
     streamInvoicesZip($ch, $marks, $zipName, $meta);

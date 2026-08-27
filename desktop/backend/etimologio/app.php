@@ -726,8 +726,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <h2 class="title">Πελάτες</h2><p class="sub">Έξυπνη αναζήτηση & διαχείριση πελατολογίου.</p>
       <div class="panel">
         <div class="row">
-          <div class="field grow"><label>Αναζήτηση (ΑΦΜ / επωνυμία / κωδικός)</label>
-            <input id="custSearch" placeholder="Πληκτρολόγησε…" autocomplete="off"></div>
+          <div class="field grow"><label>Αναζήτηση (ΑΦΜ / επωνυμία / κωδικός / πόλη)</label>
+            <input id="custSearch" placeholder="Πληκτρολόγησε…" autocomplete="off" oninput="renderCustomers()"></div>
           <button class="primary" onclick="loadCustomers()">Αναζήτηση</button>
           <button class="ghost" onclick="loadCustomers(true)">Όλοι</button>
           <button class="ghost" onclick="zipAllInvoices()">🗜️ ZIP όλων (έτος)</button>
@@ -774,7 +774,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <div class="row">
           <div class="field"><label>Από</label><input id="docFrom" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
           <div class="field"><label>Έως</label><input id="docTo" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
-          <div class="field grow"><label>Αναζήτηση (ΑΦΜ / επωνυμία / ΜΑΡΚ / σειρά)</label><input id="docSearch" placeholder="Πληκτρολόγησε…" autocomplete="off" oninput="renderDocs()"></div>
+          <div class="field grow"><label>Αναζήτηση (ΑΦΜ / επωνυμία / ΜΑΡΚ / σειρά / ημερομηνία / ποσό)</label><input id="docSearch" placeholder="Πληκτρολόγησε…" autocomplete="off" oninput="renderDocs()"></div>
           <button class="primary" onclick="loadDocs()">Αναζήτηση</button>
           <button class="ghost" onclick="docsYear()" data-tip="Επαναφορά στο τρέχον έτος">📅 Τρέχον έτος</button>
         </div>
@@ -811,17 +811,13 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <div class="panel" style="margin-top:16px">
         <div class="row">
           <div class="field"><label>Τράπεζα</label>
-            <select id="biBank">
-              <option value="">Αυτόματα</option>
-              <option value="eurobank">Eurobank</option>
-              <option value="optima">Optima</option>
-              <option value="ethniki">Εθνική (NBG)</option>
-              <option value="generic">Άλλη (γενικό)</option>
-            </select></div>
+            <select id="biBank"><option value="">Αυτόματα</option></select></div>
           <div class="field grow"><label>Αρχείο extrait (.csv / .xlsx)</label>
             <input id="biFile" type="file" accept=".csv,.xlsx,.txt"></div>
           <button class="primary" onclick="biPreview()">🔎 Ανάλυση</button>
         </div>
+        <!-- Τι αναγνωρίστηκε, με τα ίδια λόγια που θα γραφτεί στην πληρωμή. -->
+        <div class="hint" id="biBankFound" style="display:none"></div>
         <div class="hint" id="biInfo"></div>
         <div class="row" id="biBar" style="display:none;gap:14px;align-items:center;margin-top:6px">
           <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="biOnlyCredit" checked onchange="biRender()"> Μόνο εισπράξεις (καταθέσεις)</label>
@@ -1665,7 +1661,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <button type="button" class="ghost" id="pmCardBtn" style="display:none" onclick="pmShowCard()" data-tip="Δείχνει τζίρο, πληρωμές και τρέχον υπόλοιπο χωρίς να κλείσει η φόρμα">📇 Καρτέλα</button>
     <div class="field"><label>Ποσό (€)</label><input id="pmAmount" type="number" step="0.01" required></div></div>
   <div class="row"><div class="field"><label>Ημ/νία</label><input id="pmDate" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)" required></div>
-    <div class="field"><label>Τρόπος</label><select id="pmMethod"><option value="3">Μετρητά</option><option value="1">Τραπεζική μεταφορά</option><option value="4">Επιταγή</option></select></div></div>
+    <div class="field"><label>Τρόπος</label><select id="pmMethod"><option value="3">Μετρητά</option><option value="1">Τραπεζική μεταφορά</option><option value="4">Επιταγή</option></select></div>
+    <!-- Εμφανίζεται μόνο όταν υπάρχουν καταχωρημένοι λογαριασμοί: με έναν
+         λογαριασμό είναι θόρυβος, με τρεις είναι η μόνη πληροφορία που λείπει. -->
+    <div class="field grow" id="pmBankWrap" style="display:none"><label>Λογαριασμός είσπραξης</label>
+      <select id="pmBankAcc"><option value="">—</option></select></div></div>
   <div class="field" style="margin-top:8px"><label>Σημειώσεις</label><input id="pmNotes" placeholder="π.χ. έναντι τιμολογίου…"></div>
   <label class="np-check" id="pmRepeatWrap" style="margin-top:10px;display:none">
     <input type="checkbox" id="pmRepeat"> Επαναλαμβανόμενη εισαγωγή <span class="muted">(το παράθυρο μένει ανοιχτό και κρατά τον ίδιο πελάτη)</span></label>
@@ -1990,6 +1990,12 @@ const fmt=n=>(Number(n)||0).toLocaleString('el-GR',{minimumFractionDigits:2,maxi
 // Parse a number that may be el-GR formatted (1.234,56) OR plain (1234.56 / 12.3456).
 // Rule: if both separators present, the LAST one is the decimal; comma-only ⇒ decimal
 // comma; dot-only ⇒ treated as a normal decimal point (matches product prices).
+// Ελληνικά χωρίς τόνους και χωρίς κεφαλαία, ώστε το «Βάρη» να βρίσκει το
+// «ΒΑΡΗ». Τα δεδομένα της ΑΑΔΕ είναι ΚΕΦΑΛΑΙΑ ΚΑΙ ΑΤΟΝΑ, ενώ ο χρήστης γράφει
+// πεζά και τονισμένα: χωρίς αυτό δεν συναντιόνταν ποτέ. Το τελικό «ς» γίνεται
+// «σ» για τον ίδιο λόγο («Πάτρας» / «πατρασ»).
+function grFold(s){return (s==null?'':String(s)).normalize('NFD')
+  .replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\u03c2/g,'\u03c3');}
 function elNum(v){if(typeof v==='number')return v;let s=(v==null?'':v).toString().trim();if(!s)return 0;
   s=s.replace(/[^\d,.\-]/g,'');const lc=s.lastIndexOf(','),ld=s.lastIndexOf('.');
   if(lc>-1&&ld>-1){s=lc>ld?s.replace(/\./g,'').replace(',','.'):s.replace(/,/g,'');}
@@ -2167,7 +2173,7 @@ function showView(v){
     if(!issueHasContent()){WIZ_DONE=false;ISSUE_WHO='';}
     wizShow(!WIZ_DONE);}
   if(v==='drafts')loadDrafts();
-  if(v==='bankimp'){if(!ALL_CUSTOMERS.length)loadCustomers();}
+  if(v==='bankimp'){ensureCustomers();loadBankSettings();biBankOptions();}
   if(v==='bulk')loadBulkView();
   if(v==='schedule')loadSchedule();
   if(v==='series')loadSeriesView();
@@ -2955,9 +2961,35 @@ function invLabelByValue(v){const t=INVBYVALUE[String(v)];return t?t.label:Strin
 async function cachedThenSync(kind,onRows){
   let shown=false;
   try{const c=await api({cached:kind});if(c.rows&&c.rows.length){onRows(c.rows,true);shown=true;}}catch(e){}
-  try{const s=await api({sync:kind});onRows(s.rows||[],false);
+  try{const s=await api({sync:kind});
+    // ΠΟΤΕ πάνω σε καλά δεδομένα με άδεια. Ο συγχρονισμός απαντά `success:false`
+    // (π.χ. 409 «διάλεξε πρώτα εταιρεία») ή γυρίζει άδειο σε στιγμιαία αστοχία
+    // της ΑΑΔΕ — και μέχρι τώρα αυτό ΣΒΗΝΕ το πελατολόγιο που είχε ήδη φορτώσει
+    // από την κρυφή μνήμη. Ο χρήστης το έβλεπε ως «η αναζήτηση δεν φέρνει
+    // πελάτες», χωρίς κανένα μήνυμα λάθους πουθενά.
+    if(s.success===false)throw new Error(s.error||'ο συγχρονισμός απέτυχε');
+    const rows=s.rows||[];
+    if(rows.length||!shown)onRows(rows,false);
     if(s.changed&&shown&&s.prev_count>0)toast('Ενημερώθηκε ('+kind+')','ok');
   }catch(e){if(!shown)toast(kind+': '+e.message,'err');}
+}
+
+// Το πελατολόγιο ΤΩΡΑ, όχι σε πέντε δευτερόλεπτα.
+//
+// Κάθε επιλογέας πελάτη καλούσε `loadCustomers()`, που περιμένει και τον γύρο
+// προς την ΑΑΔΕ. Το dropdown της μεμονωμένης πληρωμής άνοιγε άδειο και γέμιζε
+// αργότερα· η αναζήτηση στην εισαγωγή αρχείου έψαχνε σε κενή λίστα. Εδώ
+// διαβάζουμε ΜΟΝΟ την κρυφή μνήμη (ακαριαία) και αφήνουμε τον συγχρονισμό να
+// τρέξει από πίσω, μία φορά.
+let CUST_SYNC=null;
+async function ensureCustomers(){
+  if(ALL_CUSTOMERS.length)return ALL_CUSTOMERS;
+  try{const c=await api({cached:'customers'});
+    if(c.rows&&c.rows.length){ALL_CUSTOMERS=c.rows;if($('#custTable'))renderCustomers();}
+  }catch(e){}
+  if(!CUST_SYNC)CUST_SYNC=loadCustomers().catch(()=>{}).finally(()=>{CUST_SYNC=null;});
+  if(!ALL_CUSTOMERS.length)await CUST_SYNC;    // άδεια μνήμη: αξίζει η αναμονή
+  return ALL_CUSTOMERS;
 }
 
 // --- Excel-style per-column dropdown filters ---------------------------------
@@ -3359,9 +3391,12 @@ function sortCustomers(key){
   renderCustomers();
 }
 function renderCustomers(){
-  const term=($('#custSearch').value||'').toLowerCase().trim();
+  const term=grFold($('#custSearch').value||'').trim();
   let rows=ALL_CUSTOMERS.map(custFields);
-  if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.code+' '+c.city).toLowerCase().includes(term));
+  // Κάθε στήλη του πίνακα, και η διεύθυνση από πάνω: η «Πόλη» ήταν μπροστά στα
+  // μάτια του χρήστη και δεν αναζητούνταν, γιατί ο τόνος που έγραφε δεν
+  // υπάρχει ποτέ στα δεδομένα της ΑΑΔΕ.
+  if(term)rows=rows.filter(c=>grFold([c.code,c.vat,c.name,c.city,c.address,c.type].join(' ')).includes(term));
   // sort by the active column (numeric for code/vat, locale-aware for text)
   const k=CUST_SORT.key,dir=CUST_SORT.dir;
   rows.sort((a,b)=>{let x=a[k]||'',y=b[k]||'';
@@ -3372,10 +3407,10 @@ function renderCustomers(){
   ['code','vat','name','city'].forEach(c=>{const si=document.getElementById('si-'+c);if(si)si.textContent=(CUST_SORT.key===c?(CUST_SORT.dir>0?' ▲':' ▼'):'');});
   $('#custCount').textContent=rows.length+' / '+ALL_CUSTOMERS.length+' πελάτες';
   $('#custTable tbody').innerHTML=rows.slice(0,500).map(c=>
-    `<tr class="clickable" onclick="openCard('${q1(c.vat)}','${q1(c.name)}')"><td>${esc(c.code)}</td><td>${esc(c.vat)}</td><td>${esc(c.name)}</td><td>${esc(c.city)}</td>
+    `<tr class="clickable" onclick="openCard('${q1(c.vat)}','${q1(c.name)}','${q1(c.code)}')"><td>${esc(c.code)}</td><td>${esc(c.vat)}</td><td>${esc(c.name)}</td><td>${esc(c.city)}</td>
       <td class="right"><button class="primary sm" title="Έκδοση παραστατικού" onclick="event.stopPropagation();issueFor('${q1(c.vat)}','${q1(c.name)}')">🧾 Έκδοση</button>
       <button class="ghost sm" title="Επεξεργασία πελάτη" onclick="event.stopPropagation();editCustomer('${q1(c.vat)}')">✎</button>
-      <button class="ghost sm" onclick="event.stopPropagation();openCard('${q1(c.vat)}','${q1(c.name)}')">Καρτέλα →</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">Κανένα αποτέλεσμα.</td></tr>';
+      <button class="ghost sm" onclick="event.stopPropagation();openCard('${q1(c.vat)}','${q1(c.name)}','${q1(c.code)}')">Καρτέλα →</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">Κανένα αποτέλεσμα.</td></tr>';
   applyColumnFilters('custTable');
 }
 async function loadCustomers(){await cachedThenSync('customers',rows=>{ALL_CUSTOMERS=rows;renderCustomers();if(ALL_DOCS.length&&$('#docTable'))renderDocs();});}
@@ -3528,22 +3563,47 @@ function addDatePickers(root){
     wrap.appendChild(btn);
   });
 }
+// Το κλειδί σε παραμέτρους: ΑΦΜ ή κωδικός πελάτη — ποτέ και τα δύο.
+function cardParam(key){key=(key||'').trim();
+  return key.charAt(0)==='#'?{customer_code:key.slice(1)}:{buyer_vat:key};}
 function defaultRange(){const y=new Date().getFullYear();if(!$('#cardFrom').value)dset('cardFrom',y+'-01-01');if(!$('#cardTo').value)dset('cardTo',y+'-12-31');}
-function openCard(vat,name){showView('card');$('#cardVat').value=vat;$('#cardCust').value=name||vat;defaultRange();loadCard();}
+// Το κρυφό πεδίο κρατά ΚΛΕΙΔΙ, όχι ΑΦΜ: ο ιδιώτης δεν έχει ΑΦΜ και
+// αναγνωρίζεται από τον κωδικό πελάτη («#34»). Το ίδιο κλειδί κρατά και τις
+// τοπικές πληρωμές του, οπότε η καρτέλα του βγάζει κανονικό υπόλοιπο.
+function cardKey(vat,code){vat=(vat||'').trim();code=(code||'').toString().trim();
+  return vat||(code?('#'+code):'');}
+function openCard(vat,name,code){const k=cardKey(vat,code);showView('card');$('#cardVat').value=k;$('#cardCust').value=name||k;defaultRange();loadCard();}
 // Customer selector on the Καρτέλα tab (search by name/ΑΦΜ)
-function cardAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=$('#cardAcPanel');
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+async function cardAc(inp){const panel=$('#cardAcPanel');
+  await ensureCustomers();
+  const term=grFold(inp.value).trim();
   let rows=ALL_CUSTOMERS.map(custFields);
-  if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));
+  if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));
   rows=rows.slice(0,30);
   if(!rows.length){panel.classList.remove('open');return;}
-  panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="pickCardCust('${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
+  panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="pickCardCust('${q1(c.vat)}','${q1(c.name)}','${q1(c.code)}')"><b>${esc(c.name||c.vat)}</b> <small>${c.vat?('ΑΦΜ '+esc(c.vat)):('ιδιώτης · κωδ. '+esc(c.code||'—'))}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
   panel.classList.add('open');}
-function pickCardCust(vat,name){$('#cardVat').value=vat;$('#cardCust').value=name||vat;$('#cardAcPanel').classList.remove('open');loadCard();}
+function pickCardCust(vat,name,code){const k=cardKey(vat,code);$('#cardVat').value=k;$('#cardCust').value=name||k;$('#cardAcPanel').classList.remove('open');loadCard();}
 document.addEventListener('click',e=>{const p=$('#cardAcPanel');if(p&&!e.target.closest('#cardAcPanel')&&e.target!==$('#cardCust'))p.classList.remove('open');});
 
 // ---- BANK IMPORT (extrait → local payments) --------------------------------
 let BI_TX=[]; // parsed transactions (with .customer selection attached)
+//: Ποια τράπεζα και ποιος λογαριασμός εισέπραξε — ό,τι βρήκε το τελευταίο αρχείο.
+let BI_BANK={bank:'',account:'',iban:''};
+// Η ίδια λίστα τραπεζών με τις Ρυθμίσεις, ώστε η επιλογή να μπορεί ΠΑΝΤΑ να
+// δείξει αυτό που εντοπίστηκε. Πριν είχε τέσσερις επιλογές και η αναγνώριση
+// «Πειραιώς» δεν είχε πού να γραφτεί.
+function biBankOptions(){
+  const sel=$('#biBank');if(!sel)return;
+  const banks=(BANK_CFG.banks||[]);
+  if(!banks.length||sel.dataset.filled==='1')return;
+  const keep=sel.value;
+  sel.innerHTML='<option value="">Αυτόματα</option>'+
+    banks.map(b=>`<option value="${esc(b.name)}">${esc(b.name)}</option>`).join('');
+  sel.value=keep;sel.dataset.filled='1';
+}
+// Ο λογαριασμός σε ανθρώπινη μορφή: IBAN σε τετράδες, αλλιώς ό,τι βρέθηκε.
+function biAccountLabel(a){a=(a||'').trim();return /^GR/i.test(a)?ibanPretty(a):a;}
 // POST helper that carries the active account (needed to resolve COMPANY_VAT)
 async function apostAcc(params){const b=new URLSearchParams(params);if(ACCOUNT)b.set('account',ACCOUNT);
   let r;
@@ -3569,7 +3629,7 @@ function biGuess(tx){const custs=ALL_CUSTOMERS.map(custFields);
     if(score>bestScore){bestScore=score;best=c;}}
   return bestScore>=10?best:null;}
 async function biPreview(){const f=$('#biFile').files[0];if(!f){toast('Επίλεξε αρχείο','err');return;}
-  if(!ALL_CUSTOMERS.length)await loadCustomers();
+  await ensureCustomers();
   $('#biInfo').innerHTML='<span class="spin"></span> Ανάλυση αρχείου…';
   try{const b64=await new Promise((res,rej)=>{const rd=new FileReader();
       rd.onload=()=>res(rd.result.split(',')[1]);rd.onerror=rej;rd.readAsDataURL(f);});
@@ -3580,7 +3640,26 @@ async function biPreview(){const f=$('#biFile').files[0];if(!f){toast('Επίλ�
       include:tx.direction==='credit',
       pay_date:tx.date||new Date().toISOString().slice(0,10)};});
     const cr=BI_TX.filter(t=>t.direction==='credit').length,matched=BI_TX.filter(t=>t.cust).length;
-    $('#biInfo').innerHTML=`Βρέθηκαν <b>${BI_TX.length}</b> κινήσεις · <b>${cr}</b> εισπράξεις · αυτόματη αντιστοίχιση: <b>${matched}</b>${d.bank?' · τράπεζα: '+esc(d.bank):''}`;
+    // Η τράπεζα που ΕΝΤΟΠΙΣΤΗΚΕ μπαίνει στην επιλογή, ώστε να είναι ορατή και
+    // διορθώσιμη — και κρατιέται για να γραφτεί σε κάθε πληρωμή του αρχείου.
+    biBankOptions();
+    BI_BANK={bank:d.bank_label||$('#biBank').value||'',account:d.account||'',iban:d.iban||''};
+    if(d.bank_label&&!$('#biBank').value)$('#biBank').value=d.bank_label;
+    const box=$('#biBankFound');
+    if(BI_BANK.bank||BI_BANK.account){
+      const how=d.bank_source==='settings'?'από τους λογαριασμούς σου'
+               :d.bank_source==='iban'?'από το IBAN του αρχείου'
+               :d.bank_source==='text'?'από το κείμενο του αρχείου':'';
+      box.innerHTML='🏦 Αναγνωρίστηκε: <b>'+esc(BI_BANK.bank||'άγνωστη τράπεζα')+'</b>'
+        +(BI_BANK.account?' · λογαριασμός <b>'+esc(biAccountLabel(BI_BANK.account))+'</b>':'')
+        +(how?' <span class="muted">('+how+')</span>':'')
+        +'<br><span class="muted">Γράφεται σε κάθε πληρωμή που θα καταχωρηθεί. Άλλαξε την επιλογή αριστερά αν δεν είναι σωστή.</span>';
+      box.style.display='';
+    }else{
+      box.innerHTML='🏦 Δεν αναγνωρίστηκε τράπεζα μέσα στο αρχείο — διάλεξέ την αριστερά για να καταγραφεί στις πληρωμές.';
+      box.style.display='';
+    }
+    $('#biInfo').innerHTML=`Βρέθηκαν <b>${BI_TX.length}</b> κινήσεις · <b>${cr}</b> εισπράξεις · αυτόματη αντιστοίχιση: <b>${matched}</b>`;
     $('#biBar').style.display='flex';biRender();
   }catch(e){$('#biInfo').textContent='Σφάλμα: '+e.message;toast('Ανάλυση: '+e.message,'err');}}
 function biRender(){const onlyCr=$('#biOnlyCredit').checked;
@@ -3591,7 +3670,7 @@ function biRender(){const onlyCr=$('#biOnlyCredit').checked;
     const cval=t.cust?esc(t.cust.name||t.cust.vat):'';
     return `<tr>
       <td><input type="checkbox" ${t.include?'checked':''} onchange="BI_TX[${i}].include=this.checked;biSelInfo()"></td>
-      <td>${esc(t.date)}</td>
+      <td>${esc(isoToDmy(t.date))}</td>
       <td title="${esc(t.description)}">${esc((t.description||'').slice(0,60))}</td>
       <td class="num" ${amtCls}>${fmt(Math.abs(t.amount))}</td>
       <td>${dir}</td>
@@ -3599,9 +3678,11 @@ function biRender(){const onlyCr=$('#biOnlyCredit').checked;
            oninput="biAc(this,${i})" onfocus="biAc(this,${i})"><div class="ac-panel" id="biAc${i}"></div></td>
     </tr>`;}).join('')||'<tr><td colspan="6" class="muted">Καμία κίνηση.</td></tr>';
   biSelInfo();}
-function biAc(inp,i){const term=biStrip(inp.value);const panel=$('#biAc'+i);
+async function biAc(inp,i){const panel=$('#biAc'+i);
+  await ensureCustomers();
+  const term=grFold(inp.value).trim();
   let rows=ALL_CUSTOMERS.map(custFields);
-  if(term)rows=rows.filter(c=>biStrip(c.vat+' '+c.name+' '+c.city).includes(term));
+  if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));
   rows=rows.slice(0,20);
   if(!rows.length){panel.classList.remove('open');return;}
   panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="biPick(${i},'${q1(c.vat)}','${q1(c.name)}','${q1(c.code)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
@@ -3617,8 +3698,12 @@ async function biImport(){const sel=BI_TX.filter(t=>t.include);
   if(!sel.length){toast('Δεν επέλεξες κινήσεις','err');return;}
   const noCust=sel.filter(t=>!t.cust);
   if(noCust.length&&!await uiConfirm(`${noCust.length} κινήσεις δεν έχουν πελάτη και θα καταχωρηθούν χωρίς αντιστοίχιση. Συνέχεια;`))return;
+  // Η επιλογή του χρήστη υπερισχύει της αναγνώρισης: αν διόρθωσε την τράπεζα,
+  // αυτή γράφεται.
+  const bank=$('#biBank').value||BI_BANK.bank||'';
   const items=sel.map(t=>({customer_vat:t.cust?t.cust.vat:'',customer_name:t.cust?t.cust.name:'',customer_code:t.cust?t.cust.code:'',
     amount:Math.abs(t.amount),pay_date:t.pay_date||t.date,method:1,
+    bank,bank_account:BI_BANK.account||'',
     notes:(t.direction==='debit'?'[ΠΛΗΡΩΜΗ] ':'')+(t.description||'').slice(0,180)}));
   $('#biInfo').innerHTML='<span class="spin"></span> Καταχώρηση…';
   try{const d=await apostAcc({bank_import:1,items:JSON.stringify(items)});
@@ -3631,7 +3716,7 @@ async function biImport(){const sel=BI_TX.filter(t=>t.include);
 let CARD={};
 async function loadCard(){const vat=$('#cardVat').value.trim();if(!vat){toast('Επίλεξε πελάτη','err');return;}defaultRange();
   $('#cardCards').innerHTML='<div class="card"><div class="v"><span class="spin"></span></div></div>';$('#cardTable tbody').innerHTML='';
-  try{const d=await api({ledger:1,buyer_vat:vat,issue_date_from:di('cardFrom'),issue_date_to:di('cardTo')});if(!d.success)throw new Error(d.error||'σφάλμα');CARD=d;
+  try{const d=await api(Object.assign({ledger:1,issue_date_from:di('cardFrom'),issue_date_to:di('cardTo')},cardParam(vat)));if(!d.success)throw new Error(d.error||'σφάλμα');CARD=d;
     // Τα παραστατικά της καρτέλας, για μαζική εκτύπωση/ZIP.
     window.CARD_INVOICES=(d.entries||[]).filter(e=>e.kind==='invoice'&&e.mark)
       .map(e=>({mark:e.mark,issue_date:e.date,series:e.series||'',aa:e.aa||''}));
@@ -3645,7 +3730,8 @@ async function loadCard(){const vat=$('#cardVat').value.trim();if(!vat){toast('�
         <td class="right">${e.mark?`${docBtn(e.mark)} <button class="danger sm" title="Ακύρωση με πιστωτικό" onclick="cancelFromCard('${q1(e.mark)}')">↩ Ακύρωση</button>`:''}</td></tr>`;
       // Διπλό κλικ = επεξεργασία, όπως στην εφαρμογή υπολογιστή. Μέχρι τώρα ο
       // μόνος δρόμος για μια λάθος πληρωμή ήταν διαγραφή και ξαναγράψιμο.
-      return `<tr class="clickable" title="Διπλό κλικ για επεξεργασία" ondblclick="editPayment(${e.payment_id})"><td>${esc(e.date)}</td><td><span class="pill ok">Πληρωμή</span> ${esc(payMethod(e.method))}</td><td>${esc(e.notes||'')}</td><td class="num"></td><td class="num">${fmt(e.credit)}</td><td class="num">${fmt(e.balance)}</td><td class="right"><button class="ghost sm" title="Επεξεργασία" onclick="event.stopPropagation();editPayment(${e.payment_id})">✎</button><button class="danger sm" onclick="event.stopPropagation();delPayment(${e.payment_id})">✕</button></td></tr>`;
+      const acc=e.bank||e.bank_account?`<span class="muted"> · ${esc(e.bank||'')}${e.bank_account?' '+esc(biAccountLabel(e.bank_account)):''}</span>`:'';
+      return `<tr class="clickable" title="Διπλό κλικ για επεξεργασία" ondblclick="editPayment(${e.payment_id})"><td>${esc(e.date)}</td><td><span class="pill ok">Πληρωμή</span> ${esc(payMethod(e.method))}${acc}</td><td>${esc(e.notes||'')}</td><td class="num"></td><td class="num">${fmt(e.credit)}</td><td class="num">${fmt(e.balance)}</td><td class="right"><button class="ghost sm" title="Επεξεργασία" onclick="event.stopPropagation();editPayment(${e.payment_id})">✎</button><button class="danger sm" onclick="event.stopPropagation();delPayment(${e.payment_id})">✕</button></td></tr>`;
     }).join('')||'<tr><td colspan="7" class="muted">Καμία κίνηση.</td></tr>';
   }catch(e){$('#cardCards').innerHTML='';toast('Καρτέλα: '+e.message,'err');}
 }
@@ -3659,7 +3745,16 @@ async function cancelFromCard(mark){showView('cancel');$('#cxVat').value=CARD.cu
 let PM_MODE='card', PM_NAME='', PM_EDIT=null;
 function pmReset(){['pmAmount','pmNotes'].forEach(i=>$('#'+i).value='');$('#pmResult').textContent='';
   PM_EDIT=null;$('#pmHead').textContent='💶 Καταχώρηση πληρωμής';
-  dset('pmDate',new Date().toISOString().slice(0,10));pmCardBtn();}
+  dset('pmDate',new Date().toISOString().slice(0,10));pmBankOptions();pmCardBtn();}
+// Οι λογαριασμοί που έχει καταχωρήσει η επιχείρηση (Ρυθμίσεις → 🏦).
+function pmBankOptions(keep){
+  const sel=$('#pmBankAcc'),wrap=$('#pmBankWrap');if(!sel||!wrap)return;
+  const accs=(BANK_CFG.accounts||[]).filter(a=>a.iban);
+  wrap.style.display=accs.length?'':'none';
+  sel.innerHTML='<option value="">—</option>'+accs.map(a=>
+    `<option value="${esc(a.iban)}" data-bank="${esc(a.bank||'')}">${esc((a.bank||'Λογαριασμός')+' · '+ibanPretty(a.iban))}</option>`).join('');
+  if(keep)sel.value=ibanNorm(keep);
+}
 // Επεξεργασία υπάρχουσας πληρωμής — ίδια φόρμα, άλλη κατάληξη.
 function editPayment(id){
   const e=(CARD.entries||[]).find(x=>x.payment_id===id);
@@ -3673,6 +3768,7 @@ function editPayment(id){
   $('#pmMethod').value=String(e.method||3);
   $('#pmNotes').value=e.notes||'';
   dset('pmDate',e.date_iso||e.date||'');
+  pmBankOptions(e.bank_account||'');
   $('#payModal').showModal();
 }
 // Το κουμπί «καρτέλα» εμφανίζεται μόλις υπάρχει πελάτης: στη μεμονωμένη
@@ -3684,6 +3780,7 @@ function pmCardBtn(){
   btn.style.display=(PM_MODE==='manual'&&vat)?'':'none';
 }
 function openPaymentModal(){const vat=$('#cardVat').value.trim();if(!vat){toast('Φόρτωσε πρώτα καρτέλα','err');return;}
+  loadBankSettings();
   PM_MODE='card';PM_NAME=CARD.customer_name||'';
   $('#pmPickRow').style.display='none';$('#pmRepeatWrap').style.display='none';$('#pmRepeat').checked=false;
   pmReset();$('#pmVat').value=vat;$('#pmAmount').value=CARD.balance>0?CARD.balance.toFixed(2):'';
@@ -3691,17 +3788,18 @@ function openPaymentModal(){const vat=$('#cardVat').value.trim();if(!vat){toast(
 // Μεμονωμένη καταχώρηση, χωρίς να χρειάζεται πρώτα καρτέλα.
 function openManualPayment(){
   PM_MODE='manual';
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+  ensureCustomers();loadBankSettings();
   $('#pmPickRow').style.display='';$('#pmRepeatWrap').style.display='';
   // Ο πελάτης ΔΕΝ καθαρίζεται όταν είναι ήδη επιλεγμένος: αυτό ακριβώς κρατά η
   // «επαναλαμβανόμενη εισαγωγή» ανάμεσα σε δύο πληρωμές.
   if(!$('#pmRepeat').checked){$('#pmCust').value='';$('#pmVat').value='';PM_NAME='';}
   pmReset();$('#payModal').showModal();
   setTimeout(()=>$((!$('#pmVat').value)?'#pmCust':'#pmAmount').focus(),40);}
-function pmAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=$('#pmAcPanel');
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+async function pmAc(inp){const panel=$('#pmAcPanel');
+  await ensureCustomers();
+  const term=grFold(inp.value).trim();
   let rows=ALL_CUSTOMERS.map(custFields);
-  if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));
+  if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));
   rows=rows.slice(0,30);
   if(!rows.length){panel.classList.remove('open');return;}
   panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="pmPick('${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
@@ -3717,7 +3815,7 @@ async function pmShowCard(){
   box.innerHTML='<span class="spin"></span> Φόρτωση…';
   pmCardModal.showModal();
   const y=new Date().getFullYear();
-  try{const d=await api({ledger:1,buyer_vat:vat,issue_date_from:y+'-01-01',issue_date_to:y+'-12-31'});
+  try{const d=await api(Object.assign({ledger:1,issue_date_from:y+'-01-01',issue_date_to:y+'-12-31'},cardParam(vat)));
     if(!d.success)throw new Error(d.error||'σφάλμα');
     const rows=(d.entries||[]).slice(-12).reverse();
     box.innerHTML=`<div class="cards">
@@ -3737,8 +3835,11 @@ async function savePayment(ev){ev.preventDefault();
   const vat=($('#pmVat').value||'').trim();
   if(!vat){$('#pmResult').textContent='Διάλεξε πελάτη.';return;}
   const name=PM_MODE==='card'?(CARD.customer_name||''):PM_NAME;
+  const accSel=$('#pmBankAcc'),accOpt=accSel&&accSel.selectedOptions[0];
   const p={buyer_vat:vat,customer_name:name,pay_amount:$('#pmAmount').value,
-           pay_method:$('#pmMethod').value,pay_date:di('pmDate'),pay_notes:$('#pmNotes').value};
+           pay_method:$('#pmMethod').value,pay_date:di('pmDate'),pay_notes:$('#pmNotes').value,
+           pay_bank_account:accSel?accSel.value:'',
+           pay_bank:(accOpt&&accOpt.dataset.bank)||''};
   if(PM_EDIT){p.update_payment=1;p.payment_id=PM_EDIT;}else{p.add_payment=1;}
   try{const d=await api(p);
     if(!d.success)throw new Error(d.error||'σφάλμα');
@@ -3984,7 +4085,7 @@ async function loadBulkView(){await loadInvTypes();
     sel.innerHTML=opts.length?opts.map(o=>`<option value="${esc(o.v)}">${esc(o.label)}</option>`).join(''):'<option value="">— καμία ενεργή σειρά —</option>';
     blkFillSeries();
   }catch(e){}
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+  ensureCustomers();
   if(!Object.keys(PRODMAP).length)loadProductList();
   if(!$('#blkTable tbody').children.length)blkAddRow();
 }
@@ -4002,7 +4103,7 @@ function blkAddRow(vat='',name='',code='',qty=1,price=''){
     <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove();blkCountUpd()">✕</button></td>`;
   tb.appendChild(tr);blkCountUpd();}
 function blkCustAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+  ensureCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));rows=rows.slice(0,30);
   const newRow=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="blkNewCust(this)">➕ Νέος πελάτης…</div>`;
   panel.innerHTML=newRow+rows.map(c=>`<div class="ac-row" onmousedown="blkPickCust(this,'${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
@@ -4125,7 +4226,7 @@ async function delSeries(id,code){if(!id){toast('Λείπει το id σειρά
 // Customer autocomplete on the issue form (searchable + fills all fields)
 let acEl=null;
 function custAc(el){acEl=el;const term=(el.value||'').toLowerCase().trim();const panel=$('#iCustAc');
-  if(!ALL_CUSTOMERS.length){loadCustomers();}
+  ensureCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);
   // Επαγγελματίας → μόνο επιχειρήσεις· Ιδιώτης → μόνο ιδιώτες.
   if(ISSUE_WHO==='pro')rows=rows.filter(custIsBusiness);
@@ -4384,7 +4485,7 @@ function showIssueCls(){clearTimeout(clsTimer);clsTimer=setTimeout(async()=>{
 // ==== Delivery / return note (goods, 9.x) ====================================
 // dn invoice-type value → myDATA code (for matching registered series)
 const DN_CODE={'503':'9.3','504':'9.1','505':'9.2'};
-function dnInit(){loadProductList();if(!ALL_CUSTOMERS.length)loadCustomers();
+function dnInit(){loadProductList();ensureCustomers();
   (SERIES.length?Promise.resolve():loadDnSeries()).then(dnFillSeries);
   dnLoadLoad();}
 async function loadDnSeries(){try{const d=await api({list_series:1});SERIES=d.series||[];}catch(e){}}
@@ -4407,7 +4508,7 @@ async function dnSeriesChange(){const sel=$('#dnSeries');if(sel.value!=='__new')
 // --- Customer autocomplete (fills ΑΦΜ/επωνυμία + saved delivery place) -------
 let dnTimer;
 function dnCustAc(el){const term=(el.value||'').toLowerCase().trim();const panel=$('#dnCustAcPanel');
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+  ensureCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);
   if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));
   rows=rows.slice(0,30);
@@ -4571,7 +4672,7 @@ async function dnPreviewPdf(){
 // Ακύρωση/Πιστωτικό: customer picker → their invoices → select → editable credit
 function cxRange(){const y=new Date().getFullYear();if(!$('#cxFrom').value)dset('cxFrom',y+'-01-01');if(!$('#cxTo').value)dset('cxTo',y+'-12-31');}
 function cxAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=$('#cxAcPanel');
-  if(!ALL_CUSTOMERS.length)loadCustomers();
+  ensureCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));rows=rows.slice(0,30);
   if(!rows.length){panel.classList.remove('open');return;}
   panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="cxPickCust('${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
@@ -4581,7 +4682,7 @@ document.addEventListener('click',e=>{const p=$('#cxAcPanel');if(p&&!e.target.cl
 async function cxLoadInvoices(){let vat=$('#cxVat').value.trim();
   // If the user typed the name/AFM without clicking a suggestion, resolve it here.
   if(!vat){const term=($('#cxCust').value||'').trim().toLowerCase();
-    if(term){if(!ALL_CUSTOMERS.length)await loadCustomers();
+    if(term){await ensureCustomers();
       const m=ALL_CUSTOMERS.map(custFields).find(c=>c.vat===term||c.name.toLowerCase()===term)
         ||(/^\d{9}$/.test(term)?{vat:term}:null);
       if(m){vat=m.vat;$('#cxVat').value=vat;}
@@ -4694,7 +4795,7 @@ async function loadDocs(){
   // δευτερόλεπτα, και η στήλη ενημερώνεται μόνη της όταν αυτός τελειώσει.
   if(!ALL_CUSTOMERS.length){
     try{const c=await api({cached:'customers'});if(c.rows&&c.rows.length)ALL_CUSTOMERS=c.rows;}catch(e){}
-    if(!ALL_CUSTOMERS.length)loadCustomers();
+    ensureCustomers();
   }
   try{const d=await api({search_invoices:1,issue_date_from:di('docFrom'),issue_date_to:di('docTo')});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
@@ -4714,11 +4815,22 @@ function docWho(i){
   const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===vat);
   return (c&&c.name)?c.name:vat;
 }
+// Ό,τι δείχνει η γραμμή, σε ένα κείμενο. Τα ποσά μπαίνουν ΚΑΙ όπως γράφονται
+// («10.000,00») ΚΑΙ σκέτα («10000»), ώστε να βρίσκονται είτε τα πληκτρολογήσεις
+// με τελείες είτε χωρίς. Το ίδιο η ημερομηνία: «24/08/2026» και «2026-08-24».
+function docHay(i){
+  const num=v=>{const n=elNum(v);return n?(' '+n+' '+n.toFixed(2)):'';};
+  return grFold([
+    i.mark,i.series,i.aa,i.type,
+    i.counterpart_vat,i.buyer_vat,i.counterpart,i.counterpart_name,docWho(i),
+    i.issue_date,dtParse(i.issue_date||''),
+    i.net_value,i.vat_value,i.total,
+  ].join(' ')+num(i.net_value)+num(i.vat_value)+num(i.total));
+}
 function docRows(){
-  const term=($('#docSearch').value||'').toLowerCase().trim();
+  const term=grFold($('#docSearch').value||'').trim();
   if(!term)return ALL_DOCS;
-  return ALL_DOCS.filter(i=>[i.mark,i.series,i.aa,i.type,i.counterpart_vat,i.buyer_vat,i.counterpart,i.counterpart_name,docWho(i)]
-    .join(' ').toLowerCase().includes(term));
+  return ALL_DOCS.filter(i=>docHay(i).includes(term));
 }
 function renderDocs(){
   const rows=docRows();
@@ -5094,6 +5206,10 @@ async function loadBankSettings(force){
     if(!d.success)return;
     BANK_CFG=d;BANK_VAT=ACCOUNT;
     if($('#bkTable'))bkRender();
+    // Οι λογαριασμοί τροφοδοτούν ΚΑΙ την εισαγωγή πληρωμών: μόλις έρθουν,
+    // γεμίζουν η λίστα τραπεζών και ο επιλογέας λογαριασμού είσπραξης.
+    biBankOptions();
+    if($('#pmBankAcc'))pmBankOptions($('#pmBankAcc').value);
   }catch(e){}
 }
 
@@ -5318,7 +5434,7 @@ function safeFileName(text,fallback){
 }
 // «ΚΑΡΤΕΛΑ (ΕΠΩΝΥΜΙΑ ΠΕΛΑΤΗ).pdf» — το ΑΦΜ δεν λέει σε κανέναν ποιανού είναι
 // η καρτέλα όταν κοιτάς τον φάκελο λήψεων.
-function ledgerFileName(name,vat){
+function ledgerFileName(name,vat){vat=(vat||'').charAt(0)==='#'?('ΚΩΔ '+vat.slice(1)):vat;
   const who=safeFileName(name,'')||String(vat||'');
   return 'ΚΑΡΤΕΛΑ ('+(who||'ΠΕΛΑΤΗΣ')+').pdf';
 }
@@ -5877,7 +5993,7 @@ async function cbHandle(t){const s=cbNorm(t);
   // λέξη, αντίθετη ενέργεια — το ρήμα αποφασίζει.
   const makesNew=/\bνεοσ?\b|\bνεα\b|\bνεο\b|φτιαξε|δημιουργησε|καταχωρησε|προσθεσε/.test(s);
   if(vatSaid&&!makesNew&&(/καρτελ/.test(s)||/χρωσταει|υπολοιπο/.test(s))){
-    if(!ALL_CUSTOMERS.length)await loadCustomers();
+    await ensureCustomers();
     const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===vatSaid);
     openCard(vatSaid,c&&c.name);cbBot('Άνοιξα την καρτέλα του πελάτη.');return;}
   if(vatSaid&&/εταιρει|επιχειρησ/.test(s)){
@@ -5918,7 +6034,7 @@ async function cbHandle(t){const s=cbNorm(t);
   // Πλήθη: τα έχουμε ήδη στη μνήμη — καμία ερώτηση στο backend, και ΠΡΙΝ τα
   // στατιστικά, που μετρούν παραστατικά και όχι πελάτες.
   if(/ποσ\S*\s+(?:\w+\s+){0,2}πελατ|how many (?:\w+\s+){0,2}(?:customers|clients)|customer count|client count/.test(s)){
-    if(!ALL_CUSTOMERS.length)await loadCustomers();
+    await ensureCustomers();
     cbBot('Έχεις '+ALL_CUSTOMERS.length+' πελάτες στο πελατολόγιο.');return;}
   if(/ποσ\S*\s+(?:ειδ|προιοντ)|how many items|how many products|product count|item count/.test(s)){
     if(!PRODUCTS.length)await loadProducts();
@@ -6065,7 +6181,7 @@ function cbFindProdByDesc(desc){if(!desc)return '';const d=desc.toLowerCase();le
     if(hit>bs){bs=hit;best=c;}}
   return bs>=2?best:'';}
 async function cbStartIssue(o){
-  if(!ALL_CUSTOMERS.length)await loadCustomers();
+  await ensureCustomers();
   const cust=cbResolveCustomer(o.customerRef,o.afm);
   if(cust){o.afm=cust.vat;o.name=cust.name;return cbResolveProduct(o);}
   CB_CTX={stage:'who',o};

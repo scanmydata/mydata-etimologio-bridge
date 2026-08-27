@@ -231,6 +231,11 @@ function sync_payments(string $vat): array {
         'amount'        => (float)($p['amount'] ?? 0),
         'method'        => (int)($p['method'] ?? 3),
         'pay_date'      => (string)($p['pay_date'] ?? ''),
+        // Ταξιδεύουν κι αυτά: αλλιώς η άλλη πλευρά κρατά την πληρωμή αλλά χάνει
+        // το «σε ποια τράπεζα ήρθε» — και το αποτύπωμα δεν αλλάζει, οπότε δεν
+        // ξαναγράφεται ποτέ.
+        'bank'          => (string)($p['bank'] ?? ''),
+        'bank_account'  => (string)($p['bank_account'] ?? ''),
         'mark'          => (string)($p['mark'] ?? ''),
         'notes'         => (string)($p['notes'] ?? ''),
     ], payments_list($vat));
@@ -271,6 +276,8 @@ function sync_apply(string $vat, array $payments, array $meta): array {
             'amount'        => (float)($p['amount'] ?? 0),
             'method'        => (int)($p['method'] ?? 3),
             'pay_date'      => (string)($p['pay_date'] ?? ''),
+            'bank'          => (string)($p['bank'] ?? ''),
+            'bank_account'  => (string)($p['bank_account'] ?? ''),
             'mark'          => (string)($p['mark'] ?? ''),
             'notes'         => (string)($p['notes'] ?? ''),
         ];
