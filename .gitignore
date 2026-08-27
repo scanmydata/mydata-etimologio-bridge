@@ -43,3 +43,7 @@ training/voice/etimologio_sft.jsonl
 
 # Το training/voice τρέχει scripts επιτόπου — τα .pyc δεν έχουν λόγο να ζουν στο repo.
 training/voice/__pycache__/
+
+# Κατεβασμένο μοντέλο Vosk (1,6 GB). Εκτός installer/: εκεί μέσα το πακετάρει
+# ΠΑΝΤΑ το spec, ακόμη και χωρίς -WithVoice. Για build με φωνή, γύρνα το πίσω.
+desktop/.cache/
