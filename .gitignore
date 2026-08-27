@@ -36,3 +36,10 @@ Thumbs.db
 training/voice/readlist/**/*.wav
 training/voice/readlist/wav/
 training/voice/dataset/
+
+# Παράγωγο σύνολο εκπαίδευσης: το φτιάχνει το check_datasets.py --export
+# από τα τρία JSON, οπότε δεν έχει λόγο να ζει στο repo (1,4 MB διπλά).
+training/voice/etimologio_sft.jsonl
+
+# Το training/voice τρέχει scripts επιτόπου — τα .pyc δεν έχουν λόγο να ζουν στο repo.
+training/voice/__pycache__/

@@ -1,103 +1,116 @@
-invoice series
-ledger
-stop talking
-open the companies
-scheduled invoices
-issue it for real
-how many items do I have
 users and roles
-administration
-show me around
-series
-thanks
-hello
-tour
-back up my data
-logout
 notifications
-go home
-mute
-customer count
-my companies
-any unread notifications
-mass issue
-open the card of 094019245
-sign out
-switch to company 802576637
-manage users
-statistics
-turnover this year
-reload the page
-my documents
-invoices list
-open the ledger
-unmute
-open the series
-show the documents
-create an invoice
-items
-cancel
-backup
-drafts
-submit it to the tax office
-payments
-how many unread
-open the customers
-issue
-start the tour
-refresh
-open notifications
-customer card
-go back
-new customer
-import payments
-schedule
-new item
-products
-how much this month
-issue many invoices
-open the card of 998877665
-saved drafts
-settings
-turnover this month
-open the scheduler
-open the palette
-add a customer
-good morning
-credit note
-bulk issue
-open the settings
-talk to me
-product count
-how many customers do I have
-open the drafts
-client list
-bank import
-be quiet
-command palette
-how much did I invoice this year
-open the manual
-customers
-show me the statistics
-cancellation
-preferences
-open the items
-switch to company 094019245
-create a client
-manual
-send it officially
-log out
-turn the voice on
-make a backup
-home
-documents
-issue a document
+hide a column
 cancel an invoice
+schedule
+bank import
+items
+open notifications
+cancel
+open the companies
+ledger
+home
+customer card
+open the customers
+open the palette
+start the tour
+open the settings
+series
+issue it for real
+create an invoice
+invoice series
+reload the page
+hello
+refresh
+turnover this month
+customer count
+refresh the documents
+how many unread
+create a client
+test the api key
+open the card of 998877665
+choose columns
+show the documents
+issue
+turnover this year
+mass issue
+issue a document
+preferences
 new invoice
-back
-companies
-user guide
-switch to company 998877665
-open the card of 802576637
-stats
+log out
+make a backup
+stop talking
+customers
+my documents
+documents
+restore from backup
+product count
+new customer
+bulk issue
+talk to me
+switch to company 094019245
 add a product
+new item
+tour
+clear the notifications
+submit it to the tax office
+back
+products
+statistics
+go back
+companies
+check for updates
+open the scheduler
+invoices list
+open the drafts
+sign out
+open the manual
+go home
+scheduled invoices
+my companies
+turn the voice on
+check the folder
+how many items do I have
+switch to company 998877665
+back up my data
+is there a new version
+unmute
+settings
+manage users
+backup
+how much did I invoice this year
+user guide
+command palette
+import payments
+how much this month
+logout
+delete a notification
+stats
+check the credentials
+client list
+be quiet
+any unread notifications
+drafts
+send it officially
+thanks
+add a customer
+why does it say pending
+restore the database
+credit note
+open the items
+manual
+how many customers do I have
+show me the statistics
+administration
+payments
+open the card of 802576637
+open the card of 094019245
+open the series
+cancellation
+issue many invoices
+show me around
+open the ledger
+switch to company 802576637
+good morning
+mute
+saved drafts

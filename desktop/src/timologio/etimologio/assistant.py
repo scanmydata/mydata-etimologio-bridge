@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -37,6 +38,32 @@ _ACCENTS = {
 _TRANS = str.maketrans(_ACCENTS)
 
 
+#: Ό,τι ακούγεται **ίδιο** στα ελληνικά αλλά γράφεται αλλιώς. Το whisper τα
+#: μπερδεύει σταθερά, και ο χρήστης δεν φταίει σε τίποτα: «εταιρεία» και
+#: «ετερεία» είναι ο ίδιος ήχος.
+#:
+#: Η σειρά μετράει — οι δίφθογγοι πρώτα, αλλιώς το «ει» θα είχε ήδη γίνει «ι».
+#: Δεν είναι φωνητική μεταγραφή και δεν προσπαθεί να είναι: αρκεί να εφαρμόζεται
+#: **το ίδιο** και στην είσοδο και στις λέξεις-κλειδιά.
+_FOLD: tuple[tuple[str, str], ...] = (
+    ("αι", "ε"), ("ει", "ι"), ("οι", "ι"), ("υι", "ι"),
+    ("η", "ι"), ("υ", "ι"), ("ω", "ο"),
+)
+
+
+def fold(text: str) -> str:
+    """Ηχητική «ισοπέδωση»: ό,τι ακούγεται ίδιο, γράφεται ίδιο.
+
+    Χρησιμοποιείται **μόνο ως δεύτερο πέρασμα**, αφού αποτύχει το κανονικό
+    ταίριασμα. Έτσι δεν μπορεί να χαλάσει καμία σωστή απάντηση — το χειρότερο
+    που κάνει είναι να μετατρέψει ένα «δεν το κατάλαβα» σε σωστή ενέργεια.
+    """
+    out = text
+    for old, new in _FOLD:
+        out = out.replace(old, new)
+    return out
+
+
 def normalize(text: str) -> str:
     """Πεζά, χωρίς τόνους, με τελικό σίγμα ίδιο με το μεσαίο."""
     return (text or "").lower().translate(_TRANS)
@@ -45,36 +72,160 @@ def normalize(text: str) -> str:
 # --- πλοήγηση -----------------------------------------------------------------
 #: Ενότητα → λέξεις-κλειδιά (κανονικοποιημένες). Η σειρά μετράει: το πρώτο
 #: ταίριασμα κερδίζει, όπως στο web.
+#: Η σειρά μετράει και μέσα στη γραμμή: η **Καρτέλα** πρέπει να κριθεί πριν από
+#: τους Πελάτες, γιατί το «καρτέλα πελάτη» περιέχει και τα δύο.
 NAV: list[tuple[str, tuple[str, ...]]] = [
-    ("issue",         ("εκδοση παραστατικου", "νεο παραστατικο", "εκδοση")),
+    # Η **μαζική** πριν από την Έκδοση: το «μαζική έκδοση» περιέχει «έκδοση»,
+    # και με την αντίστροφη σειρά κατέληγε πάντα στη μονή φόρμα.
+    ("bulk",          ("μαζικη εκδοση", "μαζικ",
+                       "bulk", "mass issue", "issue many")),
+    ("issue",         ("εκδοση παραστατικου", "νεο παραστατικο", "εκδοση",
+                       "new invoice", "create an invoice", "issue a document",
+                       "issue an invoice")),
     # Στο web τα εκδοθέντα ζουν μέσα στην Καρτέλα· η εφαρμογή υπολογιστή έχει
     # ξεχωριστή σελίδα «Παραστατικά».
     ("documents",     ("παραστατικα", "τιμολογια μου", "λιστα παραστατικων",
-                       "αναζητηση παραστατικ")),
-    ("bulk",          ("μαζικη εκδοση", "μαζικ")),
-    ("customers",     ("πελατ", "καρτελ")),
-    ("payments",      ("τραπεζ", "extrait", "εξτρε", "εισαγωγη πληρωμ", "πληρωμ", "ταμει")),
-    ("products",      ("ειδη", "ειδοσ", "προιοντ", "καταλογο")),
-    ("series",        ("σειρ", "αριθμηση")),
-    ("drafts",        ("προχειρ", "προσχεδι")),
-    ("credit",        ("ακυρωσ", "πιστωτικ")),
-    ("schedule",      ("προγραμματισμ", "χρονοπρογραμμ")),
-    ("stats",         ("στατιστικ", "γραφημ")),
-    ("notifications", ("ειδοποιησ", "αδιαβαστ")),
-    ("settings",      ("ρυθμισ", "2fa", "κωδικο", "authenticator")),
+                       "αναζητηση παραστατικ",
+                       "documents", "invoices list", "my invoices", "invoice list")),
+    ("card",          ("καρτελα πελατη", "καρτελα του πελατη",
+                       "customer card", "client card", "ledger")),
+    ("customers",     ("πελατ", "καρτελ",
+                       "customers", "customer", "client list", "clients")),
+    ("payments",      ("τραπεζ", "extrait", "εξτρε", "εισαγωγη πληρωμ", "πληρωμ", "ταμει",
+                       "payments", "bank import", "import payments")),
+    ("products",      ("ειδη", "ειδοσ", "προιοντ", "καταλογο",
+                       "products", "items", "product list", "item list")),
+    ("series",        ("σειρ", "αριθμηση", "series", "numbering")),
+    ("drafts",        ("προχειρ", "προσχεδι", "drafts", "saved drafts")),
+    ("credit",        ("ακυρωσ", "πιστωτικ",
+                       "credit note", "cancel an invoice", "cancellation")),
+    ("schedule",      ("προγραμματισμ", "χρονοπρογραμμ",
+                       "schedule", "scheduler", "scheduled invoice")),
+    ("stats",         ("στατιστικ", "γραφημ", "statistics", "stats", "charts")),
+    ("notifications", ("ειδοποιησ", "αδιαβαστ", "notification")),
+    ("settings",      ("ρυθμισ", "2fa", "κωδικο", "authenticator",
+                       "settings", "preferences")),
     # Οι Εταιρείες είναι δική τους ενότητα από την 0.4.1 — το «εταιρεία» έστελνε
     # ως τότε στη Διαχείριση, που δείχνει χρήστες και ρόλους, όχι εταιρείες.
-    ("companies",     ("εταιρει", "αλλαγη εταιρει")),
-    ("admin",         ("διαχειρισ", "χρηστ", "ρολο", "προσκλησ")),
+    ("companies",     ("εταιρει", "επιχειρησ", "αλλαγη εταιρει",
+                       "companies", "my companies", "switch company")),
+    ("admin",         ("διαχειρισ", "χρηστ", "ρολο", "προσκλησ",
+                       "administration", "users and roles", "manage users",
+                       "user management")),
 ]
 
 #: Ρήματα που δηλώνουν ρητή πλοήγηση. Χωρίς αυτά το «πήγαινε στα παραστατικά»
 #: θα περνούσε για εντολή έκδοσης, γιατί περιέχει «παραστατ».
-_NAV_VERB = re.compile(r"πηγαινε|ανοιξε|go to|open|δειξε|εμφανισε|παμε|βγαλε μου")
+_NAV_VERB = re.compile(
+    r"πηγαινε|ανοιξε|δειξε|εμφανισε|παμε|βγαλε μου|φερε μου|βρεσ? μου"
+    r"|go to|open|show|list|take me"
+)
 
 #: Ρήματα δημιουργίας. Ξεχωρίζουν το «φτιάξε καρτέλα για τον 802576637»
 #: (νέος πελάτης) από το «άνοιξε την καρτέλα του 802576637» (υπάρχων).
-_MAKES_NEW = re.compile(r"\bνεοσ?\b|\bνεα\b|\bνεο\b|φτιαξε|δημιουργησε|καταχωρησε|προσθεσε")
+_MAKES_NEW = re.compile(r"\bνεοσ?\b|\bνεα\b|\bνεο\b|φτιαξε|δημιουργησε|καταχωρησε|προσθεσε"
+                        r"|\bnew\b|\badd\b|\bcreate\b")
+
+#: (μοτίβο, ενότητα, τι λέει) για λειτουργίες που **δεν έχουν εντολή** στο
+#: συμβόλαιο του :class:`Reply` — π.χ. το ✕ της ειδοποίησης ή η επιλογή στηλών
+#: είναι κουμπιά μέσα στη σελίδα, όχι ενέργειες του κελύφους.
+#:
+#: Η ειλικρινής απάντηση είναι «σε πάω στη σωστή οθόνη και σου λέω τι να
+#: πατήσεις» — καλύτερη και από «δεν κατάλαβα», και από μια εντολή που ο
+#: επικυρωτής θα πετούσε.
+#:
+#: ⚠️ Κρίνονται **πριν** από το :data:`COMMANDS`, γι' αυτό τα μοτίβα είναι
+#: στενά: το «ανανέωσε τα παραστατικά» πρέπει να πάει στα Παραστατικά, αλλά το
+#: σκέτο «ανανέωση» να μείνει εντολή ανανέωσης σελίδας.
+TIPS: tuple[tuple[str, str, str], ...] = (
+    (r"(?:σβην|σβησ|διαγραφ|διαγραψ|καθαρι)\S*\s+\S*\s?ειδοποιησ"
+     r"|φυγουν οι ειδοποιησ|delete a notification|clear the notification",
+     "notifications",
+     "Κάθε ειδοποίηση έχει ένα ✕ πάνω δεξιά που τη σβήνει οριστικά. Το κλικ στη "
+     "γραμμή σημαίνει μόνο «διαβασμένη» — είναι άλλο πράγμα."),
+    (r"ανανεωσ\S*\s+(τα\s+)?παραστατ|τσεκαρε τον φακελο|ελεγξε τον φακελο"
+     r"|ελεγξε αν κατεβηκαν|λεει αναμονη|δεν το δειχνει|ενω κατεβηκε"
+     r"|δεν βλεπω το pdf"
+     r"|refresh the document|check the folder|say pending|says pending",
+     "documents",
+     "Πάτα «Ανανέωση»: ελέγχει τον φάκελο του πελάτη και ό,τι βρει εκεί το "
+     "σημειώνει ως «Ελήφθη»."),
+    (r"επαναφορα|να επαναφερω|γυρνα πισω τα δεδομεν|restore"
+     r"|φερω πισω \S*\s?\S*\s?αντιγραφο|παλιο αντιγραφο",
+     "settings",
+     "Η «Επαναφορά από αντίγραφο» είναι στις Ρυθμίσεις. Ζητά να γράψεις τη λέξη "
+     "ΕΠΑΝΑΦΟΡΑ πριν αγγίξει οτιδήποτε."),
+    (r"δοκιμασε τα κλειδι|ελεγξε αν δουλευει το api|τεστ κωδικ"
+     r"|test the api|check the credential",
+     "customers",
+     "Στην καρτέλα του πελάτη, δίπλα στο κλειδί, υπάρχει κουμπί «Δοκιμή» που "
+     "ρωτά την ΑΑΔΕ επιτόπου."),
+    (r"διαλεξε στηλ|κρυψε (μια )?στηλ|θελω αλλεσ στηλ|choose column|hide a column",
+     "",
+     "Πάνω από κάθε πίνακα υπάρχει το κουμπί «Στήλες»: διαλέγεις τι φαίνεται."),
+    (r"κλεισε τι?σ? ?λεπτομερει|ανοιξε το πλαινο|πλαινο panel"
+     r"|να δω τον πινακα ολοκληρο",
+     "",
+     "Το κουμπί «Λεπτομέρειες» ανοιγοκλείνει το πλαϊνό panel, και το χώρισμα "
+     "σέρνεται για να του δώσεις όποιο πλάτος θέλεις."),
+    (r"αλλαξε θεμα|φωτεινο θεμα|σκουρο θεμα|change the theme|dark mode|light mode",
+     "settings",
+     "Ο διακόπτης «Φωτεινό θέμα» είναι κάτω αριστερά."),
+    (r"ελεγξε για ενημερωσ|υπαρχει νεα εκδοση|τι εκδοση εχω"
+     r"|check for update|new version",
+     "",
+     "Ο «Έλεγχος για ενημερώσεις» είναι στο μενού — ή κάνε κλικ στον αριθμό "
+     "έκδοσης, κάτω αριστερά."),
+    (r"τι σημαινει ο τυπο|τι ειναι το \d\.\d|τι τυποσ παραστατικου"
+     r"|τιμολογια παροχησ υπηρεσι|μονο τα \d\.\d|ψαξε τυπο παραστατικου",
+     "documents",
+     "Η στήλη «Τύπος» δείχνει κωδικό και ονομασία — π.χ. «2.1 Τιμολόγιο "
+     "Παροχής Υπηρεσιών». Η αναζήτηση δέχεται και τα δύο: «2.1» ή «υπηρεσι»."),
+)
+
+def _hits(pattern: str, speech: str, heard: str) -> bool:
+    """Ταιριάζει το μοτίβο — είτε όπως γράφτηκε, είτε όπως ακούγεται.
+
+    Δύο περάσματα και όχι ένα «χαλαρό» μοτίβο: το κανονικό κείμενο κρίνεται
+    πρώτο και κερδίζει πάντα, οπότε το ακουστικό πέρασμα δεν μπορεί να κλέψει
+    ένα σωστό ταίριασμα — μόνο να σώσει ένα χαμένο.
+    """
+    return bool(re.search(pattern, speech) or re.search(fold(pattern), heard))
+
+
+def _nav_match(speech: str, heard: str) -> str:
+    """Η ενότητα που ζητά η φράση, ή «» — με το ίδιο διπλό πέρασμα."""
+    for view, keys in NAV:
+        if any(key in speech for key in keys):
+            return view
+    # Μόνο κλειδιά με σώμα: το folded «είδη» είναι «ιδι», τρία γράμματα
+    # που υπάρχουν μέσα στο «εγχειρίδιο» — και η ξενάγηση κατέληγε στα
+    # Είδη. Τα κοντά κλειδιά τα πιάνει ήδη το ακριβές πέρασμα.
+    for view, keys in NAV:
+        if any(len(fold(key)) >= 5 and fold(key) in heard for key in keys):
+            return view
+    return ""
+
+
+#: «Τον Ιανουάριο» είναι μήνας, το ίδιο με το «αυτόν τον μήνα». Χωρίς αυτό
+#: κάθε ερώτηση με όνομα μήνα απαντιόταν με στοιχεία **έτους**.
+_MONTHS = (r"μηνα|μηνασ|this month|per month"
+           r"|ιανουαρ|φεβρουαρ|μαρτ|απριλ|μαι[οω]|ιουν|ιουλ|αυγουστ"
+           r"|σεπτεμβρ|οκτωβρ|νοεμβρ|δεκεμβρ"
+           r"|january|february|march|april|june|july|august"
+           r"|september|october|november|december")
+
+#: Ό,τι ζητά **οριστική** έκδοση. Δεν είναι σχόλιο: είναι ο μόνος κανόνας που
+#: δεν διαπραγματεύεται, και πρέπει να απαντηθεί με άρνηση — όχι με «δεν
+#: κατάλαβα», που αφήνει τον χρήστη να νομίζει ότι απλώς δεν ακούστηκε.
+_WANTS_FINAL = re.compile(
+    r"οριστικ|στειλ\S* το στην ααδε|παρε μαρκ|υποβαλ\S*|κανε το οριστικο"
+    r"|issue it for real|submit it to the tax|officially|for real|επισημα"
+)
+_REFUSAL = (
+    "Ετοιμάζω μόνο ΠΡΟΧΕΙΡΟ. Το ΜΑΡΚ το δίνει η ΑΑΔΕ όταν πατήσεις εσύ το "
+    "κόκκινο «Οριστική Έκδοση»."
+)
 
 # --- εντολές προς το κέλυφος ---------------------------------------------------
 #: (εντολή, μοτίβο, τι λέει ο βοηθός). Ό,τι δεν είναι ούτε πλοήγηση ούτε έκδοση
@@ -85,28 +236,35 @@ _MAKES_NEW = re.compile(r"\bνεοσ?\b|\bνεα\b|\bνεο\b|φτιαξε|δη�
 #: Η σειρά μετράει όπως στο NAV: το «backup» πρέπει να κριθεί ΠΡΙΝ το «back»,
 #: αλλιώς το «κράτα backup» θα γύριζε σελίδα πίσω.
 COMMANDS: tuple[tuple[str, str, str], ...] = (
-    ("backup",  r"αντιγραφο ασφαλει|backup|κρατα αντιγραφο|σωσε τα δεδομεν",
+    ("backup",  r"αντιγραφο ασφαλει|backup|back up|κρατα \S*\s?αντιγραφο"
+                r"|σωσ\S* τα δεδομεν|save my data",
      "Ετοιμάζω αντίγραφο ασφαλείας — θα σου πω μόλις τελειώσει."),
-    ("manual",  r"εγχειριδι|manual|οδηγιεσ χρησ",
+    ("manual",  r"εγχειριδι|manual|οδηγιεσ χρησ|user guide|documentation",
      "Ανοίγω το εγχειρίδιο."),
-    ("tour",    r"ξεναγησ|ξεναγη|\btour\b",
+    ("tour",    r"ξεναγ\S*|\btour\b|show me around|walk me through"
+                r"|πωσ δουλευει η εφαρμογη|how the app works",
      "Ξεκινώ την ξενάγηση — ακολούθησε τα βήματα."),
-    ("logout",  r"αποσυνδεσ|logout|εξοδοσ απο τον λογαριασμο",
+    ("logout",  r"αποσυνδεσ|logout|log out|sign out"
+                r"|εξοδοσ απο τον λογαριασμο|να βγω απο τον λογαριασμο"
+                r"|βγαλε με εξω|sign me out|log me out",
      "Σε αποσυνδέω."),
-    ("palette", r"παλετα εντολ|command palette",
+    ("palette", r"παλετα εντολ|command palette|\bpalette\b",
      "Άνοιξα την παλέτα εντολών."),
-    ("refresh", r"ανανεωσ|ξαναφορτωσ|refresh|φρεσκαρε",
+    ("refresh", r"ανανεωσ|ξαναφορτωσ|refresh|reload|φρεσκαρε",
      "Ανανεώνω τη σελίδα."),
-    ("home",    r"αρχικη",
+    ("home",    r"αρχικη|^home$|go home",
      "Πάμε στην αρχική."),
     # ΟΧΙ «επιστροφή»: στη λογιστική είναι το πιστωτικό, όχι το κουμπί «πίσω».
-    ("back",    r"^πισω\b|γυρνα πισω|\bback\b",
+    ("back",    r"^πισω\b|γυρνα πισω|\bback\b|go back",
      "Γυρίζω πίσω."),
     # Η φωνή είναι του panel, όχι του κελύφους — αλλά περνά από τον ίδιο δρόμο,
     # ώστε να υπάρχει ΕΝΑ σημείο που ξέρει τι εντολές δέχεται ο βοηθός.
-    ("speak:off", r"σωπα|μη μιλασ|σταματα να μιλασ|\bmute\b",
+    ("speak:off", r"σωπα|μη \S*\s?μιλα|σταματα να μιλα|\bmute\b"
+                  r"|be quiet|stop talking",
      "Εντάξει, απαντώ μόνο γραπτά."),
-    ("speak:on",  r"μιλα μου|ξαναμιλα|ενεργοποιησε τη φωνη|\bunmute\b",
+    ("speak:on",  r"μιλα μου|ξαναμιλα|ενεργοποιησε τη φωνη|ανοιξε τη φωνη"
+                  r"|\bunmute\b"
+                  r"|talk to me|turn the voice on",
      "Εντάξει, ξαναμιλάω."),
 )
 
@@ -199,8 +357,12 @@ def parse_issue(text: str) -> DraftSpec:
         re.IGNORECASE | re.UNICODE,
     )
     if ref:
+        # Το «για 500» και το «200 ευρώ» ΔΕΝ είναι μέρος της επωνυμίας.
+        # Χωρίς αυτά, το «κόψε τιμολόγιο στην ΑΛΦΑ ΟΕ για 500» έψαχνε
+        # πελάτη με όνομα «ΑΛΦΑ ΟΕ για 500» — και δεν τον έβρισκε ποτέ.
         spec.name = re.sub(
-            r"\s+(καθαρ\S*|ποσ[όο]|αξ[ίι]α|με|ε[ίι]δος|παρακρ\S*|,).*$",
+            r"\s+(καθαρ\S*|ποσ[όο]|αξ[ίι]α|με|ε[ίι]δος|παρακρ\S*"
+            r"|για\s+\d|\d|ευρ[ώω]|€|eur|,).*$",
             "",
             ref.group(1),
             flags=re.IGNORECASE,
@@ -255,6 +417,20 @@ def resolve_customer(rows: Sequence[dict[str, Any]], name: str, vat: str) -> dic
         partial = [r for r in rows if needle in normalize(_text(r, "name", "customer_name"))]
         if partial:
             return partial[0]
+        # Τελευταία ευκαιρία: το whisper ακούει «Παπαδόποιλος» και
+        # «Γεοργίου». Ένα γράμμα διαφορά δεν είναι άλλος πελάτης — είναι
+        # ο ίδιος, γραμμένος όπως ακούστηκε.
+        #
+        # Το κατώφλι είναι σκόπιμα ψηλό και το όνομα θέλει τουλάχιστον
+        # τέσσερα γράμματα: προτιμάμε να ρωτήσουμε «ποιον εννοείς» παρά
+        # να διαλέξουμε λάθος πελάτη. Και ό,τι βγει είναι ΠΡΟΧΕΙΡΟ, που
+        # το βλέπει ο χρήστης πριν εκδοθεί.
+        if len(needle) >= 4:
+            names = {normalize(_text(r, "name", "customer_name")): r
+                     for r in rows if _text(r, "name", "customer_name")}
+            close = difflib.get_close_matches(needle, list(names), n=1, cutoff=0.82)
+            if close:
+                return names[close[0]]
     return None
 
 
@@ -267,11 +443,13 @@ def find_product(rows: Sequence[dict[str, Any]], description: str) -> str:
     """
     if not description:
         return ""
-    needle = normalize(description)
+    # Ηχητική ισοπέδωση και στα δύο: η «εκπαίδευση προσοπικού» που άκουσε
+    # το whisper πρέπει να βρει την «εκπαίδευση προσωπικού» του καταλόγου.
+    needle = fold(normalize(description))
     best, best_score = "", 0
     for row in rows:
         code = _text(row, "code", "product_code")
-        desc = normalize(_text(row, "description", "product_description"))
+        desc = fold(normalize(_text(row, "description", "product_description")))
         if not code or len(desc) < 3:
             continue
         score = 0
@@ -306,6 +484,9 @@ class Assistant:
         speech = normalize(raw)
         if not speech:
             return Reply("Δεν άκουσα κάτι.")
+        # Η «ακουστική» εκδοχή της ίδιας φράσης, για δεύτερο πέρασμα όταν το
+        # whisper έγραψε «ετερεία» αντί για «εταιρεία». Δες :func:`fold`.
+        heard = fold(speech)
 
         # Πάντα διαθέσιμη έξοδος: χωρίς αυτό μια ημιτελής ροή «κρατούσε» τον
         # βοηθό και κάθε επόμενη εντολή καταναλωνόταν ως απάντηση σε παλιά
@@ -326,30 +507,41 @@ class Assistant:
         # «φτιάξε καρτέλα για τον Χ» είναι ΝΕΟΣ πελάτης, όχι άνοιγμα καρτέλας —
         # η ίδια λέξη, αντίθετη ενέργεια. Το ρήμα αποφασίζει.
         if vat_said and not _MAKES_NEW.search(speech) and (
-            "καρτελ" in speech or re.search(r"χρωσταει|υπολοιπο", speech)
+            "καρτελ" in heard or _hits(r"χρωσταει|υπολοιπο|\bcard\b|ledger", speech, heard)
         ):
             return Reply(
                 "Ανοίγω την καρτέλα του πελάτη.",
                 command=f"card:{vat_said.group(1)}",
             )
-        if vat_said and re.search(r"εταιρει|επιχειρησ", speech):
+        if vat_said and _hits(r"εταιρει|επιχειρησ|\bcompany\b|switch to", speech, heard):
             return Reply(
                 "Αλλάζω ενεργή εταιρεία.",
                 command=f"company:{vat_said.group(1)}",
             )
 
         # Ρητή πλοήγηση ΠΡΩΤΑ.
-        if _NAV_VERB.search(speech):
-            for view, keys in NAV:
-                if any(key in speech for key in keys):
-                    return Reply("Άνοιξα την ενότητα.", navigate=view)
+        if _NAV_VERB.search(speech) or _NAV_VERB.search(heard):
+            view = _nav_match(speech, heard)
+            if view:
+                return Reply("Άνοιξα την ενότητα.", navigate=view)
+
+        # Η άρνηση οριστικής έκδοσης κρίνεται ΠΡΩΤΗ από τις ενέργειες: το
+        # «στείλ' το στην ΑΑΔΕ» δεν επιτρέπεται να καταλήξει πουθενά αλλού.
+        if _hits(_WANTS_FINAL.pattern, speech, heard):
+            return Reply(_REFUSAL, navigate="issue")
+
+        # Λειτουργίες που ζουν ΜΕΣΑ στη σελίδα (το ✕ της ειδοποίησης, οι
+        # «Στήλες», η «Επαναφορά»). Πριν από το COMMANDS επίτηδες — δες TIPS.
+        for pattern, view, said in TIPS:
+            if _hits(pattern, speech, heard):
+                return Reply(said, navigate=view) if view else Reply(said)
 
         # Ενέργειες της εφαρμογής (εγχειρίδιο, αντίγραφο, αποσύνδεση…). Μετά την
         # πλοήγηση, ώστε το «πήγαινε στα πρόχειρα» να μένει πλοήγηση, και πριν τη
         # βοήθεια, ώστε το «οδηγίες χρήσης» να ανοίγει το εγχειρίδιο αντί να
         # τυπώνει τη λίστα παραδειγμάτων.
         for command, pattern, said in COMMANDS:
-            if re.search(pattern, speech):
+            if _hits(pattern, speech, heard):
                 return Reply(said, command=command)
 
         if re.search(r"βοηθεια|help|τι μπορεισ|τι κανεισ|οδηγιεσ", speech):
@@ -374,7 +566,12 @@ class Assistant:
                 navigate="documents",
             )
 
-        if re.search(r"ειδοποιησ|αδιαβαστ|notification", speech):
+        # ΕΡΩΤΗΣΗ για ειδοποιήσεις, όχι σκέτη λέξη: το «ειδοποιήσεις» μόνο του
+        # σημαίνει «άνοιξέ τες» (πέφτει στην πλοήγηση παρακάτω), ενώ το «πόσες
+        # αδιάβαστες έχω» θέλει αριθμό από τον server.
+        if _hits(r"ποσ\S*\s+\S*\s*(ειδοποιησ|αδιαβαστ)|εχω ειδοποιησ"
+                 r"|τι νεο υπαρχει|any unread|how many unread"
+                 r"|unread notification", speech, heard):
             return Reply("Κοιτάζω τις ειδοποιήσεις…", fetch="notifications")
 
         if re.search(r"2fa|διπλη πιστοποιησ|authenticator|αλλαγη κωδικ|αλλαξε κωδικ", speech):
@@ -400,18 +597,26 @@ class Assistant:
         # Πλήθη που ξέρουμε ήδη: πελατολόγιο και κατάλογος είναι φορτωμένα στη
         # μνήμη της Έκδοσης. Απαντιούνται εδώ, χωρίς γύρο στο backend — και
         # ΠΡΙΝ το `is_question`, που θα τα έστελνε στα στατιστικά παραστατικών.
-        if re.search(r"ποσ\S*\s+πελατ", speech):
+        if re.search(r"ποσ\S*\s+(?:\w+\s+){0,2}πελατ"
+                     r"|how many (?:\w+\s+){0,2}(?:customers|clients)"
+                     r"|customer count|client count", speech):
             count = len(self._customers() or ())
             return Reply(f"Έχεις {count} πελάτες στο πελατολόγιο.")
-        if re.search(r"ποσ\S*\s+(?:ειδ|προιοντ)", speech):
+        if re.search(r"ποσ\S*\s+(?:ειδ|προιοντ)|how many items|how many products"
+                     r"|product count|item count", speech):
             count = len(self._products() or ())
             return Reply(f"Έχεις {count} είδη στον κατάλογο.")
 
+        # «τα στατιστικά» είναι ΠΛΟΗΓΗΣΗ· «στατιστικά μήνα» είναι ερώτηση. Η
+        # διαφορά είναι ο χρονικός προσδιορισμός, όχι η λέξη «στατιστικά».
         is_question = bool(
-            re.search(r"^ποσ[αο]\b|ποσα τιμολ|ποσα παραστατ|τζιρο|στατιστικ|how many", speech)
+            re.search(r"^ποσ[αο]\b|ποσα τιμολ|ποσα παραστατ|τζιρο"
+                      r"|how many|how much|turnover", speech)
+            or re.search(r"(στατιστικ|statistic|stats)\S*\s*(ετουσ|μηνα|φετοσ"
+                         r"|this year|this month|\byear\b|\bmonth\b)", speech)
         )
         if is_question:
-            period = "month" if re.search(r"μηνα|μηνασ", speech) else "year"
+            period = ("month" if re.search(_MONTHS, speech) else "year")
             return Reply("Φέρνω στατιστικά…", fetch=f"stats:{period}")
 
         wants_issue = bool(
@@ -419,8 +624,12 @@ class Assistant:
             and not re.search(r"λιστα|αναζητησ|ολα τα", speech)
         )
 
-        if re.search(r"νεοσ? πελατ|new customer|create customer|δημιουργησε πελατ|φτιαξε πελατ"
-                     r"|καταχωρησε πελατ|προσθεσε πελατ|φτιαξε καρτελα|νεα καρτελα", speech):
+        if _hits(r"νε[οα]\S* (?:\w+\s+){0,2}πελατ|δημιουργησε (?:\w+\s+){0,2}πελατ"
+                 r"|φτιαξε (?:\w+\s+){0,2}πελατ|καταχωρησε (?:\w+\s+){0,2}πελατ"
+                 r"|προσθεσε (?:\w+\s+){0,2}πελατ|φτιαξε (?:\w+\s+){0,2}καρτελα"
+                 r"|νεα καρτελα"
+                 r"|new customer|create customer|create a client|add a customer"
+                 r"|add a client|new client", speech, heard):
             afm = re.search(r"\b(\d{9})\b", raw)
             return Reply(
                 "Ανοίγω φόρμα νέου πελάτη"
@@ -430,8 +639,12 @@ class Assistant:
                 prefill={"vat": afm.group(1) if afm else ""},
             )
 
-        if re.search(r"νεο ειδ|νεο προι|new item|new product|δημιουργησε ειδ|φτιαξε ειδ"
-                     r"|καταχωρησε ειδ|καταχωρησε προι|προσθεσε ειδ|προσθεσε προι", speech):
+        if _hits(r"νεο (?:\w+\s+){0,2}ειδ|νεο (?:\w+\s+){0,2}προι"
+                 r"|δημιουργησε (?:\w+\s+){0,2}ειδ|φτιαξε (?:\w+\s+){0,2}ειδ"
+                 r"|καταχωρησε (?:\w+\s+){0,2}ειδ|καταχωρησε (?:\w+\s+){0,2}προι"
+                 r"|προσθεσε (?:\w+\s+){0,2}ειδ|προσθεσε (?:\w+\s+){0,2}προι"
+                 r"|new item|new product|add a product|add an item"
+                 r"|create a product", speech, heard):
             price = _number(r"(\d+(?:[.,]\d+)?)\s*(?:ευρώ|ευρω|€|eur)", raw)
             desc = re.sub(
                 r"^.*?(νέο είδ\S*|νεο ειδ\S*|νέο προϊ\S*|νεο προι\S*|new (?:item|product)|"
@@ -455,12 +668,22 @@ class Assistant:
             )
 
         if wants_issue:
-            return self._start_issue(parse_issue(raw))
+            spec = parse_issue(raw)
+            # «τα παραστατικά», «cancel an invoice», «μαζική έκδοση»:
+            # περιέχουν λέξη τιμολόγησης, αλλά ΔΕΝ κουβαλούν τίποτα να
+            # εκδοθεί — ούτε πελάτη, ούτε ποσό, ούτε είδος. Είναι ονόματα
+            # οθονών, και εκεί πρέπει να πάνε. Η Έκδοση κρατά μόνο ό,τι
+            # δείχνει πραγματικά σε αυτήν.
+            if not any((spec.vat, spec.name, spec.item, spec.price)):
+                view = _nav_match(speech, heard)
+                if view and view != "issue":
+                    return Reply("Άνοιξα την ενότητα.", navigate=view)
+            return self._start_issue(spec)
 
         # Σιωπηλή πλοήγηση: «πελάτες» σκέτο, χωρίς ρήμα.
-        for view, keys in NAV:
-            if any(key in speech for key in keys):
-                return Reply("Άνοιξα την ενότητα.", navigate=view)
+        view = _nav_match(speech, heard)
+        if view:
+            return Reply("Άνοιξα την ενότητα.", navigate=view)
 
         return Reply("Δεν το κατάλαβα. Πες «βοήθεια» για παραδείγματα.")
 

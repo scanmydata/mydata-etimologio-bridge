@@ -1,0 +1,210 @@
+[
+ {
+  "input": "για δείξε μου λίγο τι τιμολόγια έχω βγάλει",
+  "expect": "navigate=documents"
+ },
+ {
+  "input": "θέλω να δω το πελατολόγιο μου",
+  "expect": "navigate=customers"
+ },
+ {
+  "input": "για πάμε στα προσχέδια που είχα αφήσει",
+  "expect": "navigate=drafts"
+ },
+ {
+  "input": "βγάλε μου τον κατάλογο με τις υπηρεσίες",
+  "expect": "navigate=products"
+ },
+ {
+  "input": "θέλω να δω τι σειρές έχω ανοίξει",
+  "expect": "navigate=series"
+ },
+ {
+  "input": "άνοιξέ μου το ταμείο",
+  "expect": "navigate=payments"
+ },
+ {
+  "input": "τι ώρα είναι προγραμματισμένη η επόμενη έκδοση",
+  "expect": "navigate=schedule"
+ },
+ {
+  "input": "θέλω να δω τους χρήστες του λογαριασμού",
+  "expect": "navigate=admin"
+ },
+ {
+  "input": "για δείξε μου τα γραφήματα",
+  "expect": "navigate=stats"
+ },
+ {
+  "input": "άνοιξε τα αδιάβαστα μηνύματα",
+  "expect": "navigate=notifications"
+ },
+ {
+  "input": "τύπωσε μου το εγχειρίδιο σε pdf",
+  "expect": "command=manual"
+ },
+ {
+  "input": "θέλω να μου δείξεις πώς δουλεύει η εφαρμογή",
+  "expect": "command=tour"
+ },
+ {
+  "input": "κράτα ένα αντίγραφο πριν συνεχίσουμε",
+  "expect": "command=backup"
+ },
+ {
+  "input": "βγάλε με έξω",
+  "expect": "command=logout"
+ },
+ {
+  "input": "φρέσκαρε τη σελίδα",
+  "expect": "command=refresh"
+ },
+ {
+  "input": "μη μου μιλάς άλλο",
+  "expect": "command=speak:off"
+ },
+ {
+  "input": "πόσο τζίρο έκανα τον Ιανουάριο",
+  "expect": "fetch=stats:month"
+ },
+ {
+  "input": "τι τζίρο έχουμε φέτος",
+  "expect": "fetch=stats:year"
+ },
+ {
+  "input": "έχω τίποτα αδιάβαστο",
+  "expect": "notifications-any"
+ },
+ {
+  "input": "άνοιξε την καρτέλα του 094039270",
+  "expect": "command=card:094039270"
+ },
+ {
+  "input": "θέλω να δω τι χρωστάει ο 112233445",
+  "expect": "command=card:112233445"
+ },
+ {
+  "input": "πάμε στην εταιρεία 802012659",
+  "expect": "command=company:802012659"
+ },
+ {
+  "input": "καταχώρησε καινούριο πελάτη με ΑΦΜ 556677889",
+  "expect": "dialog=customer"
+ },
+ {
+  "input": "πρόσθεσε ένα είδος συντήρηση κλιματιστικού 60 ευρώ",
+  "expect": "dialog=product"
+ },
+ {
+  "input": "κόψε ένα τιμολόγιο στη ΜΕΓΚΑΤΕΚ για 300 ευρώ",
+  "expect": "draft"
+ },
+ {
+  "input": "βγάλε απόδειξη στον 094039270 για 45 ευρώ",
+  "expect": "draft"
+ },
+ {
+  "input": "τιμολόγιο στον Γεοργίοι τριακόσια ευρώ",
+  "expect": "draft-or-issue"
+ },
+ {
+  "input": "θέλω τιμολόγιο για τη ΞΕΝΤΕ, μεταφορικά, 120 ευρώ",
+  "expect": "draft"
+ },
+ {
+  "input": "γιατί δεν βλέπω το pdf ενώ κατέβηκε",
+  "expect": "navigate=documents"
+ },
+ {
+  "input": "πώς σβήνω μια ειδοποίηση",
+  "expect": "navigate=notifications"
+ },
+ {
+  "input": "θέλω να φέρω πίσω ένα παλιό αντίγραφο",
+  "expect": "navigate=settings"
+ },
+ {
+  "input": "να τσεκάρω αν παίζουν τα κλειδιά του πελάτη",
+  "expect": "navigate=customers"
+ },
+ {
+  "input": "βάλε σκούρο θέμα",
+  "expect": "navigate=settings"
+ },
+ {
+  "input": "υπάρχει καινούρια έκδοση του προγράμματος",
+  "expect": "say"
+ },
+ {
+  "input": "στείλε το οριστικά στην εφορία",
+  "expect": "refusal"
+ },
+ {
+  "input": "πάρε μαρκ για το τιμολόγιο",
+  "expect": "refusal"
+ },
+ {
+  "input": "οριστικοποίησέ το",
+  "expect": "refusal"
+ },
+ {
+  "input": "show me the invoices I issued",
+  "expect": "navigate=documents"
+ },
+ {
+  "input": "take me to the client list",
+  "expect": "navigate=customers"
+ },
+ {
+  "input": "where are my drafts",
+  "expect": "navigate=drafts"
+ },
+ {
+  "input": "open the scheduler please",
+  "expect": "navigate=schedule"
+ },
+ {
+  "input": "I want to see the statistics",
+  "expect": "navigate=stats"
+ },
+ {
+  "input": "give me the user manual",
+  "expect": "command=manual"
+ },
+ {
+  "input": "make a backup now",
+  "expect": "command=backup"
+ },
+ {
+  "input": "sign me out",
+  "expect": "command=logout"
+ },
+ {
+  "input": "how many clients are registered",
+  "expect": "fetch=customers_count"
+ },
+ {
+  "input": "what was my turnover this month",
+  "expect": "fetch=stats:month"
+ },
+ {
+  "input": "add a new client",
+  "expect": "dialog=customer"
+ },
+ {
+  "input": "issue it officially",
+  "expect": "refusal"
+ },
+ {
+  "input": "τι καιρό θα κάνει αύριο",
+  "expect": "unknown"
+ },
+ {
+  "input": "παίξε μου λίγη μουσική",
+  "expect": "unknown"
+ },
+ {
+  "input": "μπλα μπλα μπλα",
+  "expect": "unknown"
+ }
+]
