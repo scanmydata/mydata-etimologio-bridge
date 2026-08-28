@@ -112,6 +112,8 @@ TOUR_VERSION = 2
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
 _STATUS_READY = "Διαθέσιμος"
 _STATUS_NO_KEY = "Χωρίς κλειδί"
+#: Το κλειδί υπάρχει αλλά δεν ανοίγει με το `.enckey` αυτού του φακέλου.
+_STATUS_LOCKED = "Κλειδί κλειδωμένο"
 _COLUMNS = [c[0] for c in _COLUMN_SPEC]
 _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
 _COL_LAST = 9
@@ -189,6 +191,10 @@ class MainWindow(QMainWindow):
         # πελάτες τυχόν έμειναν «disabled» σε παλιότερη έκδοση.
         repo.normalize_disabled_clients(self.conn)
         self.crypto = Crypto(self.settings.enckey_path)
+        #: ΑΦΜ με αποθηκευμένο κλειδί που ΔΕΝ ανοίγει με το `.enckey` του
+        #: φακέλου. Υπολογίζεται σε κάθε `reload_clients` — είναι φθηνό (μια
+        #: αποκρυπτογράφηση ανά πελάτη) και πρέπει να είναι πάντα φρέσκο.
+        self._locked_vats: set[str] = set()
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
         #: Πότε έτρεξε τελευταία φορά ΠΡΟΓΡΑΜΜΑΤΙΣΜΕΝΗ λήψη. Επιβιώνει σε
         #: επανεκκίνηση: αλλιώς ένα άνοιγμα-κλείσιμο της εφαρμογής μετά την ώρα
@@ -680,6 +686,20 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        # Κλειδιά που δεν ανοίγουν: το μόνο πρόβλημα που δεν φαίνεται πουθενά
+        # αλλού. Ο πίνακας έλεγε «Διαθέσιμος», η καρτέλα έδειχνε κενά πεδία, και
+        # η λήψη αποτύγχανε — τρία συμπτώματα, καμία εξήγηση.
+        self.lbl_locked = QLabel("")
+        self.lbl_locked.setWordWrap(True)
+        self.lbl_locked.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_locked.setStyleSheet(
+            f"background:{CURRENT.panel_alt};border:1px solid {CURRENT.warn};"
+            f"border-radius:8px;padding:9px 12px;color:{CURRENT.txt};"
+        )
+        self.lbl_locked.setVisible(False)
+        layout.addWidget(self.lbl_locked)
+
         filters = QHBoxLayout()
         filters.setSpacing(7)
         self.combo_filter = QComboBox()
@@ -909,8 +929,33 @@ class MainWindow(QMainWindow):
         self.search.clear()  # πυροδοτεί reload_clients
         self._update_client_filter_ui()
 
-    @staticmethod
-    def _client_haystack(row, stats: dict, last_dl: dict) -> str:
+    def _refresh_locked_notice(self) -> None:
+        """Ποιων πελατών το κλειδί δεν ανοίγει — και τι να κάνει ο χρήστης."""
+        try:
+            self._locked_vats = set(repo.unreadable_clients(self.conn, self.crypto))
+        except Exception:  # noqa: BLE001 — μια ένδειξη δεν ρίχνει την οθόνη
+            self._locked_vats = set()
+        label = getattr(self, "lbl_locked", None)
+        if label is None:
+            return
+        count = len(self._locked_vats)
+        label.setVisible(bool(count))
+        if not count:
+            return
+        label.setText(
+            f"🔑 <b>{count} πελάτες έχουν κλειδί API που δεν ανοίγει.</b> "
+            "Το κλειδί κρυπτογράφησης αυτού του φακέλου (<code>.enckey</code>) "
+            "δεν είναι αυτό με το οποίο αποθηκεύτηκαν — συμβαίνει όταν γίνει "
+            "επαναφορά βάσης σε φάκελο που στήθηκε από την αρχή. Τα υπόλοιπα "
+            "δεδομένα τους είναι ακέραια· μόνο τα διαπιστευτήρια δεν "
+            "διαβάζονται, οπότε η λήψη δεν μπορεί να τρέξει.<br>"
+            "<b>Λύση:</b> «Πελάτες → Εισαγωγή από Excel» με το αρχείο κωδικών, "
+            "ή γράψτε ξανά το κλειδί σε όποιον χρειάζεται. "
+            "Αν έχετε αντίγραφο ασφαλείας μαζί με το <code>.enckey</code> του, "
+            "η «Επαναφορά» το βάζει πλέον μόνη της."
+        )
+
+    def _client_haystack(self, row, stats: dict, last_dl: dict) -> str:
         """Ό,τι ΒΛΕΠΕΙ ο χρήστης σε μια γραμμή, ως ένα πεζό κείμενο.
 
         Η αναζήτηση κοίταζε μόνο ΑΦΜ και επωνυμία, ενώ ο πίνακας δείχνει δέκα
@@ -931,12 +976,15 @@ class MainWindow(QMainWindow):
             money(income), f"{income:.2f}",
             money(expense), f"{expense:.2f}",
             last_dl.get(row["id"], ("—", 0.0))[0],
+            # Και η αληθινή κατάσταση: «κλειδωμένο» πρέπει να βρίσκεται.
+            _STATUS_LOCKED if row["vat"] in self._locked_vats else "",
         ]
         return " ".join(parts).lower()
 
     # ------------------------------------------------------------- δεδομένα
     def reload_clients(self) -> None:
         self._update_client_filter_ui()
+        self._refresh_locked_notice()
         all_clients = repo.list_clients(self.conn)
         rows = list(all_clients)
         # Κρατάμε την τρέχουσα επιλογή ΚΑΤΑ ΑΦΜ, όχι κατά index: μετά το resort ο
@@ -996,7 +1044,12 @@ class MainWindow(QMainWindow):
             expense = (s["expense"] if s else 0.0) or 0.0
             client_status = row["status"]
             is_ready = client_status == "ready"
-            status_label = _STATUS_READY if is_ready else _STATUS_NO_KEY
+            # «Διαθέσιμος» σημαίνει «μπορεί να κατεβάσει». Όταν το κλειδί δεν
+            # αποκρυπτογραφείται δεν μπορεί — και το να το λέει «Διαθέσιμο»
+            # στέλνει τον χρήστη να ψάχνει τη λήψη αντί για το κλειδί.
+            is_locked = is_ready and row["vat"] in self._locked_vats
+            status_label = (_STATUS_LOCKED if is_locked
+                            else _STATUS_READY if is_ready else _STATUS_NO_KEY)
 
             check = QTableWidgetItem()
             # Επιλέξιμοι ΟΛΟΙ, ακόμη κι όσοι δεν έχουν κλειδί: το τσεκάρισμα
@@ -1039,7 +1092,18 @@ class MainWindow(QMainWindow):
                 else:
                     item = QTableWidgetItem(text)
                 if col == _COL_STATUS:
-                    item.setForeground(QColor(CURRENT.ok if is_ready else CURRENT.bad))
+                    item.setForeground(QColor(
+                        CURRENT.warn if is_locked
+                        else CURRENT.ok if is_ready else CURRENT.bad))
+                    if is_locked:
+                        item.setToolTip(
+                            "Το κλειδί API υπάρχει αποθηκευμένο αλλά ΔΕΝ ανοίγει με "
+                            "το κλειδί κρυπτογράφησης αυτού του φακέλου (.enckey).\n"
+                            "Συμβαίνει όταν γίνει επαναφορά βάσης σε φάκελο που "
+                            "στήθηκε από την αρχή.\n"
+                            "Λύση: ξανακάντε εισαγωγή του Excel κωδικών, ή γράψτε "
+                            "ξανά το κλειδί στην καρτέλα του πελάτη."
+                        )
                 if col == 5 and done:
                     item.setForeground(QColor(CURRENT.ok))
                 if col == 6 and uncls:

@@ -108,6 +108,24 @@ def mark_printed(
     return cur.rowcount or 0
 
 
+def unreadable_clients(conn: sqlite3.Connection, crypto: Crypto) -> list[str]:
+    """Τα ΑΦΜ όσων έχουν αποθηκευμένο κλειδί που ΔΕΝ αποκρυπτογραφείται.
+
+    ΓΙΑΤΙ ΥΠΑΡΧΕΙ: η στήλη `status` βγαίνει από το αν το **κρυπτογράφημα** είναι
+    μη κενό — όχι από το αν διαβάζεται. Όταν ο φάκελος αποκτήσει άλλο `.enckey`
+    (π.χ. επαναφορά βάσης σε φρέσκο φάκελο), οι πελάτες μένουν «Διαθέσιμοι» με
+    κλειδιά που κανείς δεν μπορεί να ανοίξει: η φόρμα δείχνει κενά πεδία, η λήψη
+    αποτυγχάνει, και τίποτα δεν λέει γιατί. Εδώ ρωτάμε τα ίδια τα δεδομένα.
+    """
+    out = []
+    for row in conn.execute(
+        "SELECT vat, mydata_key_enc FROM clients WHERE mydata_key_enc <> ''"
+    ):
+        if not crypto.dec(row["mydata_key_enc"]):
+            out.append(str(row["vat"]))
+    return out
+
+
 def normalize_disabled_clients(conn: sqlite3.Connection) -> int:
     """Επαναφέρει σε φυσιολογική κατάσταση όσους πελάτες είχαν μείνει «disabled».
 

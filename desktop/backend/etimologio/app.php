@@ -2758,8 +2758,8 @@ function openAssign(userId,name){
   AS_SEL=new Set((acc&&acc.account_ids)||[]);
   renderAssign();assignModal.showModal();}
 function renderAssign(){
-  const term=($('#asFilter').value||'').toLowerCase().trim();
-  const rows=(ADMIN_SCOPE.accounts||[]).filter(a=>!term||((a.label||'')+' '+(a.vat||'')).toLowerCase().includes(term));
+  const term=grFold($('#asFilter').value).trim();
+  const rows=(ADMIN_SCOPE.accounts||[]).filter(a=>!term||grFold((a.label||'')+' '+(a.vat||'')).includes(term));
   $('#asList').innerHTML=rows.map(a=>
     `<label class="np-check"><input type="checkbox" class="as-cb" value="${a.id}"${AS_SEL.has(a.id)?' checked':''} onchange="asChanged(${a.id},this.checked)"> ${esc(a.label||a.vat)} <span class="muted">(${esc(a.vat)})</span></label>`
   ).join('')||'<span class="muted">Καμία εταιρεία.</span>';}
@@ -2958,6 +2958,18 @@ function invLabel(code){const t=INVBYCODE[code];return t?t.label:code;}      // 
 function invLabelByValue(v){const t=INVBYVALUE[String(v)];return t?t.label:String(v);}
 
 // Cache-first loader: render cached snapshot instantly, then sync in background.
+// Άδειο επειδή ο server είπε «δεν έχεις» ΔΕΝ είναι το ίδιο με άδειο επειδή η
+// κλήση απέτυχε. Το πρώτο πρέπει να καθαρίσει τη λίστα· το δεύτερο ΠΟΤΕ — και
+// μέχρι τώρα το δεύτερο έσβηνε τα πάντα. Ένα 409 «διάλεξε πρώτα εταιρεία» ή μια
+// στιγμιαία αστοχία της ΑΑΔΕ άδειαζε τη λίστα ειδών που μόλις είχε φορτώσει από
+// την κρυφή μνήμη, και το dropdown της γραμμής έμενε με μόνο το «➕ Νέο είδος…».
+// Επιστρέφει `null` όταν δεν πρέπει να πειραχτεί τίποτα.
+function freshRows(d,key){
+  if(!d||d.success===false)return null;
+  const rows=d[key];
+  return Array.isArray(rows)?rows:null;
+}
+
 async function cachedThenSync(kind,onRows){
   let shown=false;
   try{const c=await api({cached:kind});if(c.rows&&c.rows.length){onRows(c.rows,true);shown=true;}}catch(e){}
@@ -3336,7 +3348,7 @@ function openColFilter(tableId,col,th,label){
       <button class="primary sm cf-close">Κλείσιμο</button></div>`;
   const listEl=pop.querySelector('.cf-list');
   function render(term){term=(term||'').toLowerCase();
-    const shown=values.filter(v=>!term||v.toLowerCase().includes(term));
+    const shown=values.filter(v=>!term||grFold(v).includes(term));
     listEl.innerHTML=`<label class="cf-item" data-all="1"><input type="checkbox" ${!st[col]?'checked':''}><span><b>(Όλα)</b></span></label>`+
       shown.map(v=>`<label class="cf-item"><input type="checkbox" data-v="${esc(v)}" ${isAllowed(v)?'checked':''}><span>${esc(v)}</span></label>`).join('')
       ||'<div class="muted" style="padding:6px">—</div>';
@@ -3418,7 +3430,11 @@ async function loadCustomers(){await cachedThenSync('customers',rows=>{ALL_CUSTO
 // Customer modal (create/edit)
 let CUST_ONSAVED=null;
 function custTab(t){$('#custTabAfm').style.display=t==='afm'?'':'none';$('#custTabPersonal').style.display=t==='personal'?'':'none';document.querySelectorAll('#custTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));}
-function openCustomerModal(onSaved,prefillAfm){CUST_ONSAVED=(typeof onSaved==='function')?onSaved:null;$('#custModalTitle').textContent='Νέος πελάτης';['cmAfm','cmName','cmAddress','cmCity','cmZip','cmEmail','cmPhone1','cmPhone2','cpName','cpVat','cpAddress','cpCity','cpZip','cpEmail','cpPhone'].forEach(id=>$('#'+id).value='');$('#cpJob').value='ΙΔΙΩΤΗΣ';custTab('afm');if(prefillAfm)$('#cmAfm').value=prefillAfm;$('#custModal').showModal();}
+// `tab`: ποια καρτέλα ανοίγει πρώτη ('afm' | 'personal'). Ο οδηγός έκδοσης ξέρει
+// ήδη αν φτιάχνεις τιμολόγιο σε επιχείρηση ή απόδειξη σε ιδιώτη — το να ανοίγει
+// πάντα η καρτέλα του ΑΦΜ ζητούσε από τον χρήστη να το ξαναπεί.
+function openCustomerModal(onSaved,prefillAfm,tab){CUST_ONSAVED=(typeof onSaved==='function')?onSaved:null;$('#custModalTitle').textContent='Νέος πελάτης';['cmAfm','cmName','cmAddress','cmCity','cmZip','cmEmail','cmPhone1','cmPhone2','cpName','cpVat','cpAddress','cpCity','cpZip','cpEmail','cpPhone'].forEach(id=>$('#'+id).value='');$('#cpJob').value='ΙΔΙΩΤΗΣ';custTab(tab==='personal'?'personal':'afm');if(prefillAfm)$('#cmAfm').value=prefillAfm;$('#custModal').showModal();
+  setTimeout(()=>{const f=$(tab==='personal'?'#cpName':'#cmAfm');if(f)f.focus();},60);}
 // Επεξεργασία = δική της φόρμα, με ό,τι κρατά η ΑΑΔΕ για τον πελάτη.
 let CE_VAT='';
 function editCustomer(vat){
@@ -3880,9 +3896,16 @@ function buildProdMap(products){const dl=$('#prodList');if(dl)dl.innerHTML='';PR
     const good=String(p.type||'').trim()!=='Υπηρεσία';  // delivery notes accept goods only
     PRODMAP[code]={desc,vat,price,good};if(dl){const o=document.createElement('option');o.value=code;o.textContent=desc;dl.appendChild(o);}});}
 async function loadProductList(){
-  // cache-first: build the picker instantly from cached products, then refresh
+  // Πρώτα η κρυφή μνήμη (ακαριαία), μετά ανανέωση — και η ανανέωση περνά από το
+  // `sync`, όχι από το `list_products`: έτσι η ίδια κλήση ΓΡΑΦΕΙ και την κρυφή
+  // μνήμη, οπότε τα είδη είναι εκεί την επόμενη φορά ακόμη κι αν η ΑΑΔΕ δεν
+  // απαντήσει. Πριν, η κρυφή μνήμη γέμιζε μόνο αν είχες ανοίξει την οθόνη «Είδη».
   try{const c=await api({cached:'products'});if(c.rows&&c.rows.length)buildProdMap(c.rows);}catch(e){}
-  try{const d=await api({list_products:1});buildProdMap(d.products||[]);}catch(e){}}
+  // Επιτυχής απάντηση εφαρμόζεται ΠΑΝΤΑ, ακόμη κι άδεια: «δεν έχεις είδη» είναι
+  // αληθινή πληροφορία. Ο φύλακας είναι το `freshRows`, που γυρίζει `null` όταν
+  // η κλήση απέτυχε — μόνο τότε δεν πειράζουμε τίποτα.
+  try{const d=await api({sync:'products'});const rows=freshRows(d,'rows');
+    if(rows)buildProdMap(rows);}catch(e){}}
 let PROD_EDIT=null,PROD_ONSAVED=null;
 // Services carry no unit of measurement — hide the field for type=2 (Υπηρεσία).
 function pdTypeChange(){$('#pdUnitField').style.display=$('#pdType').value==='2'?'none':'';
@@ -3996,8 +4019,9 @@ function applyIssueSeries(){const seen=new Set(),opts=[];
 async function loadIssueTypes(){await loadInvTypes();
   // cache-first: render instantly from cached series, then refresh in background
   try{const c=await api({cached:'series'});if(c.rows&&c.rows.length){SERIES=c.rows;applyIssueSeries();}}catch(e){}
-  try{const d=await api({sync:'series'});SERIES=d.rows||[];applyIssueSeries();
-    if(!SERIES.length)toast('Δεν υπάρχει ενεργή σειρά. Δημιούργησε σειρά για να εκδώσεις.','err');
+  try{const d=await api({sync:'series'});const rows=freshRows(d,'rows');
+    if(rows){SERIES=rows;applyIssueSeries();
+      if(!SERIES.length)toast('Δεν υπάρχει ενεργή σειρά. Δημιούργησε σειρά για να εκδώσεις.','err');}
   }catch(e){}}
 function issueTypeChange(){fillSeries();sumTotals();}
 // Populate the Σειρά dropdown for the selected invoice type (+ "new series" option).
@@ -4102,9 +4126,9 @@ function blkAddRow(vat='',name='',code='',qty=1,price=''){
     <td><input class="blk-price" type="text" inputmode="decimal" value="${esc(price)}" onblur="elFmtField(this,4)" placeholder="0,00" style="width:110px;text-align:right"></td>
     <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove();blkCountUpd()">✕</button></td>`;
   tb.appendChild(tr);blkCountUpd();}
-function blkCustAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
+function blkCustAc(inp){const term=grFold(inp.value).trim();const panel=inp.parentElement.querySelector('.ac-panel');
   ensureCustomers();
-  let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));rows=rows.slice(0,30);
+  let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));rows=rows.slice(0,30);
   const newRow=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="blkNewCust(this)">➕ Νέος πελάτης…</div>`;
   panel.innerHTML=newRow+rows.map(c=>`<div class="ac-row" onmousedown="blkPickCust(this,'${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
   panel.classList.add('open');}
@@ -4112,9 +4136,9 @@ function blkPickCust(el,vat,name){const td=el.closest('td');const inp=td.querySe
 function blkNewCust(el){const td=el.closest('td');const inp=td.querySelector('.blk-cust');td.querySelector('.ac-panel').classList.remove('open');
   const typed=(inp.value||'').trim();
   openCustomerModal(c=>{if(c){inp.value=c.name||c.vat||'';inp.dataset.vat=c.vat||'';blkCountUpd();}},/^\d{9}$/.test(typed)?typed:'');}
-function blkProdAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ac-panel');
+function blkProdAc(inp){const term=grFold(inp.value).trim();const panel=inp.parentElement.querySelector('.ac-panel');
   let items=Object.keys(PRODMAP).map(code=>({code,desc:PRODMAP[code].desc||'',vat:PRODMAP[code].vat}));
-  if(term)items=items.filter(x=>(x.code+' '+x.desc).toLowerCase().includes(term));items=items.slice(0,40);
+  if(term)items=items.filter(x=>grFold(x.code+' '+x.desc).includes(term));items=items.slice(0,40);
   const newRow=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="blkNewProd(this)">➕ Νέο είδος…</div>`;
   panel.innerHTML=newRow+items.map(x=>`<div class="ac-row" onmousedown="blkPickProd(this,'${q1(x.code)}')"><b>${esc(x.code)}</b> <small>${esc(x.desc)}${x.vat!==undefined&&x.vat!==''?' · ΦΠΑ '+vatPct(x.vat)+'%':''}</small></div>`).join('');
   panel.classList.add('open');}
@@ -4194,7 +4218,9 @@ async function loadSeriesView(){
   let shown=false;
   try{const c=await api({cached:'series'});if(c.rows&&c.rows.length){SERIES=c.rows;renderSeriesTable(c.rows);shown=true;}}catch(e){}
   if(!shown)$('#srTable tbody').innerHTML='<tr><td colspan="5"><span class="spin"></span></td></tr>';
-  try{const d=await api({sync:'series'});SERIES=d.rows||[];renderSeriesTable(SERIES);}
+  try{const d=await api({sync:'series'});const rows=freshRows(d,'rows');
+    if(rows){SERIES=rows;renderSeriesTable(SERIES);}
+    else if(!shown)throw new Error(d&&d.error||'δεν ήρθαν σειρές');}
   catch(e){if(!shown){$('#srTable tbody').innerHTML='';toast('Σειρές: '+e.message,'err');}}
 }
 // Open the "new series" popup (populates the type dropdown if needed)
@@ -4225,13 +4251,13 @@ async function delSeries(id,code){if(!id){toast('Λείπει το id σειρά
 
 // Customer autocomplete on the issue form (searchable + fills all fields)
 let acEl=null;
-function custAc(el){acEl=el;const term=(el.value||'').toLowerCase().trim();const panel=$('#iCustAc');
+function custAc(el){acEl=el;const term=grFold(el.value).trim();const panel=$('#iCustAc');
   ensureCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);
   // Επαγγελματίας → μόνο επιχειρήσεις· Ιδιώτης → μόνο ιδιώτες.
   if(ISSUE_WHO==='pro')rows=rows.filter(custIsBusiness);
   else if(ISSUE_WHO==='idiot')rows=rows.filter(c=>!custIsBusiness(c));   // ιδιώτης ή άγνωστο
-  if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.code+' '+c.city).toLowerCase().includes(term));
+  if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));
   rows=rows.slice(0,30);
   const newRow=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="newCustFromIssue()">➕ Νέος πελάτης…</div>`;
   const note=(!rows.length&&ISSUE_WHO)?`<div class="ac-row muted">Κανένας ${ISSUE_WHO==='pro'?'επαγγελματίας':'ιδιώτης'} — άλλαξε επιλογή ή φτιάξε νέο πελάτη.</div>`:'';
@@ -4242,7 +4268,16 @@ function pickCust(vat){const c=ALL_CUSTOMERS.map(custFields).find(x=>x.vat===vat
   $('#iCustAc').classList.remove('open');showIssueCls();}
 // Create a new customer from within the issue form; on save, fill the form with it.
 function newCustFromIssue(){$('#iCustAc').classList.remove('open');const typed=($('#iAfm').value||'').trim();
-  openCustomerModal(c=>{if(c){$('#iAfm').value=c.vat||$('#iAfm').value;$('#iName').value=c.name||'';$('#iAddress').value=c.address||'';$('#iCity').value=c.city||'';$('#iZip').value=c.zip||'';}},/^\d{9}$/.test(typed)?typed:'');}
+  // Ο ιδιώτης του οδηγού ανοίγει στην καρτέλα του ιδιώτη, χωρίς δεύτερο κλικ.
+  openCustomerModal(c=>{if(c){
+      // Ιδιώτης χωρίς ΑΦΜ: το πεδίο ΚΑΘΑΡΙΖΕΙ. Κρατώντας ό,τι είχε πληκτρολογηθεί,
+      // η απόδειξη θα έβγαινε σε άλλον από αυτόν που μόλις επιλέχθηκε.
+      $('#iAfm').value=c.vat||'';$('#iName').value=c.name||'';
+      $('#iAddress').value=c.address||'';$('#iCity').value=c.city||'';$('#iZip').value=c.zip||'';
+      showIssueCls();
+    }},
+    ISSUE_WHO==='idiot'?'':(/^\d{9}$/.test(typed)?typed:''),
+    ISSUE_WHO==='idiot'?'personal':'afm');}
 document.addEventListener('click',e=>{const p=$('#iCustAc');if(p&&!e.target.closest('#iCustAc')&&e.target!==$('#iAfm')&&e.target!==$('#iName'))p.classList.remove('open');});
 // Pre-fill the issue form for a specific customer (from the Πελάτες list)
 function issueFor(vat,name){showView('issue');wizSkip(/^\d{9}$/.test(vat)?'pro':'idiot');$('#iAfm').value=vat;$('#iName').value=name||'';
@@ -4306,10 +4341,10 @@ function lineRowHtml(code,qty,price,disc){return `<tr>
   <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove();sumTotals()">✕</button></td></tr>`;}
 function addLine(code='',qty=1,price='',disc=''){$('#iLines tbody').insertAdjacentHTML('beforeend',lineRowHtml(code,qty,price,disc));sumTotals();}
 // Product combobox dropdown for a line's code input
-function prodAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.ln-ac');
+function prodAc(inp){const term=grFold(inp.value).trim();const panel=inp.parentElement.querySelector('.ln-ac');
   let items=Object.keys(PRODMAP).map(code=>({code,desc:PRODMAP[code].desc||'',vat:PRODMAP[code].vat}));
-  const sel=inp.dataset.code||'';const showAll=!term||term===prodText(sel).toLowerCase();
-  if(!showAll)items=items.filter(x=>(x.code+' '+x.desc).toLowerCase().includes(term));
+  const sel=inp.dataset.code||'';const showAll=!term||term===grFold(prodText(sel));
+  if(!showAll)items=items.filter(x=>grFold(x.code+' '+x.desc).includes(term));
   items=items.slice(0,50);
   const rowsHtml=items.map(x=>`<div class="ac-row" onmousedown="pickProd(this,'${q1(x.code)}')"><b>${esc(x.code)}</b> <small>${esc(x.desc)}${x.vat!==undefined&&x.vat!==''?' · ΦΠΑ '+vatPct(x.vat)+'%':''}</small></div>`).join('');
   panel.innerHTML=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="newProdForLine(this)">➕ Νέο είδος…</div>`+rowsHtml;
@@ -4488,7 +4523,8 @@ const DN_CODE={'503':'9.3','504':'9.1','505':'9.2'};
 function dnInit(){loadProductList();ensureCustomers();
   (SERIES.length?Promise.resolve():loadDnSeries()).then(dnFillSeries);
   dnLoadLoad();}
-async function loadDnSeries(){try{const d=await api({list_series:1});SERIES=d.series||[];}catch(e){}}
+async function loadDnSeries(){try{const d=await api({list_series:1});const rows=freshRows(d,'series');
+  if(rows)SERIES=rows;}catch(e){}}
 // Series dropdown for the selected delivery type (+ new-series option)
 function dnFillSeries(){const code=DN_CODE[$('#dnType').value]||'';const sel=$('#dnSeries');const cur=sel.value;
   const list=SERIES.filter(s=>String(s.invoice_type_code||'')===code);
@@ -4507,10 +4543,10 @@ async function dnSeriesChange(){const sel=$('#dnSeries');if(sel.value!=='__new')
 
 // --- Customer autocomplete (fills ΑΦΜ/επωνυμία + saved delivery place) -------
 let dnTimer;
-function dnCustAc(el){const term=(el.value||'').toLowerCase().trim();const panel=$('#dnCustAcPanel');
+function dnCustAc(el){const term=grFold(el.value).trim();const panel=$('#dnCustAcPanel');
   ensureCustomers();
   let rows=ALL_CUSTOMERS.map(custFields);
-  if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));
+  if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));
   rows=rows.slice(0,30);
   const nw=`<div class="ac-row" style="font-weight:700;color:var(--accent)" onmousedown="dnNewCust()">➕ Νέος πελάτης…</div>`;
   panel.innerHTML=nw+rows.map(c=>`<div class="ac-row" onmousedown="dnPickCust('${q1(c.vat)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
@@ -4562,11 +4598,11 @@ function dnRowHtml(code,qty){return `<tr>
   <td><input class="dl-qty" type="number" step="0.01" min="0" value="${esc(qty)}" style="width:110px"></td>
   <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove()">✕</button></td></tr>`;}
 function addDnLine(code='',qty=1){$('#dnLines tbody').insertAdjacentHTML('beforeend',dnRowHtml(code,qty));}
-function dnProdAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=inp.parentElement.querySelector('.dl-ac');
+function dnProdAc(inp){const term=grFold(inp.value).trim();const panel=inp.parentElement.querySelector('.dl-ac');
   // Delivery notes move GOODS only — exclude services (type = Υπηρεσία).
   let items=Object.keys(PRODMAP).filter(code=>PRODMAP[code].good).map(code=>({code,desc:PRODMAP[code].desc||'',vat:PRODMAP[code].vat}));
-  const sel=inp.dataset.code||'';const showAll=!term||term===prodText(sel).toLowerCase();
-  if(!showAll)items=items.filter(x=>(x.code+' '+x.desc).toLowerCase().includes(term));
+  const sel=inp.dataset.code||'';const showAll=!term||term===grFold(prodText(sel));
+  if(!showAll)items=items.filter(x=>grFold(x.code+' '+x.desc).includes(term));
   items=items.slice(0,50);
   const rowsHtml=items.map(x=>`<div class="ac-row" onmousedown="dnPickProd(this,'${q1(x.code)}')"><b>${esc(x.code)}</b> <small>${esc(x.desc)}${x.vat!==undefined&&x.vat!==''?' · ΦΠΑ '+vatPct(x.vat)+'%':''}</small></div>`).join('')
     ||'<div class="ac-row muted">Κανένα αγαθό — το δελτίο δέχεται μόνο αγαθά</div>';
@@ -4671,9 +4707,9 @@ async function dnPreviewPdf(){
 // Cancel / credit note
 // Ακύρωση/Πιστωτικό: customer picker → their invoices → select → editable credit
 function cxRange(){const y=new Date().getFullYear();if(!$('#cxFrom').value)dset('cxFrom',y+'-01-01');if(!$('#cxTo').value)dset('cxTo',y+'-12-31');}
-function cxAc(inp){const term=(inp.value||'').toLowerCase().trim();const panel=$('#cxAcPanel');
+function cxAc(inp){const term=grFold(inp.value).trim();const panel=$('#cxAcPanel');
   ensureCustomers();
-  let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>(c.vat+' '+c.name+' '+c.city).toLowerCase().includes(term));rows=rows.slice(0,30);
+  let rows=ALL_CUSTOMERS.map(custFields);if(term)rows=rows.filter(c=>grFold([c.vat,c.name,c.code,c.city].join(' ')).includes(term));rows=rows.slice(0,30);
   if(!rows.length){panel.classList.remove('open');return;}
   panel.innerHTML=rows.map(c=>`<div class="ac-row" onmousedown="cxPickCust('${q1(c.vat)}','${q1(c.name)}')"><b>${esc(c.name||c.vat)}</b> <small>ΑΦΜ ${esc(c.vat)}${c.city?' · '+esc(c.city):''}</small></div>`).join('');
   panel.classList.add('open');}
