@@ -62,7 +62,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 <meta name="theme-color" content="#0b1220">
 <style>
   :root{
-    --bg:#0b1220; --panel:#131f33; --panel2:#18263d; --line:#2b3b54;
+    --bg:#0b1220; --panel:#131f33; --panel2:#18263d;
+    /* Το περίγραμμα ήταν #2b3b54: μόλις 1,3:1 πάνω στο panel, δηλαδή τα
+       κουτιά δεν είχαν ορατό όριο. Ανεβαίνει ώστε κάθε πλαίσιο να ξεχωρίζει
+       χωρίς να γίνεται θορυβώδες. */
+    --line:#4d6894;
     --txt:#e6edf6; --muted:#93a4bd; --accent:#38bdf8; --accent2:#0ea5e9;
     --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --chip:#0b2942; --hover:#1b2c45;
     --radius:14px; --shadow:0 10px 30px rgba(0,0,0,.4); --side:230px;
@@ -76,7 +80,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   }
   /* Light theme — activated by data-theme="light" on <html> (toggle bottom-left). */
   :root[data-theme="light"]{
-    --bg:#f1f5fb; --panel:#ffffff; --panel2:#eef3fa; --line:#d5deea;
+    --bg:#f1f5fb; --panel:#ffffff; --panel2:#eef3fa; --line:#8aa2bd;
     /* --muted σκουρότερο από το αρχικό #5b6b84: στα 12px το παλιό έβγαινε 3.46:1
        πάνω στο λευκό, κάτω από το όριο αναγνωσιμότητας (4.5:1) — οι υπότιτλοι
        και οι ετικέτες πεδίων ήταν ξεθωριασμένοι στο φωτεινό θέμα. */
@@ -297,6 +301,13 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   td.right>button+button,td.right>a+button,td.right>button+a{margin-left:4px}
   /* Τα κελιά κειμένου κόβονται με «…» αντί να σπρώχνουν τον πίνακα. */
   table td{overflow:hidden;text-overflow:ellipsis}
+  /* ΕΞΑΙΡΕΣΗ: το κελί που φιλοξενεί αναδυόμενη λίστα ΔΕΝ κόβει.
+     Το `.ac-panel` είναι position:absolute στο `top:100%` — δηλαδή ΕΞΩ από το
+     κελί του. Με `overflow:hidden` στο `td` κοβόταν ολόκληρο και δεν φαινόταν
+     ποτέ: το dropdown ειδών άνοιγε κανονικά, γέμιζε κανονικά, και ήταν αόρατο.
+     Ίσχυε για κάθε λίστα μέσα σε πίνακα — έκδοση, μαζική έκδοση, δελτίο
+     αποστολής, εισαγωγή πληρωμών. */
+  table td.ac-cell{overflow:visible}
   /* Το σήμα του γραφείου ζει ΜΕΣΑ στο υποσέλιδο του μενού. Ως fixed στοιχείο
      καθόταν πάνω στη γραμμή της έκδοσης· εδώ είναι εξίσου «κάτω αριστερά»
      χωρίς να σκεπάζει τίποτα. Και ποτέ δεν πιάνει κλικ (το μάθαμε από το toast). */
@@ -448,6 +459,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     .panel{padding:12px}
     /* Οι πίνακες κυλούν μέσα στο πλαίσιό τους, δεν σπρώχνουν τη σελίδα. */
     .panel table{display:block;overflow-x:auto;white-space:nowrap}
+    /* ΕΞΑΙΡΕΣΗ: πίνακες με αναδυόμενη λίστα. Το `overflow-x:auto` κάνει τον
+       πίνακα δοχείο κύλισης, που ΚΟΒΕΙ ό,τι βγαίνει έξω του — δηλαδή ακριβώς
+       το dropdown, που ανοίγει κάτω από το κελί. Σε στενό παράθυρο το είδος
+       δεν επιλεγόταν με τίποτα. Εδώ ο πίνακας απλώς στριμώχνεται. */
+    .panel table:has(td.ac-cell){display:table;overflow-x:visible;white-space:normal}
     .row{flex-wrap:wrap}
     .field{min-width:0}
     dialog .modal-body{max-width:96vw!important;padding:14px}
@@ -839,7 +855,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <h2 class="title">Είδη / Υπηρεσίες</h2><p class="sub">Κατάλογος ειδών που τροφοδοτεί την έκδοση.</p>
       <div class="panel">
         <div class="row" style="justify-content:space-between">
-          <input id="prodFilter" placeholder="Φίλτρο…" oninput="renderProducts()" style="width:260px">
+          <input id="prodFilter" placeholder="Αναζήτηση κωδικού ή περιγραφής…" oninput="renderProducts()" style="width:260px">
           <div class="row">
             <button class="ghost" onclick="loadProducts()">↻ Ανανέωση</button>
             <button class="primary" onclick="openProductModal()">+ Νέο είδος</button>
@@ -2154,9 +2170,14 @@ function netNoteReply(d){
 
 // Navigation
 function showView(v){
+  // Άγνωστο όνομα οθόνης δεν ρίχνει τη ροή. Ο βοηθός καλεί την `showView` με
+  // όνομα που βγάζει από κείμενο του χρήστη· ένα λάθος όνομα έσκαγε με
+  // «Cannot read properties of null» και σταματούσε ό,τι έτρεχε μετά.
+  const target=$('#view-'+v);
+  if(!target){console.warn('showView: άγνωστη οθόνη',v);return;}
   document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.view===v));
   document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
-  $('#view-'+v).classList.add('active');
+  target.classList.add('active');
   // Κάθε πίνακας της ενότητας παίρνει φίλτρα + μεταβλητό πλάτος/σειρά στηλών.
   // Παλιά η λίστα ήταν γραμμένη με το χέρι, ανά ενότητα, και κάθε νέος πίνακας
   // ξεχνιόταν — γι' αυτό μερικοί είχαν χωνί και άλλοι όχι.
@@ -3469,7 +3490,7 @@ async function saveCustomerEdit(){
       update_phone1:$('#cePhone1').value,update_phone2:$('#cePhone2').value,
       update_job_description:$('#ceJob').value});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
-    custEditModal.close();toast('Ο πελάτης ενημερώθηκε','ok');loadCustomers(true);
+    custEditModal.close();toast('Ο πελάτης ενημερώθηκε','ok');cacheTouch('customers');loadCustomers(true);
   }catch(e){$('#ceResult').textContent='Πελάτης: '+e.message;}}
 async function cmLookup(){const afm=$('#cmAfm').value.trim();if(!/^\d{9}$/.test(afm)){toast('Δώσε 9ψήφιο ΑΦΜ','err');return;}
   try{const c=await afmDetails(afm,{busy:true});
@@ -3504,7 +3525,7 @@ async function saveCustomer(){
         saved.email=extra.email;
       }}
     if(d.success===false)throw new Error(d.error||'σφάλμα');
-    $('#custModal').close();toast('Αποθηκεύτηκε','ok');loadCustomers(true);
+    $('#custModal').close();toast('Αποθηκεύτηκε','ok');cacheTouch('customers');loadCustomers(true);
     if(CUST_ONSAVED){const cb=CUST_ONSAVED;CUST_ONSAVED=null;cb(saved);}
   }catch(e){toast('Πελάτης: '+e.message,'err');}
 }
@@ -3690,7 +3711,7 @@ function biRender(){const onlyCr=$('#biOnlyCredit').checked;
       <td title="${esc(t.description)}">${esc((t.description||'').slice(0,60))}</td>
       <td class="num" ${amtCls}>${fmt(Math.abs(t.amount))}</td>
       <td>${dir}</td>
-      <td style="position:relative"><input class="biCust" value="${cval}" placeholder="Αναζήτηση πελάτη…" autocomplete="off"
+      <td class="ac-cell" style="position:relative"><input class="biCust" value="${cval}" placeholder="Αναζήτηση πελάτη…" autocomplete="off"
            oninput="biAc(this,${i})" onfocus="biAc(this,${i})"><div class="ac-panel" id="biAc${i}"></div></td>
     </tr>`;}).join('')||'<tr><td colspan="6" class="muted">Καμία κίνηση.</td></tr>';
   biSelInfo();}
@@ -3879,8 +3900,8 @@ async function delPayment(id){if(!await uiConfirm('Διαγραφή πληρωμ
 // Products
 let PRODUCTS=[],CATEGORIES=[];
 async function loadProducts(){await cachedThenSync('products',rows=>{PRODUCTS=rows;renderProducts();});}
-function renderProducts(){const f=($('#prodFilter').value||'').toLowerCase();
-  const rows=PRODUCTS.filter(p=>!f||JSON.stringify(p).toLowerCase().includes(f));
+function renderProducts(){const f=grFold($('#prodFilter').value).trim();
+  const rows=PRODUCTS.filter(p=>!f||grFold(JSON.stringify(p)).includes(f));
   $('#prodTable tbody').innerHTML=rows.map(p=>{const code=p.product_code||p.code||'',desc=p.description||'',cat=p.category||'',vat=p.vat||p.vat_category||'',price=p.unit_price||p.price||'';
     return `<tr><td>${esc(code)}</td><td>${esc(desc)}</td><td>${esc(cat)}</td><td>${esc(vat)}</td><td class="num">${price!==''?fmt(price):''}</td>
       <td class="right"><button class="ghost sm" onclick="editProduct('${q1(code)}','${q1(desc)}')">✎</button> <button class="danger sm" onclick="delProduct('${q1(code)}')">✕</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="muted">Κανένα είδος.</td></tr>';
@@ -3900,7 +3921,12 @@ async function loadProductList(){
   // `sync`, όχι από το `list_products`: έτσι η ίδια κλήση ΓΡΑΦΕΙ και την κρυφή
   // μνήμη, οπότε τα είδη είναι εκεί την επόμενη φορά ακόμη κι αν η ΑΑΔΕ δεν
   // απαντήσει. Πριν, η κρυφή μνήμη γέμιζε μόνο αν είχες ανοίξει την οθόνη «Είδη».
-  try{const c=await api({cached:'products'});if(c.rows&&c.rows.length)buildProdMap(c.rows);}catch(e){}
+  let fresh=false;
+  try{const c=await api({cached:'products'});
+    if(c.rows&&c.rows.length)buildProdMap(c.rows);
+    fresh=cacheIsFresh('products',c);
+  }catch(e){}
+  if(fresh)return;
   // Επιτυχής απάντηση εφαρμόζεται ΠΑΝΤΑ, ακόμη κι άδεια: «δεν έχεις είδη» είναι
   // αληθινή πληροφορία. Ο φύλακας είναι το `freshRows`, που γυρίζει `null` όταν
   // η κλήση απέτυχε — μόνο τότε δεν πειράζουμε τίποτα.
@@ -3954,10 +3980,11 @@ async function saveProduct(){if(!$('#pdCode').value||!$('#pdDesc').value){toast(
   const code=$('#pdCode').value;
   try{let d;if(PROD_EDIT)d=await api({update_product_code:PROD_EDIT,...base});else d=await api({new_product:1,product_code:code,...base});
     if(d.success===false)throw new Error(d.error||'σφάλμα');$('#prodModal').close();toast('Αποθηκεύτηκε','ok');
+    cacheTouch('products');
     await loadProductList();loadProducts();
     if(PROD_ONSAVED){const cb=PROD_ONSAVED;PROD_ONSAVED=null;cb(code);}
   }catch(e){toast('Είδος: '+e.message,'err');}}
-async function delProduct(code){if(!await uiConfirm('Διαγραφή είδους '+code+';'))return;try{const d=await api({delete_product_code:code});if(d.success===false)throw new Error(d.error||'');toast('Διαγράφηκε','ok');loadProducts();}catch(e){toast(e.message,'err');}}
+async function delProduct(code){if(!await uiConfirm('Διαγραφή είδους '+code+';'))return;try{const d=await api({delete_product_code:code});if(d.success===false)throw new Error(d.error||'');toast('Διαγράφηκε','ok');cacheTouch('products');PRODMAP={};await loadProductList();loadProducts();}catch(e){toast(e.message,'err');}}
 
 // Category-level classifications (χαρακτηρισμοί ανά κατηγορία, myDATA §9)
 let CAT_CLS=[],INV_TYPES=[],CLS_OPTS={};
@@ -4018,7 +4045,12 @@ function applyIssueSeries(){const seen=new Set(),opts=[];
   fillSeries();showIssueCls();}
 async function loadIssueTypes(){await loadInvTypes();
   // cache-first: render instantly from cached series, then refresh in background
-  try{const c=await api({cached:'series'});if(c.rows&&c.rows.length){SERIES=c.rows;applyIssueSeries();}}catch(e){}
+  let fresh=false;
+  try{const c=await api({cached:'series'});
+    if(c.rows&&c.rows.length){SERIES=c.rows;applyIssueSeries();}
+    fresh=cacheIsFresh('series',c);
+  }catch(e){}
+  if(fresh)return;              // οι σειρές είναι ήδη επί της οθόνης και πρόσφατες
   try{const d=await api({sync:'series'});const rows=freshRows(d,'rows');
     if(rows){SERIES=rows;applyIssueSeries();
       if(!SERIES.length)toast('Δεν υπάρχει ενεργή σειρά. Δημιούργησε σειρά για να εκδώσεις.','err');}
@@ -4120,8 +4152,8 @@ function blkFillSeries(){const t=$('#blkType').value;const sel=$('#blkSeries');
 function blkAddRow(vat='',name='',code='',qty=1,price=''){
   const tb=$('#blkTable tbody');const tr=document.createElement('tr');
   tr.innerHTML=`
-    <td style="position:relative"><input class="blk-cust" value="${esc(name||vat)}" data-vat="${esc(vat)}" placeholder="Αναζήτηση πελάτη…" autocomplete="off" oninput="blkCustAc(this)" onfocus="blkCustAc(this)" style="width:100%"><div class="ac-panel"></div></td>
-    <td style="position:relative"><input class="blk-code" value="${esc(prodText(code))}" data-code="${esc(code)}" placeholder="Αναζήτηση είδους…" autocomplete="off" oninput="blkProdAc(this)" onfocus="blkProdAc(this)" style="width:100%"><div class="ac-panel"></div></td>
+    <td class="ac-cell" style="position:relative"><input class="blk-cust" value="${esc(name||vat)}" data-vat="${esc(vat)}" placeholder="Αναζήτηση πελάτη…" autocomplete="off" oninput="blkCustAc(this)" onfocus="blkCustAc(this)" style="width:100%"><div class="ac-panel"></div></td>
+    <td class="ac-cell" style="position:relative"><input class="blk-code" value="${esc(prodText(code))}" data-code="${esc(code)}" placeholder="Αναζήτηση είδους…" autocomplete="off" oninput="blkProdAc(this)" onfocus="blkProdAc(this)" style="width:100%"><div class="ac-panel"></div></td>
     <td><input class="blk-qty" type="number" step="0.01" min="0" value="${esc(qty)}" oninput="blkCountUpd()" style="width:80px;text-align:right"></td>
     <td><input class="blk-price" type="text" inputmode="decimal" value="${esc(price)}" onblur="elFmtField(this,4)" placeholder="0,00" style="width:110px;text-align:right"></td>
     <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove();blkCountUpd()">✕</button></td>`;
@@ -4238,7 +4270,7 @@ async function createSeriesUI(){
   $('#srModalResult').innerHTML='<span class="spin"></span> Δημιουργία…';
   try{const d=await api({new_series:1,series_invoice_type:t,series_code:code,series_start_aa:$('#srAa').value||'1',series_description:$('#srDesc').value.trim()});
     if(d.success===false)throw new Error(d.error||'σφάλμα');
-    seriesModal.close();toast(`Η σειρά «${code}» δημιουργήθηκε`,'ok');
+    seriesModal.close();toast(`Η σειρά «${code}» δημιουργήθηκε`,'ok');cacheTouch('series');
     $('#srResult').innerHTML=`<div class="card"><span class="pill ok">Η σειρά «${esc(code)}» δημιουργήθηκε</span></div>`;
     SERIES=[];loadSeriesView();
   }catch(e){$('#srModalResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(e.message)+'</div>';}
@@ -4246,7 +4278,7 @@ async function createSeriesUI(){
 async function delSeries(id,code){if(!id){toast('Λείπει το id σειράς','err');return;}
   if(!await uiConfirm('Διαγραφή σειράς '+(code||'')+';'))return;
   try{const d=await api({delete_series_id:id});if(d.success===false)throw new Error(d.error||'');
-    toast('Η σειρά διαγράφηκε','ok');SERIES=[];loadSeriesView();
+    toast('Η σειρά διαγράφηκε','ok');cacheTouch('series');SERIES=[];loadSeriesView();
   }catch(e){toast('Διαγραφή: '+e.message,'err');}}
 
 // Customer autocomplete on the issue form (searchable + fills all fields)
@@ -4332,7 +4364,7 @@ function prodText(code){const p=PRODMAP[code];return code?(code+(p&&p.desc?' - '
 function rowRate(row){if(['22','23'].includes($('#iType').value))return 0;const code=(row.querySelector('.ln-code').dataset.code||'');const p=PRODMAP[code];return p&&p.vat!==undefined&&p.vat!==''?vatPct(p.vat)/100:0.24;}
 function rowVatLabel(row){if(['22','23'].includes($('#iType').value))return '0%';const code=(row.querySelector('.ln-code').dataset.code||'');const p=PRODMAP[code];return p&&p.vat!==undefined&&p.vat!==''?vatPct(p.vat)+'%':'24%';}
 function lineRowHtml(code,qty,price,disc){return `<tr>
-  <td style="position:relative"><input class="ln-code" value="${esc(prodText(code))}" data-code="${esc(code||'')}" oninput="prodAc(this)" onfocus="prodAc(this)" placeholder="Επιλογή / αναζήτηση είδους…" autocomplete="off" style="width:100%"><div class="ac-panel ln-ac"></div></td>
+  <td class="ac-cell" style="position:relative"><input class="ln-code" value="${esc(prodText(code))}" data-code="${esc(code||'')}" oninput="prodAc(this)" onfocus="prodAc(this)" placeholder="Επιλογή / αναζήτηση είδους…" autocomplete="off" style="width:100%"><div class="ac-panel ln-ac"></div></td>
   <td><input class="ln-qty" type="number" step="0.01" min="0" value="${esc(qty)}" oninput="lineFromInputs(this.closest('tr'))" style="width:72px"></td>
   <td class="num"><input class="ln-price" type="text" inputmode="decimal" value="${esc(price)}" oninput="lineFromInputs(this.closest('tr'))" onblur="elFmtField(this,4);lineFromInputs(this.closest('tr'))" placeholder="0,00" style="width:100px;text-align:right"></td>
   <td class="num"><input class="ln-disc" type="number" step="0.01" min="0" max="100" value="${esc(disc||'')}" oninput="lineFromInputs(this.closest('tr'))" placeholder="0" style="width:70px;text-align:right"></td>
@@ -4594,7 +4626,7 @@ async function dnUseBase(){try{const d=await api({company_profile:1});const co=(
 // --- Lines editor (product combobox, like the issue form) --------------------
 function dnRowRate(row){const code=row.querySelector('.dl-code').dataset.code||'';const p=PRODMAP[code];return p&&p.vat!==undefined&&p.vat!==''?vatPct(p.vat)/100:0.24;}
 function dnRowHtml(code,qty){return `<tr>
-  <td style="position:relative"><input class="dl-code" value="${esc(prodText(code))}" data-code="${esc(code||'')}" oninput="dnProdAc(this)" onfocus="dnProdAc(this)" placeholder="Επιλογή / αναζήτηση αγαθού…" autocomplete="off" style="width:100%"><div class="ac-panel dl-ac"></div></td>
+  <td class="ac-cell" style="position:relative"><input class="dl-code" value="${esc(prodText(code))}" data-code="${esc(code||'')}" oninput="dnProdAc(this)" onfocus="dnProdAc(this)" placeholder="Επιλογή / αναζήτηση αγαθού…" autocomplete="off" style="width:100%"><div class="ac-panel dl-ac"></div></td>
   <td><input class="dl-qty" type="number" step="0.01" min="0" value="${esc(qty)}" style="width:110px"></td>
   <td class="right"><button class="danger sm" type="button" onclick="this.closest('tr').remove()">✕</button></td></tr>`;}
 function addDnLine(code='',qty=1){$('#dnLines tbody').insertAdjacentHTML('beforeend',dnRowHtml(code,qty));}
@@ -6293,8 +6325,41 @@ $('#cbLang').addEventListener('change',()=>{if(cbRec)cbRec.lang=$('#cbLang').val
 // Warm ALL e-timologio caches in the background so every view opens instantly
 // (same snapshot-cache mechanism used for πελάτες). Fire-and-forget, staggered
 // so we don't hammer the AADE session with parallel logins.
+//: Πόσα λεπτά θεωρείται φρέσκια μια αποθηκευμένη λίστα.
+const CACHE_FRESH_MIN=10;
+
+//: Είδη που άλλαξαν ΑΠΟ ΕΜΑΣ και δεν έχουν ξαναδιαβαστεί.
+//
+// Χωρίς αυτό, η βελτίωση ταχύτητας θα γινόταν σφάλμα: φτιάχνεις σειρά, η μνήμη
+// είναι δύο λεπτών άρα «φρέσκια», και η νέα σειρά δεν εμφανίζεται πουθενά μέχρι
+// να περάσει το δεκάλεπτο. Η φρεσκάδα είναι βελτιστοποίηση — ποτέ δεν επιτρέπεται
+// να κρύψει δική μας εγγραφή.
+const CACHE_DIRTY=new Set();
+function cacheTouch(kind){CACHE_DIRTY.add(kind);}
+
+// Η ΜΟΝΗ κρίση «φρέσκο ή όχι», ώστε να μην μπορεί κάποιος καλών να την
+// παρακάμψει κατά λάθος: πρώτα το σημάδι δικής μας αλλαγής, μετά η ηλικία.
+function cacheIsFresh(kind,c,minutes){
+  if(CACHE_DIRTY.has(kind)){CACHE_DIRTY.delete(kind);return false;}
+  return !!c&&!!(c.rows&&c.rows.length)
+    &&typeof c.age_seconds==='number'&&c.age_seconds<(minutes||CACHE_FRESH_MIN)*60;
+}
+
+// Είναι η κρυφή μνήμη αρκετά πρόσφατη ώστε να ΜΗΝ ξαναρωτήσουμε την ΑΑΔΕ;
+// Η ανάγνωση είναι τοπική (μία γραμμή στη βάση), οπότε κοστίζει χιλιοστά.
+async function cacheFresh(kind,minutes){
+  try{return cacheIsFresh(kind,await api({cached:kind}),minutes);}catch(e){return false;}
+}
+
+// ΓΙΑΤΙ ΜΕΤΡΑΕΙ: ο τοπικός server της PHP εξυπηρετεί ΜΙΑ αίτηση τη φορά. Επτά
+// σειριακοί συγχρονισμοί με την ΑΑΔΕ στην εκκίνηση σήμαιναν ότι ΚΑΘΕ ενέργεια
+// του χρήστη περίμενε πίσω τους — γι' αυτό «αργούσαν να φορτώσουν οι σειρές».
+// Ό,τι ρωτήθηκε τα τελευταία λεπτά δεν ξαναρωτιέται.
 async function prewarmAll(){const kinds=['customers','products','series','invtypes','categories','deductions','drafts'];
-  for(const k of kinds){try{await api({sync:k});}catch(e){}}}
+  for(const k of kinds){
+    if(await cacheFresh(k))continue;
+    try{await api({sync:k});}catch(e){}
+  }}
 
 // --- Πτυσσόμενες ενότητες ρυθμίσεων -------------------------------------------
 //
@@ -7006,6 +7071,11 @@ async function pollNotifCount(){try{const d=await api({notif_count:1});setBell(d
 // συγκρίνει την τοπική cache με την πλατφόρμα (`?sync=newdocs`) και ο server
 // γράφει ειδοποίηση για κάθε νέο ΜΑΡΚ. Σιωπηλό όταν δεν υπάρχει δίκτυο ή
 // σύνδεση ΑΑΔΕ — ο έλεγχος δεν είναι λόγος να δει ο χρήστης σφάλμα.
+//: Κάθε πόσα λεπτά ρωτάμε την ΑΑΔΕ για παραστατικά που δεν εκδόθηκαν από εδώ.
+//: Ήταν 30: ένα παραστατικό που έβγαινε από αλλού μπορούσε να μείνει μισή ώρα
+//: χωρίς ειδοποίηση, και ο χρήστης το έβλεπε πρώτος στα «Παραστατικά» — δηλαδή
+//: η καμπάνα του το έλεγε ΜΕΤΑ από αυτόν.
+const AADE_CHECK_MIN=5;
 let AADE_CHECK_BUSY=false;
 async function checkAadeNewDocs(silent=true){
   if(AADE_CHECK_BUSY)return;
@@ -7183,9 +7253,9 @@ function addEyes(root){
 (async()=>{addEyes();addDatePickers();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
-  // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε μισή ώρα.
+  // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε AADE_CHECK_MIN λεπτά.
   setTimeout(()=>checkAadeNewDocs(),9000);
-  setInterval(()=>checkAadeNewDocs(),1800000);
+  setInterval(()=>checkAadeNewDocs(),AADE_CHECK_MIN*60000);
   // First-time visitors: gently offer the tour once.
   if(!localStorage.getItem('etim_tour_done'))setTimeout(async()=>{try{
     if(await uiConfirm('Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;',

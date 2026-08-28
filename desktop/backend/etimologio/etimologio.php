@@ -397,9 +397,11 @@ function aadeCredentialTest(string $vat, string $username, string $subkey): arra
         libxml_clear_errors();
         libxml_use_internal_errors($prev);
         if ($xml !== false) $rows = $xml->count();
-        $out['mydata'] = ['ok' => true, 'rows' => $rows, 'msg' => $rows > 0
-            ? "Έγκυρα — $rows εγγραφές για $from–$to."
-            : "Έγκυρα — ο μήνας $from–$to είναι χωρίς έξοδα."];
+        // Το πλήθος εγγραφών ΔΕΝ είναι αποτέλεσμα της δοκιμής: η ερώτηση είναι
+        // «περνούν τα κλειδιά;». Το «ο μήνας είναι χωρίς έξοδα» διαβαζόταν σαν
+        // εύρημα και τρόμαζε — ενώ σημαίνει απλώς ότι η ΑΑΔΕ απάντησε ΟΚ.
+        $out['mydata'] = ['ok' => true, 'rows' => $rows,
+                          'msg' => 'Έγκυρα — η ΑΑΔΕ δέχτηκε τα διαπιστευτήρια.'];
     } elseif ($code === 401 || $code === 403) {
         $out['mydata'] = ['ok' => false, 'msg' =>
             'Απορρίφθηκαν (HTTP ' . $code . '). Έλεγξε το «Όνομα χρήστη» και το κλειδί '
@@ -5271,8 +5273,14 @@ $cachedKind = trim($_GET['cached'] ?? $_POST['cached'] ?? '');
 if ($cachedKind !== '') {
     $c = cache_get(COMPANY_VAT, $cachedKind);
     if ($c) {
+        // Η ηλικία υπολογίζεται ΕΔΩ και όχι στον browser: το `synced_at` είναι
+        // UTC και στις δύο διαλέκτους, και μια λάθος ερμηνεία ζώνης ώρας θα
+        // έκανε την κρυφή μνήμη να φαίνεται ώρες παλιά (ή ώρες από το μέλλον).
+        $ts  = strtotime((string)$c['synced_at'] . ' UTC');
+        $age = $ts ? max(0, time() - $ts) : null;
         jsonResponse(['success' => true, 'cached' => true, 'kind' => $cachedKind,
-            'synced_at' => $c['synced_at'], 'count' => count($c['rows']), 'rows' => $c['rows']]);
+            'synced_at' => $c['synced_at'], 'age_seconds' => $age,
+            'count' => count($c['rows']), 'rows' => $c['rows']]);
     }
     jsonResponse(['success' => true, 'cached' => false, 'kind' => $cachedKind, 'count' => 0, 'rows' => []]);
 }
