@@ -73,7 +73,7 @@
     <button id="t-forgot" onclick="tab('forgot')">Ξέχασα κωδικό</button>
   </div>
 
-  <form id="f-login" class="on" onsubmit="return doLogin(event)">
+  <form id="f-login"<?= ($__joinToken ?? '') === '' ? ' class="on"' : '' ?> onsubmit="return doLogin(event)">
     <label>Email</label><input type="email" id="l-email" autocomplete="username" required>
     <label>Κωδικός</label><input type="password" id="l-pass" autocomplete="current-password" required>
     <button class="primary" type="submit">Σύνδεση</button>
@@ -83,8 +83,17 @@
     <label>Επωνυμία επιχείρησης</label><input type="text" id="s-name" required>
     <label>Email</label><input type="email" id="s-email" autocomplete="email" required>
     <label>Κωδικός (≥ 8 χαρακτήρες)</label><input type="password" id="s-pass" autocomplete="new-password" required>
+    <input type="hidden" id="s-join" value="<?= htmlspecialchars($__joinToken ?? '', ENT_QUOTES) ?>">
     <button class="primary" type="submit">Δημιουργία λογαριασμού</button>
+    <?php if (($__joinToken ?? '') !== ''): ?>
+    <!-- Ήρθε από σύνδεσμο κλειδιού: η έγκριση έχει ήδη δοθεί όταν εκδόθηκε το
+         κλειδί, οπότε το μόνο που λείπει είναι η απόδειξη ότι το email είναι
+         δικό του. Το λέμε ρητά — αλλιώς περιμένει έγκριση που δεν θα έρθει. -->
+    <div class="foot">Ο σύνδεσμος σου δίνει ήδη πρόσβαση σε αυτόν τον server. Επιβεβαίωσε
+      το email σου και ο λογαριασμός ενεργοποιείται αμέσως, με τις εταιρείες σου μέσα.</div>
+    <?php else: ?>
     <div class="foot">Θα λάβετε email επιβεβαίωσης. Μετά την επιβεβαίωση, η εγγραφή εγκρίνεται από τον διαχειριστή.</div>
+    <?php endif; ?>
   </form>
 
   <form id="f-forgot" onsubmit="return doForgot(event)">
@@ -110,6 +119,9 @@
 <script>
 const API='etimologio.php';
 function msg(t,ok){const m=document.getElementById('msg');m.textContent=t;m.className='msg '+(ok?'ok':'err');}
+// Ο σύνδεσμος κλειδιού οδηγεί ΣΤΗΝ ΕΓΓΡΑΦΗ, όχι στη σύνδεση: όποιος τον ανοίγει
+// δεν έχει ακόμη λογαριασμό — γι' αυτό του τον έστειλαν.
+window.addEventListener('DOMContentLoaded',()=>{const j=g('s-join');if(j&&j.value)tab('signup');});
 function tab(w){['login','signup','forgot'].forEach(x=>{document.getElementById('f-'+x).classList.toggle('on',x===w);document.getElementById('t-'+x).classList.toggle('on',x===w);});document.getElementById('msg').className='msg';
   document.getElementById('subtitle').textContent=w==='login'?'Συνδεθείτε στον λογαριασμό της επιχείρησής σας':w==='signup'?'Δημιουργήστε λογαριασμό επιχείρησης':'Επαναφορά κωδικού πρόσβασης';}
 const g=id=>document.getElementById(id);
@@ -143,7 +155,7 @@ async function doResend(email){
 }
 async function do2fa(e){e.preventDefault();try{const d=await post({auth:'login_totp',code:g('tf-code').value});
   if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
-async function doSignup(e){e.preventDefault();try{const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+async function doSignup(e){e.preventDefault();try{const j=g('s-join');const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value,join:j?j.value:''});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doForgot(e){e.preventDefault();try{const d=await post({auth:'forgot',email:g('fg-email').value});msg(d.note||'Στάλθηκαν οδηγίες.',true);}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doReset(e){e.preventDefault();if(g('r-pass').value!==g('r-pass2').value){msg('Οι κωδικοί δεν ταιριάζουν');return false;}try{const d=await post({auth:'reset',token:g('r-token').value,password:g('r-pass').value});if(d.success){msg('Ο κωδικός ενημερώθηκε. Ανακατεύθυνση…',true);setTimeout(()=>location.href='app.php',1200);}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 

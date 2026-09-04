@@ -23,6 +23,7 @@ require_once __DIR__ . '/config.php';   // constants + legacy $ACCOUNTS
 require_once __DIR__ . '/localdb.php';  // DB + crypto + user/account helpers
 require_once __DIR__ . '/mail.php';     // Resend/SMTP transactional email
 require_once __DIR__ . '/totp.php';     // authenticator 2FA (RFC 6238)
+require_once __DIR__ . '/qrcode.php';   // ο κωδικός QR του 2FA, χωρίς δίκτυο
 
 // --- Όταν η βάση δεν απαντά --------------------------------------------------
 // Στον server η βάση είναι χωριστή υπηρεσία: μπορεί να είναι σε restart ή σε
@@ -270,13 +271,19 @@ function auth_logout(): void {
 }
 
 // --- Signup (public, pending approval) --------------------------------------
-function auth_signup(string $email, string $password, string $businessName): array {
+function auth_signup(string $email, string $password, string $businessName, string $joinToken = ''): array {
     $email = strtolower(trim($email));
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) return ['success' => false, 'error' => 'Μη έγκυρο email'];
     if (strlen($password) < 8) return ['success' => false, 'error' => 'Ο κωδικός πρέπει να έχει ≥ 8 χαρακτήρες'];
     if (trim($businessName) === '') return ['success' => false, 'error' => 'Λείπει η επωνυμία επιχείρησης'];
     if (user_by_email($email)) return ['success' => false, 'error' => 'Υπάρχει ήδη λογαριασμός με αυτό το email'];
+    // Εγγραφή μέσα από σύνδεσμο κλειδιού: ο διαχειριστής έχει ήδη εγγυηθεί γι'
+    // αυτόν τον χρήστη εκδίδοντας το κλειδί, οπότε δεν ξαναμπαίνει σε ουρά
+    // έγκρισης — αρκεί να αποδείξει ότι το email είναι δικό του.
+    $join = ($joinToken !== '' && function_exists('access_key_by_claim'))
+        ? access_key_by_claim($joinToken) : null;
     $id = user_create($email, password_hash($password, PASSWORD_DEFAULT), 'business', 'pending', $businessName);
+    if ($join) access_key_set_claimed((int)$join['id'], $id);
     // Πρώτα επαλήθευση email, ΜΕΤΑ έγκριση. Ο διαχειριστής ειδοποιείται μόνο
     // όταν αποδειχθεί ότι το email υπάρχει και ανήκει σε αυτόν που εγγράφηκε —
     // αλλιώς η ουρά εγκρίσεων γεμίζει με τυπογραφικά λάθη και ψεύτικες εγγραφές.
@@ -311,6 +318,21 @@ function auth_verify_email(string $token): array {
                 'error' => 'Ο σύνδεσμος έληξε — ζητήστε νέο'];
     }
     user_update((int)$u['id'], ['email_verified' => 1, 'verify_token' => '', 'verify_expires' => 0]);
+
+    // Ήρθε από σύνδεσμο κλειδιού; Τότε η έγκριση έχει ήδη δοθεί — από τη στιγμή
+    // που ο διαχειριστής εξέδωσε το κλειδί. Ενεργοποιείται αμέσως και παίρνει
+    // ό,τι ανέβηκε στο όνομά του όσο περίμενε.
+    $key = function_exists('access_key_by_claimed_uid') ? access_key_by_claimed_uid((int)$u['id']) : null;
+    if ($key) {
+        user_update((int)$u['id'], ['status' => 'active']);
+        $moved = auth_claim_deliver((int)$u['id']);
+        return ['success' => true, 'activated' => true, 'companies' => $moved,
+                'note' => $moved > 0
+                    ? ('Το email επιβεβαιώθηκε. Ο λογαριασμός είναι ενεργός και '
+                       . $moved . ' εταιρεί' . ($moved === 1 ? 'α είναι' : 'ες είναι') . ' ήδη μέσα.')
+                    : 'Το email επιβεβαιώθηκε. Ο λογαριασμός είναι ενεργός — μπες κανονικά.'];
+    }
+
     // Τώρα, και μόνο τώρα, μπαίνει στην ουρά των εγκρίσεων.
     if ($u['status'] === 'pending') auth_email_admins_new_signup($u['email'], (string)$u['business_name']);
     return ['success' => true, 'note' => 'Το email επιβεβαιώθηκε. Ο λογαριασμός εκκρεμεί έγκριση από τον διαχειριστή.'];
@@ -512,6 +534,11 @@ function auth_totp_setup(): array {
         'success' => true,
         'secret'  => $secret,
         'otpauth' => totp_uri($secret, $u['email'], auth_totp_issuer()),
+        // Ο ΚΩΔΙΚΑΣ ΕΡΧΕΤΑΙ ΕΤΟΙΜΟΣ. Τον έφτιαχνε ο browser με βιβλιοθήκη από
+        // CDN, την οποία η πολιτική περιεχομένου του ίδιου του server
+        // (`script-src 'self'`) δεν επέτρεπε να φορτώσει: ούτε σφάλμα, ούτε
+        // κωδικός — ένα κενό τετράγωνο. Δες `qrcode.php`.
+        'qr_svg'  => function_exists('qr_svg') ? qr_svg(totp_uri($secret, $u['email'], auth_totp_issuer())) : '',
         'issuer'  => auth_totp_issuer(),
     ];
 }
@@ -751,10 +778,47 @@ function auth_access_key_login(): void {
     if (!$u || ($u['status'] ?? '') !== 'active') return;
     $_SESSION['uid'] = (int)$u['id'];
     $GLOBALS['__access_key_user'] = (int)$u['id'];
+    // ΠΟΙΟ κλειδί, όχι μόνο ποιος χρήστης: όσα ανεβαίνουν μέσα από ένα κλειδί
+    // πρέπει να μπορούν να παραδοθούν σε αυτόν που θα το διεκδικήσει, και
+    // μόνο σε αυτόν. Χωρίς την ταυτότητα του κλειδιού δεν ξεχωρίζουν από τα
+    // βιβλία των υπολοίπων πελατών του ίδιου διαχειριστή.
+    $row = function_exists('access_key_row') ? access_key_row($key) : null;
+    $GLOBALS['__access_key_id'] = (int)($row['id'] ?? 0);
 }
 
 /** Ταυτοποιήθηκε αυτό το αίτημα με κλειδί πρόσβασης; */
 function auth_by_access_key(): bool { return !empty($GLOBALS['__access_key_user']); }
+
+/** Με ΠΟΙΟ κλειδί πρόσβασης ήρθε αυτό το αίτημα (0 = με κανένα). */
+function auth_access_key_id(): int { return (int)($GLOBALS['__access_key_id'] ?? 0); }
+
+/**
+ * Ο πελάτης ολοκλήρωσε την εγγραφή του — πάρε ό,τι ανέβηκε στο όνομά του.
+ *
+ * Μέχρι εδώ οι εταιρείες του ζούσαν κάτω από τον λογαριασμό που εξέδωσε το
+ * κλειδί: **προσωρινή στέγη**, γιατί τα δεδομένα δεν επιτρέπεται να περιμένουν
+ * σε καμία ουρά μέχρι να θυμηθεί κάποιος να κάνει εγγραφή. Τώρα αλλάζουν
+ * κάτοχο, μία-μία, και μόνο όσες ήρθαν από ΑΥΤΟ το κλειδί.
+ *
+ * Καλείται από την επιβεβαίωση email: πριν από αυτήν δεν ξέρουμε καν ότι ο
+ * παραλήπτης είναι εκείνος που λέει.
+ */
+function auth_claim_deliver(int $uid): int {
+    if ($uid <= 0 || !function_exists('access_key_by_claimed_uid')) return 0;
+    $key = access_key_by_claimed_uid($uid);
+    if (!$key) return 0;
+    $moved = 0;
+    foreach (access_key_vats((int)$key['id']) as $vat) {
+        $a = account_by_vat($vat);
+        if (!$a) continue;
+        account_set_owner((int)$a['id'], $uid);
+        $moved++;
+    }
+    // Και το ίδιο το κλειδί δένει πια στον δικό του λογαριασμό: ο επόμενος
+    // συγχρονισμός γράφει κατευθείαν εκεί, χωρίς ενδιάμεσο.
+    access_key_bind((int)$key['id'], $uid);
+    return $moved;
+}
 
 // Run bootstrap + migration + account resolution on include (safe, no output).
 auth_bootstrap();

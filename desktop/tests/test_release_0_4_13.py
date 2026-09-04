@@ -108,25 +108,35 @@ def test_the_lookup_shows_that_it_is_working(page: str) -> None:
 
 
 # --- 4. Δοκιμή διαπιστευτηρίων ---------------------------------------------
-def test_credentials_are_tested_against_both_services() -> None:
+def test_credentials_can_be_tested_against_both_services() -> None:
     """Ένα πράσινο myDATA ΔΕΝ αποδεικνύει ότι θα μπεις στο e-timologio.
 
     Είναι άλλη πύλη, με δική της εγγραφή — και τα δύο κλειδιά έχουν την ίδια
     μορφή, οπότε το λάθος κλειδί μπαίνει «σωστά» και φαίνεται ώρες αργότερα.
+
+    Ο έλεγχος myDATA ζει πλέον σε δική του συνάρτηση και είναι **προαιρετικός**:
+    το e-Τιμολόγιο Pro εκδίδει μέσα από την πύλη e-timologio και δεν αγγίζει
+    ποτέ το myDATA REST, οπότε εκεί η γραμμή του απαντούσε σε ερώτηση που δεν
+    έγινε (0.4.23). Η ίδια η δυνατότητα μένει, για όποιον τη ζητήσει.
     """
     php = ETIM_PHP.read_text(encoding="utf-8")
+    probe = php[php.index("function aadeMyDataProbe("):]
+    probe = probe[:probe.index("\n}")]
+    assert "RequestMyExpenses" in probe
+    assert "ocp-apim-subscription-key" in probe and "aade-user-id" in probe
+
     body = php[php.index("function aadeCredentialTest("):]
     body = body[:body.index("\n/**", 10)]
-    assert "RequestMyExpenses" in body
-    assert "ocp-apim-subscription-key" in body and "aade-user-id" in body
     assert "/Account/Login" in body, "και το e-timologio, που είναι αυτό που εκδίδει"
-    assert "$out['mydata']" in body and "$out['etimologio']" in body
+    assert "$out['mydata'] = aadeMyDataProbe(" in body
+    assert "$out['etimologio']" in body
 
 
 def test_zero_expenses_is_not_a_failure_on_the_server() -> None:
     php = ETIM_PHP.read_text(encoding="utf-8")
-    body = php[php.index("function aadeCredentialTest("):]
-    assert "χωρίς έξοδα" in body[:4000]
+    probe = php[php.index("function aadeMyDataProbe("):]
+    probe = probe[:probe.index("\n}")]
+    assert "χωρίς έξοδα" in probe
 
 
 def test_the_probe_never_touches_the_live_session() -> None:

@@ -263,6 +263,13 @@ function localdb(bool $close = false): ?\PDO {
         )
     ");
     $tr("CREATE INDEX IF NOT EXISTS idx_akey_user ON access_keys(user_id)");
+    // Το κλειδί μπορεί να δοθεί σε πελάτη που ΔΕΝ έχει ακόμη λογαριασμό εδώ.
+    // Ώσπου να κάνει εγγραφή, τα δεδομένα του ανεβαίνουν κανονικά και ζουν κάτω
+    // από τον λογαριασμό που εξέδωσε το κλειδί — προσωρινή στέγη, όχι τελικός
+    // κάτοχος. Το `claim_token` είναι ο προσωπικός του σύνδεσμος εγγραφής και
+    // το `claimed_uid` ο λογαριασμός που τον χρησιμοποίησε.
+    try { $tr("ALTER TABLE access_keys ADD COLUMN claim_token TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $tr("ALTER TABLE access_keys ADD COLUMN claimed_uid INTEGER NOT NULL DEFAULT 0"); } catch (\Throwable $e) {}
 
     // --- Ανάθεση εταιρειών σε λογιστές ---------------------------------------
     // Ο διαχειριστής βλέπει τα πάντα· ο λογιστής μόνο ό,τι του έχει ανατεθεί.
@@ -953,8 +960,12 @@ function audit_log_add(int $userId, string $accountVat, string $action, array $d
 
 function audit_log_list($scope = '', array $filter = [], int $limit = 300): array {
     [$where, $args] = db_scope_clause($scope);
-    $conds = []; 
-    if ($where !== '') $conds[] = $where;
+    $conds = [];
+    // Οι συνδέσεις, οι αποσυνδέσεις και οι δοκιμές email δεν ανήκουν σε καμία
+    // εταιρεία: γράφονται με κενό ΑΦΜ. Ο φίλτρος εμβέλειας («μόνο οι δικές μου
+    // εταιρείες») τις έκοβε ΟΛΕΣ, οπότε ο λογιστής άνοιγε το ημερολόγιο και
+    // έβλεπε μισή ιστορία, χωρίς κανένα σημάδι ότι λείπει κάτι.
+    if ($where !== '') $conds[] = '(' . $where . " OR account_vat = '')";
     if (!empty($filter['user_id'])) { $conds[] = 'user_id = :fu'; $args[':fu'] = (int)$filter['user_id']; }
     if (!empty($filter['action']))  { $conds[] = 'action = :fa';  $args[':fa'] = (string)$filter['action']; }
     if (!empty($filter['from']))    { $conds[] = 'created_at >= :ff'; $args[':ff'] = (string)$filter['from']; }
@@ -1016,21 +1027,50 @@ function work_time_report(string $from = '', string $to = '', $scope = ''): arra
 // Το κλειδί που βλέπει ο χρήστης δείχνεται **μία φορά**· η βάση κρατά μόνο
 // hash. Δεν υπάρχει «δες ξανά το κλειδί» — υπάρχει «φτιάξε καινούριο».
 
-function access_key_create(int $userId, string $label = ''): string {
+function access_key_create(int $userId, string $label = ''): array {
     $secret = bin2hex(random_bytes(24));
-    db_insert("INSERT INTO access_keys (user_id, key_hash, label) VALUES (:u, :h, :l)", [
-        ':u' => $userId, ':h' => hash('sha256', $secret), ':l' => trim($label),
+    $claim  = bin2hex(random_bytes(16));
+    db_insert("INSERT INTO access_keys (user_id, key_hash, label, claim_token) VALUES (:u, :h, :l, :c)", [
+        ':u' => $userId, ':h' => hash('sha256', $secret), ':l' => trim($label), ':c' => $claim,
     ]);
-    return $secret;
+    return ['secret' => $secret, 'claim' => $claim];
+}
+
+function access_key_row_out(array $r): array {
+    // Κάτοχος = ο λογαριασμός στον οποίο δένει ΤΩΡΑ το κλειδί· «διεκδικήθηκε
+    // από» = ποιος έκανε την εγγραφή. Στην αρχή διαφέρουν (το κλειδί ζει κάτω
+    // από τον διαχειριστή) και μετά την επιβεβαίωση email ταυτίζονται.
+    $claimed = (int)($r['claimed_uid'] ?? 0);
+    $who = $claimed > 0 ? user_by_id($claimed) : null;
+    $owner = user_by_id((int)$r['user_id']);
+    return [
+        'id' => (int)$r['id'], 'label' => $r['label'], 'revoked' => (int)$r['revoked'],
+        'last_used_at' => $r['last_used_at'], 'created_at' => $r['created_at'],
+        'claim_token'   => (string)($r['claim_token'] ?? ''),
+        'claimed_uid'   => $claimed,
+        'claimed_email' => $who ? (string)$who['email'] : '',
+        'claimed_status' => $who ? (string)$who['status'] : '',
+        'owner_email'   => $owner ? (string)$owner['email'] : '',
+    ];
 }
 
 function access_keys_for_user(int $userId): array {
-    $st = localdb()->prepare("SELECT id, label, revoked, last_used_at, created_at FROM access_keys WHERE user_id = :u ORDER BY id DESC");
+    $st = localdb()->prepare("SELECT * FROM access_keys WHERE user_id = :u ORDER BY id DESC");
     $st->execute([':u' => $userId]);
-    return array_map(fn($r) => [
-        'id' => (int)$r['id'], 'label' => $r['label'], 'revoked' => (int)$r['revoked'],
-        'last_used_at' => $r['last_used_at'], 'created_at' => $r['created_at'],
-    ], $st->fetchAll());
+    return array_map('access_key_row_out', $st->fetchAll());
+}
+
+/**
+ * ΟΛΑ τα κλειδιά της εγκατάστασης.
+ *
+ * Ο διαχειριστής έβλεπε μόνο όσα ανήκαν στον ίδιο — και μόλις ένας πελάτης
+ * ολοκλήρωνε την εγγραφή του, το κλειδί άλλαζε κάτοχο και **εξαφανιζόταν** από
+ * τη λίστα εκείνου που το εξέδωσε. Δηλαδή ακριβώς τα κλειδιά που δούλεψαν
+ * γίνονταν αόρατα, και δεν μπορούσαν πια ούτε να ανακληθούν.
+ */
+function access_keys_all(): array {
+    $st = localdb()->query("SELECT * FROM access_keys ORDER BY id DESC");
+    return array_map('access_key_row_out', $st->fetchAll());
 }
 
 function access_key_revoke(int $id, int $userId = 0): bool {
@@ -1040,6 +1080,82 @@ function access_key_revoke(int $id, int $userId = 0): bool {
     $st = localdb()->prepare($sql);
     $st->execute($args);
     return $st->rowCount() > 0;
+}
+
+/**
+ * Οριστική διαγραφή κλειδιού.
+ *
+ * Η ανάκληση αφήνει τη γραμμή για να φαίνεται στο ιστορικό ποιος είχε τι· ένα
+ * κλειδί όμως που γράφτηκε λάθος, ή που δόθηκε κατά λάθος, δεν είναι ιστορικό —
+ * είναι σκουπίδι που κρύβει τα υπόλοιπα. Και τα δύο χρειάζονται.
+ */
+function access_key_delete(int $id): bool {
+    $st = localdb()->prepare("DELETE FROM access_keys WHERE id = :id");
+    $st->execute([':id' => $id]);
+    setting_set('akey.' . $id . '.vats', '');
+    return $st->rowCount() > 0;
+}
+
+/** Το κλειδί πίσω από έναν σύνδεσμο εγγραφής, ή `null`. */
+function access_key_by_claim(string $token): ?array {
+    $token = trim($token);
+    if ($token === '') return null;
+    $st = localdb()->prepare("SELECT * FROM access_keys WHERE claim_token = :t AND revoked = 0 LIMIT 1");
+    $st->execute([':t' => $token]);
+    $row = $st->fetch();
+    return $row ?: null;
+}
+
+/** Το κλειδί πίσω από ένα μυστικό (η γραμμή, όχι ο χρήστης). */
+function access_key_row(string $secret): ?array {
+    $secret = trim($secret);
+    if ($secret === '') return null;
+    $st = localdb()->prepare("SELECT * FROM access_keys WHERE key_hash = :h AND revoked = 0 LIMIT 1");
+    $st->execute([':h' => hash('sha256', $secret)]);
+    $row = $st->fetch();
+    return $row ?: null;
+}
+
+function access_key_set_claimed(int $id, int $uid): void {
+    $st = localdb()->prepare("UPDATE access_keys SET claimed_uid = :u WHERE id = :id");
+    $st->execute([':u' => $uid, ':id' => $id]);
+}
+
+/**
+ * Ποιες εταιρείες ανέβηκαν μέσα από αυτό το κλειδί.
+ *
+ * Ζει στο `app_settings` και όχι σε στήλη του `aade_accounts`: η λίστα είναι
+ * μικρή, γράφεται μία φορά ανά εταιρεία και δεν αξίζει μετανάστευση σχήματος.
+ * Τη χρειαζόμαστε για να ξέρουμε τι θα παραδοθεί στον πελάτη όταν ολοκληρώσει
+ * την εγγραφή του — και τίποτα άλλο, ποτέ, από τα βιβλία των υπολοίπων.
+ */
+function access_key_note_vat(int $id, string $vat): void {
+    $vat = preg_replace('/\D/', '', $vat);
+    if ($id <= 0 || $vat === '') return;
+    $key = 'akey.' . $id . '.vats';
+    $cur = array_filter(explode(',', setting_get($key)));
+    if (in_array($vat, $cur, true)) return;
+    $cur[] = $vat;
+    setting_set($key, implode(',', $cur));
+}
+
+function access_key_vats(int $id): array {
+    return array_values(array_filter(explode(',', setting_get('akey.' . $id . '.vats'))));
+}
+
+/** Το κλειδί που διεκδίκησε αυτός ο λογαριασμός, ή `null`. */
+function access_key_by_claimed_uid(int $uid): ?array {
+    if ($uid <= 0) return null;
+    $st = localdb()->prepare("SELECT * FROM access_keys WHERE claimed_uid = :u AND revoked = 0 ORDER BY id DESC LIMIT 1");
+    $st->execute([':u' => $uid]);
+    $row = $st->fetch();
+    return $row ?: null;
+}
+
+/** Το κλειδί αλλάζει κάτοχο: από τη στέγη του διαχειριστή στον ίδιο τον πελάτη. */
+function access_key_bind(int $id, int $uid): void {
+    $st = localdb()->prepare("UPDATE access_keys SET user_id = :u WHERE id = :id");
+    $st->execute([':u' => $uid, ':id' => $id]);
 }
 
 /** Ο χρήστης πίσω από ένα κλειδί, ή `null`. Σημειώνει τη χρήση. */

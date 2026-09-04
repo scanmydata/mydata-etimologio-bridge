@@ -179,6 +179,11 @@ function srv_backup_run(string $reason = 'manual'): array {
 
     $out = ['ok' => true, 'name' => $name, 'size' => strlen($bytes),
             'encrypted' => $encrypted, 'reason' => $reason, 'uploaded' => false];
+    // «Τελευταίο αντίγραφο» σημαίνει «γράφτηκε αντίγραφο», όχι «ανέβηκε στο
+    // Drive». Η σφραγίδα μπαίνει εδώ, μόλις το αρχείο υπάρχει στον δίσκο:
+    // αλλιώς μια εγκατάσταση χωρίς Drive έδειχνε για πάντα «κανένα αντίγραφο»
+    // ενώ έπαιρνε ένα κάθε μέρα.
+    setting_set('srvbackup.last_at', date('Y-m-d H:i'));
 
     if (!$encrypted) {
         // Δες το σχόλιο στην κορυφή: ασφράγιστο αντίγραφο δεν φεύγει από εδώ.
@@ -444,7 +449,13 @@ function srv_backup_tick(): void {
     if (setting_get('srvbackup.auto_day') === date('Y-m-d')) return;
     setting_set('srvbackup.auto_day', date('Y-m-d'));
     $r = srv_backup_run('auto');
-    if (empty($r['ok']) || !empty($r['error'])) {
-        error_log('srv_backup auto: ' . (string)($r['error'] ?? 'απέτυχε'));
+    // Το `error` σε επιτυχημένο αντίγραφο ΔΕΝ είναι αποτυχία: λέει ότι το
+    // αρχείο έμεινε τοπικά (χωρίς passphrase ή χωρίς Drive). Στα logs οι δύο
+    // περιπτώσεις πρέπει να διαβάζονται διαφορετικά — αλλιώς ένα ημερήσιο
+    // «απέτυχε» εκπαιδεύει τον διαχειριστή να αγνοεί τη γραμμή.
+    if (empty($r['ok'])) {
+        error_log('srv_backup auto: ΑΠΕΤΥΧΕ — ' . (string)($r['error'] ?? 'άγνωστο σφάλμα'));
+    } elseif (!empty($r['error'])) {
+        error_log('srv_backup auto: ' . (string)$r['name'] . ' — ' . (string)$r['error']);
     }
 }

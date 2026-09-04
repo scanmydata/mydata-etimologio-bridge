@@ -366,14 +366,18 @@ function viesName(string $afm): string {
  * και μπερδεύονται συνέχεια), ο ένας έλεγχος περνά και ο άλλος όχι — και αυτό
  * ακριβώς είναι η πληροφορία που χρειάζεσαι.
  */
-function aadeCredentialTest(string $vat, string $username, string $subkey): array {
-    $out = [];
-
-    // --- 1. myDATA REST ----------------------------------------------------
-    $from = date('01/m/Y');
-    $to   = date('d/m/Y');
-    $url  = 'https://mydatapi.aade.gr/myDATA/RequestMyExpenses?'
-          . http_build_query(['dateFrom' => $from, 'dateTo' => $to]);
+/**
+ * Ο έλεγχος myDATA REST, μόνος του.
+ *
+ * Ζει χωριστά γιατί ΔΕΝ τον χρειάζονται όλοι: το e-Τιμολόγιο Pro εκδίδει μέσα
+ * από την πύλη e-timologio και δεν αγγίζει ποτέ το myDATA REST. Μια πράσινη
+ * γραμμή «myDATA — Έγκυρα» εκεί δεν απαντούσε σε καμία ερώτηση του χρήστη:
+ * πρόσθετε μια γραμμή που έπρεπε να ερμηνεύσει και μια κλήση δικτύου που
+ * έπρεπε να περιμένει.
+ */
+function aadeMyDataProbe(string $username, string $subkey): array {
+    $url = 'https://mydatapi.aade.gr/myDATA/RequestMyExpenses?'
+         . http_build_query(['dateFrom' => date('01/m/Y'), 'dateTo' => date('d/m/Y')]);
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -388,9 +392,8 @@ function aadeCredentialTest(string $vat, string $username, string $subkey): arra
     $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $cerr = curl_error($ch);
     curl_close($ch);
-    if ($body === false) {
-        $out['mydata'] = ['ok' => false, 'msg' => 'Δεν απάντησε η ΑΑΔΕ: ' . $cerr];
-    } elseif ($code === 200) {
+    if ($body === false) return ['ok' => false, 'msg' => 'Δεν απάντησε η ΑΑΔΕ: ' . $cerr];
+    if ($code === 200) {
         $rows = 0;
         $prev = libxml_use_internal_errors(true);
         $xml  = simplexml_load_string((string)$body);
@@ -400,15 +403,21 @@ function aadeCredentialTest(string $vat, string $username, string $subkey): arra
         // Το πλήθος εγγραφών ΔΕΝ είναι αποτέλεσμα της δοκιμής: η ερώτηση είναι
         // «περνούν τα κλειδιά;». Το «ο μήνας είναι χωρίς έξοδα» διαβαζόταν σαν
         // εύρημα και τρόμαζε — ενώ σημαίνει απλώς ότι η ΑΑΔΕ απάντησε ΟΚ.
-        $out['mydata'] = ['ok' => true, 'rows' => $rows,
-                          'msg' => 'Έγκυρα — η ΑΑΔΕ δέχτηκε τα διαπιστευτήρια.'];
-    } elseif ($code === 401 || $code === 403) {
-        $out['mydata'] = ['ok' => false, 'msg' =>
+        return ['ok' => true, 'rows' => $rows, 'msg' => 'Έγκυρα — η ΑΑΔΕ δέχτηκε τα διαπιστευτήρια.'];
+    }
+    if ($code === 401 || $code === 403) {
+        return ['ok' => false, 'msg' =>
             'Απορρίφθηκαν (HTTP ' . $code . '). Έλεγξε το «Όνομα χρήστη» και το κλειδί '
             . '«Api myData» στο myDATA REST API της ΑΑΔΕ.'];
-    } else {
-        $out['mydata'] = ['ok' => false, 'msg' => 'myDATA: HTTP ' . $code];
     }
+    return ['ok' => false, 'msg' => 'myDATA: HTTP ' . $code];
+}
+
+function aadeCredentialTest(string $vat, string $username, string $subkey, bool $withMyData = true): array {
+    $out = [];
+
+    // --- 1. myDATA REST (προαιρετικό) --------------------------------------
+    if ($withMyData) $out['mydata'] = aadeMyDataProbe($username, $subkey);
 
     // --- 2. e-timologio ----------------------------------------------------
     // Η ίδια φόρμα σύνδεσης με το `login()`, αλλά με τα ΥΠΟ ΔΟΚΙΜΗ στοιχεία και
@@ -3865,6 +3874,52 @@ function notifyIssueEmail(string $accountVat, array $d): void {
     foreach ($recipients as $to) { try { send_mail($to, $subject, $html); } catch (\Throwable $e) {} }
 }
 
+/**
+ * Ειδοποίηση email για παραστατικά που βρέθηκαν στην ΑΑΔΕ και δεν εκδόθηκαν εδώ.
+ *
+ * Η καμπάνα της οθόνης τα έδειχνε ήδη — αλλά μόνο σε όποιον είχε την εφαρμογή
+ * ανοιχτή και κοίταζε. Ο λογιστής που παρακολουθεί δέκα επιχειρήσεις δεν
+ * κάθεται μπροστά στην οθόνη· το μαθαίνει από το email ή δεν το μαθαίνει.
+ *
+ * Ίδιοι κανόνες παραληπτών με τις εκδόσεις (`notifyIssueEmail`): προτιμήσεις
+ * ανά χρήστη, ανά εταιρεία και ανά είδος κίνησης.
+ */
+function notifyAadeDiscoveryEmail(string $accountVat, array $docs): void {
+    if (!function_exists('mail_enabled') || !mail_enabled() || !$docs) return;
+    $recipients = [];
+    foreach (users_all() as $u) {
+        if (!in_array($u['role'], ['master', 'editor'], true) || $u['status'] !== 'active' || $u['email'] === '') continue;
+        if (notify_prefs_match(notify_prefs_get((int)$u['id']), $accountVat, 'invoice')) $recipients[] = $u['email'];
+    }
+    if (defined('NOTIFY_ADMIN_EMAIL') && trim(NOTIFY_ADMIN_EMAIL) !== '' && trim(NOTIFY_ADMIN_EMAIL) !== '-') $recipients[] = trim(NOTIFY_ADMIN_EMAIL);
+    if (defined('MASTER_ADMIN_EMAIL') && trim(MASTER_ADMIN_EMAIL) !== '') $recipients[] = trim(MASTER_ADMIN_EMAIL);
+    $recipients = array_values(array_unique(array_filter($recipients)));
+    if (!$recipients) return;
+
+    $acc   = account_by_vat($accountVat);
+    $who   = $acc ? ((string)$acc['label'] ?: $accountVat) : $accountVat;
+    $trs   = '';
+    foreach ($docs as $d) {
+        $trs .= '<tr>'
+             . '<td style="padding:4px 10px 4px 0">' . htmlspecialchars((string)($d['series'] ?? '') . ' ' . (string)($d['aa'] ?? ''), ENT_QUOTES) . '</td>'
+             . '<td style="padding:4px 10px 4px 0">' . htmlspecialchars((string)($d['date'] ?? ''), ENT_QUOTES) . '</td>'
+             . '<td style="padding:4px 10px 4px 0;text-align:right">' . htmlspecialchars((string)($d['total'] ?? ''), ENT_QUOTES) . '</td>'
+             . '<td style="padding:4px 0;font-family:monospace;font-size:12px">' . htmlspecialchars((string)($d['mark'] ?? ''), ENT_QUOTES) . '</td>'
+             . '</tr>';
+    }
+    $n = count($docs);
+    $subject = $n === 1
+        ? ('Νέο παραστατικό στην ΑΑΔΕ — ' . $who)
+        : ($n . ' νέα παραστατικά στην ΑΑΔΕ — ' . $who);
+    $inner = '<p>Βρέθηκ' . ($n === 1 ? 'ε' : 'αν') . ' στην πλατφόρμα της ΑΑΔΕ για την <b>'
+           . htmlspecialchars($who, ENT_QUOTES) . '</b> (ΑΦΜ ' . htmlspecialchars($accountVat, ENT_QUOTES)
+           . ') και <b>δεν εκδόθηκ' . ($n === 1 ? 'ε' : 'αν') . ' από την εφαρμογή</b>:</p>'
+           . '<table style="border-collapse:collapse;font-size:14px">' . $trs . '</table>';
+    $html = mail_template('🛰️ Έλεγχος ΑΑΔΕ', $inner);
+    foreach ($recipients as $to) { try { send_mail($to, $subject, $html); } catch (\Throwable $e) {} }
+    audit_log_add(0, $accountVat, 'aade_discovery_email', ['count' => $n, 'to' => count($recipients)]);
+}
+
 // --- API ENTRY POINT ---------------------------------------------------------
 
 // ===========================================================================
@@ -3877,7 +3932,9 @@ if ($authAction !== '') {
         case 'login':
             jsonResponse(auth_login(trim($_POST['email'] ?? $_GET['email'] ?? ''), (string)($_POST['password'] ?? $_GET['password'] ?? '')));
         case 'signup':
-            jsonResponse(auth_signup(trim($_POST['email'] ?? ''), (string)($_POST['password'] ?? ''), trim($_POST['business_name'] ?? '')));
+            jsonResponse(auth_signup(trim($_POST['email'] ?? ''), (string)($_POST['password'] ?? ''),
+                                     trim($_POST['business_name'] ?? ''),
+                                     trim((string)($_POST['join'] ?? $_GET['join'] ?? ''))));
         case 'forgot':
             jsonResponse(auth_forgot(trim($_POST['email'] ?? $_GET['email'] ?? '')));
         case 'reset':
@@ -3965,12 +4022,36 @@ if ($authAction !== '') {
                 usleep(300000);
                 jsonError('Το κλειδί δεν αναγνωρίστηκε', 403);
             }
+            // ⚠️ ΤΟ EMAIL ΤΟΥ ΚΑΤΟΧΟΥ ΔΕΝ ΤΑΞΙΔΕΥΕΙ. Το κλειδί το εκδίδει ο
+            // διαχειριστής και το δίνει σε ΑΛΛΟΝ: η απάντηση κατέληγε σε ξένη
+            // οθόνη, που έγραφε «καταχωρήθηκε για τον λογαριασμό <το email του
+            // διαχειριστή>» — πληροφορία που ούτε χρειάζεται ούτε του ανήκει.
+            // Ταυτότητα του κλειδιού είναι η ΠΕΡΙΓΡΑΦΗ του.
+            $row   = access_key_row($key);
+            $keyId = (int)($row['id'] ?? 0);
+            $claim = (string)($row['claim_token'] ?? '');
+            $mine  = (int)($row['claimed_uid'] ?? 0);
+            $owner = $mine > 0 ? user_by_id($mine) : null;
+            // «Έτοιμο» σημαίνει: υπάρχει λογαριασμός ΓΙ' ΑΥΤΟ το κλειδί, με
+            // επιβεβαιωμένο email και εγκεκριμένος. Οτιδήποτε λιγότερο και ο
+            // παραλήπτης θα δει φόρμα σύνδεσης που δεν μπορεί να περάσει — που
+            // ήταν ακριβώς αυτό που συνέβαινε.
+            $ready = $owner && ($owner['status'] ?? '') === 'active'
+                            && (int)($owner['email_verified'] ?? 1) === 1;
+            $base  = rtrim(app_base_url(), '/');
             jsonResponse([
-                'success' => true,
-                'url'     => app_base_url(),
-                'email'   => $u['email'],
-                'label'   => $u['business_name'] ?: $u['email'],
-                'role'    => $u['role'],
+                'success'    => true,
+                'url'        => $base,
+                'label'      => (string)($row['label'] ?? '') ?: ($u['business_name'] ?: 'λογαριασμός server'),
+                'role'       => $u['role'],
+                'key_id'     => $keyId,
+                'ready'      => $ready,
+                'signup_url' => ($ready || $claim === '') ? '' : $base . '/app.php?join=' . $claim,
+                // Κατάσταση εγγραφής, ΧΩΡΙΣ email: «ξεκίνησε αλλά δεν
+                // επιβεβαιώθηκε» είναι άλλο πράγμα από «δεν ξεκίνησε καν».
+                'signup_state' => $owner
+                    ? ((int)($owner['email_verified'] ?? 1) === 0 ? 'unverified' : $owner['status'])
+                    : 'none',
             ]);
         }
         // Τα κλειδιά πρόσβασης είναι ΜΟΝΟ του διαχειριστή. Ένα κλειδί δένει
@@ -3978,26 +4059,39 @@ if ($authAction !== '') {
         // προσωπική ρύθμιση, και δεν πρέπει να το βγάζει μόνος του ο λογιστής.
         case 'access_keys_list': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
-            $u = current_user();
-            $uid = (int)($_POST['user_id'] ?? $u['id']);
-            jsonResponse(['success' => true, 'keys' => access_keys_for_user($uid)]);
+            // Χωρίς ρητό χρήστη: ΟΛΑ τα κλειδιά της εγκατάστασης — δες
+            // `access_keys_all()` για το γιατί.
+            $uid = (int)($_POST['user_id'] ?? 0);
+            jsonResponse(['success' => true,
+                          'keys' => $uid > 0 ? access_keys_for_user($uid) : access_keys_all()]);
         }
         case 'access_key_create': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             $u = current_user();
             $uid = (int)($_POST['user_id'] ?? $u['id']);
-            $secret = access_key_create($uid, (string)($_POST['label'] ?? ''));
+            $made = access_key_create($uid, (string)($_POST['label'] ?? ''));
             // Το κλειδί που δίνεται στον χρήστη κουβαλά ΚΑΙ τη διεύθυνση, ώστε η
             // εφαρμογή να μη ρωτά «σε ποιον server;» — αλλιώς το κλειδί δεν
             // μπορεί να επαληθευτεί χωρίς να ξέρεις ήδη πού να ρωτήσεις.
             $host = preg_replace('#^https?://#', '', app_base_url());
-            $token = 'etim1_' . rtrim(strtr(base64_encode($host), '+/', '-_'), '=') . '_' . $secret;
-            jsonResponse(['success' => true, 'key' => $token, 'note' => 'Φυλάξτε το — δεν εμφανίζεται ξανά.']);
+            $token = 'etim1_' . rtrim(strtr(base64_encode($host), '+/', '-_'), '=') . '_' . $made['secret'];
+            jsonResponse(['success' => true, 'key' => $token,
+                          'signup_url' => rtrim(app_base_url(), '/') . '/app.php?join=' . $made['claim'],
+                          'note' => 'Φυλάξτε το — δεν εμφανίζεται ξανά.']);
         }
         case 'access_key_revoke': {
             if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
             $id = (int)($_POST['key_id'] ?? 0);
             jsonResponse(['success' => access_key_revoke($id, 0)]);
+        }
+        // Η ανάκληση κρατά τη γραμμή για το ιστορικό· η διαγραφή τη σβήνει.
+        // Χρειάζονται και τα δύο: ένα κλειδί που δόθηκε κατά λάθος δεν είναι
+        // ιστορικό, είναι θόρυβος που κρύβει τα υπόλοιπα.
+        case 'access_key_delete': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $id = (int)($_POST['key_id'] ?? 0);
+            if ($id <= 0) jsonError('Λείπει το κλειδί');
+            jsonResponse(['success' => access_key_delete($id)]);
         }
 
         // ---- Προτιμήσεις UI ανά χρήστη (πλάτη/σειρά στηλών, φάκελος λήψεων) ----
@@ -4125,7 +4219,8 @@ if ($authAction !== '') {
                 }
             }
             if ($username === '' || $subkey === '') jsonError('Συμπλήρωσε username και subscription key');
-            jsonResponse(['success' => true] + aadeCredentialTest($vat, $username, $subkey));
+            // ΧΩΡΙΣ myDATA: αυτή η εφαρμογή εκδίδει μέσα από το e-timologio.
+            jsonResponse(['success' => true] + aadeCredentialTest($vat, $username, $subkey, false));
         }
         case 'staff_add_company': {
             // Ο λογιστής ανοίγει ΜΟΝΟΣ του εταιρεία. Μέχρι τώρα έπρεπε να
@@ -4163,6 +4258,16 @@ if ($authAction !== '') {
             //      πρόσβαση σε ξένα βιβλία),
             //   2. ο ρόλος είναι ΠΑΝΤΑ `business` — ένας λογιστής δεν φτιάχνει
             //      διαχειριστές ούτε άλλους λογιστές.
+            // ΤΟΠΙΚΗ ΕΓΚΑΤΑΣΤΑΣΗ ΧΩΡΙΣ SERVER: η πρόσκληση δεν έχει πού να
+            // οδηγήσει. Ο σύνδεσμος δείχνει στο `127.0.0.1` αυτού του
+            // υπολογιστή — διεύθυνση που για τον πελάτη είναι ο ΔΙΚΟΣ ΤΟΥ
+            // υπολογιστής, όχι ο δικός μας. Στελνόταν κανονικά, ο πελάτης
+            // πατούσε, και έπεφτε σε σελίδα που δεν υπάρχει.
+            if (link_is_local() && setting_get('link.ready') !== '1') {
+                jsonError('Η πρόσκληση πελάτη χρειάζεται σύνδεση με web server: ο σύνδεσμος '
+                        . 'πρέπει να δείχνει σε διεύθυνση που φτάνει ο πελάτης, όχι σε αυτόν '
+                        . 'τον υπολογιστή. Ρυθμίσεις → «☁️ Σύνδεση με web server».', 409);
+            }
             $u = current_user();
             if (!$u) jsonError('Απαιτείται σύνδεση', 401);
             if (!user_is_staff($u)) jsonError('Μόνο για λογιστή/διαχειριστή', 403);
@@ -4264,7 +4369,8 @@ if ($authAction !== '') {
         // μην υπάρχει καν επιφάνεια για κατάχρηση.
         case 'link_get': case 'link_connect': case 'link_disconnect':
         case 'link_use_server': case 'link_use_local':
-        case 'link_sync': case 'backup_status': case 'backup_run': {
+        case 'link_sync': case 'backup_status': case 'backup_run':
+        case 'backup_auto': case 'local_tick': {
             if (!link_is_local()) jsonError('Διαθέσιμο μόνο στην εφαρμογή υπολογιστή', 404);
             // Ο διακόπτης `?auth=` τρέχει ΠΡΙΝ την πύλη σύνδεσης (εκεί ζουν και
             // τα login/signup), οπότε η σύνδεση ελέγχεται εδώ ρητά.
@@ -4272,6 +4378,25 @@ if ($authAction !== '') {
             if (!$me) jsonError('Απαιτείται σύνδεση', 401);
             switch ($authAction) {
                 case 'link_get': {
+                    // ⚠️ ΞΑΝΑΡΩΤΑΜΕ ΤΟΝ SERVER όσο λείπει ο λογαριασμός. Η
+                    // σφραγίδα γράφεται στην καταχώρηση του κλειδιού, αλλά η
+                    // εγγραφή γίνεται ΜΕΤΑ, σε browser, σε άλλη στιγμή: χωρίς
+                    // επανέλεγχο η οθόνη θα έλεγε «κάνε εγγραφή» για πάντα,
+                    // ακόμη κι όταν η εγγραφή είχε ολοκληρωθεί προ ώρας.
+                    // Μία κλήση το λεπτό, και μόνο σε αυτή την κατάσταση.
+                    $storedKey = setting_get('link.key');
+                    if ($storedKey !== '' && setting_get('link.ready') !== '1'
+                        && time() - (int)setting_get('link.ready_at', '0') > 60) {
+                        setting_set('link.ready_at', (string)time());
+                        [$rb, $rs] = link_decode_key($storedKey);
+                        if ($rb !== '' && $rs !== '') {
+                            $probe = link_call($rb, ['auth' => 'access_provision'], ['key' => $rs], 12);
+                            if ($probe['ok']) {
+                                setting_set('link.ready', !empty($probe['data']['ready']) ? '1' : '0');
+                                setting_set('link.signup_url', (string)($probe['data']['signup_url'] ?? ''));
+                            }
+                        }
+                    }
                     $conf = link_service_conf();
                     $url  = (string)($conf['server_url'] ?? '');
                     $items = [];
@@ -4294,6 +4419,11 @@ if ($authAction !== '') {
                         'since'     => setting_get('link.since'),
                         'last_sync' => setting_get('link.last_sync'),
                         'can_sync'  => setting_get('link.key') !== '',
+                        // Υπάρχει λογαριασμός σε αυτόν τον server για το κλειδί;
+                        // Χωρίς αυτό, το «Χρήση δεδομένων server» φαινόταν
+                        // διαθέσιμο και οδηγούσε σε φόρμα σύνδεσης χωρίς κωδικό.
+                        'ready'      => setting_get('link.ready') === '1',
+                        'signup_url' => setting_get('link.signup_url'),
                         'items'     => $items,
                     ]);
                 }
@@ -4307,7 +4437,19 @@ if ($authAction !== '') {
                     if ($base === '') jsonError('Το κλειδί δεν έχει τη σωστή μορφή');
 
                     $r = link_call($base, ['auth' => 'access_provision'], ['key' => $secret]);
-                    if (!$r['ok']) jsonError('Η σύνδεση απέτυχε: ' . $r['error']);
+                    if (!$r['ok']) {
+                        // Το «λάθος κλειδί» δεν είναι σφάλμα δικτύου και δεν
+                        // πρέπει να διαβάζεται σαν τέτοιο: ο server απάντησε
+                        // κανονικά, απλώς δεν αναγνώρισε ό,τι επικολλήθηκε.
+                        // Χωρίς τον διαχωρισμό, ο χρήστης ξαναδοκίμαζε το ίδιο
+                        // κλειδί περιμένοντας να «στρώσει το δίκτυο».
+                        if ((int)($r['http'] ?? 0) === 403) {
+                            jsonError('Το κλειδί δεν αναγνωρίστηκε από τον server: έχει ανακληθεί, '
+                                    . 'ή αντιγράφηκε λειψό. Ζήτα καινούριο από τον διαχειριστή — '
+                                    . 'τα κλειδιά αρχίζουν με etim1_ και δεν έχουν κενά.', 400);
+                        }
+                        jsonError('Η σύνδεση απέτυχε: ' . $r['error']);
+                    }
                     $d   = $r['data'];
                     $url = rtrim((string)($d['url'] ?? $base), '/');
 
@@ -4324,16 +4466,27 @@ if ($authAction !== '') {
                     // λοιπόν καταχωρούμε το κλειδί, ανεβάζουμε τα δεδομένα, και
                     // η μετάβαση σε λειτουργία server μένει ξεχωριστή απόφαση.
                     setting_set('link.key', $key);
-                    setting_set('link.label', (string)($d['label'] ?? $d['email'] ?? ''));
+                    // Ταυτότητα του κλειδιού είναι η ΠΕΡΙΓΡΑΦΗ του, όχι το email
+                    // εκείνου που το εξέδωσε — δες `access_provision`.
+                    setting_set('link.label', (string)($d['label'] ?? ''));
                     setting_set('link.since', date('Y-m-d H:i'));
+                    setting_set('link.ready', !empty($d['ready']) ? '1' : '0');
+                    setting_set('link.signup_url', (string)($d['signup_url'] ?? ''));
                     // Πρώτος συγχρονισμός αμέσως: αλλιώς ο server μένει άδειος
                     // και η «σύνδεση» δεν έχει δείξει τίποτα.
                     $sync = link_sync_all($me);
+                    // Τα σφάλματα του ανεβάσματος ΤΑΞΙΔΕΥΟΥΝ. Έμεναν μέσα στο
+                    // `link_sync_all` και η οθόνη έγραφε μόνο «Ανέβηκαν 0
+                    // εταιρείες» — η πιο άχρηστη μορφή αποτυχίας: ξέρεις ότι
+                    // κάτι πήγε στραβά και τίποτα για το τι.
                     jsonResponse(['success' => true, 'url' => $url,
                                   'label' => (string)($d['label'] ?? ''),
-                                  'email' => (string)($d['email'] ?? ''),
                                   'role'  => (string)($d['role'] ?? ''),
-                                  'synced' => $sync,
+                                  'ready'        => !empty($d['ready']),
+                                  'signup_url'   => (string)($d['signup_url'] ?? ''),
+                                  'signup_state' => (string)($d['signup_state'] ?? ''),
+                                  'synced'   => $sync,
+                                  'errors'   => (array)($sync['errors'] ?? []),
                                   'web_link' => $url . '/app.php']);
                 }
                 case 'link_sync': {
@@ -4391,10 +4544,24 @@ if ($authAction !== '') {
                         'success' => true,
                         'folder'  => $dir,
                         'count'   => count($files),
+                        'auto'       => setting_get('link.backup.auto', '1') === '1',
+                        'auto_last'  => setting_get('link.backup.last_auto'),
+                        'auto_error' => setting_get('link.backup.last_error'),
                         'last'    => $last ? ['name' => basename($last),
                                               'size' => filesize($last),
                                               'at'   => date('Y-m-d H:i', (int)filemtime($last))] : null,
                     ]);
+                }
+                case 'backup_auto': {
+                    setting_set('link.backup.auto', !empty($_POST['on']) ? '1' : '0');
+                    jsonResponse(['success' => true, 'auto' => setting_get('link.backup.auto', '1') === '1']);
+                }
+                // Ο παλμός της τοπικής εγκατάστασης. Δεν υπάρχει cron εδώ: η
+                // εφαρμογή υπολογιστή δεν στήνει εργασία των Windows, και ο
+                // `scheduler.php` τρέχει μόνο στον server. Ό,τι πρέπει να γίνει
+                // «κάθε τόσο» τοπικά, γίνεται όσο η εφαρμογή είναι ανοιχτή.
+                case 'local_tick': {
+                    jsonResponse(['success' => true, 'backup' => link_backup_tick()]);
                 }
                 case 'backup_run': {
                     $r = link_backup_run();
@@ -4415,11 +4582,23 @@ if ($authAction !== '') {
                     $r = link_call($base, ['auth' => 'access_provision'], ['key' => $secret]);
                     if (!$r['ok']) jsonError('Ο server δεν απαντά: ' . $r['error']);
                     $url = rtrim((string)($r['data']['url'] ?? $base), '/');
+                    setting_set('link.ready', !empty($r['data']['ready']) ? '1' : '0');
+                    setting_set('link.signup_url', (string)($r['data']['signup_url'] ?? ''));
+                    // Η μετάβαση σε λογαριασμό που δεν υπάρχει ακόμη είναι
+                    // λευκή οθόνη με άλλο όνομα: ο χρήστης βλέπει φόρμα
+                    // σύνδεσης που δεν μπορεί να περάσει, και τα τοπικά του
+                    // στοιχεία ΔΕΝ ισχύουν εκεί — είναι άλλη βάση.
+                    if (empty($r['data']['ready'])) {
+                        $link = (string)($r['data']['signup_url'] ?? '');
+                        jsonError('Δεν υπάρχει ακόμη λογαριασμός σε αυτόν τον server για το κλειδί σου. '
+                                . 'Κάνε πρώτα εγγραφή' . ($link !== '' ? ' εδώ: ' . $link : ' στη σελίδα του server')
+                                . ' και επιβεβαίωσε το email σου. Μέχρι τότε η εφαρμογή δουλεύει '
+                                . 'κανονικά στα τοπικά δεδομένα και συνεχίζει να τα ανεβάζει.', 409);
+                    }
                     if (!link_service_write(['mode' => 'thin', 'server_url' => $url])) {
                         jsonError('Δεν μπόρεσα να γράψω το service.json δίπλα στα δεδομένα');
                     }
-                    jsonResponse(['success' => true, 'url' => $url,
-                                  'email' => (string)($r['data']['email'] ?? '')]);
+                    jsonResponse(['success' => true, 'url' => $url]);
                 }
                 case 'link_use_local': {
                     // Επιστροφή στα τοπικά δεδομένα ΧΩΡΙΣ να χαθεί το κλειδί:
@@ -4436,6 +4615,9 @@ if ($authAction !== '') {
                     setting_set('link.key', '');
                     setting_set('link.label', '');
                     setting_set('link.since', '');
+                    setting_set('link.ready', '');
+                    setting_set('link.signup_url', '');
+                    setting_set('link.ready_at', '');
                     jsonResponse(['success' => true]);
                 }
             }
@@ -4551,8 +4733,17 @@ if ($authAction !== '') {
                     $ok = send_mail($to, 'Δοκιμαστικό μήνυμα — e-Τιμολόγιο Pro',
                         mail_template('Ο πάροχος email δουλεύει',
                             '<p>Αν διαβάζεις αυτό το μήνυμα, οι ρυθμίσεις αποστολής είναι σωστές.</p>'));
+                    // ΤΟ ΗΜΕΡΟΛΟΓΙΟ ΚΡΑΤΑ ΚΑΙ ΤΙΣ ΑΠΟΤΥΧΙΕΣ. Το «δες το αρχείο
+                    // καταγραφής του server» ζητούσε από τον χρήστη κάτι που δεν
+                    // έχει: πρόσβαση στον δίσκο του server. Το ίδιο συμβάν
+                    // γράφεται πλέον εκεί που το βλέπει — και μένει, ώστε να
+                    // φαίνεται αργότερα ότι ο πάροχος έσπασε ΤΟΤΕ.
+                    audit_log_add((int)($me['id'] ?? 0), '', $ok ? 'mail_test_sent' : 'mail_test_failed',
+                                  ['to' => $to, 'provider' => mail_provider()]);
                     jsonResponse(['success' => $ok, 'provider' => mail_provider(),
-                                  'error' => $ok ? '' : 'Η αποστολή απέτυχε — δες το αρχείο καταγραφής του server.']);
+                                  'error' => $ok ? '' : 'Η αποστολή απέτυχε. Καταγράφηκε στο ημερολόγιο '
+                                                      . 'ενεργειών (Διαχείριση → 📜 Ημερολόγιο ενεργειών) '
+                                                      . 'μαζί με τον παραλήπτη και τον πάροχο.']);
                 }
                 case 'admin_delete_account':
                     jsonResponse(['success' => account_delete((int)($_POST['account_id'] ?? 0))]);
@@ -4690,6 +4881,11 @@ if ($apiAction !== '') {
     }
 
     $applied = sync_apply($vat, (array)($payload['payments'] ?? []), (array)($payload['customer_meta'] ?? []));
+    // Ποιο κλειδί έφερε ποια εταιρεία. Όσο ο παραλήπτης δεν έχει ακόμη
+    // λογαριασμό εδώ, τα βιβλία του ζουν κάτω από αυτόν που εξέδωσε το κλειδί —
+    // και χωρίς αυτή τη σημείωση δεν θα ξεχώριζαν ποτέ από τα βιβλία των
+    // υπόλοιπων πελατών του, ώστε να του παραδοθούν μόλις κάνει εγγραφή.
+    access_key_note_vat(auth_access_key_id(), $vat);
 
     jsonResponse([
         'success'       => true,
@@ -5268,6 +5464,24 @@ if ($statisticsFlag && !empty($_GET['stats_cached'] ?? $_POST['stats_cached'] ??
         'breakdown' => [], 'total_count' => 0, 'total_value' => 0, 'synced_at' => '']);
 }
 
+// --- Ποιες εταιρείες οφείλουν ωριαίο έλεγχο ---------------------------------
+// ΠΡΙΝ από κάθε σύνδεση στην ΑΑΔΕ, επίτηδες: η απάντηση είναι μια λίστα ΑΦΜ και
+// κοστίζει μηδέν. Ο έλεγχος έτρεχε μόνο για την ΕΝΕΡΓΗ εταιρεία, δηλαδή για
+// όποια έτυχε να είναι επιλεγμένη στην οθόνη — οι υπόλοιπες δεν ελέγχονταν
+// ποτέ, όσο κι αν χτυπούσε το χρονόμετρο.
+if (!empty($_GET['notify_due'] ?? $_POST['notify_due'] ?? '')) {
+    $u = current_user();
+    if (!$u) jsonError('Απαιτείται σύνδεση', 401);
+    $mins = max(5, (int)($_GET['minutes'] ?? $_POST['minutes'] ?? 60));
+    $due  = [];
+    foreach (auth_visible_accounts($u) as $a) {
+        $vat  = (string)$a['vat'];
+        $last = (int)setting_get('notify.tick.' . $vat, '0');
+        if (time() - $last >= $mins * 60) $due[] = $vat;
+    }
+    jsonResponse(['success' => true, 'due' => $due, 'minutes' => $mins]);
+}
+
 // Instant cache read (no AADE login) — UI renders from this immediately
 $cachedKind = trim($_GET['cached'] ?? $_POST['cached'] ?? '');
 if ($cachedKind !== '') {
@@ -5588,6 +5802,7 @@ if ($syncKind !== '') {
     // ΜΟΝΟ όταν υπάρχει προηγούμενη cache: στον πρώτο συγχρονισμό τα «νέα» είναι
     // ολόκληρο το έτος, και η καμπάνα θα γέμιζε με εκατοντάδες παλιές εγγραφές.
     $discovered = 0;
+    $found_new  = [];
     if ($syncKind === 'newdocs' && $prev) {
         $known = [];
         foreach (($prev['rows'] ?? []) as $pr) {
@@ -5630,9 +5845,18 @@ if ($syncKind !== '') {
             ]);
             // Όριο ανά σάρωση: μια εβδομάδα εκτός σύνδεσης δεν πρέπει να ρίξει
             // 300 ειδοποιήσεις μαζί (και 300 INSERT σε ένα request).
+            $found_new[] = $inv;
             if (++$discovered >= 25) break;
         }
+        // ΤΟ EMAIL ΦΕΥΓΕΙ ΜΙΑ ΦΟΡΑ ΑΝΑ ΣΑΡΩΣΗ, όχι ανά παραστατικό: πέντε νέα
+        // τιμολόγια είναι ένα μήνυμα με πέντε γραμμές, όχι πέντε μηνύματα.
+        if ($found_new) {
+            try { notifyAadeDiscoveryEmail(COMPANY_VAT, $found_new); } catch (\Throwable $e) {}
+        }
     }
+    // Η σφραγίδα του ωριαίου ελέγχου. Μπαίνει και όταν δεν βρέθηκε τίποτα:
+    // «έλεγξα και δεν υπήρχε τίποτα» είναι εξίσου ολοκληρωμένος έλεγχος.
+    if ($syncKind === 'newdocs') setting_set('notify.tick.' . COMPANY_VAT, (string)time());
 
     $newHash  = md5(json_encode($rows, JSON_UNESCAPED_UNICODE));
     $changed  = !$prev || $prev['hash'] !== $newHash;

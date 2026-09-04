@@ -36,7 +36,19 @@ $__resetToken = trim($_GET['reset'] ?? '');
 // κάποιος άλλος είναι ήδη συνδεδεμένος σε αυτόν τον browser: το token αφορά
 // άλλον λογαριασμό και δεν πρέπει να «καταναλωθεί» σιωπηλά μέσα στην εφαρμογή.
 $__verifyToken = trim($_GET['verify'] ?? '');
-if (!$__user || $__resetToken !== '' || $__verifyToken !== '') {
+// Ο σύνδεσμος εγγραφής που κουβαλά ένα κλειδί πρόσβασης. Ισχύει το ίδιο με τον
+// σύνδεσμο επιβεβαίωσης: αφορά ΑΛΛΟΝ λογαριασμό από όποιον τυχαίνει να είναι
+// συνδεδεμένος σε αυτόν τον browser, και δεν πρέπει να καταναλωθεί σιωπηλά.
+$__joinToken = trim($_GET['join'] ?? '');
+// Ένα token που δεν αντιστοιχεί σε κλειδί δεν είναι σύνδεσμος εγγραφής: η
+// φόρμα θα υποσχόταν «έχεις ήδη πρόσβαση», και ο χρήστης θα περίμενε
+// ενεργοποίηση που δεν θα ερχόταν ποτέ. Καλύτερα σκέτη εγγραφή, με τους
+// κανονικούς κανόνες έγκρισης.
+if ($__joinToken !== '' && function_exists('access_key_by_claim')
+    && !access_key_by_claim($__joinToken)) {
+    $__joinToken = '';
+}
+if (!$__user || $__resetToken !== '' || $__verifyToken !== '' || $__joinToken !== '') {
     require __DIR__ . '/authview.php';   // outputs the auth page and exits
     exit;
 }
@@ -692,7 +704,17 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
             aria-label="Μενού" aria-expanded="false" aria-controls="sideNav">☰</button>
     <div class="field" style="min-width:230px">
       <label class="hint">Λογαριασμός (επιχείρηση)</label>
-      <select id="account"></select>
+      <div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap">
+        <select id="account" style="flex:1;min-width:0"></select>
+        <?php if ($__role === 'master'): ?>
+        <!-- Η προσθήκη επιχείρησης ζούσε τρία κλικ μακριά, μέσα στη Διαχείριση.
+             Ο λογιστής που μόλις πήρε νέο πελάτη είναι ΕΔΩ, μπροστά στον
+             επιλογέα — και ήθελε να προσθέσει ακριβώς αυτό που δεν βρίσκει
+             στη λίστα. -->
+        <button class="add sm" id="acctQuickAdd" onclick="quickAddCompany()"
+                data-tip="Γρήγορη προσθήκη νέας επιχείρησης" aria-label="Νέα επιχείρηση">+</button>
+        <?php endif; ?>
+      </div>
     </div>
     <div class="search-trigger" onclick="openPalette()">🔍 Αναζήτηση πελάτη… <kbd>Ctrl K</kbd></div>
     <div class="grow"></div>
@@ -1263,9 +1285,9 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <strong>🔑 Κλειδιά πρόσβασης — σύνδεση εφαρμογής υπολογιστή</strong>
           <button class="add" onclick="createAccessKey()">➕ Νέο κλειδί</button>
         </div>
-        <p class="sub" style="margin-top:4px">Δώσε ένα κλειδί σε κάθε υπολογιστή που θα συνδέεται σε αυτόν τον server. Στην εφαρμογή: <b>Ρυθμίσεις → ☁️ Σύνδεση με web server → Καταχώρηση &amp; ανέβασμα</b> — επικόλληση και τέλος· τη διεύθυνση τη βρίσκει μόνη της. Ο χρήστης πρέπει να έχει ΗΔΗ λογαριασμό εδώ (πρόσκληση + επιβεβαίωση email), αλλιώς θα δει φόρμα σύνδεσης που δεν μπορεί να περάσει. Το κλειδί εμφανίζεται <b>μία φορά</b>.</p>
+        <p class="sub" style="margin-top:4px">Δώσε ένα κλειδί σε κάθε υπολογιστή που θα συνδέεται σε αυτόν τον server. Στην εφαρμογή: <b>Ρυθμίσεις → ☁️ Σύνδεση με web server → Καταχώρηση &amp; ανέβασμα</b> — επικόλληση και τέλος· τη διεύθυνση τη βρίσκει μόνη της. Μαζί με το κλειδί βγαίνει και ένας <b>σύνδεσμος εγγραφής</b>: ο παραλήπτης φτιάχνει από εκεί τον λογαριασμό του και, μόλις επιβεβαιώσει το email, ενεργοποιείται αμέσως με τις εταιρείες του μέσα. Μέχρι τότε τα δεδομένα του ανεβαίνουν κανονικά και περιμένουν στον λογαριασμό που εξέδωσε το κλειδί. Το κλειδί εμφανίζεται <b>μία φορά</b>.</p>
         <div id="akNew" style="margin:8px 0"></div>
-        <table id="akTable"><thead><tr><th>Περιγραφή</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Κατάσταση</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
+        <table id="akTable"><thead><tr><th>Περιγραφή</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Λογαριασμός</th><th>Κατάσταση</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
       <?php endif; ?>
       <!-- Τραπεζικοί λογαριασμοί + αυτόματη αποστολή. Ανά ΕΤΑΙΡΕΙΑ, όχι ανά
@@ -1319,12 +1341,12 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <span class="pill" id="lkState">—</span>
         </div>
         <p class="sub" style="margin-top:4px">
-          Δουλεύεις μια χαρά και χωρίς αυτήν. Με τη σύνδεση όμως, τα δεδομένα των
-          εταιρειών σου ζουν <b>στον server</b> και κάθε πελάτης μπορεί να μπει
-          από browser με έναν σύνδεσμο — χωρίς να εγκαταστήσει τίποτα.
-          Ζήτα από τον διαχειριστή του server ένα <b>κλειδί πρόσβασης</b>
-          (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης» στον server) και επικόλλησέ το εδώ·
-          τη διεύθυνση την κουβαλά το ίδιο το κλειδί.
+          Χρειάζονται <b>δύο</b> πράγματα, και τα δύο: ένας <b>λογαριασμός</b> στο
+          <a href="https://etimologiopro.scanmydata.gr/" target="_blank" rel="noopener">https://etimologiopro.scanmydata.gr/</a>
+          (εγγραφή + επιβεβαίωση email) και ένα <b>κλειδί πρόσβασης</b> από τον
+          διαχειριστή του server. Το κλειδί ανεβάζει τα δεδομένα· ο λογαριασμός
+          σε βάζει μέσα να τα δεις. Επικόλλησε το κλειδί εδώ — τη διεύθυνση την
+          κουβαλά το ίδιο.
         </p>
         <div class="row" style="margin-top:8px">
           <div class="field grow"><label>1. Κλειδί πρόσβασης</label>
@@ -1337,6 +1359,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <button class="ghost" id="lkModeBtn" onclick="linkUseServer()" data-tip="Η εφαρμογή θα δείχνει τα δεδομένα του server">🖥️ Χρήση δεδομένων server</button>
           <span class="hint" id="lkModeNote"></span>
         </div>
+        <div class="card" id="lkSignup" hidden
+             style="margin-top:10px;border-left:4px solid var(--warn,#f59e0b);padding:10px 12px"></div>
         <div class="hint" id="lkInfo" style="margin-top:8px"></div>
         <table id="lkTable"><thead><tr>
           <th>Εταιρεία</th><th>ΑΦΜ</th><th>Σύνδεσμος για τον πελάτη</th><th class="nofilter"></th>
@@ -1356,6 +1380,10 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           που δεν ανακτώνται από πουθενά: κράτα ένα αντίγραφο και <b>εκτός</b>
           υπολογιστή.
         </p>
+        <div class="row" style="align-items:center;gap:14px;margin-top:6px">
+          <label class="side-toggle" style="color:var(--txt)"><input type="checkbox" id="bkAuto" onchange="backupAuto(this.checked)"> Αυτόματο ημερήσιο αντίγραφο</label>
+          <span class="hint" id="bkAutoState"></span>
+        </div>
         <div class="row" style="margin-top:6px">
           <button class="primary" onclick="backupRun()">💾 Αντίγραφο τώρα</button>
           <button class="ghost" onclick="backupDownload()" id="bkDl" data-tip="Κατεβάζει το πιο πρόσφατο αντίγραφο">⬇️ Λήψη τελευταίου</button>
@@ -1451,6 +1479,13 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
                 <option value="payment_update">Αλλαγή πληρωμής</option>
                 <option value="payment_delete">Διαγραφή πληρωμής</option>
                 <option value="email_sent">Αποστολή email</option>
+                <option value="auto_email_sent">Αυτόματη αποστολή στον πελάτη</option>
+                <option value="auto_email_failed">Αποτυχία αυτόματης αποστολής</option>
+                <option value="auto_email_skipped">Παράλειψη αποστολής (χωρίς email)</option>
+                <option value="mail_test_sent">Δοκιμή email — στάλθηκε</option>
+                <option value="mail_test_failed">Δοκιμή email — ΑΠΕΤΥΧΕ</option>
+                <option value="ledger_dispatch">Αποστολή καρτελών</option>
+                <option value="aade_discovery_email">Ειδοποίηση ελέγχου ΑΑΔΕ</option>
               </select></div>
             <button class="ghost" onclick="loadAuditLog()">↻ Ανανέωση</button>
           </div>
@@ -1993,12 +2028,15 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 
 <script src="<?= asset_url('assets/vendor/jspdf.umd.min.js') ?>"></script>
 <script src="<?= asset_url('assets/vendor/jspdf.plugin.autotable.min.js') ?>"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
 <script>
 const API='etimologio.php';
 const ROLE=<?= json_encode($__role) ?>;
 const ME_ID=<?= (int)$__user['id'] ?>;
 const IS_STAFF=<?= json_encode(in_array($__role, ['master','editor'], true)) ?>;
+//: Τρέχει σε εγκατάσταση γραφείου (δικός της PHP δίπλα στα δεδομένα) και όχι σε
+//: κοινό web server; Μόνο εκεί υπάρχουν αντίγραφα, σύνδεση με server και ο
+//: τοπικός παλμός — στον server τα κάνει ο `scheduler.php`.
+const IS_LOCAL_INSTALL=<?= json_encode(defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== '') ?>;
 let ACCOUNT='';
 const $=s=>document.querySelector(s);
 const $$=s=>Array.from(document.querySelectorAll(s));
@@ -2251,6 +2289,13 @@ async function refreshAccounts(){
   }catch(e){}
 }
 
+// Το πράσινο «+» δίπλα στον επιλογέα. Ανοίγει την ΙΔΙΑ φόρμα που ανοίγει και η
+// Διαχείριση — μία διαδρομή προσθήκης, ένας κώδικας να συντηρείται.
+function quickAddCompany(){
+  if(typeof openNewCompany==='function'){openNewCompany();return;}
+  showView('admin');
+}
+
 // Auth: logout, settings, admin
 async function logout(){
   // Η αποσύνδεση είναι δίπλα στο κουδουνάκι και πατιόταν κατά λάθος — και στην
@@ -2357,13 +2402,31 @@ async function loadSettings(){
 async function loadAccessKeys(){
   const el=$('#akTable');if(!el)return;
   try{const d=await apost({auth:'access_keys_list'});
-    el.querySelector('tbody').innerHTML=(d.keys||[]).map(k=>`<tr>
+    el.querySelector('tbody').innerHTML=(d.keys||[]).map(k=>{
+      // Ποιος κρατά το κλειδί: όσο δεν έχει εγγραφεί κανείς, τα δεδομένα του
+      // περιμένουν κάτω από αυτόν τον λογαριασμό — και ο διαχειριστής πρέπει
+      // να το βλέπει, γιατί αυτός θα ρωτηθεί «γιατί δεν μπαίνω;».
+      const who=k.claimed_email
+        ? esc(k.claimed_email)+(k.claimed_status==='active'?'':' <span class="pill warn">'+esc(k.claimed_status||'εκκρεμεί')+'</span>')
+        : '<span class="pill warn">χωρίς εγγραφή</span>'
+          +(k.owner_email?'<br><span class="muted" style="font-size:11px">προσωρινά στο '+esc(k.owner_email)+'</span>':'');
+      const join=k.claim_token?(location.origin+location.pathname.replace(/[^/]*$/,'')+'app.php?join='+k.claim_token):'';
+      return `<tr>
       <td>${esc(k.label||'—')}</td><td>${esc((k.created_at||'').slice(0,16))}</td>
       <td>${esc(k.last_used_at||'—')}</td>
+      <td>${who}</td>
       <td>${k.revoked?'<span class="pill bad">ανακλήθηκε</span>':'<span class="pill ok">ενεργό</span>'}</td>
-      <td class="right">${k.revoked?'':`<button class="danger sm" onclick="revokeAccessKey(${k.id})">Ανάκληση</button>`}</td></tr>`).join('')
-      ||'<tr><td colspan="5" class="muted">Κανένα κλειδί.</td></tr>';
+      <td class="right">${(join&&!k.claimed_email)?`<button class="ghost sm" onclick="linkCopy('${q1(join)}')" data-tip="Ο σύνδεσμος εγγραφής του παραλήπτη">🔗 Σύνδεσμος</button> `:''}${k.revoked?'':`<button class="ghost sm" onclick="revokeAccessKey(${k.id})">Ανάκληση</button> `}<button class="danger sm" onclick="deleteAccessKey(${k.id})" data-tip="Οριστική διαγραφή — δεν μένει ούτε στο ιστορικό">🗑</button></td></tr>`;}).join('')
+      ||'<tr><td colspan="6" class="muted">Κανένα κλειδί.</td></tr>';
   }catch(e){}}
+// Η ανάκληση κρατά τη γραμμή για το ιστορικό· η διαγραφή τη σβήνει. Ένα κλειδί
+// που δόθηκε κατά λάθος δεν είναι ιστορικό — είναι θόρυβος.
+async function deleteAccessKey(id){
+  if(!await uiConfirm('Οριστική διαγραφή του κλειδιού;\n\nΔεν μένει ούτε στο ιστορικό, και ο '
+    +'υπολογιστής που το χρησιμοποιεί χάνει τη σύνδεση αμέσως.'))return;
+  try{const d=await apost({auth:'access_key_delete',key_id:id});
+    if(!d.success)throw new Error('δεν βρέθηκε');toast('Διαγράφηκε','ok');loadAccessKeys();
+  }catch(e){toast('Κλειδί: '+e.message,'err');}}
 async function createAccessKey(){
   const label=await uiPrompt('Περιγραφή (π.χ. «Φορητός Μαρίας»):','');
   if(label===null)return;
@@ -2375,7 +2438,12 @@ async function createAccessKey(){
       <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
         <code id="akValue" style="flex:1;word-break:break-all;background:var(--panel2);border:1px solid var(--line);padding:8px 10px;border-radius:8px">${esc(d.key)}</code>
         <button class="primary sm" onclick="copyAccessKey()">📋 Αντιγραφή</button>
-      </div></div>`;
+      </div>
+      ${d.signup_url?`<div style="margin-top:10px">Και ο <b>σύνδεσμος εγγραφής</b> για τον παραλήπτη
+        (φτιάχνει λογαριασμό και ενεργοποιείται μόλις επιβεβαιώσει το email):<br>
+        <code style="word-break:break-all">${esc(d.signup_url)}</code>
+        <button class="ghost sm" onclick="linkCopy('${q1(d.signup_url)}')">📋 Αντιγραφή</button></div>`:''}
+      </div>`;
     loadAccessKeys();
   }catch(e){toast('Κλειδί: '+e.message,'err');}}
 function copyAccessKey(){const t=($('#akValue')||{}).textContent||'';
@@ -2428,9 +2496,11 @@ async function start2fa(){$('#twofaResult').textContent='';
     if(!d.success){$('#twofaResult').textContent=d.error||'Αποτυχία';return;}
     $('#twofaSecret').textContent=d.secret;$('#twofaCode').value='';
     $('#twofaDisabled').style.display='none';$('#twofaSetup').style.display='';
-    const box=$('#twofaQr');box.innerHTML='';
-    if(window.QRCode){QRCode.toCanvas(d.otpauth,{width:176,margin:1},(err,cv)=>{if(!err){box.appendChild(cv);}else{box.innerHTML='<span class="muted" style="font-size:11px">QR σφάλμα — χρησιμοποίησε το κλειδί</span>';}});}
-    else{box.innerHTML='<span class="muted" style="font-size:11px">Χρησιμοποίησε το κλειδί δεξιά</span>';}
+    // Το SVG έρχεται από τον server (`qrcode.php`). Καμία βιβλιοθήκη, κανένα
+    // CDN: ο κωδικός εμφανίζεται και σε υπολογιστή χωρίς internet, και δεν
+    // εξαρτάται από πολιτική περιεχομένου που μπορεί να τον μπλοκάρει σιωπηλά.
+    const box=$('#twofaQr');
+    box.innerHTML=d.qr_svg||'<span class="muted" style="font-size:11px">Χρησιμοποίησε το κλειδί δεξιά</span>';
     setTimeout(()=>$('#twofaCode').focus(),60);
   }catch(e){$('#twofaResult').textContent='Σφάλμα δικτύου';}}
 function cancel2fa(){render2fa();}
@@ -2610,9 +2680,20 @@ async function srvBackupSaveSettings(){
 }
 
 // --- Ημερολόγιο ενεργειών ----------------------------------------------------
+// Κάθε ενέργεια που γράφεται ΠΡΕΠΕΙ να έχει όνομα εδώ: χωρίς αυτό η στήλη
+// δείχνει το εσωτερικό αναγνωριστικό («auto_email_failed»), που δεν λέει τίποτα
+// σε όποιον διαβάζει το ημερολόγιο για να καταλάβει τι πήγε στραβά.
 const AUDIT_LABELS={login:'Σύνδεση',login_2fa:'Σύνδεση (2FA)',logout:'Αποσύνδεση',
   issue:'Έκδοση',payment_update:'Αλλαγή πληρωμής',payment_delete:'Διαγραφή πληρωμής',
-  email_sent:'Αποστολή email'};
+  email_sent:'Αποστολή email',
+  auto_email_sent:'Αυτόματη αποστολή στον πελάτη',
+  auto_email_failed:'Αποτυχία αυτόματης αποστολής',
+  auto_email_skipped:'Παράλειψη αποστολής (χωρίς email)',
+  mail_test_sent:'Δοκιμή email — στάλθηκε',
+  mail_test_failed:'Δοκιμή email — ΑΠΕΤΥΧΕ',
+  ledger_dispatch:'Αποστολή καρτελών',
+  bank_settings_saved:'Αλλαγή τραπεζικών ρυθμίσεων',
+  aade_discovery_email:'Ειδοποίηση ελέγχου ΑΑΔΕ'};
 async function loadAuditLog(){
   const el=$('#alTable');if(!el)return;
   try{const d=await api({audit_log:1,f_action:$('#alAction').value,limit:300});
@@ -2650,13 +2731,26 @@ function renderBiz(accs){const el=$('#adminBiz');if(!el)return;
     const who=master?(mgrs.length?mgrs.map(esc).join(', '):'<span class="pill warn">κανένας</span>'):'<span class="muted">εσύ</span>';
     return `<tr>
     <td><b>${esc(a.label||'—')}</b></td><td>${esc(a.vat||'')}</td><td>${esc(a.owner_email||'—')}</td><td>${who}</td>
-    <td class="right"><button class="ghost sm" onclick="inviteClient(${a.id},'${esc(a.label||a.vat||'')}')" data-tip="Πρόσκληση του πελάτη να μπαίνει μόνος του στη δική του εταιρεία">✉️ Πρόσκληση πελάτη</button>
+    <td class="right"><button class="ghost sm"${INVITE_OK?'':' disabled'} onclick="inviteClient(${a.id},'${esc(a.label||a.vat||'')}')" data-tip="${INVITE_OK?'Πρόσκληση του πελάτη να μπαίνει μόνος του στη δική του εταιρεία':'Χρειάζεται σύνδεση με web server: ο σύνδεσμος πρέπει να δείχνει κάπου που φτάνει ο πελάτης'}">✉️ Πρόσκληση πελάτη</button>
       <button class="primary sm" onclick="openCompany(${a.id})" data-tip="Άνοιγμα της καρτέλας αυτής της εταιρείας">✎ Επεξεργασία</button></td></tr>`;}).join('')
     ||`<tr><td colspan="5" class="muted">${master?'Καμία συνδεδεμένη επιχείρηση. Πάτησε «+ Νέα επιχείρηση».':'Δεν σου έχει ανατεθεί καμία εταιρεία ακόμη.'}</td></tr>`;}
 
 // Ο λογιστής καλεί τον πελάτη του χωρίς να περάσει από τον διαχειριστή. Ο ρόλος
 // είναι πάντα «επιχείρηση» — αυτό το επιβάλλει ο server, όχι αυτή η φόρμα.
+// Σε τοπική εγκατάσταση χωρίς server, ο σύνδεσμος της πρόσκλησης δείχνει στο
+// `127.0.0.1` ΑΥΤΟΥ του υπολογιστή — δηλαδή, για τον πελάτη, στον δικό του. Η
+// πρόσκληση έφευγε κανονικά και κατέληγε σε σελίδα που δεν υπάρχει.
+//: Η αρχική τιμή έρχεται από τον server και όχι από «θα το μάθουμε μετά»: ο
+//: πίνακας επιχειρήσεων μπορεί να ζωγραφιστεί ΠΡΙΝ φορτώσει η κάρτα σύνδεσης,
+//: και ένα κουμπί που είναι ενεργό για μισό δευτερόλεπτο πατιέται.
+let INVITE_OK=<?= json_encode(!(defined('DESKTOP_TOKEN') && DESKTOP_TOKEN !== '') || setting_get('link.ready') === '1') ?>;
 async function inviteClient(id,label){
+  if(!INVITE_OK){
+    await uiAlert('Η πρόσκληση πελάτη χρειάζεται σύνδεση με web server.\n\n'
+      +'Ο σύνδεσμος πρέπει να δείχνει σε διεύθυνση που φτάνει ο πελάτης από τον '
+      +'δικό του υπολογιστή — όχι σε αυτόν εδώ.\n\nΡυθμίσεις → «☁️ Σύνδεση με web server».');
+    return;
+  }
   const email=(await uiPrompt('Email του πελάτη για την εταιρεία «'+label+'»:')||'').trim();
   if(!email)return;
   const name=(await uiPrompt('Επωνυμία που θα βλέπει ο πελάτης:',label)||'').trim();
@@ -2735,11 +2829,13 @@ async function testCompanyCreds(){
   try{
     const d=await withBusy('Δοκιμή στην ΑΑΔΕ…',
       ()=>apost({auth:'account_test',vat,username,subkey,account_id:CO_ID||0}),
-      'myDATA (σύνολα εξόδων τρέχοντος μήνα) + e-timologio');
+      'Σύνδεση στην πύλη e-timologio με τα στοιχεία που έδωσες');
     if(!d.success)throw new Error(d.error||'σφάλμα');
     const line=(icon,title,r)=>`<div style="margin-top:4px">${icon} <b>${title}</b> — ${esc((r||{}).msg||'—')}</div>`;
-    box.innerHTML=line(d.mydata&&d.mydata.ok?'✅':'❌','myDATA REST',d.mydata)
-                 +line(d.etimologio&&d.etimologio.ok?'✅':'❌','e-timologio',d.etimologio);
+    // Μία γραμμή, γι' αυτό που πραγματικά χρησιμοποιεί η εφαρμογή. Η γραμμή
+    // myDATA έμπαινε από συνήθεια και απαντούσε σε ερώτηση που δεν έγινε.
+    box.innerHTML=line(d.etimologio&&d.etimologio.ok?'✅':'❌','e-timologio',d.etimologio)
+                 +(d.mydata?line(d.mydata.ok?'✅':'❌','myDATA REST',d.mydata):'');
   }catch(err){box.textContent='Δοκιμή: '+err.message;}
 }
 async function saveCompany(){
@@ -6648,12 +6744,17 @@ const MANUAL=[
 
   ['11ζ. Σύνδεση με web server (μόνο στην εφαρμογή υπολογιστή)','h2'],
   ['Η εφαρμογή δουλεύει μια χαρά μόνη της. Αν όμως το γραφείο έχει στημένο <b>web server</b>, μπορεί να δεθεί μαζί του: τα δεδομένα ζουν <b>και</b> εκεί, και κάθε πελάτης μπαίνει από browser με έναν σύνδεσμο — χωρίς να εγκαταστήσει τίποτα.','p'],
-  ['<b>Πρώτα ο λογαριασμός.</b> Ο διαχειριστής του server σε γράφει εκεί ως <b>λογιστή</b>: παίρνεις email πρόσκλησης, βάζεις κωδικό, επιβεβαιώνεις. Αυτά τα στοιχεία θα χρησιμοποιείς στο web — ο τοπικός λογαριασμός της εφαρμογής <b>δεν</b> ισχύει στον server, είναι άλλη βάση.','li'],
   ['<b>Βήμα 1 — Καταχώρηση &amp; ανέβασμα.</b> Ο διαχειριστής σου δίνει ένα <b>κλειδί πρόσβασης</b> (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης» στον server). Επικόλλησέ το στις «Ρυθμίσεις → ☁️ Σύνδεση με web server» και πάτησε «🔗 Καταχώρηση &amp; ανέβασμα». Οι εταιρείες και οι πληρωμές σου ανεβαίνουν αμέσως. Διεύθυνση δεν χρειάζεται να ξέρεις: το κλειδί την κουβαλά μέσα του. <b>Η εφαρμογή συνεχίζει να δουλεύει στα τοπικά δεδομένα.</b>','li'],
-  ['<b>Βήμα 2 — Χρήση δεδομένων server.</b> Μπες πρώτα στο web από browser και βεβαιώσου ότι όλα φαίνονται σωστά. Μετά, αν θέλεις να δείχνει και η εφαρμογή τα δεδομένα του server, πάτησε «🖥️ Χρήση δεδομένων server» και <b>κλείσε και ξανάνοιξε</b>. Από εκεί και πέρα μπαίνεις με τα στοιχεία <b>του server</b>.','li'],
+  ['<b>Βήμα 2 — Η εγγραφή σου.</b> Μαζί με το κλειδί παίρνεις έναν <b>προσωπικό σύνδεσμο εγγραφής</b> (τον δείχνει και η ίδια η κάρτα, αν λείπει ο λογαριασμός). Άνοιξέ τον σε browser — π.χ. <b>https://etimologiopro.scanmydata.gr/</b> — φτιάξε λογαριασμό και <b>επιβεβαίωσε το email σου</b>. Ο λογαριασμός ενεργοποιείται αμέσως, με τις εταιρείες που ανέβηκαν στο Βήμα 1 <b>ήδη μέσα</b>: μέχρι να γίνει η εγγραφή, τα δεδομένα φιλοξενούνται στον λογαριασμό που εξέδωσε το κλειδί και παραδίδονται σε σένα με την επιβεβαίωση.','li'],
+  ['<b>Βήμα 3 — Χρήση δεδομένων server.</b> Μπες πρώτα στο web από browser και βεβαιώσου ότι όλα φαίνονται σωστά. Μετά, αν θέλεις να δείχνει και η εφαρμογή τα δεδομένα του server, πάτησε «🖥️ Χρήση δεδομένων server» και <b>κλείσε και ξανάνοιξε</b>. Από εκεί και πέρα μπαίνεις με τα στοιχεία <b>του server</b> — ο τοπικός λογαριασμός της εφαρμογής <b>δεν</b> ισχύει εκεί, είναι άλλη βάση.','li'],
+  ['Χωρίς σύνδεση με server, η <b>«✉️ Πρόσκληση πελάτη»</b> δεν είναι διαθέσιμη: ο σύνδεσμος θα έδειχνε σε αυτόν τον υπολογιστή, δηλαδή σε διεύθυνση που ο πελάτης δεν φτάνει.','li'],
   ['<b>Πάντα υπάρχει γυρισμός.</b> Σε λειτουργία server, μια μπάρα στην κορυφή γράφει πού βρίσκεσαι και έχει κουμπί «💻 Τοπικά δεδομένα». Τα δεδομένα αυτού του υπολογιστή δεν πειράζονται ποτέ.','li'],
   ['Στην ίδια κάρτα βλέπεις τις εταιρείες σου και τον <b>σύνδεσμο που δίνεις στον πελάτη</b> (κουμπιά αντιγραφής και ανοίγματος). Το «Αποσύνδεση» γυρίζει σε τοπική λειτουργία· ό,τι έχει ήδη ανέβει μένει στον server.','li'],
   ['Το κλειδί είναι <b>διαπιστευτήριο</b>: στείλ\' το όπως θα έστελνες κωδικό, και αν χαθεί ζήτα ανάκληση και νέο.','li'],
+
+  ['11ζ2. Αντίγραφα ασφαλείας (μόνο στην εφαρμογή υπολογιστή)','h2'],
+  ['Στις «Ρυθμίσεις → 💾 Αντίγραφα ασφαλείας» υπάρχει <b>αυτόματο ημερήσιο αντίγραφο</b>: παίρνεται μία φορά την ημέρα, με το πρώτο άνοιγμα της εφαρμογής, και κρατιούνται τα 14 νεότερα. Ο διακόπτης το σταματά αν δεν το θέλεις, και δίπλα του γράφει πότε έγινε το τελευταίο.','p'],
+  ['Το zip περιέχει <b>και</b> τη βάση <b>και</b> το κλειδί κρυπτογράφησης: χωριστά, κανένα από τα δύο δεν διαβάζεται. Ο δίσκος που θα χαλάσει παίρνει μαζί του τα κλειδιά ΑΑΔΕ κάθε πελάτη, που δεν ανακτώνται από πουθενά — κράτα ένα αντίγραφο και <b>εκτός</b> υπολογιστή.','li'],
 
   ['11η. Αμφίδρομος συγχρονισμός','h2'],
   ['Το «🔄 Συγχρονισμός τώρα» στην ίδια κάρτα δουλεύει <b>και προς τις δύο κατευθύνσεις</b>: στέλνει ό,τι καταχωρήθηκε εδώ και φέρνει ό,τι καταχωρήθηκε στον server (π.χ. από τον ίδιο τον πελάτη, μέσα από τον browser). Καμία πλευρά δεν είναι «η σωστή».','p'],
@@ -6930,20 +7031,38 @@ async function loadLink(){
     st.className='pill'+(d.thin?' ok':'');
     const mb=$('#lkModeBtn'),mn=$('#lkModeNote');
     if(mb){
+      // Το κουμπί μένει ενεργό ακόμη κι όταν λείπει ο λογαριασμός: τον έλεγχο
+      // τον κάνει ο server και απαντά με το τι λείπει και πού να το κάνεις.
+      // Απενεργοποιημένο, θα ήταν αδιέξοδο χωρίς εξήγηση.
       mb.disabled=!d.has_key;
       mb.textContent=d.thin?'💻 Επιστροφή σε τοπικά δεδομένα':'🖥️ Χρήση δεδομένων server';
       mb.onclick=d.thin?linkUseLocal:linkUseServer;
     }
     if(mn)mn.textContent=d.thin
       ? 'Η εφαρμογή δείχνει τα δεδομένα του server. Μπαίνεις με τα στοιχεία ΤΟΥ SERVER.'
-      : (d.has_key?'Τα δεδομένα ανεβαίνουν στον server, αλλά η εφαρμογή δουλεύει ακόμη τοπικά.'
-                  :'Καταχώρησε πρώτα κλειδί πρόσβασης.');
+      : (!d.has_key?'Καταχώρησε πρώτα κλειδί πρόσβασης.'
+        :(d.ready?'Τα δεδομένα ανεβαίνουν στον server, αλλά η εφαρμογή δουλεύει ακόμη τοπικά.'
+                 :'Τα δεδομένα ανεβαίνουν. Λείπει ο λογαριασμός σου στον server — κάνε εγγραφή.'));
+    const nag=$('#lkSignup');
+    if(nag){
+      const need=d.has_key&&!d.thin&&!d.ready;
+      nag.hidden=!need;
+      if(need){
+        const url=d.signup_url||'https://etimologiopro.scanmydata.gr/';
+        nag.innerHTML='📝 <b>Μένει η εγγραφή σου.</b> Άνοιξε τον προσωπικό σου σύνδεσμο, '
+          +'φτιάξε λογαριασμό και επιβεβαίωσε το email: '
+          +'<a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(url)+'</a> '
+          +'<button class="ghost sm" onclick="linkCopy(\''+q1(url)+'\')">📋 Αντιγραφή</button>';
+      }
+    }
     $('#lkInfo').innerHTML=d.connected
       ? `Server: <b>${esc(d.url)}</b>${d.label?(' · λογαριασμός <b>'+esc(d.label)+'</b>'):''}${d.since?(' · από '+esc(d.since)):''}`
         +(d.last_sync?`<br>Τελευταίος συγχρονισμός: <b>${esc(d.last_sync)}</b>`:'')
         +(d.connected&&!d.can_sync?'<br><span style="color:var(--warn,var(--muted))">Για συγχρονισμό, ξανασύνδεσε τον server από εδώ (χρειάζεται το κλειδί).</span>':'')
       : 'Χωρίς σύνδεση: όλα μένουν σε αυτόν τον υπολογιστή.';
     const sb=$('#lkSyncBtn');if(sb)sb.disabled=!d.connected;
+    INVITE_OK=!!d.ready;
+    if(typeof ADMIN_SCOPE!=='undefined'&&ADMIN_SCOPE.accounts)renderBiz(ADMIN_SCOPE.accounts);
     $('#lkTable tbody').innerHTML=(d.items||[]).map(i=>`<tr>
       <td>${esc(i.label||'—')}</td><td>${esc(i.vat)}</td>
       <td>${d.web_link?`<span class="muted">${esc(d.web_link)}</span>`:'<span class="muted">—</span>'}</td>
@@ -6961,13 +7080,29 @@ async function linkConnect(){
       ()=>apost({auth:'link_connect',key}),'Έλεγχος κλειδιού και ανέβασμα δεδομένων');
     if(d.success){
       $('#lkKey').value='';
-      const s=d.synced||{};
-      toast('Καταχωρήθηκε: '+(d.label||d.url),'ok');
-      await uiAlert('Το κλειδί καταχωρήθηκε για τον λογαριασμό '+(d.email||d.label||'')+'.\n\n'
-        +'Ανέβηκαν '+(s.companies||0)+' εταιρείες στον server.\n\n'
-        +'Η εφαρμογή συνεχίζει να δουλεύει στα ΤΟΠΙΚΑ δεδομένα. Όταν επιβεβαιώσεις '
-        +'ότι μπαίνεις κανονικά στο web (με το email και τον κωδικό ΤΟΥ SERVER), '
-        +'πάτησε «Χρήση δεδομένων server».');
+      const s=d.synced||{},errs=d.errors||[];
+      toast('Το κλειδί καταχωρήθηκε','ok');
+      // ΤΟ EMAIL ΔΕΝ ΕΜΦΑΝΙΖΕΤΑΙ. Το κλειδί το εκδίδει ο διαχειριστής και το
+      // δίνει σε άλλον: η οθόνη έγραφε «καταχωρήθηκε για τον λογαριασμό <email
+      // του διαχειριστή>» — πληροφορία που ούτε χρειάζεται ούτε του ανήκει.
+      let msg='Το κλειδί καταχωρήθηκε.\n\n';
+      msg+=(s.companies||0)>0
+        ? ('Ανέβηκαν '+s.companies+' εταιρείες στον server.\n\n')
+        : 'Δεν ανέβηκε καμία εταιρεία.\n\n';
+      // Η σιωπηλή αποτυχία ήταν το χειρότερο κομμάτι: «Ανέβηκαν 0» χωρίς λέξη
+      // για το γιατί. Τώρα ο λόγος έρχεται μαζί.
+      if(errs.length)msg+='Τι εμπόδισε το ανέβασμα:\n• '+errs.slice(0,5).join('\n• ')+'\n\n';
+      msg+=d.ready
+        ? ('Η εφαρμογή συνεχίζει να δουλεύει στα ΤΟΠΙΚΑ δεδομένα. Μόλις '
+          +'επιβεβαιώσεις ότι μπαίνεις κανονικά στο web, πάτησε «Χρήση δεδομένων server».')
+        : ('ΜΕΝΕΙ ΕΝΑ ΒΗΜΑ: δεν υπάρχει ακόμη λογαριασμός σε αυτόν τον server για '
+          +'αυτό το κλειδί. Κάνε εγγραφή εδώ:\n\n'
+          +(d.signup_url||'https://etimologiopro.scanmydata.gr/')+'\n\n'
+          +'Επιβεβαίωσε το email σου και ο λογαριασμός ενεργοποιείται αμέσως, με τις '
+          +'εταιρείες σου ήδη μέσα. Μέχρι τότε δουλεύεις κανονικά στα τοπικά δεδομένα '
+          +'και ό,τι κάνεις συνεχίζει να ανεβαίνει.');
+      await uiAlert(msg);
+      if(!d.ready&&d.signup_url)linkCopy(d.signup_url);
       loadLink();
     }
   }catch(e){toast(e.message,'err');}
@@ -6982,7 +7117,7 @@ async function linkUseServer(){
     const d=await withBusy('Έλεγχος server…',()=>apost({auth:'link_use_server'}));
     if(d.success){
       await uiAlert('Έτοιμο. Κλείσε και ξανάνοιξε την εφαρμογή.\n\nΘα σου ζητηθεί σύνδεση με '
-        +'τα στοιχεία του server'+(d.email?(' ('+d.email+')'):'')+'.');
+        +'το email και τον κωδικό που έχεις ΣΤΟΝ SERVER.');
       loadLink();
     }
   }catch(e){toast(e.message,'err');}
@@ -7024,6 +7159,27 @@ async function loadBackup(){
     $('#bkState').textContent=d.count?`${d.count} αντίγραφα · τελευταίο ${d.last?d.last.at:''}`:'κανένα αντίγραφο ακόμη';
     $('#bkFolder').textContent=d.folder||'';
     const dl=$('#bkDl');if(dl)dl.disabled=!d.count;
+    const au=$('#bkAuto');if(au)au.checked=d.auto!==false;
+    const as=$('#bkAutoState');
+    if(as)as.textContent=d.auto===false
+      ? 'Απενεργοποιημένο — μόνο όσα παίρνεις με το χέρι.'
+      : (d.auto_error?('Το τελευταίο αυτόματο απέτυχε: '+d.auto_error)
+        :(d.auto_last?('Τελευταίο αυτόματο: '+d.auto_last):'Θα γίνει με το πρώτο άνοιγμα της ημέρας.'));
+  }catch(e){}
+}
+async function backupAuto(on){
+  try{const d=await apost({auth:'backup_auto',on:on?'1':''});
+    if(d.success){toast(on?'Το ημερήσιο αντίγραφο ενεργοποιήθηκε':'Το ημερήσιο αντίγραφο σταμάτησε','ok');loadBackup();}
+  }catch(e){toast(e.message,'err');}
+}
+// Ο παλμός της τοπικής εγκατάστασης. Δεν υπάρχει χρονοπρογραμματιστής εδώ: ο
+// `scheduler.php` τρέχει μόνο στον server και η εφαρμογή υπολογιστή δεν στήνει
+// εργασία των Windows. Ό,τι πρέπει να γίνεται «κάθε τόσο» τοπικά — σήμερα το
+// ημερήσιο αντίγραφο — γίνεται όσο το παράθυρο είναι ανοιχτό.
+async function localTick(){
+  if(!IS_LOCAL_INSTALL)return;
+  try{const d=await apost({auth:'local_tick'});
+    if(d&&d.backup&&d.backup.ran&&d.backup.ok)loadBackup();
   }catch(e){}
 }
 async function backupRun(){
@@ -7091,6 +7247,31 @@ async function checkAadeNewDocs(silent=true){
   }catch(e){if(!silent)toast('Ο έλεγχος δεν ολοκληρώθηκε: '+e.message,'err');}
   finally{AADE_CHECK_BUSY=false;}
 }
+//: Κάθε πόσα λεπτά ελέγχεται ΚΑΘΕ εταιρεία (και όχι μόνο η επιλεγμένη).
+//: Μία ώρα: ο έλεγχος συνδέεται στην ΑΑΔΕ μία φορά ανά εταιρεία, και με δέκα
+//: πελάτες αυτό είναι δέκα συνδέσεις — πιο συχνά θα ήταν βάρος χωρίς όφελος,
+//: αφού η ενεργή εταιρεία ελέγχεται ούτως ή άλλως κάθε AADE_CHECK_MIN λεπτά.
+const AADE_ALL_MIN=60;
+let AADE_ALL_BUSY=false;
+
+// Ο έλεγχος ανά εταιρεία. Ο server λέει ΠΟΙΕΣ οφείλουν έλεγχο (φθηνή κλήση,
+// χωρίς σύνδεση στην ΑΑΔΕ) και μόνο γι' αυτές πληρώνουμε το κόστος. Σειριακά
+// επίτηδες: ο τοπικός server εξυπηρετεί μία αίτηση τη φορά, και μια παράλληλη
+// ριπή θα πάγωνε την οθόνη όση ώρα κρατά.
+async function checkAllAccounts(){
+  if(AADE_ALL_BUSY)return;
+  if(navigator.onLine===false)return;
+  AADE_ALL_BUSY=true;
+  try{
+    const d=await api({notify_due:1,minutes:AADE_ALL_MIN});
+    for(const vat of (d.due||[])){
+      try{await api({sync:'newdocs',account:vat});}catch(e){}
+    }
+    await pollNotifCount();
+  }catch(e){}
+  finally{AADE_ALL_BUSY=false;}
+}
+
 // Ξαναδοκίμασε μόλις επιστρέψει το δίκτυο — αυτή είναι η «σύνδεση στο internet».
 window.addEventListener('online',()=>setTimeout(()=>checkAadeNewDocs(),4000));
 function setBell(n){const b=$('#bellBadge');if(!b)return;n=+n||0;if(n>0){b.hidden=false;b.textContent=n>99?'99+':n;}else b.hidden=true;}
@@ -7256,6 +7437,13 @@ function addEyes(root){
   // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε AADE_CHECK_MIN λεπτά.
   setTimeout(()=>checkAadeNewDocs(),9000);
   setInterval(()=>checkAadeNewDocs(),AADE_CHECK_MIN*60000);
+  // Και ο ωριαίος γύρος ΟΛΩΝ των εταιρειών, με ειδοποίηση email σε ό,τι βρεθεί.
+  setTimeout(()=>checkAllAccounts(),45000);
+  setInterval(()=>checkAllAccounts(),AADE_ALL_MIN*60000);
+  // Ο τοπικός παλμός: το ημερήσιο αντίγραφο ασφαλείας, όσο η εφαρμογή είναι
+  // ανοιχτή. Χωρίς αυτόν δεν έτρεχε ποτέ — δεν υπάρχει cron σε αυτή τη μεριά.
+  setTimeout(()=>localTick(),6000);
+  setInterval(()=>localTick(),3600000);
   // First-time visitors: gently offer the tour once.
   if(!localStorage.getItem('etim_tour_done'))setTimeout(async()=>{try{
     if(await uiConfirm('Θέλεις μια γρήγορη ξενάγηση 30 δευτερολέπτων στην εφαρμογή;',

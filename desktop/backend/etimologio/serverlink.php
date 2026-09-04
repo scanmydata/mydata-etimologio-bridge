@@ -116,6 +116,17 @@ function link_call(string $url, array $params, array $post = [], int $timeout = 
             : ['Accept: application/json'],
     ];
     if ($post) {
+        // ΤΟ ΚΛΕΙΔΙ ΤΑΞΙΔΕΥΕΙ ΚΑΙ ΩΣ ΠΕΔΙΟ, όχι μόνο ως κεφαλίδα. Η
+        // `Authorization` είναι η καθαρή διαδρομή, αλλά είναι και η πιο εύθραυστη
+        // στη μέση: ο Apache την κόβει από το περιβάλλον CGI/FastCGI χωρίς
+        // `CGIPassAuth On`, και κάθε ενδιάμεσος (proxy, CDN, load balancer) έχει
+        // το δικαίωμα να μην την προωθήσει. Το αποτέλεσμα ήταν 401 σε ΚΑΘΕ
+        // εταιρεία και ένα «Ανέβηκαν 0 εταιρείες» χωρίς καμία εξήγηση.
+        //
+        // Ο server δέχεται ήδη το `access_key` ως πεδίο (`auth_access_key_login`),
+        // οπότε αυτό δεν είναι νέα επιφάνεια — είναι η ίδια πόρτα, χωρίς την
+        // κεφαλίδα που μπορεί να χαθεί.
+        if ($key !== '' && !isset($post['access_key'])) $post['access_key'] = $key;
         $opts[CURLOPT_POST] = true;
         $opts[CURLOPT_POSTFIELDS] = http_build_query($post);
     }
@@ -125,16 +136,20 @@ function link_call(string $url, array $params, array $post = [], int $timeout = 
     $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     curl_close($ch);
 
-    if ($body === false || $err !== '') return ['ok' => false, 'data' => null, 'error' => 'Δεν απαντά ο server: ' . $err];
+    if ($body === false || $err !== '') {
+        return ['ok' => false, 'data' => null, 'http' => $code,
+                'error' => 'Δεν απαντά ο server: ' . $err];
+    }
     $data = json_decode((string)$body, true);
     if (!is_array($data)) {
-        return ['ok' => false, 'data' => null,
+        return ['ok' => false, 'data' => null, 'http' => $code,
                 'error' => 'Ο server απάντησε κάτι που δεν είναι JSON (HTTP ' . $code . ')'];
     }
     if (empty($data['success'])) {
-        return ['ok' => false, 'data' => $data, 'error' => (string)($data['error'] ?? ('HTTP ' . $code))];
+        return ['ok' => false, 'data' => $data, 'http' => $code,
+                'error' => (string)($data['error'] ?? ('HTTP ' . $code))];
     }
-    return ['ok' => true, 'data' => $data, 'error' => ''];
+    return ['ok' => true, 'data' => $data, 'http' => $code, 'error' => ''];
 }
 
 // --- Αντίγραφα ασφαλείας της τοπικής εγκατάστασης ---------------------------
@@ -197,6 +212,43 @@ function link_backup_run(int $keep = 14): array {
     }
     return ['ok' => true, 'name' => basename($archive), 'size' => strlen($bytes),
             'folder' => link_backup_dir(), 'pruned' => $pruned, 'members' => array_keys($files)];
+}
+
+/**
+ * Το ημερήσιο αντίγραφο της ΤΟΠΙΚΗΣ εγκατάστασης.
+ *
+ * Μέχρι τώρα το αντίγραφο γινόταν μόνο με το κουμπί «Αντίγραφο τώρα»: δηλαδή
+ * όποτε το θυμόταν κανείς, που για ένα αντίγραφο ασφαλείας σημαίνει «σχεδόν
+ * ποτέ, και σίγουρα όχι τη μέρα που χάλασε ο δίσκος».
+ *
+ * Ο φύλακας είναι η ΗΜΕΡΟΜΗΝΙΑ και όχι χρονόμετρο: η εφαρμογή ανοίγει και
+ * κλείνει πολλές φορές τη μέρα, και ένα «κάθε 24 ώρες» μετρημένο από την
+ * εκκίνηση θα έπαιρνε αντίγραφο σε κάθε άνοιγμα. Με τη σφραγίδα ημέρας το
+ * αντίγραφο είναι **ένα**, το πρώτο άνοιγμα κάθε μέρας.
+ *
+ * Επιστρέφει πάντα πίνακα με `ran`: ψευδές σημαίνει «δεν χρειαζόταν», όχι
+ * αποτυχία.
+ */
+function link_backup_tick(): array {
+    if (setting_get('link.backup.auto', '1') !== '1') {
+        return ['ran' => false, 'why' => 'off'];
+    }
+    $today = date('Y-m-d');
+    if (setting_get('link.backup.day') === $today) {
+        return ['ran' => false, 'why' => 'done_today'];
+    }
+    // Η σφραγίδα μπαίνει ΠΡΙΝ τη δουλειά: μια αποτυχία που επαναλαμβάνεται σε
+    // κάθε τικ θα γέμιζε τον δίσκο με μισογραμμένα zip και τα logs με το ίδιο
+    // σφάλμα κάθε λεπτό. Ξαναδοκιμάζει αύριο.
+    setting_set('link.backup.day', $today);
+    $r = link_backup_run();
+    if (empty($r['ok'])) {
+        setting_set('link.backup.last_error', (string)($r['error'] ?? 'απέτυχε'));
+        return ['ran' => true, 'ok' => false, 'error' => (string)($r['error'] ?? 'απέτυχε')];
+    }
+    setting_set('link.backup.last_error', '');
+    setting_set('link.backup.last_auto', date('Y-m-d H:i'));
+    return ['ran' => true, 'ok' => true, 'name' => $r['name'], 'size' => $r['size']];
 }
 
 // --- Αμφίδρομος συγχρονισμός: τι ταξιδεύει και πώς αναγνωρίζεται -------------
@@ -329,9 +381,17 @@ function sync_apply(string $vat, array $payments, array $meta): array {
 function link_sync_all(array $me): array {
     [$keyBase, $key] = link_decode_key(setting_get('link.key'));
     $url = link_url() ?: $keyBase;
-    if ($key === '' || $url === '') return ['ok' => false, 'error' => 'χωρίς κλειδί'];
+    if ($key === '' || $url === '') return ['ok' => false, 'error' => 'χωρίς κλειδί',
+                                            'companies' => 0, 'errors' => ['Δεν έχει καταχωρηθεί κλειδί πρόσβασης.']];
     $sent = 0; $recv = 0; $companies = 0; $errors = [];
-    foreach (auth_visible_accounts($me) as $a) {
+    $visible = auth_visible_accounts($me);
+    // «Ανέβηκαν 0» χωρίς λόγο είναι η χειρότερη απάντηση. Αν δεν υπάρχει καμία
+    // εταιρεία, αυτό ΕΙΝΑΙ ο λόγος και πρέπει να ειπωθεί.
+    if (!$visible) {
+        return ['ok' => false, 'companies' => 0, 'sent' => 0, 'recv' => 0,
+                'errors' => ['Δεν υπάρχει καμία εταιρεία σε αυτή την εγκατάσταση για να ανέβει.']];
+    }
+    foreach ($visible as $a) {
         $vat  = (string)$a['vat'];
         $full = account_by_vat($vat) ?: [];
         $payload = [
