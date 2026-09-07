@@ -25,6 +25,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -125,6 +127,18 @@ class _Host(QObject):
     start_minimized_changed = Signal(bool)
     update_check_requested = Signal()
     restore_requested = Signal()
+    open_external_requested = Signal(str)
+
+    @Slot(str)
+    def openExternal(self, url: str) -> None:  # noqa: N802 — JS API
+        """Άνοιγμα διεύθυνσης στον **προεπιλεγμένο browser** του χρήστη.
+
+        Μέσα στο παράθυρο της εφαρμογής δεν υπάρχουν καρτέλες: ένα
+        ``target="_blank"`` δεν οδηγεί πουθενά και ο σύνδεσμος «δεν κάνει
+        τίποτα». Ο σύνδεσμος εγγραφής στον web server ΠΡΕΠΕΙ να ανοίξει σε
+        πραγματικό browser — εκεί θα ζήσει η συνεδρία του χρήστη.
+        """
+        self.open_external_requested.emit(str(url))
 
     @Slot(bool)
     def setStartMinimized(self, value: bool) -> None:  # noqa: N802 — JS API
@@ -137,6 +151,55 @@ class _Host(QObject):
     @Slot()
     def restoreBackup(self) -> None:  # noqa: N802 — JS API
         self.restore_requested.emit()
+
+
+def _is_local(url: QUrl) -> bool:
+    """Δείχνει στον δικό μας server (loopback) ή στο internet;
+
+    Ο διαχωρισμός είναι όλη η ουσία: ό,τι είναι δικό μας μένει μέσα στο
+    παράθυρο (και τα κατεβάσματα περνούν από τον χειριστή λήψεων), ενώ ό,τι
+    δείχνει έξω πάει στον browser του χρήστη. Ένα loopback URL ανοιγμένο έξω θα
+    κατέληγε σε οθόνη σύνδεσης: ο εξωτερικός browser δεν έχει τη συνεδρία μας.
+    """
+    if url.scheme() in ("", "file", "data", "blob", "about"):
+        return True
+    return url.host() in ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
+class _Page(QWebEnginePage):
+    """Η σελίδα του κελύφους, με έναν κανόνα: το «έξω» φεύγει έξω."""
+
+    def __init__(self, profile_or_parent, shell) -> None:
+        super().__init__(profile_or_parent)
+        self._shell = shell
+
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:  # noqa: N802 — Qt API
+        if (is_main_frame
+                and nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked
+                and not _is_local(url)):
+            self._shell.open_external(url.toString())
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+    def createWindow(self, _window_type):  # noqa: N802 — Qt API
+        """``target="_blank"`` και ``window.open`` δεν έχουν πού να πάνε εδώ.
+
+        Το QtWebEngine ζητά **σελίδα**, όχι διεύθυνση: τη διεύθυνση τη μαθαίνει
+        μόνο αφού τη φορτώσει. Δίνουμε λοιπόν μια σελίδα-κέλυφος που το μόνο
+        που κάνει είναι να μας πει πού πήγαινε — και μετά σβήνεται.
+
+        Τοπικές διευθύνσεις αγνοούνται επίτηδες: η ίδια η εφαρμογή τις χειρίζεται
+        με ``location.href`` ώστε να περάσουν από τον χειριστή λήψεων.
+        """
+        probe = QWebEnginePage(self)
+
+        def _went(url: QUrl) -> None:
+            if not _is_local(url):
+                self._shell.open_external(url.toString())
+            probe.deleteLater()
+
+        probe.urlChanged.connect(_went)
+        return probe
 
 
 class EtimologioWebShell(QWidget):
@@ -207,6 +270,12 @@ class EtimologioWebShell(QWidget):
         from PySide6.QtWebEngineWidgets import QWebEngineView
 
         self._view = QWebEngineView()
+        # Δική μας σελίδα, ΠΡΙΝ από κάθε άλλη σύνδεση: αλλιώς οι εξωτερικοί
+        # σύνδεσμοι πέφτουν στο κενό, και ό,τι δεθεί στην παλιά σελίδα χάνεται
+        # μαζί της. Κρατιέται σε πεδίο — μια σελίδα χωρίς αναφορά την παίρνει ο
+        # συλλέκτης της Python και το παράθυρο μένει λευκό.
+        self._page = _Page(self._view.page().profile(), self)
+        self._view.setPage(self._page)
         # ⚠️ Χωρίς χειριστή λήψης, το QtWebEngine **ακυρώνει σιωπηλά** κάθε
         # κατέβασμα: ο χρήστης πατούσε «PDF καρτέλας» ή «ZIP» και δεν συνέβαινε
         # τίποτα. Ρωτάμε πού να μπει το αρχείο και μετά το ανοίγουμε.
@@ -245,6 +314,7 @@ class EtimologioWebShell(QWidget):
         self._host.start_minimized_changed.connect(self.start_minimized_changed)
         self._host.update_check_requested.connect(self.update_check_requested)
         self._host.restore_requested.connect(self.restore_backup)
+        self._host.open_external_requested.connect(self.open_external)
 
         self._channel = QWebChannel(self)
         self._channel.registerObject("etimHost", self._host)
@@ -267,6 +337,20 @@ class EtimologioWebShell(QWidget):
         script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
         script.setRunsOnSubFrames(False)
         self._view.page().scripts().insert(script)
+
+    @Slot(str)
+    def open_external(self, url: str) -> None:
+        """Ανοίγει διεύθυνση στον προεπιλεγμένο browser του συστήματος.
+
+        Μόνο ``http``/``https`` και μόνο εκτός loopback: ένα ``file://`` από τη
+        σελίδα θα άνοιγε αρχείο του δίσκου, και ένα loopback URL θα κατέληγε σε
+        οθόνη σύνδεσης χωρίς συνεδρία.
+        """
+        target = QUrl(str(url or "").strip())
+        if target.scheme() not in ("http", "https") or _is_local(target):
+            log.info("Αγνοήθηκε εξωτερικό άνοιγμα: %s", url)
+            return
+        QDesktopServices.openUrl(target)
 
     # --- κύκλος ζωής --------------------------------------------------------
     def start(self) -> None:

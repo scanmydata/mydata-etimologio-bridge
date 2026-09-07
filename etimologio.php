@@ -3798,6 +3798,59 @@ function ledgerMailBody(string $accountVat, array $info): array {
 }
 
 // failed result — it no-ops unless a ΜΑΡΚ was obtained.
+/**
+ * Ό,τι πήρε ΜΑΡΚ από αυτή την εφαρμογή μπαίνει αμέσως στη μνήμη του ελέγχου ΑΑΔΕ.
+ *
+ * ΓΙΑΤΙ: ο έλεγχος «τι νέο έχει η ΑΑΔΕ» ρωτούσε **μόνο** τον πίνακα των
+ * ειδοποιήσεων για να ξεχωρίσει τα δικά μας παραστατικά από τα ξένα. Τις
+ * ειδοποιήσεις όμως τις σβήνει ο χρήστης με το «✕» — και μόλις σβηστεί εκείνη
+ * του τιμολογίου, ο επόμενος έλεγχος το ξαναβρίσκει σαν άγνωστο και στέλνει
+ * **δεύτερο** email για το ίδιο ακριβώς παραστατικό. Ένα εκδόθηκε, δύο
+ * ειδοποιήσεις: μία «Νέο παραστατικό» από την έκδοση και μία «Έλεγχος ΑΑΔΕ»
+ * λίγο αργότερα.
+ *
+ * Η κρυφή μνήμη `newdocs` είναι το σωστό μέρος: εκεί ζει η λίστα «τι είχε η
+ * ΑΑΔΕ την τελευταία φορά», ο χρήστης δεν την αγγίζει, και ο έλεγχος τη
+ * συμβουλεύεται ΠΡΙΝ από οτιδήποτε άλλο.
+ *
+ * Καλείται και για τα δελτία αποστολής (9.x), που επίτηδες ΔΕΝ γράφουν
+ * ειδοποίηση — και γι' αυτό ακριβώς εμφανίζονταν ως «νέα» της ΑΑΔΕ.
+ */
+function markIssuedHere(array $result): void {
+    if (empty($result['success']) || empty($result['mark'])) return;
+    if (!defined('COMPANY_VAT') || COMPANY_VAT === '') return;
+    $mk = (string)$result['mark'];
+    $c  = cache_get(COMPANY_VAT, 'newdocs');
+    // Χωρίς προηγούμενη σάρωση ο έλεγχος δεν τρέχει καθόλου (βλ. `$prev`),
+    // οπότε δεν υπάρχει τίποτα να προστεθεί.
+    if (!$c) return;
+    $rows = (array)($c['rows'] ?? []);
+    foreach ($rows as $r) {
+        if ((string)($r['mark'] ?? '') === $mk) return;
+    }
+    $rows[] = ['mark' => $mk, 'series' => (string)($result['series'] ?? ''),
+               'aa' => (string)($result['aa'] ?? '')];
+    try { cache_set(COMPANY_VAT, 'newdocs', $rows); } catch (\Throwable $e) {}
+}
+
+/**
+ * Τα ΜΑΡΚ που έχει εκδώσει αυτή η εγκατάσταση, από το **ημερολόγιο ενεργειών**.
+ *
+ * Δεύτερο δίχτυ κάτω από το `markIssuedHere()`: το ημερολόγιο δεν σβήνεται από
+ * κανένα κουμπί, οπότε απαντά και για παραστατικά που εκδόθηκαν πριν μπει η
+ * μνήμη — ή σε εγκατάσταση όπου η κρυφή μνήμη καθαρίστηκε.
+ */
+function issuedMarksFromAudit(string $accountVat, int $limit = 400): array {
+    $out = [];
+    try {
+        foreach (audit_log_list($accountVat, ['action' => 'issue'], $limit) as $row) {
+            $mk = (string)(($row['detail'] ?? [])['mark'] ?? '');
+            if ($mk !== '') $out[$mk] = true;
+        }
+    } catch (\Throwable $e) { /* το δίχτυ δεν είναι λόγος να σπάσει ο έλεγχος */ }
+    return $out;
+}
+
 function notifyIssue(array $result, array $ctx): void {
     if (empty($result['success']) || empty($result['mark'])) return;
     $accountVat = defined('COMPANY_VAT') ? COMPANY_VAT : (string)($ctx['account_vat'] ?? '');
@@ -3819,7 +3872,11 @@ function notifyIssue(array $result, array $ctx): void {
         'amount_total'  => (float)($result['amount_total'] ?? 0),
         'source'        => (string)($ctx['source'] ?? ($GLOBALS['__issueSource'] ?? 'manual')),
     ];
-    try { notification_add($accountVat, $data); } catch (\Throwable $e) { /* never block issuance */ }
+    markIssuedHere($result);
+    // Η αποτυχία δεν σταματά την έκδοση, αλλά ΔΕΝ σωπαίνει κιόλας: μια
+    // ειδοποίηση που δεν γράφτηκε σημαίνει καμπάνα που δεν χτύπησε.
+    try { notification_add($accountVat, $data); }
+    catch (\Throwable $e) { error_log('notification_add: ' . $e->getMessage()); }
     try { notifyIssueEmail($accountVat, $data); } catch (\Throwable $e) {}
     // Και στον ΠΕΛΑΤΗ, αν η εταιρεία έχει ζητήσει αυτόματη αποστολή.
     try { autoSendIssuedDocument($accountVat, $data); } catch (\Throwable $e) {}
@@ -5816,9 +5873,14 @@ if ($syncKind !== '') {
             $cv = (string)($c['vat'] ?? $c['customer_vat'] ?? '');
             if ($cv !== '') $custNames[$cv] = (string)($c['name'] ?? $c['customer_name'] ?? '');
         }
+        // ΠΟΙΑ ΕΒΓΑΛΕ Η ΙΔΙΑ Η ΕΦΑΡΜΟΓΗ. Το ημερολόγιο ενεργειών δεν σβήνεται
+        // από κανένα κουμπί, σε αντίθεση με τις ειδοποιήσεις: μια σβησμένη
+        // ειδοποίηση έκανε το παραστατικό να ξαναφαίνεται «άγνωστο» και έστελνε
+        // δεύτερο email για την ίδια έκδοση.
+        $mine = issuedMarksFromAudit(COMPANY_VAT);
         foreach ($found as $inv) {
             $mk = (string)($inv['mark'] ?? '');
-            if ($mk === '' || isset($known[$mk])) continue;
+            if ($mk === '' || isset($known[$mk]) || isset($mine[$mk])) continue;
             // Ό,τι εκδόθηκε από την εφαρμογή έχει ήδη ειδοποίηση με το ίδιο ΜΑΡΚ.
             if (notification_exists(COMPANY_VAT, $mk)) {
                 // Περνώντας από δίπλα, διορθώνουμε ό,τι γράφτηκε με το παλιό,
@@ -6113,6 +6175,9 @@ if (!empty($_GET['delivery_note'] ?? $_POST['delivery_note'] ?? '')) {
         0, 0.0, $live, '', trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, $delivery, $dnLines, $dnSeries, [], $previewFlag, $issueLang, [], $reuseTempId
     );
     curl_close($ch);
+    // Τα δελτία αποστολής επίτηδες ΔΕΝ γράφουν ειδοποίηση — γι' αυτό ακριβώς ο
+    // έλεγχος ΑΑΔΕ τα έβρισκε αργότερα και τα ανήγγειλε ως ξένα.
+    if ($live && !$previewFlag) markIssuedHere($result);
     jsonResponse($result);
 }
 

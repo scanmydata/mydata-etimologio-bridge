@@ -96,6 +96,9 @@
     <?php endif; ?>
   </form>
 
+  <div id="signup-done" class="foot" style="display:none;margin-top:12px;padding:10px 12px;
+       border:1px solid rgba(56,189,248,.45);border-radius:10px;text-align:left"></div>
+
   <form id="f-forgot" onsubmit="return doForgot(event)">
     <label>Email</label><input type="email" id="fg-email" autocomplete="email" required>
     <button class="primary" type="submit">Αποστολή οδηγιών επαναφοράς</button>
@@ -155,7 +158,33 @@ async function doResend(email){
 }
 async function do2fa(e){e.preventDefault();try{const d=await post({auth:'login_totp',code:g('tf-code').value});
   if(d.success){location.href='app.php';}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
-async function doSignup(e){e.preventDefault();try{const j=g('s-join');const d=await post({auth:'signup',email:g('s-email').value,password:g('s-pass').value,business_name:g('s-name').value,join:j?j.value:''});if(d.success){msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);tab('login');}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
+// Η ΕΓΓΡΑΦΗ ΔΕΝ ΤΕΛΕΙΩΝΕΙ ΕΔΩ, και πρέπει να το πει. Ο χρήστης πατούσε
+// «Δημιουργία λογαριασμού», έβλεπε μια γραμμή να περνά και επέστρεφε στη
+// σύνδεση — όπου ο κωδικός του δεν δούλευε ακόμη, χωρίς να ξέρει γιατί. Το
+// βήμα που λείπει είναι το email επιβεβαίωσης, και λέγεται με το όνομά του.
+async function doSignup(e){
+  e.preventDefault();
+  const email=g('s-email').value.trim();
+  try{
+    const j=g('s-join');
+    const d=await post({auth:'signup',email,password:g('s-pass').value,
+                        business_name:g('s-name').value,join:j?j.value:''});
+    if(!d.success){msg(d.error||'Αποτυχία');return false;}
+    const box=g('signup-done');
+    if(box){
+      box.innerHTML=d.verification_sent===false
+        ? '<b>Η εγγραφή καταχωρήθηκε, αλλά ΔΕΝ στάλθηκε email επιβεβαίωσης.</b>'
+          +'<br>Επικοινώνησε με τον διαχειριστή του server για να την ολοκληρώσει.'
+        : '<b>Στάλθηκε email επιβεβαίωσης στο '+email.replace(/[<>&]/g,'')+'.</b>'
+          +'<br>Άνοιξέ το και πάτησε τον σύνδεσμο για να ενεργοποιηθεί ο λογαριασμός σου. '
+          +'Αν δεν το βρίσκεις, κοίτα και στα ανεπιθύμητα.';
+      box.style.display='';
+    }
+    msg(d.note||'Η εγγραφή καταχωρήθηκε.',true);
+    tab('login');
+  }catch(x){msg('Σφάλμα δικτύου');}
+  return false;
+}
 async function doForgot(e){e.preventDefault();try{const d=await post({auth:'forgot',email:g('fg-email').value});msg(d.note||'Στάλθηκαν οδηγίες.',true);}catch(x){msg('Σφάλμα δικτύου');}return false;}
 async function doReset(e){e.preventDefault();if(g('r-pass').value!==g('r-pass2').value){msg('Οι κωδικοί δεν ταιριάζουν');return false;}try{const d=await post({auth:'reset',token:g('r-token').value,password:g('r-pass').value});if(d.success){msg('Ο κωδικός ενημερώθηκε. Ανακατεύθυνση…',true);setTimeout(()=>location.href='app.php',1200);}else msg(d.error||'Αποτυχία');}catch(x){msg('Σφάλμα δικτύου');}return false;}
 

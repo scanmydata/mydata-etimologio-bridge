@@ -313,6 +313,11 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   td.right>button+button,td.right>a+button,td.right>button+a{margin-left:4px}
   /* Τα κελιά κειμένου κόβονται με «…» αντί να σπρώχνουν τον πίνακα. */
   table td{overflow:hidden;text-overflow:ellipsis}
+  /* Η γραμμή που μόλις εκδόθηκε (ή που έδειξε μια ειδοποίηση). Σβήνει μόνη της:
+     ένα μόνιμο χρώμα θα γινόταν θόρυβος στην επόμενη ματιά. */
+  @keyframes rowFound{from{background:rgba(56,189,248,.38)}to{background:transparent}}
+  tr.row-found>td{animation:rowFound 6s ease-out 1;outline:0}
+  tr.row-found>td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   /* ΕΞΑΙΡΕΣΗ: το κελί που φιλοξενεί αναδυόμενη λίστα ΔΕΝ κόβει.
      Το `.ac-panel` είναι position:absolute στο `top:100%` — δηλαδή ΕΞΩ από το
      κελί του. Με `overflow:hidden` στο `td` κοβόταν ολόκληρο και δεν φαινόταν
@@ -706,11 +711,18 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <label class="hint">Λογαριασμός (επιχείρηση)</label>
       <div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap">
         <select id="account" style="flex:1;min-width:0"></select>
-        <?php if ($__role === 'master'): ?>
+        <?php if (in_array($__role, ['master','editor'], true)): ?>
         <!-- Η προσθήκη επιχείρησης ζούσε τρία κλικ μακριά, μέσα στη Διαχείριση.
              Ο λογιστής που μόλις πήρε νέο πελάτη είναι ΕΔΩ, μπροστά στον
              επιλογέα — και ήθελε να προσθέσει ακριβώς αυτό που δεν βρίσκει
-             στη λίστα. -->
+             στη λίστα.
+
+             ΚΑΙ ΓΙΑ ΤΟΝ ΛΟΓΙΣΤΗ, όχι μόνο για τον διαχειριστή: στην εγκατάσταση
+             υπολογιστή ο συνδεδεμένος χρήστης ΕΙΝΑΙ λογιστής (`editor`, δες
+             `auth_desktop_workspace_user`), οπότε ο έλεγχος «μόνο master»
+             έκρυβε το κουμπί ακριβώς εκεί που χρειαζόταν — και το ίδιο στο web
+             για κάθε λογιστή. Το `staff_add_company` δέχεται ήδη και τους δύο
+             ρόλους και αναθέτει μόνο του τη νέα εταιρεία. -->
         <button class="add sm" id="acctQuickAdd" onclick="quickAddCompany()"
                 data-tip="Γρήγορη προσθήκη νέας επιχείρησης" aria-label="Νέα επιχείρηση">+</button>
         <?php endif; ?>
@@ -4621,6 +4633,9 @@ async function deliveryFromInvoice(){const o=window.__dnFromInv;if(!o)return;
 // Start a fresh draft: the next «Αποθήκευση & Προεπισκόπηση» creates a new draft ID.
 function issueNewDraft(){window.__issueTempId=null;$('#issueResult').innerHTML='<div class="card"><span class="pill">Νέο πρόχειρο</span> Το επόμενο Αποθήκευση θα δημιουργήσει νέο πρόχειρο.</div>';toast('Νέο πρόχειρο','ok');}
 async function submitInvoice(viaIssue){const live=viaIssue===true;
+  // Καθαρίζει την πρόταση δελτίου της ΠΡΟΗΓΟΥΜΕΝΗΣ έκδοσης: έμενε καρφωμένη στο
+  // παράθυρο και το επόμενο τιμολόγιο νόμιζε ότι έχει κι αυτό αγαθά.
+  window.__dnFromInv=null;
   const lines=collectLines();
   if(!lines.length){toast('Πρόσθεσε τουλάχιστον μία γραμμή (είδος + ποσότητα + τιμή)','err');return;}
   const ser=$('#iSeries').value;if(!ser||ser==='__new'){toast('Επίλεξε σειρά παραστατικού','err');return;}
@@ -4630,7 +4645,13 @@ async function submitInvoice(viaIssue){const live=viaIssue===true;
   if(live)p.live=1;
   $('#issueResult').innerHTML='<span class="spin"></span> Υποβολή…';
   try{const d=await api(p);
-    if(d.success){$('#issueResult').innerHTML=d.live?`<div class="card"><span class="pill ok">Εκδόθηκε</span><div style="margin-top:8px">ΜΑΡΚ <strong>${esc(d.mark)}</strong> · ΑΑ ${esc(d.aa)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € · ${docBtn(d.mark)}</div></div>`:`<div class="card"><span class="pill warn">Πρόχειρο</span><div style="margin-top:8px">Temp ID ${esc(d.temp_id)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € <span class="muted">(δεν υποβλήθηκε)</span></div></div>`;toast(d.live?'Εκδόθηκε':'Πρόχειρο OK','ok');if(d.live)window.__issueTempId=null;ITAXES=[];renderTaxes();sumTotals();offerDelivery(lines);}
+    if(d.success){$('#issueResult').innerHTML=d.live?`<div class="card"><span class="pill ok">Εκδόθηκε</span><div style="margin-top:8px">ΜΑΡΚ <strong>${esc(d.mark)}</strong> · ΑΑ ${esc(d.aa)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € · ${docBtn(d.mark)}</div></div>`:`<div class="card"><span class="pill warn">Πρόχειρο</span><div style="margin-top:8px">Temp ID ${esc(d.temp_id)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € <span class="muted">(δεν υποβλήθηκε)</span></div></div>`;toast(d.live?'Εκδόθηκε':'Πρόχειρο OK','ok');if(d.live)window.__issueTempId=null;ITAXES=[];renderTaxes();sumTotals();offerDelivery(lines);
+      // Οριστική έκδοση: πάμε εκεί που ζει πια το παραστατικό, με τη γραμμή του
+      // επισημασμένη. Η φόρμα δεν έχει να δείξει τίποτα άλλο.
+      //
+      // ΟΧΙ όταν προτάθηκε δελτίο αποστολής: εκείνη η πρόταση ζει μέσα στο
+      // «Αποτέλεσμα» της Έκδοσης και θα έφευγε από την οθόνη πριν τη δει.
+      if(d.live&&d.mark&&!window.__dnFromInv)setTimeout(()=>docJump(d.mark),700);}
     else $('#issueResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc(d.error||'')+'</div>';
   }catch(e){$('#issueResult').innerHTML='';toast('Έκδοση: '+e.message,'err');}}
 
@@ -4950,6 +4971,49 @@ let ALL_DOCS=[];
 function docsYear(){const y=new Date().getFullYear();dset('docFrom',y+'-01-01');dset('docTo',y+'-12-31');loadDocs();}
 function docsInit(){if(!$('#docFrom').value||!$('#docTo').value){docsYear();return;}
   if(!ALL_DOCS.length)loadDocs();}
+//: Το ΜΑΡΚ που πρέπει να ξεχωρίσει στον πίνακα μόλις ζωγραφιστεί.
+let DOC_FOCUS='';
+/**
+ * Πήγαινε στα Παραστατικά και δείξε ΑΥΤΟ το ΜΑΡΚ.
+ *
+ * Μέχρι τώρα η έκδοση τελείωνε με ένα «Εκδόθηκε» και ο χρήστης έμενε στη φόρμα:
+ * για να δει το παραστατικό έπρεπε να αλλάξει οθόνη, να περιμένει φόρτωση και
+ * να ψάξει τη γραμμή του ανάμεσα σε όλες τις άλλες. Το ίδιο ίσχυε για κάθε
+ * ειδοποίηση της καμπάνας — έλεγε ότι κάτι έγινε, χωρίς να πηγαίνει εκεί.
+ *
+ * Η λίστα ξαναδιαβάζεται ΠΑΝΤΑ: το μόλις εκδοθέν δεν υπάρχει στην παλιά.
+ */
+async function docJump(mark){
+  mark=String(mark||'').trim();
+  if(!mark)return;
+  DOC_FOCUS=mark;
+  showView('documents');
+  // Χωρίς διάστημα, ολόκληρο το έτος — ΧΩΡΙΣ να καλέσουμε το `docsYear()`, που
+  // φορτώνει κι εκείνο: δύο φορτώσεις στη σειρά σε έναν server που εξυπηρετεί
+  // μία αίτηση τη φορά είναι διπλή αναμονή για το ίδιο αποτέλεσμα.
+  if(!$('#docFrom').value||!$('#docTo').value){
+    const y=new Date().getFullYear();dset('docFrom',y+'-01-01');dset('docTo',y+'-12-31');
+  }
+  await loadDocs();
+  focusDocRow();
+}
+function focusDocRow(){
+  if(!DOC_FOCUS)return;
+  const mark=DOC_FOCUS;
+  const cb=document.querySelector('#docTable tbody .doc-cb[value="'+CSS.escape(mark)+'"]');
+  const row=cb?cb.closest('tr'):null;
+  if(!row){
+    // Το παραστατικό δεν είναι στο φιλτραρισμένο διάστημα. Καλύτερα να το πούμε
+    // παρά να αφήσουμε τον χρήστη να ψάχνει γραμμή που δεν υπάρχει.
+    toast('Το παραστατικό '+mark+' δεν βρέθηκε στο επιλεγμένο διάστημα','warn');
+    DOC_FOCUS='';
+    return;
+  }
+  document.querySelectorAll('#docTable tr.row-found').forEach(r=>r.classList.remove('row-found'));
+  row.classList.add('row-found');
+  row.scrollIntoView({block:'center',behavior:'smooth'});
+  DOC_FOCUS='';
+}
 async function loadDocs(){
   if(!$('#docFrom').value||!$('#docTo').value){const y=new Date().getFullYear();dset('docFrom',y+'-01-01');dset('docTo',y+'-12-31');}
   $('#docTable tbody').innerHTML='<tr><td colspan="11"><span class="spin"></span></td></tr>';
@@ -5018,6 +5082,7 @@ function renderDocs(){
     ||'<tr><td colspan="11" class="muted">Κανένα παραστατικό στο διάστημα.</td></tr>';
   applyColumnFilters('docTable');
   docSelChanged();
+  if(DOC_FOCUS)focusDocRow();
 }
 function docToggleAll(on){document.querySelectorAll('#docTable .doc-cb').forEach(cb=>{
   if(cb.closest('tr').style.display!=='none')cb.checked=on;});
@@ -6513,6 +6578,20 @@ function sectReveal(el){const p=el&&el.closest('.panel.sect');if(p&&!p.classList
 // μόνο το Qt. Η γέφυρα είναι το QWebChannel — το `window.etimHost` το φυτεύει
 // το κέλυφος (webshell.py) και υπάρχει ΜΟΝΟ στην ενσωματωμένη εφαρμογή.
 function dtHost(){return window.etimHost||null;}
+// Άνοιγμα διεύθυνσης ΕΞΩ από την εφαρμογή.
+//
+// Μέσα στο παράθυρο της εφαρμογής υπολογιστή δεν υπάρχουν καρτέλες: ένα
+// `window.open` δεν οδηγεί πουθενά και ο σύνδεσμος «δεν κάνει τίποτα». Η γέφυρα
+// του Qt ανοίγει τον προεπιλεγμένο browser — εκεί που θα ζήσει και η συνεδρία
+// του χρήστη στον server. Στον κανονικό browser μένει το γνωστό νέο παράθυρο.
+function openExternalUrl(url){
+  url=String(url||'').trim();
+  if(!/^https?:\/\//i.test(url))return;
+  const h=dtHost();
+  if(h&&h.openExternal){h.openExternal(url);toast('Άνοιξε στον browser σου','ok');return;}
+  const w=window.open(url,'_blank','noopener');
+  if(!w)uiPrompt('Αντίγραψε τη διεύθυνση:',url,{title:'🌐 Σύνδεσμος'});
+}
 // Το Qt μας λέει την τρέχουσα κατάσταση μόλις φορτώσει η σελίδα.
 function applyDesktopPrefs(p){
   p=p||{};
@@ -6699,6 +6778,7 @@ const MANUAL=[
 
   ['8. Ειδοποιήσεις εκδόσεων','h2'],
   ['Κάθε πραγματική έκδοση (λαμβάνει ΜΑΡΚ) — εκτός από τα δελτία αποστολής (9.x) — καταγράφει ειδοποίηση για τον λογιστή/διαχειριστή. Το κουδουνάκι 🔔 πάνω δεξιά δείχνει το πλήθος των αδιάβαστων και ανοίγει τη λίστα με το ποιος εξέδωσε τι και πότε: τύπος παραστατικού, πελάτης, σειρά/ΑΑ, σύνολο, ΜΑΡΚ και ένδειξη πηγής (⏰ προγραμματισμένη, 📚 μαζική). Ο λογιστής/διαχειριστής βλέπει τις εκδόσεις όλων των εταιριών· η κάθε επιχείρηση μόνο τις δικές της. Πάτησε μια ειδοποίηση για να τη σημάνεις αναγνωσμένη, ή «✓ Όλα».','p'],
+  ['<b>Διπλό κλικ σε μια ειδοποίηση</b> σε πηγαίνει στο ίδιο το παραστατικό: ανοίγει τα «Παραστατικά», αλλάζει εταιρεία αν χρειάζεται, και <b>φωτίζει τη γραμμή του</b>. Το ίδιο γίνεται και μόνο του μετά από κάθε οριστική έκδοση.','li'],
 
   ['9. Προτιμήσεις email ειδοποιήσεων (ανά εταιρία & κίνηση)','h2'],
   ['Ο λογιστής/διαχειριστής ρυθμίζει από «Ρυθμίσεις → Ειδοποιήσεις email» για ΠΟΙΕΣ εταιρίες-πελάτες και ΠΟΙΕΣ κινήσεις θέλει να λαμβάνει email όταν εκδίδεται παραστατικό: επίλεξε «(Όλες)» ή συγκεκριμένες εταιρίες, και τύπους κίνησης (Τιμολόγια, Αποδείξεις λιανικής, Πιστωτικά/Ακυρώσεις). Ο γενικός διακόπτης «Λαμβάνω email» ενεργοποιεί/απενεργοποιεί εντελώς τα email. Οι εντός εφαρμογής ειδοποιήσεις (🔔) δεν επηρεάζονται — φιλτράρονται μόνο τα email. Απαιτείται ρυθμισμένος πάροχος email (Resend ή SMTP) στο config.php.','p'],
@@ -6707,6 +6787,7 @@ const MANUAL=[
   ['Τρεις ρόλοι: «Διαχειριστής» = πλήρη δικαιώματα, διαχείριση μελών και πρόσβαση σε όλες τις εταιρίες· «Λογιστής» = πρόσβαση/έκδοση/χρονοπρογραμματισμός/ειδοποιήσεις σε όλες τις εταιρίες, χωρίς διαχείριση μελών· «Επιχείρηση» = μόνο οι δικές της εταιρίες.','p'],
   ['Ο διαχειριστής, από τη «Διαχείριση»: εγκρίνει νέες εγγραφές, αλλάζει ρόλο κάθε μέλους από το αναπτυσσόμενο μενού, βλέπει την κατάσταση 2FA, και προσκαλεί νέα μέλη με email («✉️ Πρόσκληση μέλους» → email με σύνδεσμο ενεργοποίησης όπου το μέλος ορίζει κωδικό). Αν δεν υπάρχει πάροχος email, εμφανίζεται ο σύνδεσμος ενεργοποίησης για χειροκίνητη αποστολή.','p'],
   ['Ως λογιστής/διαχειριστής, επίλεξε εταιρία από τον διακόπτη «Λογαριασμός» πάνω και εργάσου (έκδοση, καρτέλες, πληρωμές, χρονοπρογραμματισμός, ειδοποιήσεις) για οποιαδήποτε εταιρία-πελάτη.','p'],
+  ['Το πράσινο <b>+</b> δίπλα στον διακόπτη ανοίγει κατευθείαν τη φόρμα νέας επιχείρησης — ίδια με εκείνη της Διαχείρισης. Η εταιρεία καταχωρείται στο γραφείο σου και σου ανατίθεται αμέσως.','li'],
 
   ['11. Ασφάλεια — 2FA με authenticator','h2'],
   ['Προαιρετική επαλήθευση δύο παραγόντων. Από «Ρυθμίσεις → 2FA» πάτα «Ενεργοποίηση», σκάναρε τον κωδικό QR με εφαρμογή authenticator (Google Authenticator, Authy, Microsoft Authenticator, 1Password κ.λπ.) ή καταχώρησε το εμφανιζόμενο κλειδί χειροκίνητα, και επιβεβαίωσε με τον 6ψήφιο κωδικό. Στο εξής, σε κάθε σύνδεση θα ζητείται ο τρέχων κωδικός. Απενεργοποίηση με τον κωδικό authenticator ή με τον κωδικό πρόσβασής σου. Το μυστικό 2FA αποθηκεύεται κρυπτογραφημένο.','p'],
@@ -6745,7 +6826,7 @@ const MANUAL=[
   ['11ζ. Σύνδεση με web server (μόνο στην εφαρμογή υπολογιστή)','h2'],
   ['Η εφαρμογή δουλεύει μια χαρά μόνη της. Αν όμως το γραφείο έχει στημένο <b>web server</b>, μπορεί να δεθεί μαζί του: τα δεδομένα ζουν <b>και</b> εκεί, και κάθε πελάτης μπαίνει από browser με έναν σύνδεσμο — χωρίς να εγκαταστήσει τίποτα.','p'],
   ['<b>Βήμα 1 — Καταχώρηση &amp; ανέβασμα.</b> Ο διαχειριστής σου δίνει ένα <b>κλειδί πρόσβασης</b> (Ρυθμίσεις → «🔑 Κλειδιά πρόσβασης» στον server). Επικόλλησέ το στις «Ρυθμίσεις → ☁️ Σύνδεση με web server» και πάτησε «🔗 Καταχώρηση &amp; ανέβασμα». Οι εταιρείες και οι πληρωμές σου ανεβαίνουν αμέσως. Διεύθυνση δεν χρειάζεται να ξέρεις: το κλειδί την κουβαλά μέσα του. <b>Η εφαρμογή συνεχίζει να δουλεύει στα τοπικά δεδομένα.</b>','li'],
-  ['<b>Βήμα 2 — Η εγγραφή σου.</b> Μαζί με το κλειδί παίρνεις έναν <b>προσωπικό σύνδεσμο εγγραφής</b> (τον δείχνει και η ίδια η κάρτα, αν λείπει ο λογαριασμός). Άνοιξέ τον σε browser — π.χ. <b>https://etimologiopro.scanmydata.gr/</b> — φτιάξε λογαριασμό και <b>επιβεβαίωσε το email σου</b>. Ο λογαριασμός ενεργοποιείται αμέσως, με τις εταιρείες που ανέβηκαν στο Βήμα 1 <b>ήδη μέσα</b>: μέχρι να γίνει η εγγραφή, τα δεδομένα φιλοξενούνται στον λογαριασμό που εξέδωσε το κλειδί και παραδίδονται σε σένα με την επιβεβαίωση.','li'],
+  ['<b>Βήμα 2 — Η εγγραφή σου.</b> Μαζί με το κλειδί παίρνεις έναν <b>προσωπικό σύνδεσμο εγγραφής</b> (τον δείχνει και η ίδια η κάρτα, αν λείπει ο λογαριασμός). Πάτησέ τον: μέσα από την εφαρμογή υπολογιστή ανοίγει στον <b>δικό σου browser</b>, εκεί όπου θα ζήσει και η συνεδρία σου. Φτιάξε λογαριασμό και <b>επιβεβαίωσε το email σου</b> — θα σου σταλεί μήνυμα και η οθόνη σου το λέει. Ο λογαριασμός δημιουργείται ως <b>λογιστής</b> και ενεργοποιείται με την επιβεβαίωση, με τις εταιρείες που ανέβηκαν στο Βήμα 1 <b>ήδη μέσα</b>: μέχρι τότε φιλοξενούνται στον λογαριασμό που εξέδωσε το κλειδί και παραδίδονται σε σένα.','li'],
   ['<b>Βήμα 3 — Χρήση δεδομένων server.</b> Μπες πρώτα στο web από browser και βεβαιώσου ότι όλα φαίνονται σωστά. Μετά, αν θέλεις να δείχνει και η εφαρμογή τα δεδομένα του server, πάτησε «🖥️ Χρήση δεδομένων server» και <b>κλείσε και ξανάνοιξε</b>. Από εκεί και πέρα μπαίνεις με τα στοιχεία <b>του server</b> — ο τοπικός λογαριασμός της εφαρμογής <b>δεν</b> ισχύει εκεί, είναι άλλη βάση.','li'],
   ['Χωρίς σύνδεση με server, η <b>«✉️ Πρόσκληση πελάτη»</b> δεν είναι διαθέσιμη: ο σύνδεσμος θα έδειχνε σε αυτόν τον υπολογιστή, δηλαδή σε διεύθυνση που ο πελάτης δεν φτάνει.','li'],
   ['<b>Πάντα υπάρχει γυρισμός.</b> Σε λειτουργία server, μια μπάρα στην κορυφή γράφει πού βρίσκεσαι και έχει κουμπί «💻 Τοπικά δεδομένα». Τα δεδομένα αυτού του υπολογιστή δεν πειράζονται ποτέ.','li'],
@@ -6946,8 +7027,13 @@ function uiAsk(opts){
   $('#uiAskHead').textContent=opts.title||'Επιβεβαίωση';
   // Τα παλιά μηνύματα είναι γραμμένα με «\n» — γίνονται παράγραφοι, αλλιώς
   // βγαίνουν όλα κολλητά σε μία γραμμή.
-  $('#uiAskBody').innerHTML=String(opts.text||'').split(/\n{2,}/)
-    .map(part=>'<p style="margin:6px 0">'+esc(part).replace(/\n/g,'<br>')+'</p>').join('');
+  // `opts.html`: περιεχόμενο που φτιάχνει η ΙΔΙΑ η εφαρμογή (π.χ. ένας σύνδεσμος
+  // που πρέπει να πατιέται). Ποτέ κείμενο χρήστη — αυτό περνά από το `text`,
+  // που εξακολουθεί να περνά από `esc()`.
+  $('#uiAskBody').innerHTML=opts.html!==undefined
+    ? String(opts.html)
+    : String(opts.text||'').split(/\n{2,}/)
+      .map(part=>'<p style="margin:6px 0">'+esc(part).replace(/\n/g,'<br>')+'</p>').join('');
   const field=$('#uiAskField'),input=$('#uiAskInput');
   const wantsInput=opts.input!==undefined;
   field.style.display=wantsInput?'':'none';
@@ -7049,9 +7135,12 @@ async function loadLink(){
       nag.hidden=!need;
       if(need){
         const url=d.signup_url||'https://etimologiopro.scanmydata.gr/';
+        // ΟΧΙ σκέτο `target="_blank"`: μέσα στην εφαρμογή υπολογιστή δεν ανοίγει
+        // τίποτα. Το κλικ περνά από τη γέφυρα, που ξέρει τον browser του χρήστη.
         nag.innerHTML='📝 <b>Μένει η εγγραφή σου.</b> Άνοιξε τον προσωπικό σου σύνδεσμο, '
-          +'φτιάξε λογαριασμό και επιβεβαίωσε το email: '
-          +'<a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(url)+'</a> '
+          +'φτιάξε λογαριασμό και επιβεβαίωσε το email:<br>'
+          +'<a href="#" onclick="openExternalUrl(\''+q1(url)+'\');return false;">'+esc(url)+'</a> '
+          +'<button class="primary sm" onclick="openExternalUrl(\''+q1(url)+'\')">🌐 Άνοιγμα</button> '
           +'<button class="ghost sm" onclick="linkCopy(\''+q1(url)+'\')">📋 Αντιγραφή</button>';
       }
     }
@@ -7067,7 +7156,7 @@ async function loadLink(){
       <td>${esc(i.label||'—')}</td><td>${esc(i.vat)}</td>
       <td>${d.web_link?`<span class="muted">${esc(d.web_link)}</span>`:'<span class="muted">—</span>'}</td>
       <td class="right">${d.web_link?`<button class="ghost sm" onclick="linkCopy('${q1(d.web_link)}')">🔗 Αντιγραφή</button>
-        <button class="ghost sm" onclick="window.open('${q1(d.web_link)}','_blank')">🌐 Άνοιγμα</button>`:''}</td></tr>`)
+        <button class="ghost sm" onclick="openExternalUrl('${q1(d.web_link)}')">🌐 Άνοιγμα</button>`:''}</td></tr>`)
       .join('')||'<tr><td colspan="4" class="muted">Καμία εταιρεία σε αυτή την εγκατάσταση.</td></tr>';
   }catch(e){}
 }
@@ -7092,17 +7181,29 @@ async function linkConnect(){
       // Η σιωπηλή αποτυχία ήταν το χειρότερο κομμάτι: «Ανέβηκαν 0» χωρίς λέξη
       // για το γιατί. Τώρα ο λόγος έρχεται μαζί.
       if(errs.length)msg+='Τι εμπόδισε το ανέβασμα:\n• '+errs.slice(0,5).join('\n• ')+'\n\n';
-      msg+=d.ready
-        ? ('Η εφαρμογή συνεχίζει να δουλεύει στα ΤΟΠΙΚΑ δεδομένα. Μόλις '
-          +'επιβεβαιώσεις ότι μπαίνεις κανονικά στο web, πάτησε «Χρήση δεδομένων server».')
-        : ('ΜΕΝΕΙ ΕΝΑ ΒΗΜΑ: δεν υπάρχει ακόμη λογαριασμός σε αυτόν τον server για '
-          +'αυτό το κλειδί. Κάνε εγγραφή εδώ:\n\n'
-          +(d.signup_url||'https://etimologiopro.scanmydata.gr/')+'\n\n'
-          +'Επιβεβαίωσε το email σου και ο λογαριασμός ενεργοποιείται αμέσως, με τις '
-          +'εταιρείες σου ήδη μέσα. Μέχρι τότε δουλεύεις κανονικά στα τοπικά δεδομένα '
-          +'και ό,τι κάνεις συνεχίζει να ανεβαίνει.');
-      await uiAlert(msg);
-      if(!d.ready&&d.signup_url)linkCopy(d.signup_url);
+      if(d.ready){
+        msg+='Η εφαρμογή συνεχίζει να δουλεύει στα ΤΟΠΙΚΑ δεδομένα. Μόλις '
+            +'επιβεβαιώσεις ότι μπαίνεις κανονικά στο web, πάτησε «Χρήση δεδομένων server».';
+        await uiAlert(msg);
+      }else{
+        // Ο σύνδεσμος είναι το ΕΠΟΜΕΝΟ ΒΗΜΑ, όχι πληροφορία: μπαίνει ως κουμπί
+        // που ανοίγει τον browser του χρήστη, όχι ως κείμενο να αντιγράψει.
+        const url=d.signup_url||'https://etimologiopro.scanmydata.gr/';
+        const body=msg.split(/\n{2,}/).map(p=>'<p style="margin:6px 0">'+esc(p).replace(/\n/g,'<br>')+'</p>').join('')
+          +'<p style="margin:10px 0 6px"><b>Μένει ένα βήμα:</b> δεν υπάρχει ακόμη λογαριασμός '
+          +'σε αυτόν τον server για αυτό το κλειδί.</p>'
+          +'<p style="margin:6px 0"><a href="#" onclick="openExternalUrl(\''+q1(url)+'\');return false;">'
+          +esc(url)+'</a></p>'
+          +'<p style="margin:6px 0" class="muted">Επιβεβαίωσε το email σου και ο λογαριασμός '
+          +'ενεργοποιείται αμέσως, με τις εταιρείες σου ήδη μέσα. Μέχρι τότε δουλεύεις '
+          +'κανονικά στα τοπικά δεδομένα και ό,τι κάνεις συνεχίζει να ανεβαίνει.</p>';
+        if(await uiAsk({html:body,title:'☁️ Σύνδεση με τον server',
+                        ok:'🌐 Άνοιγμα εγγραφής',cancel:'Αργότερα'})){
+          openExternalUrl(url);
+        }else{
+          linkCopy(url);
+        }
+      }
       loadLink();
     }
   }catch(e){toast(e.message,'err');}
@@ -7289,7 +7390,10 @@ function renderNotifications(items){const list=$('#notifList');
     const src=n.source==='scheduled'?' ⏰':(n.source==='bulk'?' 📚':(n.source==='aade'?' 🛰️':''));
     const acct=(IS_STAFF&&n.account_vat)?(' · ΑΦΜ '+esc(n.account_vat)):'';
     const seri=n.series?(' · Σειρά '+esc(n.series)+(n.aa?('/'+esc(n.aa)):'')):'';
-    return `<div class="notif-item ${n.is_read?'':'unread'}" data-nid="${n.id}" onclick="notifRead(${n.id},this)">
+    // Μονό κλικ = «το είδα». Διπλό κλικ = «πήγαινέ με εκεί»: η ειδοποίηση έλεγε
+    // ότι κάτι έγινε, αλλά ο χρήστης έπρεπε να το βρει μόνος του.
+    return `<div class="notif-item ${n.is_read?'':'unread'}" data-nid="${n.id}" onclick="notifRead(${n.id},this)"
+      ${n.mark?`ondblclick="notifOpen(event,'${q1(n.mark)}','${q1(n.account_vat||'')}')" title="Διπλό κλικ: άνοιγμα του παραστατικού στη λίστα"`:''}>
       <div class="nt-top"><b>${esc(n.doc_label||n.doc_type)}</b>${src}<span class="nt-amt">${amt}</span>
         <button class="nt-x" title="Διαγραφή ειδοποίησης" aria-label="Διαγραφή ειδοποίησης"
                 onclick="notifDelete(event,${n.id})">✕</button></div>
@@ -7297,6 +7401,20 @@ function renderNotifications(items){const list=$('#notifList');
       <div class="nt-sub">${esc(n.created_at||'')}${seri}</div>
       <div class="nt-mark">ΜΑΡΚ ${esc(n.mark)}</div>
     </div>`;}).join('');}
+// Το διπλό κλικ πάει στο παραστατικό της ειδοποίησης — αλλάζοντας πρώτα εταιρεία
+// αν η ειδοποίηση αφορά άλλη. Ο λογιστής βλέπει ειδοποιήσεις ΟΛΩΝ των πελατών
+// του: χωρίς την αλλαγή, το άλμα θα κατέληγε σε λίστα άλλης επιχείρησης.
+async function notifOpen(ev,mark,vat){
+  if(ev){ev.stopPropagation();ev.preventDefault();}
+  const p=$('#notifPanel');if(p)p.hidden=true;
+  if(vat&&vat!==ACCOUNT){
+    const sel=$('#account');
+    if(sel&&Array.from(sel.options).some(o=>o.value===vat)){
+      sel.value=vat;ACCOUNT=vat;ALL_DOCS=[];await loadProductList();
+    }
+  }
+  docJump(mark);
+}
 async function notifRead(id,el){if(el)el.classList.remove('unread');try{const d=await api({notif_read:1,id});setBell(d.unread||0);}catch(e){}}
 // Το ✕ ΔΕΝ πρέπει να μετρήσει και ως «διάβασέ το»: το κλικ ανεβαίνει στη
 // γραμμή, που έχει δικό της onclick. Χωρίς stopPropagation θα έφευγαν δύο

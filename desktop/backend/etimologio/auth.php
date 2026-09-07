@@ -282,7 +282,12 @@ function auth_signup(string $email, string $password, string $businessName, stri
     // έγκρισης — αρκεί να αποδείξει ότι το email είναι δικό του.
     $join = ($joinToken !== '' && function_exists('access_key_by_claim'))
         ? access_key_by_claim($joinToken) : null;
-    $id = user_create($email, password_hash($password, PASSWORD_DEFAULT), 'business', 'pending', $businessName);
+    // ΡΟΛΟΣ ΛΟΓΙΣΤΗ, όχι επιχείρησης. Το κλειδί το παίρνει ένα ΓΡΑΦΕΙΟ που
+    // ανεβάζει τις εταιρείες των πελατών του: με ρόλο «επιχείρηση» θα έβλεπε
+    // μόνο όσες του ανήκουν ονομαστικά και δεν θα μπορούσε ούτε να προσθέσει
+    // καινούρια — δηλαδή θα έμπαινε σε εφαρμογή που δεν κάνει τη δουλειά του.
+    $role = $join ? 'editor' : 'business';
+    $id = user_create($email, password_hash($password, PASSWORD_DEFAULT), $role, 'pending', $businessName);
     if ($join) access_key_set_claimed((int)$join['id'], $id);
     // Πρώτα επαλήθευση email, ΜΕΤΑ έγκριση. Ο διαχειριστής ειδοποιείται μόνο
     // όταν αποδειχθεί ότι το email υπάρχει και ανήκει σε αυτόν που εγγράφηκε —
@@ -808,11 +813,21 @@ function auth_claim_deliver(int $uid): int {
     $key = access_key_by_claimed_uid($uid);
     if (!$key) return 0;
     $moved = 0;
+    $ids = [];
     foreach (access_key_vats((int)$key['id']) as $vat) {
         $a = account_by_vat($vat);
         if (!$a) continue;
         account_set_owner((int)$a['id'], $uid);
+        $ids[] = (int)$a['id'];
         $moved++;
+    }
+    // Ο ΛΟΓΙΣΤΗΣ ΔΕΝ ΒΛΕΠΕΙ ΟΣΑ ΤΟΥ ΑΝΗΚΟΥΝ — βλέπει όσα του έχουν ανατεθεί.
+    // Χωρίς αυτή την ανάθεση, ο λογαριασμός θα άνοιγε άδειος πάνω από τις ίδιες
+    // του τις εταιρείες, που θα ήταν ήδη εκεί, ορατές μόνο στον διαχειριστή.
+    $me = user_by_id($uid);
+    if ($ids && $me && ($me['role'] ?? '') === 'editor') {
+        manager_set_accounts($uid, array_values(array_unique(
+            array_merge(manager_account_ids($uid), $ids))));
     }
     // Και το ίδιο το κλειδί δένει πια στον δικό του λογαριασμό: ο επόμενος
     // συγχρονισμός γράφει κατευθείαν εκεί, χωρίς ενδιάμεσο.

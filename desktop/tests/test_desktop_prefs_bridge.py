@@ -46,7 +46,7 @@ def test_page_and_shell_agree_on_the_bridge_names(page: str) -> None:
     source = Path(webshell.__file__).read_text(encoding="utf-8")
     assert "window.etimHost" in page and "window.etimHost=c.objects.etimHost" in source
     assert 'registerObject("etimHost"' in source
-    for call in ("setStartMinimized", "checkUpdates"):
+    for call in ("setStartMinimized", "checkUpdates", "openExternal"):
         assert f"h.{call}(" in page, f"η σελίδα δεν καλεί το {call}"
         assert f"def {call}(" in source, f"το κέλυφος δεν εκθέτει το {call}"
     assert "applyDesktopPrefs" in page and "applyDesktopPrefs" in source
