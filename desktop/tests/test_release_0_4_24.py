@@ -66,7 +66,9 @@ def test_the_scan_remembers_what_we_issued_even_after_the_bell_is_cleared():
     loop = loop[: loop.index("notification_add(")]
     # Και οι δύο μνήμες ρωτιούνται ΠΡΙΝ γραφτεί οτιδήποτε.
     assert "isset($mine[$mk])" in loop
-    assert "$mine = issuedMarksFromAudit(COMPANY_VAT);" in src
+    # Από την 0.4.25 η πηγή είναι ΔΥΟ (ημερολόγιο + κοινή λίστα με την άλλη
+    # εγκατάσταση) και η κλήση λέγεται `issuedMarksFor` — δες test_release_0_4_25.
+    assert "$mine = issuedMarksFor(COMPANY_VAT);" in src
 
 
 def test_the_issue_writes_itself_into_the_scan_memory():

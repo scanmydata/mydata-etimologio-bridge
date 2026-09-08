@@ -3831,6 +3831,43 @@ function markIssuedHere(array $result): void {
     $rows[] = ['mark' => $mk, 'series' => (string)($result['series'] ?? ''),
                'aa' => (string)($result['aa'] ?? '')];
     try { cache_set(COMPANY_VAT, 'newdocs', $rows); } catch (\Throwable $e) {}
+    // Και στη ΜΟΝΙΜΗ λίστα, που ταξιδεύει και στην άλλη πλευρά.
+    try { issued_marks_add(COMPANY_VAT, [$mk]); } catch (\Throwable $e) {}
+    try { pushIssuedMark(COMPANY_VAT, $mk); } catch (\Throwable $e) {}
+}
+
+/**
+ * Λέει ΑΜΕΣΩΣ στην άλλη πλευρά ότι αυτό το ΜΑΡΚ βγήκε από εδώ.
+ *
+ * Χωρίς αυτό, η ενημέρωση θα περίμενε τον επόμενο συγχρονισμό — και ο ωριαίος
+ * έλεγχος της άλλης πλευράς προλαβαίνει: ο χρήστης έπαιρνε δεύτερο email πριν
+ * προλάβουν οι δύο βάσεις να συμφωνήσουν.
+ *
+ * Best-effort και με κοντό χρονικό όριο: η έκδοση έχει ήδη πετύχει, και δεν
+ * επιτρέπεται να περιμένει ο χρήστης για μια ενημέρωση που μπορεί να γίνει και
+ * αργότερα, με τον κανονικό συγχρονισμό.
+ */
+function pushIssuedMark(string $accountVat, string $mark): void {
+    if (!function_exists('link_is_local') || !link_is_local()) return;
+    $stored = setting_get('link.key');
+    if ($stored === '') return;
+    [$base, $secret] = link_decode_key($stored);
+    if ($base === '' || $secret === '') return;
+    link_call($base, ['api' => 'issued'],
+              ['vat' => $accountVat, 'marks' => $mark], 6, $secret);
+}
+
+/**
+ * Όλα τα ΜΑΡΚ που έχει εκδώσει η σουίτα για αυτή την εταιρεία.
+ *
+ * Δύο πηγές, γιατί καμία δεν αρκεί μόνη της: το **ημερολόγιο ενεργειών** ξέρει
+ * μόνο ό,τι εκδόθηκε σε ΑΥΤΗ την εγκατάσταση, και η **κοινή λίστα** ξέρει και
+ * ό,τι εκδόθηκε στην άλλη — αλλά μόνο για όσο διάστημα κρατά (τα τελευταία 300).
+ */
+function issuedMarksFor(string $accountVat): array {
+    $out = issuedMarksFromAudit($accountVat);
+    foreach (issued_marks_all($accountVat) as $m) $out[$m] = true;
+    return $out;
 }
 
 /**
@@ -4072,12 +4109,32 @@ if ($authAction !== '') {
         // συνεδρία — ο χρήστης συνδέεται κανονικά μετά.
         case 'access_provision': {
             $key = trim((string)($_POST['key'] ?? $_GET['key'] ?? ''));
-            $u = access_key_user($key);
-            // Ίδιο μήνυμα για «λάθος κλειδί» και «ανενεργός χρήστης»: δεν
-            // βοηθάμε κάποιον να μαντέψει ποια κλειδιά υπάρχουν.
-            if (!$u || ($u['status'] ?? '') !== 'active') {
+            $ks  = access_key_state($key);
+            $u   = $ks['user'];
+            // «Δεν σε ξέρω» μένει σκέτο: δεν βοηθάμε κάποιον να μαντέψει ποια
+            // κλειδιά υπάρχουν. Ένα κλειδί όμως που ΤΑΥΤΟΠΟΙΗΘΗΚΕ σημαίνει ότι
+            // ο καλών κρατά ήδη το μυστικό — δικαιούται να μάθει ΓΙΑΤΙ δεν
+            // δουλεύει, αντί να ξαναδοκιμάζει το ίδιο κλειδί για μέρες.
+            if ($ks['state'] === 'unknown' || !$u || ($u['status'] ?? '') !== 'active') {
                 usleep(300000);
                 jsonError('Το κλειδί δεν αναγνωρίστηκε', 403);
+            }
+            if ($ks['state'] !== 'ok') {
+                $row = $ks['row'];
+                $why = [
+                    'revoked' => 'Το κλειδί ΑΝΑΚΛΗΘΗΚΕ από τον διαχειριστή του server. '
+                               . 'Ζήτησέ του καινούριο — τα δεδομένα σου δεν χάθηκαν, '
+                               . 'δουλεύεις κανονικά στα τοπικά.',
+                    'expired' => 'Το κλειδί ΕΛΗΞΕ στις '
+                               . date('d/m/Y', strtotime((string)$row['expires_at'])) . '. '
+                               . 'Ζήτησε ανανέωση από τον διαχειριστή του server.',
+                    'unpaid'  => 'Η συνδρομή/δωρεά για αυτό το κλειδί κάλυπτε ως τις '
+                               . date('d/m/Y', strtotime((string)$row['paid_until'])) . '. '
+                               . 'Η σύνδεση με τον server σταματά μέχρι να ανανεωθεί· '
+                               . 'η εφαρμογή δουλεύει κανονικά στα τοπικά δεδομένα.',
+                ][$ks['state']] ?? 'Το κλειδί δεν ισχύει.';
+                jsonResponse(['success' => false, 'error' => $why,
+                              'key_state' => $ks['state']], 403);
             }
             // ⚠️ ΤΟ EMAIL ΤΟΥ ΚΑΤΟΧΟΥ ΔΕΝ ΤΑΞΙΔΕΥΕΙ. Το κλειδί το εκδίδει ο
             // διαχειριστής και το δίνει σε ΑΛΛΟΝ: η απάντηση κατέληγε σε ξένη
@@ -4127,6 +4184,15 @@ if ($authAction !== '') {
             $u = current_user();
             $uid = (int)($_POST['user_id'] ?? $u['id']);
             $made = access_key_create($uid, (string)($_POST['label'] ?? ''));
+            // Η λήξη ορίζεται τη στιγμή της δημιουργίας, αν δόθηκε.
+            if (trim((string)($_POST['expires_at'] ?? '')) !== ''
+                || trim((string)($_POST['paid_until'] ?? '')) !== '') {
+                $st = localdb()->prepare("SELECT id FROM access_keys WHERE key_hash = :h");
+                $st->execute([':h' => hash('sha256', $made['secret'])]);
+                $newId = (int)$st->fetchColumn();
+                if ($newId > 0) access_key_set_dates($newId, (string)($_POST['expires_at'] ?? ''),
+                                                             (string)($_POST['paid_until'] ?? ''));
+            }
             // Το κλειδί που δίνεται στον χρήστη κουβαλά ΚΑΙ τη διεύθυνση, ώστε η
             // εφαρμογή να μη ρωτά «σε ποιον server;» — αλλιώς το κλειδί δεν
             // μπορεί να επαληθευτεί χωρίς να ξέρεις ήδη πού να ρωτήσεις.
@@ -4149,6 +4215,16 @@ if ($authAction !== '') {
             $id = (int)($_POST['key_id'] ?? 0);
             if ($id <= 0) jsonError('Λείπει το κλειδί');
             jsonResponse(['success' => access_key_delete($id)]);
+        }
+        // Λήξη και «πληρωμένο ως». Κενό = χωρίς όριο· ημερομηνία στο παρελθόν
+        // κόβει τη σύνδεση με μήνυμα που λέει τον λόγο (δες `access_key_state`).
+        case 'access_key_dates': {
+            if (!is_master()) jsonError('Απαιτείται διαχειριστής', 403);
+            $id = (int)($_POST['key_id'] ?? 0);
+            if ($id <= 0) jsonError('Λείπει το κλειδί');
+            access_key_set_dates($id, (string)($_POST['expires_at'] ?? ''),
+                                      (string)($_POST['paid_until'] ?? ''));
+            jsonResponse(['success' => true, 'keys' => access_keys_all()]);
         }
 
         // ---- Προτιμήσεις UI ανά χρήστη (πλάτη/σειρά στηλών, φάκελος λήψεων) ----
@@ -4451,6 +4527,15 @@ if ($authAction !== '') {
                             if ($probe['ok']) {
                                 setting_set('link.ready', !empty($probe['data']['ready']) ? '1' : '0');
                                 setting_set('link.signup_url', (string)($probe['data']['signup_url'] ?? ''));
+                                setting_set('link.blocked', '');
+                                setting_set('link.blocked_msg', '');
+                            } elseif (($probe['data']['key_state'] ?? '') !== '') {
+                                // Το κλειδί ανακλήθηκε/έληξε ΑΦΟΥ είχε δεθεί. Χωρίς αυτό,
+                                // η εφαρμογή απλώς σταματούσε να συγχρονίζει και ο χρήστης
+                                // δεν είχε κανέναν τρόπο να μάθει γιατί.
+                                setting_set('link.blocked', (string)$probe['data']['key_state']);
+                                setting_set('link.blocked_msg', (string)$probe['error']);
+                                setting_set('link.ready', '0');
                             }
                         }
                     }
@@ -4481,6 +4566,8 @@ if ($authAction !== '') {
                         // διαθέσιμο και οδηγούσε σε φόρμα σύνδεσης χωρίς κωδικό.
                         'ready'      => setting_get('link.ready') === '1',
                         'signup_url' => setting_get('link.signup_url'),
+                        'blocked'     => setting_get('link.blocked'),
+                        'blocked_msg' => setting_get('link.blocked_msg'),
                         'items'     => $items,
                     ]);
                 }
@@ -4500,6 +4587,15 @@ if ($authAction !== '') {
                         // κανονικά, απλώς δεν αναγνώρισε ό,τι επικολλήθηκε.
                         // Χωρίς τον διαχωρισμό, ο χρήστης ξαναδοκίμαζε το ίδιο
                         // κλειδί περιμένοντας να «στρώσει το δίκτυο».
+                        // Ο server ξέρει ΓΙΑΤΙ (ανακληθέν / ληγμένο / απλήρωτο) και
+                        // το λέει με το όνομά του· εδώ απλώς το προωθούμε.
+                        $state = (string)($r['data']['key_state'] ?? '');
+                        if ($state !== '') {
+                            setting_set('link.blocked', $state);
+                            setting_set('link.blocked_msg', (string)$r['error']);
+                            jsonResponse(['success' => false, 'key_state' => $state,
+                                          'error' => (string)$r['error']], 403);
+                        }
                         if ((int)($r['http'] ?? 0) === 403) {
                             jsonError('Το κλειδί δεν αναγνωρίστηκε από τον server: έχει ανακληθεί, '
                                     . 'ή αντιγράφηκε λειψό. Ζήτα καινούριο από τον διαχειριστή — '
@@ -4522,6 +4618,8 @@ if ($authAction !== '') {
                     // ρόλος λογιστή) και ΜΕΤΑ βγάζει κλειδί γι' αυτόν. Εδώ
                     // λοιπόν καταχωρούμε το κλειδί, ανεβάζουμε τα δεδομένα, και
                     // η μετάβαση σε λειτουργία server μένει ξεχωριστή απόφαση.
+                    setting_set('link.blocked', '');
+                    setting_set('link.blocked_msg', '');
                     setting_set('link.key', $key);
                     // Ταυτότητα του κλειδιού είναι η ΠΕΡΙΓΡΑΦΗ του, όχι το email
                     // εκείνου που το εξέδωσε — δες `access_provision`.
@@ -4568,17 +4666,28 @@ if ($authAction !== '') {
                             'subkey'        => (string)($full['subkey'] ?? ''),
                             'payments'      => sync_payments($vat),
                             'customer_meta' => sync_customer_meta($vat),
+                            'issued_marks'  => issued_marks_all($vat),
                         ];
                         $r = link_call($url, ['api' => 'sync'],
                                        ['payload' => json_encode($payload, JSON_UNESCAPED_UNICODE)],
                                        120, $key);
                         if (!$r['ok']) {
+                            // Ανακληθέν/ληγμένο κλειδί: ίδιο σφάλμα για κάθε εταιρεία.
+                            // Το κρατάμε ώστε η κάρτα να το δείξει αμέσως, χωρίς να
+                            // περιμένει τον περιοδικό επανέλεγχο.
+                            $ks = (string)($r['data']['key_state'] ?? '');
+                            if ($ks !== '') {
+                                setting_set('link.blocked', $ks);
+                                setting_set('link.blocked_msg', (string)$r['error']);
+                                setting_set('link.ready', '0');
+                            }
                             $done[] = ['vat' => $vat, 'ok' => false, 'error' => $r['error']];
                             continue;
                         }
                         // Η άλλη κατεύθυνση: ό,τι είχε ο server και δεν έχουμε.
                         $back = sync_apply($vat, (array)($r['data']['payments'] ?? []),
                                                  (array)($r['data']['customer_meta'] ?? []));
+                        issued_marks_add($vat, (array)($r['data']['issued_marks'] ?? []));
                         $sent = (array)($r['data']['applied'] ?? []);
                         $done[] = [
                             'vat'   => $vat,
@@ -4675,6 +4784,8 @@ if ($authAction !== '') {
                     setting_set('link.ready', '');
                     setting_set('link.signup_url', '');
                     setting_set('link.ready_at', '');
+                    setting_set('link.blocked', '');
+                    setting_set('link.blocked_msg', '');
                     jsonResponse(['success' => true]);
                 }
             }
@@ -4872,6 +4983,30 @@ if ($schedTok !== '' && defined('SCHED_TOKEN') && SCHED_TOKEN !== '' && hash_equ
 }
 
 // ---- LOGIN GATE: everything past here needs an authenticated user ----------
+// --- Κλειδί που ΥΠΑΡΧΕΙ αλλά δεν ισχύει ------------------------------------
+// ⚠️ ΠΡΙΝ τη γενική πύλη σύνδεσης, επίτηδες. Ένα ανακληθέν ή ληγμένο κλειδί δεν
+// ανοίγει συνεδρία, οπότε η πύλη απαντούσε «Απαιτείται σύνδεση»: σωστό γράμμα,
+// λάθος νόημα — κλειδί υπήρχε, απλώς δεν ισχύει πια. Η άλλη πλευρά έβλεπε τη
+// σύνδεση να σταματά χωρίς να μάθει ποτέ γιατί.
+//
+// Ο λόγος δίνεται ΜΟΝΟ σε όποιον κρατά ήδη το μυστικό — άγνωστο κλειδί
+// εξακολουθεί να παίρνει σκέτο 401, ώστε να μη μαθαίνει κανείς ποια υπάρχουν.
+if (trim((string)($_GET['api'] ?? $_POST['api'] ?? '')) !== '' && !current_user()) {
+    $__hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    $__pk  = stripos($__hdr, 'bearer ') === 0 ? trim(substr($__hdr, 7)) : '';
+    if ($__pk === '') $__pk = trim((string)($_POST['access_key'] ?? $_GET['access_key'] ?? ''));
+    $__ks = access_key_state($__pk);
+    if (in_array($__ks['state'], ['revoked', 'expired', 'unpaid'], true)) {
+        jsonResponse(['success' => false, 'key_state' => $__ks['state'], 'error' => [
+            'revoked' => 'Το κλειδί ανακλήθηκε από τον διαχειριστή του server.',
+            'expired' => 'Το κλειδί έληξε στις '
+                       . date('d/m/Y', strtotime((string)$__ks['row']['expires_at'])) . '.',
+            'unpaid'  => 'Η συνδρομή/δωρεά για αυτό το κλειδί κάλυπτε ως τις '
+                       . date('d/m/Y', strtotime((string)$__ks['row']['paid_until'])) . '.',
+        ][$__ks['state']]], 403);
+    }
+}
+
 $__user = current_user();
 if (!$__user) jsonError('Απαιτείται σύνδεση', 401);
 
@@ -4914,6 +5049,16 @@ if (!empty($_GET['backup_file'] ?? $_POST['backup_file'] ?? '')) {
 $apiAction = trim((string)($_GET['api'] ?? $_POST['api'] ?? ''));
 if ($apiAction !== '') {
     if (!auth_by_access_key()) jsonError('Χρειάζεται κλειδί πρόσβασης (Authorization: Bearer …)', 401);
+    // Τα ΜΑΡΚ που εξέδωσε η άλλη πλευρά — δες `issued_marks_add()`.
+    if ($apiAction === 'issued') {
+        $vat = preg_replace('/\D/', '', (string)($_POST['vat'] ?? $_GET['vat'] ?? ''));
+        if ($vat === '') jsonError('Λείπει το ΑΦΜ');
+        if (!auth_may_access_vat($__user, $vat)) jsonError('Χωρίς πρόσβαση σε αυτή την εταιρεία', 403);
+        $marks = array_filter(array_map('trim', explode(',', (string)($_POST['marks'] ?? $_GET['marks'] ?? ''))));
+        $added = issued_marks_add($vat, $marks);
+        jsonResponse(['success' => true, 'added' => $added,
+                      'issued_marks' => issued_marks_all($vat)]);
+    }
     if ($apiAction !== 'sync') jsonError('Άγνωστη ενέργεια API: ' . $apiAction, 400);
 
     $payload = json_decode((string)($_POST['payload'] ?? $_GET['payload'] ?? ''), true);
@@ -4943,11 +5088,15 @@ if ($apiAction !== '') {
     // και χωρίς αυτή τη σημείωση δεν θα ξεχώριζαν ποτέ από τα βιβλία των
     // υπόλοιπων πελατών του, ώστε να του παραδοθούν μόλις κάνει εγγραφή.
     access_key_note_vat(auth_access_key_id(), $vat);
+    // Και ποια ΜΑΡΚ έχει εκδώσει η άλλη πλευρά, ώστε ο έλεγχος ΑΑΔΕ ΕΔΩ να μην
+    // τα αναγγείλει ως ξένα (και το αντίστροφο, με την απάντηση).
+    issued_marks_add($vat, (array)($payload['issued_marks'] ?? []));
 
     jsonResponse([
         'success'       => true,
         'vat'           => $vat,
         'account'       => $accountState,
+        'issued_marks'  => issued_marks_all($vat),
         'applied'       => $applied,
         // Η άλλη κατεύθυνση: ό,τι έχει ο server, για να το γράψει το γραφείο.
         'payments'      => sync_payments($vat),
@@ -5877,7 +6026,7 @@ if ($syncKind !== '') {
         // από κανένα κουμπί, σε αντίθεση με τις ειδοποιήσεις: μια σβησμένη
         // ειδοποίηση έκανε το παραστατικό να ξαναφαίνεται «άγνωστο» και έστελνε
         // δεύτερο email για την ίδια έκδοση.
-        $mine = issuedMarksFromAudit(COMPANY_VAT);
+        $mine = issuedMarksFor(COMPANY_VAT);
         foreach ($found as $inv) {
             $mk = (string)($inv['mark'] ?? '');
             if ($mk === '' || isset($known[$mk]) || isset($mine[$mk])) continue;

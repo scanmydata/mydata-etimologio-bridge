@@ -401,12 +401,28 @@ function link_sync_all(array $me): array {
             'subkey'        => (string)($full['subkey'] ?? ''),
             'payments'      => sync_payments($vat),
             'customer_meta' => sync_customer_meta($vat),
+            // Ό,τι εκδόθηκε ΕΔΩ, ώστε ο έλεγχος ΑΑΔΕ του server να μην το
+            // αναγγείλει ως ξένο — και το αντίστροφο, από την απάντηση.
+            'issued_marks'  => issued_marks_all($vat),
         ];
         $r = link_call($url, ['api' => 'sync'],
                        ['payload' => json_encode($payload, JSON_UNESCAPED_UNICODE)], 120, $key);
-        if (!$r['ok']) { $errors[] = $vat . ': ' . $r['error']; continue; }
+        if (!$r['ok']) {
+            // Ανακληθέν/ληγμένο κλειδί: ίδιο σφάλμα για ΚΑΘΕ εταιρεία, οπότε
+            // σταματάμε αμέσως και το κρατάμε για την οθόνη.
+            $state = (string)($r['data']['key_state'] ?? '');
+            if ($state !== '') {
+                setting_set('link.blocked', $state);
+                setting_set('link.blocked_msg', (string)$r['error']);
+                return ['ok' => false, 'companies' => $companies, 'sent' => $sent, 'recv' => $recv,
+                        'key_state' => $state, 'errors' => [(string)$r['error']]];
+            }
+            $errors[] = $vat . ': ' . $r['error'];
+            continue;
+        }
         $back = sync_apply($vat, (array)($r['data']['payments'] ?? []),
                                  (array)($r['data']['customer_meta'] ?? []));
+        issued_marks_add($vat, (array)($r['data']['issued_marks'] ?? []));
         $applied = (array)($r['data']['applied'] ?? []);
         $sent += (int)($applied['payments_added'] ?? 0);
         $recv += (int)($back['payments_added'] ?? 0);

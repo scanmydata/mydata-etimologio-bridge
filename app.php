@@ -956,9 +956,9 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <div id="iCustAc" class="ac-panel"></div>
         </div>
         <div class="row">
-          <div class="field grow"><label>Διεύθυνση</label><input id="iAddress"></div>
-          <div class="field"><label>Πόλη</label><input id="iCity"></div>
-          <div class="field"><label>Τ.Κ.</label><input id="iZip"></div>
+          <div class="field grow"><label>Διεύθυνση</label><input id="iAddress" autocomplete="off"></div>
+          <div class="field"><label>Πόλη</label><input id="iCity" autocomplete="off"></div>
+          <div class="field"><label>Τ.Κ.</label><input id="iZip" autocomplete="off"></div>
         </div>
         <div class="row">
           <div class="field grow" style="min-width:240px"><label>Τύπος παραστατικού <span class="hint">(μόνο με ενεργή σειρά)</span></label>
@@ -983,7 +983,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         <div style="margin:14px 0 2px"><strong>💶 Φόροι / Κρατήσεις / Τέλη</strong> <span class="hint" id="iTaxHint" style="margin-left:8px"></span></div>
         <table id="iTaxes"><thead><tr><th>Είδος</th><th>Κατηγορία</th><th class="num">Ποσό (€)</th><th>Σημ.</th><th></th></tr></thead><tbody></tbody></table>
 
-        <div class="row" style="margin-top:12px"><div class="field grow"><label>Σχόλια / Παρατηρήσεις</label><input id="iNotes" placeholder="Προαιρετικές παρατηρήσεις παραστατικού"></div></div>
+        <div class="row" style="margin-top:12px"><div class="field grow"><label>Σχόλια / Παρατηρήσεις</label><input id="iNotes" placeholder="Προαιρετικές παρατηρήσεις παραστατικού" autocomplete="off"></div></div>
 
         <div style="display:flex;justify-content:flex-end;margin-top:12px">
           <div style="min-width:300px">
@@ -1299,7 +1299,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         </div>
         <p class="sub" style="margin-top:4px">Δώσε ένα κλειδί σε κάθε υπολογιστή που θα συνδέεται σε αυτόν τον server. Στην εφαρμογή: <b>Ρυθμίσεις → ☁️ Σύνδεση με web server → Καταχώρηση &amp; ανέβασμα</b> — επικόλληση και τέλος· τη διεύθυνση τη βρίσκει μόνη της. Μαζί με το κλειδί βγαίνει και ένας <b>σύνδεσμος εγγραφής</b>: ο παραλήπτης φτιάχνει από εκεί τον λογαριασμό του και, μόλις επιβεβαιώσει το email, ενεργοποιείται αμέσως με τις εταιρείες του μέσα. Μέχρι τότε τα δεδομένα του ανεβαίνουν κανονικά και περιμένουν στον λογαριασμό που εξέδωσε το κλειδί. Το κλειδί εμφανίζεται <b>μία φορά</b>.</p>
         <div id="akNew" style="margin:8px 0"></div>
-        <table id="akTable"><thead><tr><th>Περιγραφή</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Λογαριασμός</th><th>Κατάσταση</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
+        <table id="akTable"><thead><tr><th>Περιγραφή</th><th>Δημιουργήθηκε</th><th>Τελευταία χρήση</th><th>Λογαριασμός</th><th>Ισχύς</th><th>Κατάσταση</th><th class="nofilter"></th></tr></thead><tbody></tbody></table>
       </div>
       <?php endif; ?>
       <!-- Τραπεζικοί λογαριασμοί + αυτόματη αποστολή. Ανά ΕΤΑΙΡΕΙΑ, όχι ανά
@@ -1371,6 +1371,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <button class="ghost" id="lkModeBtn" onclick="linkUseServer()" data-tip="Η εφαρμογή θα δείχνει τα δεδομένα του server">🖥️ Χρήση δεδομένων server</button>
           <span class="hint" id="lkModeNote"></span>
         </div>
+        <div class="card" id="lkBlocked" hidden
+             style="margin-top:10px;border-left:4px solid #ef4444;padding:10px 12px"></div>
         <div class="card" id="lkSignup" hidden
              style="margin-top:10px;border-left:4px solid var(--warn,#f59e0b);padding:10px 12px"></div>
         <div class="hint" id="lkInfo" style="margin-top:8px"></div>
@@ -2411,10 +2413,14 @@ async function loadSettings(){
 // Το κλειδί είναι το μόνο που χρειάζεται η εφαρμογή υπολογιστή για να στραφεί σε
 // αυτόν τον server: κουβαλά κωδικοποιημένη τη διεύθυνση, οπότε ο χρήστης δεν
 // πληκτρολογεί URL που μπορεί να γράψει λάθος.
+//: Οι γραμμές όπως ήρθαν — τις χρειάζεται το `akDates` για την ημερομηνία που
+//: ΔΕΝ άλλαξε ο χρήστης.
+let AK_ROWS=[];
 async function loadAccessKeys(){
   const el=$('#akTable');if(!el)return;
   try{const d=await apost({auth:'access_keys_list'});
-    el.querySelector('tbody').innerHTML=(d.keys||[]).map(k=>{
+    AK_ROWS=d.keys||[];
+    el.querySelector('tbody').innerHTML=AK_ROWS.map(k=>{
       // Ποιος κρατά το κλειδί: όσο δεν έχει εγγραφεί κανείς, τα δεδομένα του
       // περιμένουν κάτω από αυτόν τον λογαριασμό — και ο διαχειριστής πρέπει
       // να το βλέπει, γιατί αυτός θα ρωτηθεί «γιατί δεν μπαίνω;».
@@ -2423,16 +2429,36 @@ async function loadAccessKeys(){
         : '<span class="pill warn">χωρίς εγγραφή</span>'
           +(k.owner_email?'<br><span class="muted" style="font-size:11px">προσωρινά στο '+esc(k.owner_email)+'</span>':'');
       const join=k.claim_token?(location.origin+location.pathname.replace(/[^/]*$/,'')+'app.php?join='+k.claim_token):'';
+      // Ισχύς = λήξη + «πληρωμένο ως». Και τα δύο προαιρετικά: κενό σημαίνει
+      // «χωρίς όριο», ημερομηνία στο παρελθόν κόβει τη σύνδεση με μήνυμα.
+      const dates=`<input type="date" value="${esc(k.expires_at||'')}" title="Λήξη κλειδιού"
+          onchange="akDates(${k.id},this.value,null)" style="width:140px">
+        <input type="date" value="${esc(k.paid_until||'')}" title="Πληρωμένο/δωρεά ως"
+          onchange="akDates(${k.id},null,this.value)" style="width:140px;margin-top:4px">`;
+      const state=k.revoked?'<span class="pill bad">ανακλήθηκε</span>'
+        :k.expired?'<span class="pill bad">έληξε</span>'
+        :k.unpaid?'<span class="pill warn">χωρίς πληρωμή</span>'
+        :'<span class="pill ok">ενεργό</span>';
       return `<tr>
       <td>${esc(k.label||'—')}</td><td>${esc((k.created_at||'').slice(0,16))}</td>
       <td>${esc(k.last_used_at||'—')}</td>
       <td>${who}</td>
-      <td>${k.revoked?'<span class="pill bad">ανακλήθηκε</span>':'<span class="pill ok">ενεργό</span>'}</td>
+      <td>${dates}</td>
+      <td>${state}</td>
       <td class="right">${(join&&!k.claimed_email)?`<button class="ghost sm" onclick="linkCopy('${q1(join)}')" data-tip="Ο σύνδεσμος εγγραφής του παραλήπτη">🔗 Σύνδεσμος</button> `:''}${k.revoked?'':`<button class="ghost sm" onclick="revokeAccessKey(${k.id})">Ανάκληση</button> `}<button class="danger sm" onclick="deleteAccessKey(${k.id})" data-tip="Οριστική διαγραφή — δεν μένει ούτε στο ιστορικό">🗑</button></td></tr>`;}).join('')
-      ||'<tr><td colspan="6" class="muted">Κανένα κλειδί.</td></tr>';
+      ||'<tr><td colspan="7" class="muted">Κανένα κλειδί.</td></tr>';
   }catch(e){}}
 // Η ανάκληση κρατά τη γραμμή για το ιστορικό· η διαγραφή τη σβήνει. Ένα κλειδί
 // που δόθηκε κατά λάθος δεν είναι ιστορικό — είναι θόρυβος.
+// Οι δύο ημερομηνίες γράφονται μαζί: το `null` σημαίνει «άφησε την άλλη ως έχει».
+async function akDates(id,expires,paid){
+  const row=(AK_ROWS||[]).find(k=>k.id===id)||{};
+  const e=expires===null?(row.expires_at||''):expires;
+  const p=paid===null?(row.paid_until||''):paid;
+  try{const d=await apost({auth:'access_key_dates',key_id:id,expires_at:e,paid_until:p});
+    if(!d.success)throw new Error('απέτυχε');
+    AK_ROWS=d.keys||AK_ROWS;toast('Η ισχύς του κλειδιού ενημερώθηκε','ok');loadAccessKeys();
+  }catch(err){toast('Κλειδί: '+err.message,'err');}}
 async function deleteAccessKey(id){
   if(!await uiConfirm('Οριστική διαγραφή του κλειδιού;\n\nΔεν μένει ούτε στο ιστορικό, και ο '
     +'υπολογιστής που το χρησιμοποιεί χάνει τη σύνδεση αμέσως.'))return;
@@ -4014,7 +4040,44 @@ function renderProducts(){const f=grFold($('#prodFilter').value).trim();
     return `<tr><td>${esc(code)}</td><td>${esc(desc)}</td><td>${esc(cat)}</td><td>${esc(vat)}</td><td class="num">${price!==''?fmt(price):''}</td>
       <td class="right"><button class="ghost sm" onclick="editProduct('${q1(code)}','${q1(desc)}')">✎</button> <button class="danger sm" onclick="delProduct('${q1(code)}')">✕</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="muted">Κανένα είδος.</td></tr>';
   applyColumnFilters('prodTable');}
-async function loadCategories(){try{const d=await api({list_product_categories:1});CATEGORIES=d.product_categories||d.categories||d.items||[];const sel=$('#pdCategory');if(sel){sel.innerHTML='<option value="">—</option>'+CATEGORIES.map(c=>`<option value="${esc(c.id||c.category_id||'')}">${esc(c.name||c.category||c.category_name||'')}</option>`).join('');}}catch(e){}}
+// `pick`: η κατηγορία που πρέπει να μείνει επιλεγμένη μόλις γεμίσει η λίστα —
+// είτε με το αναγνωριστικό της είτε με το ΟΝΟΜΑ της. Χρειάζονται και τα δύο: ο
+// πίνακας των ειδών δίνει `category_id`, αλλά παλιότερες εγγραφές έχουν μόνο
+// όνομα, και η λίστα φορτώνει ΑΣΥΓΧΡΟΝΑ — γι' αυτό η επιλογή γίνεται εδώ μέσα
+// και όχι από τον καλούντα, που θα την έγραφε πάνω σε άδειο `<select>`.
+async function loadCategories(pick){
+  try{
+    const d=await api({list_product_categories:1});
+    CATEGORIES=d.product_categories||d.categories||d.items||[];
+    const sel=$('#pdCategory');
+    if(!sel)return;
+    sel.innerHTML='<option value="">—</option>'+CATEGORIES.map(c=>`<option value="${esc(c.id||c.category_id||'')}">${esc(c.name||c.category||c.category_name||'')}</option>`).join('');
+    if(pick===undefined||pick===null)return;
+    const want=String(pick).trim();
+    if(!want)return;
+    const opts=Array.from(sel.options);
+    const byVal=opts.find(o=>o.value===want);
+    const byName=opts.find(o=>grFold(o.textContent)===grFold(want));
+    if(byVal||byName)sel.value=(byVal||byName).value;
+  }catch(e){}
+}
+//: ΦΠΑ: από το κείμενο της ΑΑΔΕ («24%», «Απαλλαγή») στον κωδικό myDATA.
+function vatCodeFromText(t){
+  const s=String(t||'').trim();
+  if(!s)return '1';
+  if(/απαλλ/i.test(s)||/exempt/i.test(s))return '8';
+  const pct=parseFloat(s.replace(',','.'));
+  const map={24:'1',13:'2',6:'3',17:'4',9:'5',4:'6',0:'7'};
+  return map[Math.round(pct)]||'1';
+}
+function unitCodeFromText(t){
+  const s=grFold(String(t||''));
+  if(s.includes('κιλ'))return '2';
+  if(s.includes('λιτρ'))return '3';
+  if(s.includes('μετρ'))return '4';
+  if(s.includes('τεμ'))return '1';
+  return s?'7':'1';
+}
 let PRODMAP={};
 const VATPCT={1:24,2:13,3:6,4:17,5:9,6:4,7:0,8:0};
 // Accepts a myDATA VAT category (1-8), a percent string ("24%"), or a plain number.
@@ -4078,7 +4141,29 @@ async function suggestCatClsFromProduct(){
   toast('Συμπληρώθηκε προτεινόμενος χαρακτηρισμός για '+(rows.length||0)+' τύπους — έλεγξε & αποθήκευσε','ok');
 }
 function openProductModal(prefillCode,onSaved,forceType){PROD_EDIT=null;PROD_ONSAVED=onSaved||null;$('#prodModalTitle').textContent='Νέο είδος';['pdCode','pdDesc'].forEach(i=>$('#'+i).value='');$('#pdPrice').value='0';$('#pdCode').readOnly=false;if(typeof prefillCode==='string')$('#pdCode').value=prefillCode;$('#pdType').value=forceType==='good'?'1':'2';pdTypeChange();loadCategories();$('#prodModal').showModal();}
-function editProduct(code,desc){PROD_EDIT=code;PROD_ONSAVED=null;$('#prodModalTitle').textContent='Επεξεργασία είδους';$('#pdCode').value=code;$('#pdCode').readOnly=true;$('#pdDesc').value=desc;pdTypeChange();loadCategories();$('#prodModal').showModal();}
+/**
+ * Άνοιγμα είδους για επεξεργασία, με ΟΛΑ του τα στοιχεία μέσα.
+ *
+ * ⚠️ Δεν ήταν καλλωπισμός. Η αποθήκευση στέλνει ΠΑΝΤΑ κατηγορία, ΦΠΑ, μονάδα
+ * και τιμή από τη φόρμα· η φόρμα όμως γέμιζε μόνο κωδικό και περιγραφή. Κάθε
+ * επεξεργασία λοιπόν έγραφε από πάνω ό,τι δεν φαινόταν: ΦΠΑ 24%, τιμή 0,
+ * μονάδα «Τεμάχιο» — και η κατηγορία έμενε «—», που έκοβε την αποθήκευση με
+ * μήνυμα που δεν εξηγούσε τίποτα.
+ */
+function editProduct(code,desc){
+  PROD_EDIT=code;PROD_ONSAVED=null;
+  $('#prodModalTitle').textContent='Επεξεργασία είδους';
+  $('#pdCode').value=code;$('#pdCode').readOnly=true;
+  const p=(PRODUCTS||[]).find(x=>String(x.product_code||x.code||'')===String(code))||{};
+  $('#pdDesc').value=(p.description!==undefined?p.description:desc)||'';
+  $('#pdType').value=/υπηρ/i.test(String(p.type||''))?'2':(p.type?'1':'2');
+  $('#pdVat').value=vatCodeFromText(p.vat||p.vat_category);
+  $('#pdUnit').value=unitCodeFromText(p.measurement_unit);
+  $('#pdPrice').value=String(elNum(p.unit_price!==undefined?p.unit_price:(p.price||0))||0);
+  pdTypeChange();
+  loadCategories(p.category_id||p.category||'');
+  $('#prodModal').showModal();
+}
 async function saveProduct(){if(!$('#pdCode').value||!$('#pdDesc').value){toast('Κωδικός & περιγραφή απαιτούνται','err');return;}
   // e-timologio requires a category on every product (empty → «The value '' is invalid»).
   if(!$('#pdCategory').value){toast('Χρειάζεται Κατηγορία. Πάτα «🏷️ Νέα κατηγορία με προτεινόμενο χαρακτηρισμό» ή διάλεξε υπάρχουσα.','err');
@@ -6779,6 +6864,7 @@ const MANUAL=[
   ['8. Ειδοποιήσεις εκδόσεων','h2'],
   ['Κάθε πραγματική έκδοση (λαμβάνει ΜΑΡΚ) — εκτός από τα δελτία αποστολής (9.x) — καταγράφει ειδοποίηση για τον λογιστή/διαχειριστή. Το κουδουνάκι 🔔 πάνω δεξιά δείχνει το πλήθος των αδιάβαστων και ανοίγει τη λίστα με το ποιος εξέδωσε τι και πότε: τύπος παραστατικού, πελάτης, σειρά/ΑΑ, σύνολο, ΜΑΡΚ και ένδειξη πηγής (⏰ προγραμματισμένη, 📚 μαζική). Ο λογιστής/διαχειριστής βλέπει τις εκδόσεις όλων των εταιριών· η κάθε επιχείρηση μόνο τις δικές της. Πάτησε μια ειδοποίηση για να τη σημάνεις αναγνωσμένη, ή «✓ Όλα».','p'],
   ['<b>Διπλό κλικ σε μια ειδοποίηση</b> σε πηγαίνει στο ίδιο το παραστατικό: ανοίγει τα «Παραστατικά», αλλάζει εταιρεία αν χρειάζεται, και <b>φωτίζει τη γραμμή του</b>. Το ίδιο γίνεται και μόνο του μετά από κάθε οριστική έκδοση.','li'],
+  ['<b>Ένα email ανά παραστατικό, πάντα.</b> Ακόμη κι όταν την ίδια εταιρεία την παρακολουθούν <b>δύο</b> εγκαταστάσεις (η εφαρμογή σου και ο web server), η μία ξέρει τι εξέδωσε η άλλη: η πληροφορία ταξιδεύει μόνη της με τον συγχρονισμό και αμέσως μετά από κάθε έκδοση. Δεν χρειάζεται καμία ρύθμιση από κανέναν.','li'],
 
   ['9. Προτιμήσεις email ειδοποιήσεων (ανά εταιρία & κίνηση)','h2'],
   ['Ο λογιστής/διαχειριστής ρυθμίζει από «Ρυθμίσεις → Ειδοποιήσεις email» για ΠΟΙΕΣ εταιρίες-πελάτες και ΠΟΙΕΣ κινήσεις θέλει να λαμβάνει email όταν εκδίδεται παραστατικό: επίλεξε «(Όλες)» ή συγκεκριμένες εταιρίες, και τύπους κίνησης (Τιμολόγια, Αποδείξεις λιανικής, Πιστωτικά/Ακυρώσεις). Ο γενικός διακόπτης «Λαμβάνω email» ενεργοποιεί/απενεργοποιεί εντελώς τα email. Οι εντός εφαρμογής ειδοποιήσεις (🔔) δεν επηρεάζονται — φιλτράρονται μόνο τα email. Απαιτείται ρυθμισμένος πάροχος email (Resend ή SMTP) στο config.php.','p'],
@@ -6832,6 +6918,7 @@ const MANUAL=[
   ['<b>Πάντα υπάρχει γυρισμός.</b> Σε λειτουργία server, μια μπάρα στην κορυφή γράφει πού βρίσκεσαι και έχει κουμπί «💻 Τοπικά δεδομένα». Τα δεδομένα αυτού του υπολογιστή δεν πειράζονται ποτέ.','li'],
   ['Στην ίδια κάρτα βλέπεις τις εταιρείες σου και τον <b>σύνδεσμο που δίνεις στον πελάτη</b> (κουμπιά αντιγραφής και ανοίγματος). Το «Αποσύνδεση» γυρίζει σε τοπική λειτουργία· ό,τι έχει ήδη ανέβει μένει στον server.','li'],
   ['Το κλειδί είναι <b>διαπιστευτήριο</b>: στείλ\' το όπως θα έστελνες κωδικό, και αν χαθεί ζήτα ανάκληση και νέο.','li'],
+  ['<b>Ισχύς κλειδιού.</b> Ο διαχειριστής μπορεί να ορίσει <b>ημερομηνία λήξης</b> και <b>«πληρωμένο/δωρεά ως»</b>. Όταν κάποια από τις δύο περάσει — ή αν το κλειδί ανακληθεί — η σύνδεση σταματά και η κάρτα το λέει με το όνομά του: ανακλήθηκε, έληξε, ή δεν είναι σε ισχύ η συνδρομή. <b>Τα δεδομένα σου δεν χάνονται</b>: η εφαρμογή συνεχίζει κανονικά στα τοπικά.','li'],
 
   ['11ζ2. Αντίγραφα ασφαλείας (μόνο στην εφαρμογή υπολογιστή)','h2'],
   ['Στις «Ρυθμίσεις → 💾 Αντίγραφα ασφαλείας» υπάρχει <b>αυτόματο ημερήσιο αντίγραφο</b>: παίρνεται μία φορά την ημέρα, με το πρώτο άνοιγμα της εφαρμογής, και κρατιούνται τα 14 νεότερα. Ο διακόπτης το σταματά αν δεν το θέλεις, και δίπλα του γράφει πότε έγινε το τελευταίο.','p'],
@@ -7129,9 +7216,18 @@ async function loadLink(){
       : (!d.has_key?'Καταχώρησε πρώτα κλειδί πρόσβασης.'
         :(d.ready?'Τα δεδομένα ανεβαίνουν στον server, αλλά η εφαρμογή δουλεύει ακόμη τοπικά.'
                  :'Τα δεδομένα ανεβαίνουν. Λείπει ο λογαριασμός σου στον server — κάνε εγγραφή.'));
+    const blk=$('#lkBlocked');
+    if(blk){
+      // Ανακληθέν / ληγμένο / απλήρωτο κλειδί. Μέχρι τώρα η σύνδεση απλώς
+      // σταματούσε να δουλεύει, χωρίς λέξη — και ο χρήστης νόμιζε ότι φταίει
+      // το δίκτυο ή η ίδια η εφαρμογή.
+      blk.hidden=!d.blocked;
+      if(d.blocked)blk.innerHTML='⛔ <b>Η σύνδεση με τον server σταμάτησε.</b><br>'
+        +esc(d.blocked_msg||'Το κλειδί δεν ισχύει πια.');
+    }
     const nag=$('#lkSignup');
     if(nag){
-      const need=d.has_key&&!d.thin&&!d.ready;
+      const need=d.has_key&&!d.thin&&!d.ready&&!d.blocked;
       nag.hidden=!need;
       if(need){
         const url=d.signup_url||'https://etimologiopro.scanmydata.gr/';
@@ -7549,7 +7645,22 @@ function addEyes(root){
   });
 }
 
-(async()=>{addEyes();addDatePickers();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+// Ο browser συμπληρώνει ΜΟΝΟΣ ΤΟΥ πεδία που «μοιάζουν» με στοιχεία επικοινωνίας:
+// το email σύνδεσης έμπαινε στις «Παρατηρήσεις» του παραστατικού, και η
+// διεύθυνση του χρήστη κινδύνευε να μπει στη διεύθυνση του ΠΕΛΑΤΗ. Κανένα πεδίο
+// αυτής της εφαρμογής δεν είναι στοιχείο του χρήστη — εκτός από τη φόρμα
+// σύνδεσης, που ζει σε άλλη σελίδα (`authview.php`) και δεν την αγγίζουμε.
+function noAutofill(root){
+  (root||document).querySelectorAll('input,textarea').forEach(el=>{
+    if(el.type==='password')return;
+    if(!el.hasAttribute('autocomplete'))el.setAttribute('autocomplete','off');
+    // Ο Chromium αγνοεί το «off» σε πεδία που θεωρεί διεύθυνση· ένα όνομα που
+    // δεν αναγνωρίζει το σταματά. Τα πεδία μας στέλνονται με το `id`, ποτέ με
+    // το `name`, οπότε δεν χαλάει τίποτα.
+    if(!el.name)el.name='etim-'+(el.id||Math.random().toString(36).slice(2));
+  });
+}
+(async()=>{addEyes();addDatePickers();noAutofill();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
   // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε AADE_CHECK_MIN λεπτά.

@@ -270,6 +270,13 @@ function localdb(bool $close = false): ?\PDO {
     // το `claimed_uid` ο λογαριασμός που τον χρησιμοποίησε.
     try { $tr("ALTER TABLE access_keys ADD COLUMN claim_token TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
     try { $tr("ALTER TABLE access_keys ADD COLUMN claimed_uid INTEGER NOT NULL DEFAULT 0"); } catch (\Throwable $e) {}
+    // Ημερομηνία λήξης (κενό = χωρίς λήξη) και μέχρι πότε είναι πληρωμένο.
+    // Δύο πεδία και όχι ένα: η λήξη είναι απόφαση του διαχειριστή («αυτό το
+    // κλειδί ισχύει ως τον Μάρτιο»), ενώ η πληρωμή είναι κατάσταση που αλλάζει
+    // μόνη της. Ένα παρελθοντικό `paid_until` πρέπει να λέει «δεν έχει γίνει
+    // πληρωμή», όχι «λάθος κλειδί».
+    try { $tr("ALTER TABLE access_keys ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $tr("ALTER TABLE access_keys ADD COLUMN paid_until TEXT NOT NULL DEFAULT ''"); } catch (\Throwable $e) {}
 
     // --- Ανάθεση εταιρειών σε λογιστές ---------------------------------------
     // Ο διαχειριστής βλέπει τα πάντα· ο λογιστής μόνο ό,τι του έχει ανατεθεί.
@@ -1051,6 +1058,12 @@ function access_key_row_out(array $r): array {
         'claimed_email' => $who ? (string)$who['email'] : '',
         'claimed_status' => $who ? (string)$who['status'] : '',
         'owner_email'   => $owner ? (string)$owner['email'] : '',
+        'expires_at'    => trim((string)($r['expires_at'] ?? '')),
+        'paid_until'    => trim((string)($r['paid_until'] ?? '')),
+        'expired'       => trim((string)($r['expires_at'] ?? '')) !== ''
+                           && trim((string)($r['expires_at'] ?? '')) < date('Y-m-d'),
+        'unpaid'        => trim((string)($r['paid_until'] ?? '')) !== ''
+                           && trim((string)($r['paid_until'] ?? '')) < date('Y-m-d'),
     ];
 }
 
@@ -1143,6 +1156,47 @@ function access_key_vats(int $id): array {
     return array_values(array_filter(explode(',', setting_get('akey.' . $id . '.vats'))));
 }
 
+/**
+ * Τα ΜΑΡΚ που έχει εκδώσει η ΣΟΥΙΤΑ για μια εταιρεία — τοπικά **και** στον server.
+ *
+ * ΤΟ ΠΡΟΒΛΗΜΑ ΠΟΥ ΛΥΝΕΙ: όταν η εγκατάσταση γραφείου και ο web server
+ * παρακολουθούν το ΙΔΙΟ ΑΦΜ, ο καθένας κρατούσε δική του μνήμη. Ο ένας εξέδιδε,
+ * ο άλλος το έβρισκε στην ΑΑΔΕ σαν ξένο, και ο χρήστης έπαιρνε δύο email για
+ * ένα παραστατικό — με μοναδική λύση να σβήσει τις ειδοποιήσεις στη μία μεριά.
+ * Ρύθμιση που πρέπει να κάνει κάθε λογιστής χωριστά δεν είναι λύση.
+ *
+ * Η λίστα ταξιδεύει με τον συγχρονισμό και ενημερώνεται αμέσως μετά από κάθε
+ * έκδοση, ώστε καμία πλευρά να μην αναγγέλλει ό,τι έβγαλε η άλλη. Κρατιούνται
+ * τα τελευταία 300: όσα χρειάζονται για μια σάρωση του τρέχοντος μήνα, χωρίς η
+ * ρύθμιση να μεγαλώνει για πάντα.
+ */
+const ISSUED_MARKS_KEEP = 300;
+
+function issued_marks_add(string $accountVat, array $marks): int {
+    $vat = preg_replace('/\D/', '', $accountVat);
+    if ($vat === '') return 0;
+    $key  = 'issued.' . $vat;
+    $have = array_flip(issued_marks_all($vat));
+    $added = 0;
+    foreach ($marks as $m) {
+        $m = preg_replace('/\D/', '', (string)$m);
+        if ($m === '' || isset($have[$m])) continue;
+        $have[$m] = true;
+        $added++;
+    }
+    if (!$added) return 0;
+    $all = array_keys($have);
+    if (count($all) > ISSUED_MARKS_KEEP) $all = array_slice($all, -ISSUED_MARKS_KEEP);
+    setting_set($key, implode(',', $all));
+    return $added;
+}
+
+function issued_marks_all(string $accountVat): array {
+    $vat = preg_replace('/\D/', '', $accountVat);
+    if ($vat === '') return [];
+    return array_values(array_filter(explode(',', setting_get('issued.' . $vat))));
+}
+
 /** Το κλειδί που διεκδίκησε αυτός ο λογαριασμός, ή `null`. */
 function access_key_by_claimed_uid(int $uid): ?array {
     if ($uid <= 0) return null;
@@ -1158,17 +1212,53 @@ function access_key_bind(int $id, int $uid): void {
     $st->execute([':u' => $uid, ':id' => $id]);
 }
 
-/** Ο χρήστης πίσω από ένα κλειδί, ή `null`. Σημειώνει τη χρήση. */
-function access_key_user(string $secret): ?array {
+/**
+ * Η κατάσταση ενός κλειδιού, **με λόγο**.
+ *
+ * `state`: `unknown` | `revoked` | `expired` | `unpaid` | `ok`.
+ *
+ * ΓΙΑΤΙ ΞΕΧΩΡΙΖΟΥΝ: το «δεν σε ξέρω» δεν πρέπει ποτέ να αποκαλύψει ποια κλειδιά
+ * υπάρχουν — γι' αυτό μένει σκέτο. Ένα κλειδί όμως που ΤΑΥΤΟΠΟΙΗΘΗΚΕ σημαίνει
+ * ότι ο καλών κρατά ήδη το μυστικό: δικαιούται να μάθει ότι ανακλήθηκε ή έληξε,
+ * και χωρίς αυτό έβλεπε «η σύνδεση απέτυχε» και ξαναδοκίμαζε το ίδιο κλειδί.
+ */
+function access_key_state(string $secret): array {
     $secret = trim($secret);
-    if ($secret === '') return null;
-    $st = localdb()->prepare("SELECT * FROM access_keys WHERE key_hash = :h AND revoked = 0 LIMIT 1");
+    if ($secret === '') return ['state' => 'unknown', 'row' => null, 'user' => null];
+    $st = localdb()->prepare("SELECT * FROM access_keys WHERE key_hash = :h LIMIT 1");
     $st->execute([':h' => hash('sha256', $secret)]);
     $row = $st->fetch();
-    if (!$row) return null;
+    if (!$row) return ['state' => 'unknown', 'row' => null, 'user' => null];
+
+    $user = user_by_id((int)$row['user_id']);
+    $out  = ['row' => $row, 'user' => $user];
+    if ((int)$row['revoked'] === 1) return $out + ['state' => 'revoked'];
+
+    $today = date('Y-m-d');
+    $exp   = trim((string)($row['expires_at'] ?? ''));
+    if ($exp !== '' && $exp < $today) return $out + ['state' => 'expired'];
+    $paid  = trim((string)($row['paid_until'] ?? ''));
+    if ($paid !== '' && $paid < $today) return $out + ['state' => 'unpaid'];
+
+    // Η χρήση σημειώνεται ΜΟΝΟ όταν το κλειδί ισχύει: αλλιώς το «τελευταία
+    // χρήση» θα γέμιζε από αποτυχημένες προσπάθειες ανακληθέντων κλειδιών.
     $up = localdb()->prepare("UPDATE access_keys SET last_used_at = :t WHERE id = :id");
     $up->execute([':t' => date('Y-m-d H:i:s'), ':id' => (int)$row['id']]);
-    return user_by_id((int)$row['user_id']);
+    return $out + ['state' => 'ok'];
+}
+
+/** Ο χρήστης πίσω από ένα ΕΝΕΡΓΟ κλειδί, ή `null`. */
+function access_key_user(string $secret): ?array {
+    $s = access_key_state($secret);
+    return $s['state'] === 'ok' ? $s['user'] : null;
+}
+
+function access_key_set_dates(int $id, string $expiresAt, string $paidUntil): bool {
+    $ok = static fn(string $d): string =>
+        preg_match('/^\d{4}-\d{2}-\d{2}$/', $d) === 1 ? $d : '';
+    $st = localdb()->prepare("UPDATE access_keys SET expires_at = :e, paid_until = :p WHERE id = :id");
+    $st->execute([':e' => $ok(trim($expiresAt)), ':p' => $ok(trim($paidUntil)), ':id' => $id]);
+    return $st->rowCount() > 0;
 }
 
 // --- Προτιμήσεις UI ανά χρήστη ----------------------------------------------
