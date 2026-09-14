@@ -809,6 +809,12 @@ function listCustomers(
                 $customer['company_vat'] = $m[1];
                 $customer['delete_code'] = $m[2];
             }
+            // Η λίστα της ΑΑΔΕ ΔΕΝ έχει Τ.Κ., email, τηλέφωνα, ΔΟΥ — μόνο η σελίδα
+            // του πελάτη. Κρατάμε τη διεύθυνσή της για να τα διαβάσουμε (βλ.
+            // enrichCustomerDetails)· δεν φεύγει ποτέ προς τον browser.
+            if (preg_match('/href="([^"]*\/Customer\/viewcustomer\?[^"]+)"/i', $row['html'], $mv)) {
+                $customer['view_url'] = html_entity_decode($mv[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }
 
             $key = $customer['code'] . '|' . $customer['vat'];
             if (!isset($seen[$key])) {
@@ -2470,6 +2476,10 @@ function buildInvoiceLine(
     }
     $isZero = ($rate == 0.0);
     if ($qty <= 0) $qty = 1.0;
+    // Η ΑΑΔΕ δέχεται ΜΟΝΟ 2 δεκαδικά σε κάθε ποσό (AmountType, fractionDigits=2).
+    // Μια τιμή που προέκυψε από «σύνολο με ΦΠΑ ÷ 1,24» (2419.3548) περνούσε την
+    // προεπισκόπηση και κοβόταν στην ΟΡΙΣΤΙΚΗ έκδοση με σφάλμα XSD.
+    $unitNet = round($unitNet, 2);
 
     // Gross (before discount) → discount → net (after discount) → VAT.
     $gross = round($unitNet * $qty, 2);
@@ -2674,6 +2684,30 @@ function createInvoice(
                 if ($zip     === '') $zip     = $dbData['zip'];
                 if ($country === 'GR') $country = $dbData['country'];
             }
+        }
+    }
+
+    // Ο Τ.Κ. και η πόλη είναι ΥΠΟΧΡΕΩΤΙΚΑ μέσα στη διεύθυνση (myDATA AddressType).
+    // Η λίστα πελατών δεν έχει Τ.Κ., οπότε η φόρμα συχνά ερχόταν χωρίς αυτόν —
+    // και η οριστική έκδοση κοβόταν με «postalCode expected».
+    if (empty($delivery) && defined('COMPANY_VAT') && ($zip === '' || $city === '')
+            && ($address !== '' || $zip !== '' || $city !== '')) {
+        $det = custDetailsFind(COMPANY_VAT, preg_match('/^\d{9}$/', $afm) ? $afm : '');
+        if (!$det && preg_match('/^\d{9}$/', $afm)) {
+            // Άγνωστος στη μνήμη: μία ματιά στη σελίδα του στην ΑΑΔΕ.
+            try {
+                $loc = findCustomerViewUrl($ch, $afm, '');
+                if (!empty($loc['view_url'])) $det = customerDetailsFromView($ch, (string)$loc['view_url']);
+            } catch (\Throwable $e) {}
+        }
+        if ($det) {
+            if ($zip === '')  $zip  = (string)($det['zip'] ?? '');
+            if ($city === '') $city = (string)($det['city'] ?? '');
+        }
+        if ($zip === '' || $city === '') {
+            // Καλύτερα παραστατικό χωρίς διεύθυνση λήπτη παρά απόρριψη από την ΑΑΔΕ.
+            $address = ''; $zip = ''; $city = '';
+            $GLOBALS['__addressDropped'] = true;
         }
     }
 
@@ -3269,23 +3303,32 @@ function getStatistics(\CurlHandle $ch, string $period = 'month'): array {
     $res = searchInvoices($ch, $from, $to, '', '', '', '', '0');
     $invoices = $res['invoices'] ?? [];
 
-    $agg = [];  // dotted code => ['count'=>, 'value'=> net]
-    $totalCount = 0; $totalNet = 0.0;
+    $agg = [];  // dotted code => ['count'=>, 'value'=> net, 'vat'=>, 'gross'=>]
+    $totalCount = 0; $totalNet = 0.0; $totalVat = 0.0; $totalGross = 0.0;
     foreach ($invoices as $iv) {
-        $net = parseMoney((string)($iv['net_value'] ?? '0'));
         // type comes as "2.1 - Τιμολόγιο …"; key the breakdown by the dotted code.
         $label = (string)($iv['type'] ?? '');
         $code  = preg_match('/^\s*([\d.]+)/', $label, $m) ? $m[1] : $label;
-        if (!isset($agg[$code])) $agg[$code] = ['count' => 0, 'value' => 0.0];
+        // Τα πιστωτικά ΜΕΙΩΝΟΥΝ τον τζίρο· η ΑΑΔΕ τα γράφει με θετικά ποσά.
+        $sign  = in_array($code, ['5.1', '5.2', '11.4'], true) ? -1.0 : 1.0;
+        $net   = $sign * abs(parseMoney((string)($iv['net_value'] ?? '0')));
+        $vat   = $sign * abs(parseMoney((string)($iv['vat_value'] ?? '0')));
+        // «Με ΦΠΑ» = καθαρή + ΦΠΑ. Η στήλη «Σύνολο» της ΑΑΔΕ είναι το ΠΛΗΡΩΤΕΟ,
+        // μετά από παρακρατήσεις — άλλο νούμερο, που θα διαβαζόταν λάθος.
+        $gross = $net + $vat;
+        if (!isset($agg[$code])) $agg[$code] = ['count' => 0, 'value' => 0.0, 'vat' => 0.0, 'gross' => 0.0];
         $agg[$code]['count']++;
         $agg[$code]['value'] += $net;
+        $agg[$code]['vat']   += $vat;
+        $agg[$code]['gross'] += $gross;
         $totalCount++;
-        $totalNet += $net;
+        $totalNet += $net; $totalVat += $vat; $totalGross += $gross;
     }
 
     $breakdown = [];
     foreach ($agg as $code => $a) {
-        $breakdown[] = ['type' => (string)$code, 'count' => $a['count'], 'value' => round($a['value'], 2)];
+        $breakdown[] = ['type' => (string)$code, 'count' => $a['count'], 'value' => round($a['value'], 2),
+                        'vat' => round($a['vat'], 2), 'gross' => round($a['gross'], 2)];
     }
     usort($breakdown, fn($x, $y) => $y['value'] <=> $x['value']);
 
@@ -3296,7 +3339,9 @@ function getStatistics(\CurlHandle $ch, string $period = 'month'): array {
         'to'           => $to,
         'breakdown'    => $breakdown,
         'total_count'  => $totalCount,
-        'total_value'  => round($totalNet, 2),   // NET turnover
+        'total_value'  => round($totalNet, 2),   // NET turnover (χωρίς ΦΠΑ)
+        'total_vat'    => round($totalVat, 2),
+        'total_gross'  => round($totalGross, 2), // με ΦΠΑ
     ];
 }
 
@@ -3601,6 +3646,150 @@ function customerContactFetch(\CurlHandle $ch, string $customerVat): array {
     ];
 }
 
+// --- Πλήρη στοιχεία πελάτη (Τ.Κ., email, τηλέφωνα, ΔΟΥ, επάγγελμα) -------------
+//
+// Η λίστα πελατών της ΑΑΔΕ δίνει μόνο κωδικό, ΑΦΜ, επωνυμία, διεύθυνση, πόλη.
+// Ο Τ.Κ. ζει μόνο στη σελίδα του πελάτη — και χωρίς αυτόν η ΟΡΙΣΤΙΚΗ έκδοση
+// κόβεται («address has incomplete content … postalCode»), ενώ η φόρμα
+// «Επεξεργασία πελάτη» έδειχνε κενά πεδία που στην ΑΑΔΕ ήταν γεμάτα.
+//
+// Κάθε πελάτης διαβάζεται ΜΙΑ φορά και μένει στη βάση (`custdetails`)· ξανα-
+// ελέγχεται στο παρασκήνιο όταν περάσει το CUST_DETAILS_TTL.
+const CUST_DETAILS_TTL = 86400;
+
+function custDetailsKey(string $code, string $vat): string {
+    return trim($code) . '|' . trim($vat);
+}
+
+/** Διαβάζει τη σελίδα «Προβολή πελάτη». `null` = δεν απάντησε. */
+function customerDetailsFromView(\CurlHandle $ch, string $viewUrl): ?array {
+    if ($viewUrl === '') return null;
+    $url = preg_match('#^https?://#i', $viewUrl) ? $viewUrl
+         : (preg_replace('#/timologio$#', '', BASE_URL) . '/' . ltrim($viewUrl, '/'));
+    $html = curlGet($ch, $url);
+    if ($html === '' || stripos($html, 'customer.CustomerZipCode') === false) return null;
+    $v = static fn(string $n): string => trim(htmlInputValue($html, $n));
+    return [
+        'zip'             => $v('customer.CustomerZipCode'),
+        'email'           => $v('customer.CustomerEmail'),
+        'phone1'          => $v('customer.CustomerPhone1'),
+        'phone2'          => $v('customer.CustomerPhone2'),
+        'doy'             => $v('customer.Doy'),
+        'job_description' => $v('customer.JobDescription'),
+        'address'         => $v('customer.CustomerAddress'),
+        'city'            => $v('customer.CustomerCity'),
+        'fetched_at'      => time(),
+    ];
+}
+
+function custDetailsAll(string $accountVat): array {
+    try { return (array)((cache_get($accountVat, 'custdetails') ?? [])['rows'] ?? []); }
+    catch (\Throwable $e) { return []; }
+}
+
+/** Τα ΓΝΩΣΤΑ στοιχεία ενός πελάτη, χωρίς ταξίδι στην ΑΑΔΕ. */
+function custDetailsFind(string $accountVat, string $vat = '', string $code = ''): ?array {
+    $all = custDetailsAll($accountVat);
+    if ($code !== '' || $vat !== '') {
+        $k = custDetailsKey($code, $vat);
+        if (isset($all[$k])) return $all[$k];
+    }
+    if ($vat !== '') {
+        foreach ($all as $k => $d) {
+            if (substr((string)$k, -strlen('|' . $vat)) === '|' . $vat) return $d;
+        }
+    }
+    return null;
+}
+
+/**
+ * Συμπληρώνει τα στοιχεία που λείπουν από τη λίστα πελατών.
+ *
+ * Ό,τι είναι στη βάση μπαίνει αμέσως. Ό,τι λείπει (ή πάλιωσε) διαβάζεται από την
+ * ΑΑΔΕ όσο προλαβαίνει ο χρόνος· τα υπόλοιπα γυρίζουν στο `details_pending` και
+ * τα ζητά η σελίδα στο παρασκήνιο.
+ */
+function enrichCustomerDetails(\CurlHandle $ch, array &$rows, float $budget = 8.0): int {
+    if (!defined('COMPANY_VAT') || COMPANY_VAT === '') return 0;
+    $all = custDetailsAll(COMPANY_VAT);
+    $t0 = microtime(true);
+    $changed = false;
+    $pending = 0;
+    foreach ($rows as &$r) {
+        $k = custDetailsKey((string)($r['code'] ?? ''), (string)($r['vat'] ?? ''));
+        $have = $all[$k] ?? null;
+        $stale = !$have || (time() - (int)($have['fetched_at'] ?? 0)) > CUST_DETAILS_TTL;
+        if ($stale && !empty($r['view_url']) && microtime(true) - $t0 <= $budget) {
+            $got = null;
+            try { $got = customerDetailsFromView($ch, (string)$r['view_url']); } catch (\Throwable $e) {}
+            if ($got !== null) { $all[$k] = $have = $got; $changed = true; $stale = false; }
+        }
+        if ($stale) $pending++;
+        if ($have) {
+            foreach (['zip', 'email', 'phone1', 'phone2', 'doy', 'job_description'] as $f) {
+                if ((string)($have[$f] ?? '') !== '') $r[$f] = (string)$have[$f];
+            }
+            // Το email πάει ΚΑΙ στο αντίγραφο επαφών που διαβάζει η αποστολή.
+            $cv = trim((string)($r['vat'] ?? ''));
+            if ($changed && $cv !== '' && (string)($have['email'] ?? '') !== '') {
+                try {
+                    $known = customer_contact_get(COMPANY_VAT, $cv);
+                    if ($known['email'] === '') customer_contact_set(COMPANY_VAT, $cv, [
+                        'email' => $have['email'], 'phone1' => $have['phone1'] ?? '',
+                        'phone2' => $have['phone2'] ?? '', 'name' => (string)($r['name'] ?? ''),
+                    ]);
+                } catch (\Throwable $e) {}
+            }
+        }
+        unset($r['view_url']);
+    }
+    unset($r);
+    if ($changed) { try { cache_set(COMPANY_VAT, 'custdetails', $all); } catch (\Throwable $e) {} }
+    return $pending;
+}
+
+// --- Μνήμη λιστών χωρίς σύνδεση στην ΑΑΔΕ ------------------------------------
+//
+// Κάθε αίτημα προς την ΑΑΔΕ ξεκινά με ΠΛΗΡΗ σύνδεση (~1 δευτ.), και ο τοπικός
+// server εξυπηρετεί ένα αίτημα τη φορά: πέντε «ανανεώσεις» στο παρασκήνιο
+// έκαναν τον οδηγό της Έκδοσης να περιμένει πίσω τους. Μια λίστα που
+// επιβεβαιώθηκε πρόσφατα απαντιέται από τη βάση, χωρίς σύνδεση.
+const SYNC_TRUST_SECONDS = 600;
+
+function cacheAgeSeconds(?array $c): ?int {
+    if (!$c) return null;
+    $ts = strtotime((string)$c['synced_at'] . ' UTC');
+    return $ts ? max(0, time() - $ts) : null;
+}
+
+function cacheDirtyKey(string $vat, string $kind): string { return 'cache.dirty.' . $vat . '.' . $kind; }
+
+/** Σημαδεύει λίστες που ΑΛΛΑΞΑΜΕ εμείς: η επόμενη ανανέωση πάει στην ΑΑΔΕ. */
+function cacheMarkDirty(string $vat, array $kinds): void {
+    if ($vat === '') return;
+    foreach ($kinds as $k) { try { setting_set(cacheDirtyKey($vat, $k), '1'); } catch (\Throwable $e) {} }
+}
+
+// --- Χαιρετισμός email ---------------------------------------------------------
+/** «Καλημέρα» ως τις 12:00, μετά «Καλησπέρα» — με την ώρα ΑΠΟΣΤΟΛΗΣ, ώρα Ελλάδας. */
+function mailGreeting(?int $ts = null): string {
+    $d = new \DateTime('@' . ($ts ?? time()));
+    $d->setTimezone(new \DateTimeZone('Europe/Athens'));
+    return (int)$d->format('G') < 12 ? 'Καλημέρα' : 'Καλησπέρα';
+}
+
+/** Το κείμενο γράφτηκε νωρίτερα· ο χαιρετισμός διορθώνεται τη στιγμή που φεύγει. */
+function mailFixGreeting(string $body, ?int $ts = null): string {
+    return (string)preg_replace('/^(\s*)(Καλημέρα|Καλησπέρα)\b/u', '${1}' . mailGreeting($ts), $body, 1);
+}
+
+/** Η επωνυμία της εταιρείας για την υπογραφή — ΧΩΡΙΣ το ΑΦΜ. */
+function mailCompanyName(string $accountVat): string {
+    try { $a = account_by_vat($accountVat); } catch (\Throwable $e) { $a = null; }
+    $label = trim((string)($a['label'] ?? ''));
+    return trim((string)preg_replace('/\s*[\(\[]?\s*(ΑΦΜ[:\s]*)?\d{9}\s*[\)\]]?\s*$/u', '', $label));
+}
+
 /**
  * Το email του πελάτη: πρώτα από το τοπικό αντίγραφο, αλλιώς ζωντανά από την
  * ΑΑΔΕ (και τότε το κρατάμε, ώστε να μη ξαναρωτήσουμε).
@@ -3610,6 +3799,8 @@ function customerEmailFor(\CurlHandle $ch, string $accountVat, string $customerV
     if ($customerVat === '') return '';
     $known = customer_contact_get($accountVat, $customerVat);
     if ($known['email'] !== '') return $known['email'];
+    $det = custDetailsFind($accountVat, $customerVat);
+    if ($det && (string)($det['email'] ?? '') !== '') return (string)$det['email'];
     try { $info = customerContactFetch($ch, $customerVat); }
     catch (\Throwable $e) { return ''; }
     if (trim($info['email']) !== '') customer_contact_set($accountVat, $customerVat, $info);
@@ -3653,23 +3844,28 @@ function autoSendIssuedDocument(string $accountVat, array $d): void {
     $subject = trim($label . ' ' . $ref);
     $total   = moneyGr((float)($d['amount_total'] ?? 0));
 
+    $buyerName = trim((string)($d['buyer_name'] ?? ''));
+    $hello     = mailGreeting() . ($buyerName !== '' ? ' ' . $buyerName : ' σας') . ',';
+    $company   = mailCompanyName($accountVat);
     $lines = [
-        'αγαπητέ συνεργάτη,',
+        $hello,
         '',
         'σας αποστέλλουμε συνημμένο το παραστατικό ' . $ref . ' με ημερομηνία ' . date('d/m/Y')
             . ', συνολικής αξίας ' . $total . ' €.',
     ];
     $bank = bankBlockText($accountVat);
     if ($bank !== '') $lines[] = $bank;
+    if ($company !== '') { $lines[] = ''; $lines[] = 'Με εκτίμηση,'; $lines[] = $company; }
 
-    $inner = '<p>Σας αποστέλλουμε συνημμένο το παραστατικό σας.</p>'
+    $inner = '<p>' . htmlspecialchars($hello, ENT_QUOTES) . '</p><p>σας αποστέλλουμε συνημμένο το παραστατικό σας.</p>'
         . mail_kv([
             ['Παραστατικό', $subject],
             ['Ημερομηνία', date('d/m/Y')],
             ['Σύνολο', $total . ' €'],
             ['ΜΑΡΚ', $mark],
           ])
-        . bankBlockHtml($accountVat);
+        . bankBlockHtml($accountVat)
+        . ($company !== '' ? '<p>Με εκτίμηση,<br>' . htmlspecialchars($company, ENT_QUOTES) . '</p>' : '');
 
     $files = [['name' => 'ΠΑΡΑΣΤΑΤΙΚΟ-' . $mark . '.pdf', 'mime' => 'application/pdf', 'data' => $pdf]];
     $html  = mail_template($subject, $inner);
@@ -3835,7 +4031,7 @@ function runLedgerDispatch(\CurlHandle $ch, string $accountVat, string $from, st
             'period'  => $period,
         ]);
         $html = mail_template($body['subject'],
-            '<p>' . htmlspecialchars($r['name'] !== '' ? $r['name'] : 'αγαπητέ συνεργάτη', ENT_QUOTES) . ',</p>'
+            '<p>' . htmlspecialchars(explode("\n", $body['text'])[0], ENT_QUOTES) . '</p>'
             . '<p>σας αποστέλλουμε την καρτέλα κινήσεων για το διάστημα <strong>'
             . htmlspecialchars($period, ENT_QUOTES) . '</strong>.</p>'
             . ledgerTableHtml($r['entries'] ?? [], (float)$r['opening'])
@@ -3863,7 +4059,9 @@ function runLedgerDispatch(\CurlHandle $ch, string $accountVat, string $from, st
  */
 function ledgerMailBody(string $accountVat, array $info): array {
     $name    = trim((string)($info['name'] ?? ''));
-    $who     = $name !== '' ? $name : 'αγαπητέ συνεργάτη';
+    // Χαιρετισμός με την ώρα αποστολής και την επωνυμία — ποτέ το ΑΦΜ.
+    $who     = mailGreeting() . ($name !== '' && !preg_match('/^\d{9}$/', $name) ? ' ' . $name : ' σας');
+    if (!array_key_exists('company', $info)) $info['company'] = mailCompanyName($accountVat);
     $bal     = balanceWording((float)($info['balance'] ?? 0));
     $period  = trim((string)($info['period'] ?? ''));
     $company = trim((string)($info['company'] ?? ''));
@@ -3884,7 +4082,7 @@ function ledgerMailBody(string $accountVat, array $info): array {
     // υπόλοιπο θα διάβαζαν σαν απαίτηση.
     $bank = $bal['debit'] ? bankBlockText($accountVat) : '';
     if ($bank !== '') $lines[] = $bank;
-    if ($company !== '') { $lines[] = ''; $lines[] = 'με εκτίμηση,'; $lines[] = $company; }
+    if ($company !== '') { $lines[] = ''; $lines[] = 'Με εκτίμηση,'; $lines[] = $company; }
 
     $inner = '<p>' . htmlspecialchars($who, ENT_QUOTES) . ',</p>'
         . '<p>σας αποστέλλουμε συνημμένη την καρτέλα κινήσεων'
@@ -5980,6 +6178,96 @@ if (!empty($_GET['cls_options'] ?? $_POST['cls_options'] ?? '')) {
     if ($cHit && !empty($cHit['rows'])) jsonResponse($cHit['rows']);
 }
 
+// --- Λίστες που αλλάζουμε ΕΜΕΙΣ: η επόμενη ανανέωση πάει οπωσδήποτε στην ΑΑΔΕ ---
+if (defined('COMPANY_VAT') && COMPANY_VAT !== '') {
+    $__mut = [
+        'customers'  => ['create_personal_customer', 'update_customer', 'delete_customer_code', 'delete_customer_vat', 'new_customer'],
+        'products'   => ['new_product', 'update_product_code', 'delete_product_code'],
+        'series'     => ['new_series', 'update_series_id', 'delete_series_id'],
+        'deductions' => ['new_deduction', 'update_deduction_code', 'delete_deduction_code'],
+        'prodcats'   => ['new_product_category', 'update_category_id', 'delete_product_category_id', 'save_category_cls'],
+        'categories' => ['new_product_category', 'update_category_id', 'delete_product_category_id', 'save_category_cls'],
+    ];
+    $__dirty = [];
+    foreach ($__mut as $__kind => $__params) {
+        foreach ($__params as $__p) {
+            if (trim((string)($_GET[$__p] ?? $_POST[$__p] ?? '')) !== '') { $__dirty[] = $__kind; break; }
+        }
+    }
+    if ($__dirty) {
+        cacheMarkDirty(COMPANY_VAT, $__dirty);
+        // Και ΜΕΤΑ την αλλαγή: μια ανανέωση που έτρεξε στο μεταξύ θα είχε
+        // καθαρίσει το σημάδι πριν η αλλαγή φτάσει στην ΑΑΔΕ.
+        $__dv = COMPANY_VAT;
+        register_shutdown_function(static function () use ($__dv, $__dirty) { cacheMarkDirty($__dv, $__dirty); });
+        // Ο πελάτης που αλλάζει ξαναδιαβάζεται ολόκληρος.
+        if (in_array('customers', $__dirty, true)) {
+            $__all = custDetailsAll(COMPANY_VAT);
+            $__cv = trim((string)($_POST['update_customer_vat'] ?? $_GET['update_customer_vat'] ?? ''));
+            $__cc = trim((string)($_POST['update_customer_code'] ?? $_GET['update_customer_code'] ?? ''));
+            foreach (array_keys($__all) as $__k) {
+                if (($__cv !== '' && substr((string)$__k, -10) === '|' . $__cv) || ($__cc !== '' && strpos((string)$__k, $__cc . '|') === 0)) {
+                    unset($__all[$__k]);
+                }
+            }
+            try { cache_set(COMPANY_VAT, 'custdetails', $__all); } catch (\Throwable $e) {}
+        }
+    }
+}
+
+// Ανανέωση λίστας που επιβεβαιώθηκε πρόσφατα: απάντηση από τη βάση, χωρίς σύνδεση.
+$__syncFast = trim((string)($_GET['sync'] ?? $_POST['sync'] ?? ''));
+if ($__syncFast !== '' && defined('COMPANY_VAT') && COMPANY_VAT !== ''
+        && in_array($__syncFast, ['customers', 'products', 'series', 'deductions', 'categories', 'prodcats', 'invtypes'], true)
+        && empty($_GET['force'] ?? $_POST['force'] ?? '') && empty($_GET['details'] ?? $_POST['details'] ?? '')
+        && setting_get(cacheDirtyKey(COMPANY_VAT, $__syncFast)) === ''
+        && !($__syncFast === 'customers' && setting_get('cache.pending.' . COMPANY_VAT . '.customers') !== '0')) {
+    $__c = cache_get(COMPANY_VAT, $__syncFast);
+    $__age = cacheAgeSeconds($__c);
+    if ($__c && $__age !== null && $__age < SYNC_TRUST_SECONDS) {
+        jsonResponse(['success' => true, 'kind' => $__syncFast, 'changed' => false, 'from_cache' => true,
+            'count' => count($__c['rows']), 'prev_count' => count($__c['rows']), 'discovered' => 0,
+            'age_seconds' => $__age, 'synced_at' => $__c['synced_at'], 'rows' => $__c['rows']]);
+    }
+}
+
+// Κατηγορίες φόρων: σταθερός κατάλογος της ΑΑΔΕ — μία φορά τη μέρα αρκεί.
+if (!empty($_GET['tax_categories'] ?? $_POST['tax_categories'] ?? '') && defined('COMPANY_VAT') && COMPANY_VAT !== '') {
+    $__c = cache_get(COMPANY_VAT, 'taxcats');
+    $__age = cacheAgeSeconds($__c);
+    if ($__c && !empty($__c['rows']) && $__age !== null && $__age < 86400) jsonResponse($__c['rows']);
+}
+
+// Κατηγορίες ειδών (dropdown της φόρμας είδους).
+if (!empty($_GET['list_product_categories'] ?? $_POST['list_product_categories'] ?? '') && defined('COMPANY_VAT') && COMPANY_VAT !== ''
+        && empty($_GET['force'] ?? $_POST['force'] ?? '') && setting_get(cacheDirtyKey(COMPANY_VAT, 'prodcats')) === '') {
+    $__c = cache_get(COMPANY_VAT, 'prodcats');
+    $__age = cacheAgeSeconds($__c);
+    if ($__c && $__age !== null && $__age < SYNC_TRUST_SECONDS) {
+        jsonResponse(['success' => true, 'from_cache' => true, 'count' => count($__c['rows']),
+                      'product_categories' => $__c['rows']]);
+    }
+}
+
+// Στοιχεία ενός πελάτη από τη βάση (η φόρμα «Επεξεργασία πελάτη» ανοίγει γεμάτη).
+if (!empty($_GET['customer_details'] ?? $_POST['customer_details'] ?? '') && defined('COMPANY_VAT') && COMPANY_VAT !== ''
+        && empty($_GET['verify'] ?? $_POST['verify'] ?? '')) {
+    $__det = custDetailsFind(COMPANY_VAT, trim((string)($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? '')),
+                             trim((string)($_GET['customer_code'] ?? $_POST['customer_code'] ?? '')));
+    jsonResponse(['success' => true, 'cached' => (bool)$__det, 'details' => $__det ?: new \stdClass(),
+        'stale' => !$__det || (time() - (int)($__det['fetched_at'] ?? 0)) > CUST_DETAILS_TTL]);
+}
+
+// Email πελάτη που ΗΔΗ ξέρουμε: καμία σύνδεση.
+if (!empty($_GET['customer_email'] ?? $_POST['customer_email'] ?? '') && defined('COMPANY_VAT') && COMPANY_VAT !== '') {
+    $__cv = trim((string)($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? ''));
+    if ($__cv !== '') {
+        $__known = customer_contact_get(COMPANY_VAT, $__cv)['email'];
+        if ($__known === '') { $__d = custDetailsFind(COMPANY_VAT, $__cv); $__known = (string)($__d['email'] ?? ''); }
+        if ($__known !== '') jsonResponse(['success' => true, 'email' => $__known, 'from_cache' => true]);
+    }
+}
+
 $ch = login();
 
 // Serve e-timologio's own client-side PDF scripts through the bridge so the UI can
@@ -6048,8 +6336,21 @@ $syncKind = trim($_GET['sync'] ?? $_POST['sync'] ?? '');
 if ($syncKind !== '') {
     $prev = cache_get(COMPANY_VAT, $syncKind);
     $rows = [];
+    $detailsPending = null;
     if ($syncKind === 'customers') {
         $r = listCustomers($ch, '', '', '', true, 1000, 20); $rows = $r['customers'] ?? [];
+        if (!empty($r['success'])) {
+            // Ο πρώτος γύρος σύντομος (ο πίνακας περιμένει)· οι επόμενοι, που
+            // ζητά η σελίδα στο παρασκήνιο, με περισσότερο χρόνο.
+            $detailsPending = enrichCustomerDetails($ch, $rows,
+                !empty($_GET['details'] ?? $_POST['details'] ?? '') ? 20.0 : 6.0);
+            setting_set('cache.pending.' . COMPANY_VAT . '.customers', (string)$detailsPending);
+        } else {
+            foreach ($rows as &$__r) unset($__r['view_url']);
+            unset($__r);
+        }
+    } elseif ($syncKind === 'prodcats') {
+        $r = listProductCategories($ch); $rows = $r['product_categories'] ?? [];
     } elseif ($syncKind === 'products') {
         $r = listProducts($ch); $rows = $r['products'] ?? [];
     } elseif ($syncKind === 'invoices') {
@@ -6170,12 +6471,15 @@ if ($syncKind !== '') {
 
     $newHash  = md5(json_encode($rows, JSON_UNESCAPED_UNICODE));
     $changed  = !$prev || $prev['hash'] !== $newHash;
-    if ($changed) cache_set(COMPANY_VAT, $syncKind, $rows);
+    // ΠΑΝΤΑ εγγραφή: ακόμη κι όταν δεν άλλαξε τίποτα, ανανεώνεται η σφραγίδα
+    // «επιβεβαιώθηκε», πάνω στην οποία απαντούν οι επόμενες ανανεώσεις χωρίς σύνδεση.
+    cache_set(COMPANY_VAT, $syncKind, $rows);
+    try { setting_set(cacheDirtyKey(COMPANY_VAT, $syncKind), ''); } catch (\Throwable $e) {}
     $meta = cache_get(COMPANY_VAT, $syncKind);
     curl_close($ch);
     jsonResponse(['success' => true, 'kind' => $syncKind, 'changed' => $changed,
         'count' => count($rows), 'prev_count' => $prev ? count($prev['rows']) : 0,
-        'discovered' => $discovered,
+        'discovered' => $discovered, 'details_pending' => $detailsPending,
         'synced_at' => $meta['synced_at'] ?? '', 'rows' => $rows]);
 }
 
@@ -6225,8 +6529,31 @@ if (!empty($_GET['taxis_name'] ?? $_POST['taxis_name'] ?? '')) {
 // Invoice taxes / withholdings / fees category lists (Νέος Φόρος)
 if (!empty($_GET['tax_categories'] ?? $_POST['tax_categories'] ?? '')) {
     $result = getTaxCategories($ch);
+    if (is_array($result) && !empty($result) && ($result['success'] ?? true) !== false && defined('COMPANY_VAT')) {
+        try { cache_set(COMPANY_VAT, 'taxcats', $result); } catch (\Throwable $e) {}
+    }
     curl_close($ch);
     jsonResponse($result);
+}
+
+// Στοιχεία ενός πελάτη, ΖΩΝΤΑΝΑ από την ΑΑΔΕ (επιβεβαίωση της μνήμης).
+if (!empty($_GET['customer_details'] ?? $_POST['customer_details'] ?? '')) {
+    $cv = trim((string)($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? ''));
+    $cc = trim((string)($_GET['customer_code'] ?? $_POST['customer_code'] ?? ''));
+    $loc = findCustomerViewUrl($ch, $cv, $cc);
+    $det = !empty($loc['view_url']) ? customerDetailsFromView($ch, (string)$loc['view_url']) : null;
+    curl_close($ch);
+    if ($det === null) jsonError('Δεν βρέθηκε ο πελάτης στην ΑΑΔΕ', 404);
+    $all = custDetailsAll(COMPANY_VAT);
+    $code = $cc !== '' ? $cc : (string)($loc['customer_code'] ?? '');
+    $key = custDetailsKey($code, $cv);
+    // Αν ο κωδικός δεν ήρθε, κρατάμε το κλειδί που ήδη υπάρχει για αυτό το ΑΦΜ.
+    if ($code === '' && $cv !== '') {
+        foreach (array_keys($all) as $k) { if (substr((string)$k, -10) === '|' . $cv) { $key = (string)$k; break; } }
+    }
+    $all[$key] = $det;
+    try { cache_set(COMPANY_VAT, 'custdetails', $all); } catch (\Throwable $e) {}
+    jsonResponse(['success' => true, 'cached' => false, 'details' => $det, 'stale' => false]);
 }
 
 // Invoice-type catalogue (numeric value + dotted code + full label) for the UI.
@@ -6447,6 +6774,9 @@ if ($linesJson !== '') {
         trim($_GET['notes'] ?? $_POST['notes'] ?? ''), -1.0, 0, [], $linesArr, $issueSeries, $taxesArr, $previewFlag, $issueLang, [], $reuseTempId
     );
     curl_close($ch);
+    if (!empty($GLOBALS['__addressDropped']) && is_array($result)) {
+        $result['warning'] = 'Η διεύθυνση του πελάτη δεν μπήκε στο παραστατικό: λείπει ο Τ.Κ. ή η πόλη. Συμπλήρωσέ τα στον πελάτη.';
+    }
     if ($live && !$previewFlag) notifyIssue($result, ['doc_type' => $type, 'series' => $issueSeries, 'buyer_vat' => $afm, 'buyer_name' => $name]);
     jsonResponse($result);
 }
@@ -6471,7 +6801,9 @@ if (!empty($_POST['email_document'] ?? $_GET['email_document'] ?? '')) {
     $to = trim((string)($_POST['to'] ?? ''));
     if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) jsonError('Άκυρη διεύθυνση παραλήπτη');
     $subject = trim((string)($_POST['subject'] ?? '')) ?: 'Παραστατικό';
-    $bodyRaw = (string)($_POST['body'] ?? '');
+    // Το κείμενο μπορεί να γράφτηκε πριν από ώρες: «Καλημέρα» που φεύγει στις
+    // έξι το απόγευμα διορθώνεται εδώ, με την ώρα που πραγματικά στέλνεται.
+    $bodyRaw = mailFixGreeting((string)($_POST['body'] ?? ''));
     $acctVat = defined('COMPANY_VAT') ? COMPANY_VAT : '';
     $files = [];
 
@@ -6836,6 +7168,10 @@ if ($listProductsFlag) {
 
 if ($listCategoriesFlag) {
     $result = listProductCategories($ch);
+    if (!empty($result['success']) && defined('COMPANY_VAT')) {
+        try { cache_set(COMPANY_VAT, 'prodcats', $result['product_categories']); } catch (\Throwable $e) {}
+        try { setting_set(cacheDirtyKey(COMPANY_VAT, 'prodcats'), ''); } catch (\Throwable $e) {}
+    }
     curl_close($ch);
     jsonResponse($result);
 }
@@ -6904,6 +7240,9 @@ if ($amount > 0) {
         $withholdingCategory, $withholdingAmount, $live, '', '', -1.0, 0, [], [], $issueSeries
     );
     curl_close($ch);
+    if (!empty($GLOBALS['__addressDropped']) && is_array($result)) {
+        $result['warning'] = 'Η διεύθυνση του πελάτη δεν μπήκε στο παραστατικό: λείπει ο Τ.Κ. ή η πόλη. Συμπλήρωσέ τα στον πελάτη.';
+    }
     if ($live) notifyIssue($result, ['doc_type' => $type, 'series' => $issueSeries, 'buyer_vat' => $afm, 'buyer_name' => $name]);
     jsonResponse($result);
 } else {
