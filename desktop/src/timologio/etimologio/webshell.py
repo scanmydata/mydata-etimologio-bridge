@@ -26,7 +26,7 @@ from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -101,6 +101,41 @@ def _free_name(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     return path
+
+
+#: Το ΜΟΝΙΜΟ προφίλ του ενσωματωμένου browser — ένα ανά διεργασία.
+_PROFILE = None
+
+#: Όνομα του προφίλ στον δίσκο. Ένα όνομα σημαίνει φάκελο κάτω από το
+#: LOCALAPPDATA/scanmydata/Timologio Downloader/QtWebEngine — ΕΞΩ από τον φάκελο
+#: της εγκατάστασης, άρα δεν τον αγγίζει καμία ενημέρωση.
+PROFILE_NAME = "etimologio"
+
+
+def persistent_profile():
+    """Προφίλ που ΘΥΜΑΤΑΙ: cookies σύνδεσης και τοπικές ρυθμίσεις της σελίδας.
+
+    ⚠️ Στο Qt 6 το προεπιλεγμένο προφίλ είναι «ανώνυμης περιήγησης»: όλα ζουν στη
+    μνήμη και σβήνουν με το κλείσιμο. Κάθε ενημέρωση (που κλείνει και ξανανοίγει
+    την εφαρμογή) έβγαζε τον λογιστή από τον λογαριασμό του στον server και
+    ξεχνούσε ό,τι είχε ρυθμίσει στη σελίδα.
+
+    Τα cookies «μέχρι να κλείσει ο browser» κρατιούνται κι αυτά
+    (ForcePersistentCookies): η σύνδεση είναι ακριβώς τέτοιο cookie.
+    """
+    global _PROFILE
+    if _PROFILE is None:
+        from PySide6.QtWidgets import QApplication
+
+        # Γονέας η ίδια η εφαρμογή: το προφίλ πρέπει να ζήσει περισσότερο από
+        # κάθε σελίδα που το χρησιμοποιεί, αλλιώς το Qt διαμαρτύρεται (ή σκάει)
+        # στο κλείσιμο.
+        profile = QWebEngineProfile(PROFILE_NAME, QApplication.instance())
+        profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+        )
+        _PROFILE = profile
+    return _PROFILE
 
 
 def webengine_available() -> bool:
@@ -296,7 +331,7 @@ class EtimologioWebShell(QWidget):
         # σύνδεσμοι πέφτουν στο κενό, και ό,τι δεθεί στην παλιά σελίδα χάνεται
         # μαζί της. Κρατιέται σε πεδίο — μια σελίδα χωρίς αναφορά την παίρνει ο
         # συλλέκτης της Python και το παράθυρο μένει λευκό.
-        self._page = _Page(self._view.page().profile(), self)
+        self._page = _Page(persistent_profile(), self)
         self._view.setPage(self._page)
         # ⚠️ Χωρίς χειριστή λήψης, το QtWebEngine **ακυρώνει σιωπηλά** κάθε
         # κατέβασμα: ο χρήστης πατούσε «PDF καρτέλας» ή «ZIP» και δεν συνέβαινε

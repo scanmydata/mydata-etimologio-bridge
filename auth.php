@@ -85,18 +85,43 @@ function req_is_loopback(): bool {
     return true;
 }
 
+//: Πόσο κρατά η σύνδεση της ΕΦΑΡΜΟΓΗΣ ΥΠΟΛΟΓΙΣΤΗ χωρίς χρήση (30 ημέρες).
+const AUTH_SHELL_SESSION_TTL = 2592000;
+
 if (session_status() === PHP_SESSION_NONE) {
     session_name('ETIM_SID');
+    // Η εφαρμογή υπολογιστή κλείνει και ξανανοίγει σε κάθε ενημέρωση: με
+    // συνεδρία «μέχρι να κλείσει ο browser» ο λογιστής έβγαινε από τον
+    // λογαριασμό του κάθε φορά. Εκεί η σύνδεση κρατά AUTH_SHELL_SESSION_TTL.
+    // Στον απλό browser ΤΙΠΟΤΑ δεν αλλάζει: ίδιο cookie συνεδρίας, ίδιο όριο
+    // αδράνειας με πριν (όσο έλεγε το php.ini).
+    $__shellClient = !empty($_COOKIE['etim_shell']) || (string)($_GET['shell'] ?? '') === '1'
+                     || isset($_GET['desktop_token']);
+    $__webIdle = (int)ini_get('session.gc_maxlifetime');
+    if ($__webIdle <= 0) $__webIdle = 1440;
+    // Ο καθαριστής συνεδριών σβήνει με βάση ΑΥΤΟ το όριο — πρέπει να καλύπτει
+    // τη μακρύτερη. Το όριο του browser επιβάλλεται ρητά πιο κάτω.
+    if ($__webIdle < AUTH_SHELL_SESSION_TTL) @ini_set('session.gc_maxlifetime', (string)AUTH_SHELL_SESSION_TTL);
     // Secure μόνο όταν το αίτημα ΕΙΝΑΙ https: σταθερό «1» θα έσπαγε την τοπική
     // λειτουργία της εφαρμογής υπολογιστή σε http://127.0.0.1.
     session_set_cookie_params([
-        'lifetime' => 0,
+        'lifetime' => $__shellClient ? AUTH_SHELL_SESSION_TTL : 0,
         'path'     => '/',
         'httponly' => true,
         'samesite' => 'Lax',
         'secure'   => req_is_https(),
     ]);
     session_start();
+    $__now  = time();
+    $__seen = (int)($_SESSION['__seen'] ?? 0);
+    $__idle = $__shellClient ? AUTH_SHELL_SESSION_TTL : $__webIdle;
+    if ($__seen > 0 && $__now - $__seen > $__idle && !empty($_SESSION['uid'])) {
+        // Ληγμένη λόγω αδράνειας: ίδιο αποτέλεσμα με τον παλιό καθαριστή.
+        $_SESSION = [];
+        $__seen = 0;
+    }
+    // Εγγραφή το πολύ μία φορά το λεπτό: αλλιώς κάθε αίτημα θα ξαναέγραφε το αρχείο.
+    if ($__now - $__seen >= 60) $_SESSION['__seen'] = $__now;
 }
 
 // --- Master bootstrap -------------------------------------------------------

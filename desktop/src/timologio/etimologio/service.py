@@ -130,6 +130,27 @@ class EtimologioService:
             self._conf["server_url"] = server_url.rstrip("/")
         self._save_conf()
 
+    def _stable_port(self) -> int:
+        """Η ΙΔΙΑ θύρα σε κάθε εκκίνηση, όσο είναι ελεύθερη.
+
+        Ο browser κρατά τις τοπικές ρυθμίσεις της σελίδας (localStorage) ανά
+        διεύθυνση ΜΑΖΙ με τη θύρα. Με νέα τυχαία θύρα σε κάθε εκκίνηση, κάθε
+        ενημέρωση άνοιγε την εφαρμογή «από την αρχή».
+        """
+        wanted = int(self._conf.get("port") or 0)
+        if 1024 <= wanted <= 65535:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                try:
+                    sock.bind(("127.0.0.1", wanted))
+                except OSError:
+                    wanted = 0
+            if wanted:
+                return wanted
+        port = _free_port()
+        self._conf["port"] = port
+        self._save_conf()
+        return port
+
     def desktop_token(self) -> str:
         """Το κλειδί αυτόματης σύνδεσης του ενσωματωμένου UI (loopback μόνο)."""
         return str(self._conf.get("desktop_token", ""))
@@ -237,9 +258,13 @@ const NOTIFY_ADMIN_EMAIL = '';
             adopt_existing(self.data_dir)
         except Exception:  # noqa: BLE001 — ποτέ λόγος να μην ανοίξει η εφαρμογή
             log.exception("Η αυτόματη φόρτωση αντιγράφου απέτυχε")
-        self._port = _free_port()
+        self._port = self._stable_port()
         self._write_config(self._port)
         (self.data_dir / ".cookies").mkdir(exist_ok=True)
+        # Οι συνεδρίες ΔΙΠΛΑ στα δεδομένα, όχι στον Temp των Windows (που
+        # καθαρίζεται), και με διάρκεια που αντέχει επανεκκινήσεις/ενημερώσεις.
+        sessions = self.data_dir / ".sessions"
+        sessions.mkdir(exist_ok=True)
         logfile = open(self.data_dir / "php-server.log", "ab")  # noqa: SIM115
         cmd = [php]
         ini = resolve_php_ini(php)
@@ -259,6 +284,8 @@ const NOTIFY_ADMIN_EMAIL = '';
             "-d", "html_errors=0",
             "-d", "log_errors=1",
             "-d", f"error_log={self.data_dir / 'php-errors.log'}",
+            "-d", f"session.save_path={sessions}",
+            "-d", "session.gc_maxlifetime=2592000",
         ]
         cmd += ["-S", f"127.0.0.1:{self._port}", "-t", str(root)]
         self._proc = subprocess.Popen(

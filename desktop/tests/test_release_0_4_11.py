@@ -105,7 +105,8 @@ def test_an_empty_install_loads_the_folder_by_itself() -> None:
 
     source = Path(service.__file__).read_text(encoding="utf-8")
     body = source[source.index("def start_local"):]
-    assert "adopt_existing" in body[:body.index("self._port = _free_port()")]
+    # Η 0.4.29 κράτησε σταθερή τη θύρα (`_stable_port`)· η σειρά μένει ίδια.
+    assert "adopt_existing" in body[:body.index("self._port = self._stable_port()")]
 
 
 # --- η οθόνη σύνδεσης -------------------------------------------------------
