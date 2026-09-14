@@ -176,7 +176,7 @@ class _Page(QWebEnginePage):
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:  # noqa: N802 — Qt API
         if (is_main_frame
                 and nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked
-                and not _is_local(url)):
+                and not self._shell.is_ours(url)):
             self._shell.open_external(url.toString())
             return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
@@ -194,7 +194,7 @@ class _Page(QWebEnginePage):
         probe = QWebEnginePage(self)
 
         def _went(url: QUrl) -> None:
-            if not _is_local(url):
+            if not self._shell.is_ours(url):
                 self._shell.open_external(url.toString())
             probe.deleteLater()
 
@@ -264,6 +264,14 @@ class EtimologioWebShell(QWidget):
         self._retry.clicked.connect(self._restart)
         self._retry.hide()
         holder_box.addWidget(self._retry, 0, Qt.AlignmentFlag.AlignHCenter)
+        # Η έξοδος προς τα τοπικά ΚΑΙ στην οθόνη σφάλματος: όταν ο server δεν
+        # απαντά, η μπάρα από πάνω είναι το μόνο άλλο σημείο — και ο κώδικας
+        # που την κρύβει/δείχνει αναφερόταν σε κουμπί που είχε σβηστεί, οπότε
+        # το «Τοπικά δεδομένα» έσκαγε πριν κάνει οτιδήποτε.
+        self._go_local = QPushButton("💻 Τοπικά δεδομένα")
+        self._go_local.clicked.connect(self._back_to_local)
+        self._go_local.hide()
+        holder_box.addWidget(self._go_local, 0, Qt.AlignmentFlag.AlignHCenter)
         holder_box.addStretch(1)
         self._stack.addWidget(holder)
 
@@ -338,6 +346,24 @@ class EtimologioWebShell(QWidget):
         script.setRunsOnSubFrames(False)
         self._view.page().scripts().insert(script)
 
+    def is_ours(self, url: QUrl) -> bool:
+        """Ανήκει η διεύθυνση στην εφαρμογή που δείχνουμε ΤΩΡΑ;
+
+        Loopback πάντα. Σε λειτουργία server όμως η εφαρμογή ζει στον ίδιο τον
+        server: με μόνο το loopback ως «δικό μας», κάθε ``location.href`` της
+        σελίδας σύνδεσης (το «μπες» μετά τον κωδικό) θεωρούνταν εξωτερικό — ο
+        χρήστης πατούσε «Σύνδεση» και του άνοιγε ο Edge, ενώ το παράθυρο έμενε
+        στη φόρμα.
+        """
+        if _is_local(url):
+            return True
+        if not self._base:
+            return False
+        base = QUrl(self._base)
+        return (url.scheme() == base.scheme()
+                and url.host().lower() == base.host().lower()
+                and url.port(-1) == base.port(-1))
+
     @Slot(str)
     def open_external(self, url: str) -> None:
         """Ανοίγει διεύθυνση στον προεπιλεγμένο browser του συστήματος.
@@ -401,6 +427,11 @@ class EtimologioWebShell(QWidget):
         (``auth_desktop_autologin``): ο χρήστης έχει ήδη ανοίξει την εφαρμογή
         του και ο κωδικός που θα ζητούσαμε είναι αυτός που παρήγαγε η ίδια.
         """
+        if self._service.mode() == "thin":
+            # Το κλειδί είναι ΜΟΝΟ για τον τοπικό server. Προς τον server του
+            # internet θα κατέληγε στα access logs του, χωρίς καμία χρησιμότητα.
+            address = f"{self._base}/app.php"
+            return f"{address}#{section}" if section else address
         token = quote(self._service.desktop_token(), safe="")
         address = f"{self._base}/app.php?desktop_token={token}"
         return f"{address}#{section}" if section else address
@@ -441,6 +472,10 @@ class EtimologioWebShell(QWidget):
         self._service.set_mode("offline")
         self._go_local.hide()
         self._thin_bar.hide()
+        # Η σελίδα του server δεν είναι «η εφαρμογή φόρτωσε»: χωρίς μηδενισμό,
+        # μια αποτυχία του τοπικού θα αγνοούνταν σαν ακυρωμένη λήψη.
+        self._loaded_ok = False
+        self._base = ""
         self._restart()
 
     def _set_status(self, text: str) -> None:

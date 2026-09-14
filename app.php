@@ -840,7 +840,10 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <th class="grid-check" style="width:34px"><input type="checkbox" id="docAll" onchange="docToggleAll(this.checked)"></th>
           <th>Ημ/νία</th><th>Τύπος</th><th>Σειρά</th><th>Α/Α</th><th>Πελάτης</th>
           <th class="num">Καθαρή</th><th class="num">ΦΠΑ</th><th class="num">Σύνολο</th><th>ΜΑΡΚ</th><th class="nofilter"></th>
-        </tr></thead><tbody></tbody></table>
+        </tr></thead><tbody></tbody><tfoot><tr class="doc-totals">
+          <td></td><td></td><td></td><td></td><td></td><td class="right"><b>Σύνολα</b></td>
+          <td class="num" id="docSumNet"></td><td class="num" id="docSumVat"></td><td class="num" id="docSumTotal"></td><td></td><td></td>
+        </tr></tfoot></table>
       </div>
     </section>
 
@@ -2032,7 +2035,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <button title="Καθαρισμός" onclick="cbClear()">🗑</button>
     <button title="Κλείσιμο" onclick="cbTogglePanel()">✕</button></div>
   <div id="cbLog"></div>
-  <div id="cbHint">π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ» · «μαζική εκτύπωση» · «ZIP παραστατικών» · «πόσες αδιάβαστες» · «ενεργοποίηση 2FA» · «βοήθεια»</div>
+  <div id="cbHint">π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός 10 ευρώ» · «μαζική εκτύπωση» · «ZIP παραστατικών» · «πόσες αδιάβαστες» · «ενεργοποίηση 2FA» · «βοήθεια»</div>
   <div id="cbBar">
     <input id="cbInput" placeholder="Γράψε ή πάτα το μικρόφωνο…" onkeydown="if(event.key==='Enter')cbSubmitText()">
     <button id="cbMic" title="Ομιλία" onclick="cbToggleMic()">🎙</button>
@@ -3294,6 +3297,9 @@ function applyGridLayout(tableId){
   const order=gridOrder(tableId,hdr.cells.length);
   orderRow(hdr,order);
   if(table.tBodies[0])[...table.tBodies[0].rows].forEach(tr=>orderRow(tr,order));
+  // Η γραμμή συνόλων ακολουθεί σειρά και ορατότητα στηλών, αλλιώς τα ποσά
+  // πέφτουν κάτω από λάθος κεφαλίδα μόλις σύρεις μια στήλη.
+  if(table.tFoot)[...table.tFoot.rows].forEach(tr=>orderRow(tr,order));
   const L=gridLayout(tableId);
   const widths=L.w||{};
   // Σταθερή διάταξη ΜΟΝΟ όταν έχουμε πλάτος για κάθε στήλη· αλλιώς οι στήλες
@@ -3321,6 +3327,7 @@ function applyHidden(tableId){
   paint(table.tHead.rows[0]);
   if(table.tBodies[0])[...table.tBodies[0].rows].forEach(tr=>{
     if(tr.cells.length>1)paint(tr);});
+  if(table.tFoot)[...table.tFoot.rows].forEach(tr=>{if(tr.cells.length>1)paint(tr);});
 }
 function setColumnHidden(tableId,logical,hidden){
   const L=gridLayout(tableId);const set=hiddenSet(tableId);
@@ -3544,6 +3551,7 @@ function applyColumnFilters(tableId){
   // keep funnel active-state in sync after re-renders
   const hdr=table.tHead&&table.tHead.rows[0];
   if(hdr)[...hdr.querySelectorAll('.filter-btn')].forEach(b=>b.classList.toggle('active',!!st[b.dataset.col]));
+  if(tableId==='docTable')docTotals();
 }
 
 // Customers (cached + instant client-side filter)
@@ -5110,11 +5118,62 @@ async function loadDocs(){
     try{const c=await api({cached:'customers'});if(c.rows&&c.rows.length)ALL_CUSTOMERS=c.rows;}catch(e){}
     ensureCustomers();
   }
-  try{const d=await api({search_invoices:1,issue_date_from:di('docFrom'),issue_date_to:di('docTo')});
+  const from=di('docFrom'),to=di('docTo');
+  // ΠΡΩΤΑ η μνήμη: η ΑΑΔΕ θέλει σύνδεση + αναζήτηση (δευτερόλεπτα), ενώ η
+  // τελευταία λίστα του ίδιου διαστήματος είναι ήδη στη βάση μας. Ο πίνακας
+  // εμφανίζεται αμέσως και ανανεώνεται σιωπηλά μόλις έρθει η φρέσκια.
+  const seq=++DOCS_SEQ;
+  try{const c=await api({cached:'docs'});
+    const r=c&&c.rows;
+    if(seq===DOCS_SEQ&&r&&r.from===from&&r.to===to&&Array.isArray(r.invoices)){
+      ALL_DOCS=r.invoices.filter(i=>i.mark);DOCS_FROM_CACHE=true;renderDocs();}
+  }catch(e){}
+  try{const d=await api({search_invoices:1,issue_date_from:from,issue_date_to:to});
+    if(seq!==DOCS_SEQ)return;
     if(d.success===false)throw new Error(d.error||'σφάλμα');
-    ALL_DOCS=(d.invoices||[]).filter(i=>i.mark);
+    ALL_DOCS=(d.invoices||[]).filter(i=>i.mark);DOCS_FROM_CACHE=false;
     renderDocs();
-  }catch(e){$('#docTable tbody').innerHTML='';toast('Παραστατικά: '+e.message,'err');}
+    if(d.names_pending>0)docFillNames(seq,from,to);
+  }catch(e){
+    if(seq!==DOCS_SEQ)return;
+    // Με λίστα από τη μνήμη στην οθόνη, ένα σφάλμα δικτύου δεν τη σβήνει.
+    if(!DOCS_FROM_CACHE)$('#docTable tbody').innerHTML='';
+    toast('Παραστατικά: '+e.message,'err');}
+}
+let DOCS_SEQ=0,DOCS_FROM_CACHE=false;
+// Οι επωνυμίες που δεν πρόλαβε η πρώτη απάντηση, στο παρασκήνιο. Κάθε ΜΑΡΚ
+// ρωτιέται στην ΑΑΔΕ μία φορά ΓΙΑ ΠΑΝΤΑ (μένει στη μνήμη του server).
+async function docFillNames(seq,from,to){
+  for(let round=0;round<10&&seq===DOCS_SEQ;round++){
+    let d;try{d=await api({search_invoices:1,names_only:1,issue_date_from:from,issue_date_to:to});}catch(e){return;}
+    if(seq!==DOCS_SEQ||!d||d.success===false)return;
+    const names=d.names||{};let hit=false;
+    ALL_DOCS.forEach(i=>{if(names[i.mark]&&!i.counterpart_name){i.counterpart_name=names[i.mark];hit=true;}});
+    if(hit)renderDocs();
+    if(!(d.names_pending>0))return;
+  }
+}
+// Πιστωτικά (5.1, 5.2, 11.4): η ΑΑΔΕ τα γράφει με θετικά ποσά, αλλά ΜΕΙΩΝΟΥΝ
+// τον τζίρο. Χωρίς πρόσημο, ένα πιστωτικό 6.416,26 φούσκωνε το σύνολο αντί να
+// το μειώνει.
+function docIsCredit(i){return /^\s*(5\.[12]|11\.4)(\s|$|-)/.test(String(i.type||''));}
+function docSigned(i,field){const n=elNum(i[field]||0);return docIsCredit(i)?-Math.abs(n):n;}
+function docAmt(i,field){
+  const raw=String(i[field]||'').trim();
+  if(!raw)return '';
+  return docIsCredit(i)&&!raw.startsWith('-')?'-'+raw:raw;
+}
+// Σύνολα ανά στήλη, ΜΟΝΟ των γραμμών που φαίνονται (αναζήτηση + φίλτρα στηλών).
+function docTotals(){
+  const byMark={};ALL_DOCS.forEach(i=>{byMark[i.mark]=i;});
+  let net=0,vat=0,total=0;
+  document.querySelectorAll('#docTable tbody tr').forEach(tr=>{
+    if(tr.style.display==='none')return;
+    const cb=tr.querySelector('.doc-cb');const i=cb&&byMark[cb.value];if(!i)return;
+    net+=docSigned(i,'net_value');vat+=docSigned(i,'vat_value');total+=docSigned(i,'total');
+  });
+  const put=(id,v)=>{const el=$('#'+id);if(el)el.textContent=ALL_DOCS.length?fmt(v):'';};
+  put('docSumNet',net);put('docSumVat',vat);put('docSumTotal',total);
 }
 // Ποιος είναι ο πελάτης της γραμμής. Ο πίνακας της ΑΑΔΕ έχει ΜΟΝΟ το ΑΦΜ του
 // αγοραστή (11 στήλες, καμία με όνομα), οπότε ο λογιστής έβλεπε μια κολόνα
@@ -5147,8 +5206,9 @@ function docRows(){
 }
 function renderDocs(){
   const rows=docRows();
-  $('#docCount').textContent=rows.length+' / '+ALL_DOCS.length+' παραστατικά · '+
-    fmt(rows.reduce((s,i)=>s+elNum(i.total||0),0))+' € σύνολο';
+  // Τα ποσά γράφονται πλέον ανά στήλη, στο κάτω μέρος του πίνακα.
+  $('#docCount').textContent=rows.length+' / '+ALL_DOCS.length+' παραστατικά'+
+    (DOCS_FROM_CACHE?' · από τη μνήμη, ανανέωση…':'');
   $('#docTable tbody').innerHTML=rows.map(i=>{
     const who=docWho(i),whoVat=String(i.counterpart_vat||i.buyer_vat||'');
     // Ο τύπος έρχεται από την ΑΑΔΕ ήδη σαν «11.2 - ΑΠΥ (…)»: δεύτερη φορά το
@@ -5159,9 +5219,9 @@ function renderDocs(){
       <td>${esc(i.series||'')}</td>
       <td>${esc(i.aa||'')}</td>
       <td title="${esc(who===whoVat?who:who+' · ΑΦΜ '+whoVat)}">${esc(who)}</td>
-      <td class="num">${esc(i.net_value||'')}</td>
-      <td class="num">${esc(i.vat_value||'')}</td>
-      <td class="num">${esc(i.total||'')}</td>
+      <td class="num">${esc(docAmt(i,'net_value'))}</td>
+      <td class="num">${esc(docAmt(i,'vat_value'))}</td>
+      <td class="num">${esc(docAmt(i,'total'))}</td>
       <td>${esc(i.mark)}</td>
       <td class="right">${docBtn(i.mark)}<button class="ghost sm" title="Αποστολή με email" onclick="event.stopPropagation();emailDocument('${q1(i.mark)}')">✉️</button></td></tr>`;}).join('')
     ||'<tr><td colspan="11" class="muted">Κανένα παραστατικό στο διάστημα.</td></tr>';
@@ -5903,7 +5963,7 @@ function cbTogglePanel(){const p=$('#cbPanel');p.classList.toggle('open');
     if(cbRecOn){try{cbStopLocalRec();}catch(e){}try{if(cbRec)cbRec.stop();}catch(e){}}
     return;
   }
-  {$('#cbInput').focus();cbWarmVoice();if(!$('#cbLog').children.length)cbBot('Γεια! Πες μου π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμ κωδ 10 ευρώ», «νέος πελάτης», «νέο είδος», «νέα σειρά», «πήγαινε στην καρτέλα», ή «ψάξε …» για οτιδήποτε. Αποθηκεύω πάντα ΠΡΟΧΕΙΡΟ — ΜΑΡΚ παίρνει το παραστατικό μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');}}
+  {$('#cbInput').focus();cbWarmVoice();if(!$('#cbLog').children.length)cbBot('Γεια! Πες μου π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός 10 ευρώ», «νέος πελάτης», «νέο είδος», «νέα σειρά», «πήγαινε στην καρτέλα», ή «ψάξε …» για οτιδήποτε. Αποθηκεύω πάντα ΠΡΟΧΕΙΡΟ — ΜΑΡΚ παίρνει το παραστατικό μόνο όταν επιλέξεις «Οριστική Έκδοση».');}}
 function cbClear(){$('#cbLog').innerHTML='';}
 function cbAdd(text,who,actionsHtml){const log=$('#cbLog');const d=document.createElement('div');d.className='cbMsg '+who;d.innerHTML=esc(text).replace(/\n/g,'<br>')+(actionsHtml||'');log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
 function cbMe(t){cbAdd(t,'me');}
@@ -5993,6 +6053,7 @@ function cbSpeak(t,retried){
     // Οι φωνές δεν έχουν φορτώσει ακόμη — μία ματιά αργότερα, πριν αποφασίσουμε.
     if(voice===null&&!retried){setTimeout(()=>cbSpeak(t,true),400);return;}
     if(voice){cbSpeakWith(voice,text);return;}
+    if(cbIsMobile()&&window.speechSynthesis){cbSpeakLang(text,lang);return;}
   }
   // 2η: η μηχανή της εγκατάστασης (Piper), όπου υπάρχει.
   if(!CB_TTS_OFF){
@@ -6026,12 +6087,36 @@ function cbSpeakBrowser(text,lang,retried){try{
   const voice=cbBrowserVoice(lang);
   if(voice===null&&!retried){setTimeout(()=>cbSpeakBrowser(text,lang,true),400);return;}
   if(!voice){
+    // ⚠️ Στο ΚΙΝΗΤΟ η λίστα φωνών έρχεται συχνά άδεια ή χωρίς την ελληνική,
+    // ενώ η ίδια η συσκευή μιλά ελληνικά μια χαρά: Android και iOS διαλέγουν
+    // φωνή μόνα τους από τη γλώσσα. Το «δεν έχεις φωνή — πήγαινε στις
+    // Ρυθμίσεις των Windows» σε τηλέφωνο ήταν λάθος δύο φορές.
+    if(cbIsMobile()){cbSpeakLang(text,lang);return;}
     if(!CB_VOICE_WARNED&&want_greek(lang)){CB_VOICE_WARNED=true;
-      cbAdd('🔇 Ο browser δεν έχει ελληνική φωνή σε αυτόν τον υπολογιστή, οπότε απαντώ μόνο γραπτά. (Windows: Ρυθμίσεις → Ώρα & γλώσσα → Ομιλία → προσθήκη ελληνικής φωνής.)','bot');}
+      cbAdd('🔇 Ο browser δεν έχει ελληνική φωνή σε αυτόν τον υπολογιστή, οπότε απαντώ μόνο γραπτά.'+cbVoiceHowTo(),'bot');}
     return;
   }
   cbSpeakWith(voice,text);
 }catch(e){}}
+// Κινητό ή tablet; Το iPad δηλώνεται «Macintosh», οπότε μετράμε και την αφή.
+function cbIsMobile(){
+  const ua=navigator.userAgent||'';
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua)||(/Macintosh/.test(ua)&&(navigator.maxTouchPoints||0)>1);
+}
+// Εκφώνηση ΧΩΡΙΣ ρητή φωνή: η συσκευή διαλέγει από τη γλώσσα.
+function cbSpeakLang(text,lang){try{
+  if(CB_AUDIO){CB_AUDIO.pause();CB_AUDIO=null;}
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang=want_greek(lang)?'el-GR':(lang||'en');u.rate=1.0;
+  speechSynthesis.cancel();speechSynthesis.speak(u);
+}catch(e){}}
+// Οδηγία ανά λειτουργικό — τα βήματα των Windows δεν λένε τίποτα σε Mac ή Linux.
+function cbVoiceHowTo(){
+  const ua=navigator.userAgent||'';
+  if(/Windows/i.test(ua))return ' (Windows: Ρυθμίσεις → Ώρα & γλώσσα → Ομιλία → προσθήκη ελληνικής φωνής.)';
+  if(/Macintosh|Mac OS/i.test(ua))return ' (macOS: Ρυθμίσεις συστήματος → Προσβασιμότητα → Εκφωνημένο περιεχόμενο → Φωνή συστήματος.)';
+  return '';
+}
 function want_greek(lang){return (lang||'').toLowerCase().startsWith('el');}
 // Οι φωνές φορτώνονται ασύγχρονα — χωρίς αυτό, η πρώτη απάντηση βρίσκει κενή λίστα.
 if(window.speechSynthesis)speechSynthesis.onvoiceschanged=()=>{CB_VOICE=cbPickVoice($('#cbLang').value);};
@@ -6321,7 +6406,7 @@ async function cbHandle(t){const s=cbNorm(t);
   // Ο κανόνας που δεν διαπραγματεύεται: ΜΑΡΚ μόνο από το κόκκινο κουμπί.
   if(/οριστικ|στειλ\S* το στην ααδε|παρε μαρκ|υποβαλ|officially|for real|submit it to the tax/.test(s)){
     showView('issue');
-    cbBot('Ετοιμάζω μόνο ΠΡΟΧΕΙΡΟ. Το ΜΑΡΚ το δίνει η ΑΑΔΕ όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
+    cbBot('Ετοιμάζω μόνο ΠΡΟΧΕΙΡΟ. Το ΜΑΡΚ το δίνει η ΑΑΔΕ όταν επιλέξεις «Οριστική Έκδοση».');return;}
   if(/σωπα|μη \S*\s?μιλα|σταματα να μιλα|\bmute\b|be quiet|stop talking/.test(s)){
     CB_MUTED=true;
     // Σιωπή σημαίνει ΤΩΡΑ — όχι «μετά την πρόταση που ήδη ακούγεται».
@@ -6383,7 +6468,7 @@ async function cbHandle(t){const s=cbNorm(t);
       '📊 Ερωτήσεις: «πόσα τιμολόγια φέτος» · «τζίρος μήνα» · «πόσους πελάτες έχω»\n'+
       '🧭 Πλοήγηση: «πήγαινε στην καρτέλα / πελάτες / είδη / σειρές / πρόχειρα…»\n'+
       '🔍 Αναζήτηση: «ψάξε <ό,τι θες>» — πελάτες, ενότητες, ρυθμίσεις, είδη, σειρές, ΜΑΡΚ\n\n'+
-      'ℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση».');return;}
+      'ℹ️ Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν επιλέξεις «Οριστική Έκδοση».');return;}
   // Αναζήτηση παντού — η ίδια που τρέχει το Ctrl+K.
   {
     const m=/^\s*(?:ψ[άα]ξε|βρες|βρε[ίι]ς|αναζ[ήη]τησ[εη]|search|find)\s+(.{2,})$/i.exec(t||'');
@@ -6717,7 +6802,7 @@ const TOUR=[
   {sel:'#bkTable',view:'settings',title:'🏦 Λογαριασμοί & αυτόματη αποστολή',text:'Καταχώρησε τα IBAN της επιχείρησης — η τράπεζα βγαίνει από λίστα και το IBAN ελέγχεται πραγματικά (mod-97), οπότε λάθος ψηφίο δεν περνά. Όσα έχουν ✓ «στο email» γράφονται στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο· μπορείς και να ανεβάσεις PDF με τους λογαριασμούς.'},
   {sel:'#bkAutoSend',view:'settings',title:'📤 Να φεύγει μόνο του',text:'Με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ στέλνεται αμέσως στον πελάτη με το PDF συνημμένο. Παρακάτω ορίζεις και <b>προγραμματισμένη αποστολή καρτελών</b>: ημέρα του μήνα, μόνο σε όσους χρωστούν, πάνω από ένα ποσό.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα <b>Ctrl+K</b> οποιαδήποτε στιγμή. Δεν ψάχνει μόνο πελάτες: γράψε <b>όνομα ενότητας</b> («πρόχειρα», «σειρές»), <b>ρύθμιση</b> («αντίγραφα», «2FA»), <b>κωδικό ή περιγραφή είδους</b>, <b>σειρά</b>, ή σκέτο <b>ΜΑΡΚ</b> για να ανοίξει το PDF του. Enter ανοίγει το πρώτο αποτέλεσμα.'},
-  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή <b>μίλα</b> και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμ ΚΩΔ 10 ευρώ», «μαζική εκτύπωση», «παραστατικά», «πόσες αδιάβαστες», «πήγαινε στην καρτέλα», «<b>ψάξε</b> …» για αναζήτηση σε όλη την εφαρμογή. Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.<br><br>Στην εφαρμογή υπολογιστή ακούει και μιλά <b>εκτός δικτύου</b>: τίποτα δεν φεύγει από το μηχάνημα. Οι φωνητικές εντολές είναι αξιόπιστες για πλοήγηση και ερωτήσεις — τα ΑΦΜ γράψε τα.'},
+  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή <b>μίλα</b> και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός 10 ευρώ», «μαζική εκτύπωση», «παραστατικά», «πόσες αδιάβαστες», «πήγαινε στην καρτέλα», «<b>ψάξε</b> …» για αναζήτηση σε όλη την εφαρμογή. Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.<br><br>Στην εφαρμογή υπολογιστή ακούει και μιλά <b>εκτός δικτύου</b>: τίποτα δεν φεύγει από το μηχάνημα. Οι φωνητικές εντολές είναι αξιόπιστες για πλοήγηση και ερωτήσεις — τα ΑΦΜ γράψε τα.'},
   {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τους διακόπτες, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
   {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'},
   {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Πάνω από κάθε πίνακα υπάρχει και το «<b>⚙ Στήλες</b>»: διαλέγεις τι φαίνεται. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'},
@@ -6843,6 +6928,7 @@ const MANUAL=[
   ['3β. Μαζική εκτύπωση & εξαγωγή ZIP','h2'],
   ['Από την «Καρτέλα» ενός πελάτη έχεις δύο μαζικές ενέργειες για ΟΛΑ τα παραστατικά του διαστήματος:','p'],
   ['🖨️ <b>Μαζική εκτύπωση</b> — κατεβάζει τα PDF από την ΑΑΔΕ, τα ενώνει σε ένα αρχείο και ανοίγει προεπισκόπηση. Από εκεί τυπώνεις όλα μαζί με μία εργασία, αντί να ανοίγεις ένα-ένα.','li'],
+  ['📄 <b>Παραστατικά</b> — τα <b>πιστωτικά</b> (5.1, 5.2, 11.4) φαίνονται με <b>μείον</b> και αφαιρούνται από τα σύνολα. Κάτω από τον πίνακα, σύνολο <b>ανά στήλη</b> (καθαρή, ΦΠΑ, σύνολο) για ό,τι φαίνεται — αναζήτηση και φίλτρα στηλών μετράνε. Πελάτες <b>χωρίς ΑΦΜ</b> εμφανίζονται με την επωνυμία τους: ρωτιέται μία φορά ανά παραστατικό και μένει στη μνήμη, ενώ η λίστα ανοίγει αμέσως από την τελευταία φόρτωση.','li'],
   ['🗜️ <b>ZIP παραστατικών</b> — πακετάρει τα ίδια PDF σε ένα αρχείο ZIP για αρχειοθέτηση ή αποστολή στον πελάτη. Κάθε αρχείο ονομάζεται «ημερομηνία σειρά-ΑΑ ΜΑΡΚ.pdf», ώστε να ταξινομούνται σωστά.','li'],
   ['Οι ίδιες ενέργειες υπάρχουν και στην εφαρμογή υπολογιστή (σελίδα «Παραστατικά», με επιλογή γραμμών μέσω checkbox). Λειτουργούν και όταν συνδέεσαι στον κεντρικό server (thin client) — η λήψη των PDF γίνεται από τον server, μέσα στα δικαιώματα του λογαριασμού σου.','p'],
   ['Όριο: 200 παραστατικά ανά παρτίδα. Αν κάποιο PDF δεν βρεθεί, τα υπόλοιπα προχωρούν κανονικά και ενημερώνεσαι για όσα έλειψαν.','p'],
@@ -6886,7 +6972,7 @@ const MANUAL=[
   ['Λογαριασμός & αυτοματισμοί: «ειδοποιήσεις», «πόσες αδιάβαστες», «προγραμματισμός», «ενεργοποίηση 2FA», «αλλαγή κωδικού», «διαχείριση χρηστών».','li'],
   ['Ερωτήσεις: «πόσα τιμολόγια φέτος», «τζίρος μήνα». Πλοήγηση: «πήγαινε στην καρτέλα/πελάτες/είδη/σειρές/πρόχειρα…».','li'],
   ['Αναζήτηση: «<b>ψάξε</b> ό,τι θες» — ανοίγει την ίδια γρήγορη αναζήτηση με το <b>Ctrl+K</b> και ψάχνει πελάτες, ενότητες, ρυθμίσεις, είδη, σειρές και ΜΑΡΚ παραστατικών.','li'],
-  ['<b>Ασφάλεια:</b> ό,τι ετοιμάζει ο βοηθός μένει ΠΡΟΧΕΙΡΟ. Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν πατήσεις εσύ το κόκκινο «Οριστική Έκδοση». Πες «βοήθεια» για την πλήρη λίστα.','p'],
+  ['<b>Ασφάλεια:</b> ό,τι ετοιμάζει ο βοηθός μένει ΠΡΟΧΕΙΡΟ. Το παραστατικό παίρνει ΜΑΡΚ μόνο όταν επιλέξεις «Οριστική Έκδοση». Πες «βοήθεια» για την πλήρη λίστα.','p'],
 
   ['11γ. Λογαριασμοί, IBAN και αποστολή με email','h2'],
   ['Στις «Ρυθμίσεις → 🏦 Λογαριασμοί & αυτόματη αποστολή» καταχωρείς τους τραπεζικούς λογαριασμούς της επιχείρησης. Η τράπεζα επιλέγεται από λίστα και το IBAN ελέγχεται με το διεθνές πρότυπο mod-97 — λάθος ψηφίο δεν αποθηκεύεται. Όσοι λογαριασμοί έχουν ✓ στο «στο email» γράφονται μέσα στο μήνυμα της καρτέλας.','p'],

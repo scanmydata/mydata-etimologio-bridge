@@ -1179,6 +1179,9 @@ function searchInvoices(
         if (preg_match('/PrintInvoice2PdfNew\?mark=([0-9]+)/', $row['html'], $m)) {
             $markValue = $m[1];
         }
+        // Η «Προβολή» της γραμμής: η ΜΟΝΗ σελίδα που δίνει την επωνυμία του
+        // λήπτη για κάθε τύπο (και πιστωτικά). Κρατιέται μόνο στον server.
+        $viewK = preg_match('/viewinvoice\?k=([A-Za-z0-9_\-]+)/i', $row['html'], $mv) ? $mv[1] : '';
 
         $items[] = [
             'row_no'      => $cols[0] ?? '',
@@ -1193,6 +1196,7 @@ function searchInvoices(
             'total'       => $cols[10] ?? '',
             'status'      => $invoiceStatus,
             'columns'    => $cols,
+            'view_k'      => $viewK,
         ];
     }
 
@@ -1205,6 +1209,86 @@ function searchInvoices(
         'invoice_status'  => $invoiceStatus,
         'invoices'        => $items,
     ];
+}
+
+/**
+ * Η επωνυμία του λήπτη ενός εκδοθέντος παραστατικού, από τη σελίδα «Προβολή».
+ *
+ * Ο κατάλογος της ΑΑΔΕ έχει μόνο ΑΦΜ. Για πελάτη ΧΩΡΙΣ ΑΦΜ (ιδιώτη σε ΑΠΥ ή
+ * πιστωτικό λιανικής) δεν υπάρχει τίποτα να αντιστοιχίσουμε με το πελατολόγιο,
+ * και η στήλη έμενε «—». `null` = δεν απάντησε (ξαναδοκιμάζεται)· `''` = το
+ * παραστατικό όντως δεν έχει όνομα (δεν ξαναρωτάμε ποτέ).
+ */
+function invoiceCounterpartName(\CurlHandle $ch, string $viewK): ?string {
+    if ($viewK === '') return null;
+    $html = curlGet($ch, BASE_URL . '/Invoice/viewinvoice?k=' . rawurlencode($viewK));
+    if ($html === '' || stripos($html, 'counterpartData') === false) return null;
+    if (!preg_match('/<input[^>]*\bid="counterpartData"[^>]*>/i', $html, $m)) return '';
+    if (!preg_match('/\bvalue="([^"]*)"/i', $m[0], $v)) return '';
+    return trim(html_entity_decode($v[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+}
+
+/**
+ * Συμπληρώνει `counterpart_name` στις γραμμές του καταλόγου.
+ *
+ * Σειρά: μόνιμη μνήμη ανά ΜΑΡΚ (`docnames`) → πελατολόγιο → «Προβολή» της ΑΑΔΕ.
+ * Ένα εκδοθέν παραστατικό δεν αλλάζει λήπτη, οπότε κάθε ΜΑΡΚ ρωτιέται ΜΙΑ φορά
+ * σε όλη του τη ζωή. Το χρονικό όριο κρατά την πρώτη φόρτωση σύντομη· ό,τι δεν
+ * πρόλαβε επιστρέφει στο `names_pending` και το ζητά η σελίδα στο παρασκήνιο.
+ */
+function enrichInvoiceNames(\CurlHandle $ch, array &$result, float $budget = 6.0): void {
+    if (!defined('COMPANY_VAT') || COMPANY_VAT === '' || empty($result['invoices'])) return;
+    $known = [];
+    try { $known = (array)((cache_get(COMPANY_VAT, 'docnames') ?? [])['rows'] ?? []); } catch (\Throwable $e) {}
+    $custNames = [];
+    try {
+        foreach ((cache_get(COMPANY_VAT, 'customers')['rows'] ?? []) as $c) {
+            $v = trim((string)($c['vat'] ?? $c['customer_vat'] ?? ''));
+            $n = trim((string)($c['name'] ?? $c['customer_name'] ?? ''));
+            if ($v !== '' && $n !== '') $custNames[$v] = $n;
+        }
+    } catch (\Throwable $e) {}
+
+    $t0 = microtime(true);
+    $changed = false;
+    $pending = 0;
+    foreach ($result['invoices'] as &$iv) {
+        $mk  = (string)($iv['mark'] ?? '');
+        $vat = trim((string)($iv['buyer_vat'] ?? ''));
+        if ($mk === '') continue;
+        if (isset($known[$mk])) {
+            if ((string)$known[$mk] !== '') $iv['counterpart_name'] = (string)$known[$mk];
+            continue;
+        }
+        if ($vat !== '' && isset($custNames[$vat])) { $iv['counterpart_name'] = $custNames[$vat]; continue; }
+        if (microtime(true) - $t0 > $budget) { $pending++; continue; }
+        $name = null;
+        try { $name = invoiceCounterpartName($ch, (string)($iv['view_k'] ?? '')); } catch (\Throwable $e) {}
+        if ($name === null) { $pending++; continue; }
+        $known[$mk] = $name;
+        $changed = true;
+        if ($name !== '') $iv['counterpart_name'] = $name;
+    }
+    unset($iv);
+    if ($changed) { try { cache_set(COMPANY_VAT, 'docnames', $known); } catch (\Throwable $e) {} }
+    $result['names_pending'] = $pending;
+}
+
+/** Το `k` της «Προβολής» είναι κλειδί συνεδρίας στην ΑΑΔΕ — δεν φεύγει στον browser. */
+function stripViewKeys(array &$result): void {
+    foreach (($result['invoices'] ?? []) as $i => $iv) unset($result['invoices'][$i]['view_k']);
+}
+
+/** Μια επωνυμία που ΞΕΡΟΥΜΕ ήδη (π.χ. από την έκδοση) δεν χρειάζεται ερώτηση στην ΑΑΔΕ. */
+function rememberInvoiceName(string $accountVat, string $mark, string $name): void {
+    $name = trim($name);
+    if ($accountVat === '' || $mark === '' || $name === '') return;
+    try {
+        $known = (array)((cache_get($accountVat, 'docnames') ?? [])['rows'] ?? []);
+        if ((string)($known[$mark] ?? '') === $name) return;
+        $known[$mark] = $name;
+        cache_set($accountVat, 'docnames', $known);
+    } catch (\Throwable $e) {}
 }
 
 function searchTempInvoices(
@@ -3910,6 +3994,7 @@ function notifyIssue(array $result, array $ctx): void {
         'source'        => (string)($ctx['source'] ?? ($GLOBALS['__issueSource'] ?? 'manual')),
     ];
     markIssuedHere($result);
+    rememberInvoiceName($accountVat, $data['mark'], $data['buyer_name']);
     // Η αποτυχία δεν σταματά την έκδοση, αλλά ΔΕΝ σωπαίνει κιόλας: μια
     // ειδοποίηση που δεν γράφτηκε σημαίνει καμπάνα που δεν χτύπησε.
     try { notification_add($accountVat, $data); }
@@ -6674,7 +6759,31 @@ if ($searchInvoicesFlag) {
         $searchCounterpart,
         $searchB2G
     );
+    $namesOnly = !empty($_GET['names_only'] ?? $_POST['names_only'] ?? '');
+    if (!empty($result['success'])) {
+        // Η δεύτερη κλήση (παρασκήνιο) έχει περισσότερο χρόνο: ο πίνακας έχει
+        // ήδη εμφανιστεί και απλώς γεμίζει ονόματα.
+        enrichInvoiceNames($ch, $result, $namesOnly ? 20.0 : 6.0);
+    }
+    stripViewKeys($result);
     curl_close($ch);
+    if (!empty($result['success']) && $namesOnly) {
+        $names = [];
+        foreach ($result['invoices'] as $iv) {
+            if (!empty($iv['counterpart_name'])) $names[(string)$iv['mark']] = (string)$iv['counterpart_name'];
+        }
+        jsonResponse(['success' => true, 'names' => $names, 'names_pending' => (int)($result['names_pending'] ?? 0)]);
+    }
+    // Μνήμη της τελευταίας λίστας: η οθόνη ανοίγει ΑΜΕΣΩΣ με αυτή και
+    // ανανεώνεται μόλις απαντήσει η ΑΑΔΕ. Μόνο η «σκέτη» αναζήτηση διαστήματος
+    // — ένα φίλτρο ΜΑΡΚ/σειράς θα έσβηνε τη μνήμη της οθόνης Παραστατικά.
+    if (!empty($result['success']) && $mark === '' && $seriesFilter === '' && $buyerVatFilter === ''
+            && $searchInvoiceType === '' && $invoiceStatusFilter === '0' && defined('COMPANY_VAT')) {
+        try {
+            cache_set(COMPANY_VAT, 'docs', ['from' => $result['issue_date_from'], 'to' => $result['issue_date_to'],
+                                            'invoices' => $result['invoices']]);
+        } catch (\Throwable $e) {}
+    }
     jsonResponse($result);
 }
 
