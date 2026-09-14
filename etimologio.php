@@ -1916,6 +1916,8 @@ function listProducts(\CurlHandle $ch): array {
             'category_id'      => $cols[4] ?? '',
             'category'         => $cols[5] ?? '',
             'product_code'     => $cols[6] ?? '',
+            // Η στήλη «Taric Code» (κρυφή στη σελίδα της ΑΑΔΕ, αλλά γεμάτη).
+            'taric'            => $cols[7] ?? '',
             'description'      => $cols[8] ?? '',
             'unit_price'       => $cols[9] ?? '',
             'vat'              => $cols[10] ?? '',
@@ -2143,17 +2145,29 @@ function updateProduct(
         '__RequestVerificationToken' => $token,
     ];
 
-    $response = curlPost($ch, BASE_URL . '/product/create', $formData);
-    $decoded = json_decode($response, true);
-    
-    // Server returns JSON with success=true when product is updated
-    if (is_array($decoded) && ($decoded['success'] === true || $decoded['success'] === 'true')) {
+    // ⚠️ Η ενημέρωση ΔΕΝ είναι το `/product/create`. Εκεί πήγαινε μέχρι τώρα, και
+    // η ΑΑΔΕ απαντούσε σε κάθε επεξεργασία «Ο κωδικός είδους υπάρχει»: καμία
+    // αλλαγή είδους δεν αποθηκεύτηκε ποτέ. Η σελίδα της ΑΑΔΕ στέλνει στο
+    // `/Product/update` ένα αντικείμενο `prd`, και απαντά 200 χωρίς σώμα.
+    $prd = $formData;
+    unset($prd['__RequestVerificationToken']);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-Requested-With: XMLHttpRequest']);
+    $response = curlPost($ch, BASE_URL . '/Product/update', [
+        'prd' => $prd,
+        '__RequestVerificationToken' => $token,
+    ]);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, []);
+    $decoded = json_decode((string)$response, true);
+
+    $failed = is_array($decoded) && (($decoded['success'] ?? null) === false || isset($decoded['message']));
+    if ($code === 200 && !$failed) {
         return ['success' => true, 'message' => 'Product updated successfully', 'code' => $productCode];
     }
 
     return [
         'success' => false,
-        'error'   => $decoded['message'] ?? 'Failed to update product',
+        'error'   => (is_array($decoded) ? ($decoded['message'] ?? null) : null) ?? ('Η ΑΑΔΕ δεν δέχτηκε την αλλαγή (HTTP ' . $code . ')'),
         'raw'     => $decoded,
     ];
 }

@@ -184,7 +184,8 @@ def test_customer_name_prefers_server_name(page: str):
 # ===========================================================================
 def test_assistant_wording(page: str):
     assert "2 τεμ " not in page and "τεμ ΚΩΔ" not in page
-    assert "2 τεμάχια κωδικός 10 ευρώ" in page
+    # Η 0.4.27 το έκανε «κωδικός είδους 1 αξία 10 ευρώ».
+    assert "2 τεμάχια κωδικός είδους 1 αξία 10 ευρώ" in page
     assert "πατήσεις εσύ το κόκκινο" not in page
     assert "όταν επιλέξεις «Οριστική Έκδοση»" in page
     for rel in ("assistant.py", "help.py", "pages/assistant_panel.py"):

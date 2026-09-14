@@ -241,7 +241,21 @@ class EtimologioWebShell(QWidget):
         bar.setContentsMargins(10, 6, 10, 6)
         self._thin_label = QLabel("")
         self._thin_label.setWordWrap(True)
+        # Η διεύθυνση του server είναι ΣΥΝΔΕΣΜΟΣ: ανοίγει στον browser του
+        # χρήστη, όπου μπορεί να μπει και από οποιονδήποτε άλλον υπολογιστή.
+        self._thin_label.setTextFormat(Qt.TextFormat.RichText)
+        self._thin_label.setOpenExternalLinks(True)
+        self._thin_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         bar.addWidget(self._thin_label, 1)
+        self._thin_bar_layout = bar
+        # Το πλήρες κείμενο μένει 10 δευτερόλεπτα από την εκκίνηση και μετά η
+        # μπάρα μαζεύεται σε μία γραμμή: είναι ενημέρωση, όχι μόνιμο ταβάνι
+        # πάνω από την εφαρμογή.
+        from PySide6.QtCore import QTimer
+        self._thin_timer = QTimer(self)
+        self._thin_timer.setSingleShot(True)
+        self._thin_timer.setInterval(self.THIN_BAR_FULL_MS)
+        self._thin_timer.timeout.connect(self._thin_compact)
         back = QPushButton("💻 Τοπικά δεδομένα")
         back.setToolTip("Επιστροφή στα δεδομένα αυτού του υπολογιστή. "
                         "Ό,τι έχει ανέβει στον server μένει εκεί.")
@@ -388,16 +402,43 @@ class EtimologioWebShell(QWidget):
         self._set_status("Εκκίνηση e-Τιμολόγιο Pro…")
         _run(self._service.start_local, self._on_ready, self._on_error)
 
+    #: Πόση ώρα φαίνεται ολόκληρο το κείμενο της μπάρας πριν μαζευτεί.
+    THIN_BAR_FULL_MS = 10_000
+
+    def _server_link(self) -> str:
+        from html import escape
+
+        url = self._service.server_url()
+        shown = url.split("://", 1)[-1].rstrip("/")
+        return (f'<a href="{escape(url, quote=True)}" style="color:#38bdf8">'
+                f"{escape(shown)}</a>")
+
     def _sync_thin_bar(self) -> None:
         """Δείχνει τη μπάρα όσο η εφαρμογή δουλεύει πάνω στον server."""
         thin = self._service.mode() == "thin"
         if thin:
+            self._thin_label.setToolTip("")
+            self._thin_bar_layout.setContentsMargins(10, 6, 10, 6)
             self._thin_label.setText(
                 "Λειτουργία server: βλέπεις τα δεδομένα του "
-                f"{self._service.server_url()} και μπαίνεις με τα στοιχεία ΤΟΥ SERVER. "
+                f"{self._server_link()} και μπαίνεις με τα στοιχεία ΤΟΥ SERVER. "
                 "Τα τοπικά δεδομένα είναι ασφαλή σε αυτόν τον υπολογιστή."
             )
+            self._thin_timer.start()
+        else:
+            self._thin_timer.stop()
         self._thin_bar.setVisible(thin)
+
+    def _thin_compact(self) -> None:
+        """Η μπάρα μαζεμένη: μόνο ο σύνδεσμος και το κουμπί επιστροφής."""
+        if self._service.mode() != "thin":
+            return
+        self._thin_bar_layout.setContentsMargins(10, 2, 10, 2)
+        self._thin_label.setText(f"🌐 Server: {self._server_link()}")
+        self._thin_label.setToolTip(
+            "Βλέπεις τα δεδομένα του server και μπαίνεις με τα στοιχεία ΤΟΥ SERVER. "
+            "Τα τοπικά δεδομένα είναι ασφαλή σε αυτόν τον υπολογιστή."
+        )
 
     def _restart(self) -> None:
         self._started = False
@@ -430,7 +471,9 @@ class EtimologioWebShell(QWidget):
         if self._service.mode() == "thin":
             # Το κλειδί είναι ΜΟΝΟ για τον τοπικό server. Προς τον server του
             # internet θα κατέληγε στα access logs του, χωρίς καμία χρησιμότητα.
-            address = f"{self._base}/app.php"
+            # `shell=1` λέει στη σελίδα ότι είναι μέσα στην εφαρμογή (κρύβει το
+            # δικό της πλαϊνό μενού) χωρίς να δίνει κανένα δικαίωμα.
+            address = f"{self._base}/app.php?shell=1"
             return f"{address}#{section}" if section else address
         token = quote(self._service.desktop_token(), safe="")
         address = f"{self._base}/app.php?desktop_token={token}"
@@ -471,6 +514,7 @@ class EtimologioWebShell(QWidget):
         """
         self._service.set_mode("offline")
         self._go_local.hide()
+        self._thin_timer.stop()
         self._thin_bar.hide()
         # Η σελίδα του server δεν είναι «η εφαρμογή φόρτωσε»: χωρίς μηδενισμό,
         # μια αποτυχία του τοπικού θα αγνοούνταν σαν ακυρωμένη λήψη.
@@ -688,6 +732,10 @@ class EtimologioWebShell(QWidget):
         η σελίδα δεν έχει πού να πάει, και χωρίς αυτό η πρώτη εμφάνιση ερχόταν
         πάντα με τις προεπιλογές της σελίδας.
         """
+        if self._service.mode() == "thin":
+            # Δίχτυ για server που τρέχει παλιότερη έκδοση και δεν ξέρει το
+            # `shell=1`: το μενού του κρύβεται και από εδώ.
+            self._js("document.body&&document.body.classList.add('embedded');")
         if self._theme_light is not None:
             name = "light" if self._theme_light else "dark"
             self._js(f"applyTheme('{name}');localStorage.setItem('etim_theme','{name}');")

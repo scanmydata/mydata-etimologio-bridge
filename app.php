@@ -24,7 +24,10 @@ $__user = current_user();
 // ξαναφαινόταν το πλαϊνό μενού της web εφαρμογής ΜΕΣΑ στην εφαρμογή
 // υπολογιστή, που έχει ήδη δικό της μενού. Το κρατάμε σε cookie συνεδρίας:
 // ελέγχει μόνο εμφάνιση, κανένα δικαίωμα.
-$__embedded = isset($_GET['desktop_token']);
+// Σε λειτουργία server το κλειδί ΔΕΝ ταξιδεύει (είναι μόνο για τον τοπικό
+// server)· η εφαρμογή λέει «είμαι το κέλυφος» με ένα σκέτο `shell=1`. Χωρίς αυτό
+// ο server έδειχνε και το δικό του πλαϊνό μενού, δίπλα στο μενού της εφαρμογής.
+$__embedded = isset($_GET['desktop_token']) || (string)($_GET['shell'] ?? '') === '1';
 if ($__embedded) {
     setcookie('etim_shell', '1', ['expires' => 0, 'path' => '/', 'samesite' => 'Lax']);
 } elseif (!empty($_COOKIE['etim_shell'])) {
@@ -1674,6 +1677,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
       <option value="1">Τεμάχιο</option><option value="2">Κιλό</option><option value="3">Λίτρο</option>
       <option value="4">Μέτρο</option><option value="7">Άλλο</option></select></div>
     <div class="field"><label>Τιμή (€)</label><input id="pdPrice" type="number" step="0.01" value="0"></div></div>
+  <div class="row" id="pdTaricRow" style="margin-top:8px"><div class="field"><label>Κωδικός TARIC <span class="hint">(προαιρετικό, μόνο για αγαθά)</span></label>
+    <input id="pdTaric" inputmode="numeric" maxlength="10" placeholder="π.χ. 3208101000" oninput="this.value=this.value.replace(/\D/g,'').slice(0,10)" style="width:180px"></div></div>
   <div class="card" style="margin-top:12px;background:rgba(56,189,248,.08)">
     <div id="pdClsSuggest" class="sub" style="margin-bottom:6px"></div>
     <button class="info sm" type="button" onclick="suggestCatClsFromProduct()">🏷️ Νέα κατηγορία με προτεινόμενο χαρακτηρισμό</button>
@@ -2035,7 +2040,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <button title="Καθαρισμός" onclick="cbClear()">🗑</button>
     <button title="Κλείσιμο" onclick="cbTogglePanel()">✕</button></div>
   <div id="cbLog"></div>
-  <div id="cbHint">π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός 10 ευρώ» · «μαζική εκτύπωση» · «ZIP παραστατικών» · «πόσες αδιάβαστες» · «ενεργοποίηση 2FA» · «βοήθεια»</div>
+  <div id="cbHint">π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός είδους 1 αξία 10 ευρώ» (αντί για κωδικό, «περιγραφή είδους …») · «μαζική εκτύπωση» · «ZIP παραστατικών» · «πόσες αδιάβαστες» · «ενεργοποίηση 2FA» · «βοήθεια»</div>
   <div id="cbBar">
     <input id="cbInput" placeholder="Γράψε ή πάτα το μικρόφωνο…" onkeydown="if(event.key==='Enter')cbSubmitText()">
     <button id="cbMic" title="Ομιλία" onclick="cbToggleMic()">🎙</button>
@@ -4114,6 +4119,8 @@ async function loadProductList(){
 let PROD_EDIT=null,PROD_ONSAVED=null;
 // Services carry no unit of measurement — hide the field for type=2 (Υπηρεσία).
 function pdTypeChange(){$('#pdUnitField').style.display=$('#pdType').value==='2'?'none':'';
+  // Ο TARIC αφορά ΜΟΝΟ αγαθά (δασμολογική κλάση)· σε υπηρεσία δεν έχει νόημα.
+  const tr=$('#pdTaricRow');if(tr)tr.style.display=$('#pdType').value==='1'?'':'none';
   const goods=$('#pdType').value==='1';const el=$('#pdClsSuggest');
   // Repo firebed/aade-mydata: goods sales (1.x) → «Έσοδα Πώλησης Εμπορευμάτων»
   // (category1_1); services (2.x) → «Έσοδα Παροχής Υπηρεσιών» (category1_3). Income
@@ -4148,7 +4155,7 @@ async function suggestCatClsFromProduct(){
   if(rows.length){rows.forEach(r=>addCatClsRow(r));}else addCatClsRow();
   toast('Συμπληρώθηκε προτεινόμενος χαρακτηρισμός για '+(rows.length||0)+' τύπους — έλεγξε & αποθήκευσε','ok');
 }
-function openProductModal(prefillCode,onSaved,forceType){PROD_EDIT=null;PROD_ONSAVED=onSaved||null;$('#prodModalTitle').textContent='Νέο είδος';['pdCode','pdDesc'].forEach(i=>$('#'+i).value='');$('#pdPrice').value='0';$('#pdCode').readOnly=false;if(typeof prefillCode==='string')$('#pdCode').value=prefillCode;$('#pdType').value=forceType==='good'?'1':'2';pdTypeChange();loadCategories();$('#prodModal').showModal();}
+function openProductModal(prefillCode,onSaved,forceType){PROD_EDIT=null;PROD_ONSAVED=onSaved||null;$('#prodModalTitle').textContent='Νέο είδος';['pdCode','pdDesc','pdTaric'].forEach(i=>$('#'+i).value='');$('#pdPrice').value='0';$('#pdCode').readOnly=false;if(typeof prefillCode==='string')$('#pdCode').value=prefillCode;$('#pdType').value=forceType==='good'?'1':'2';pdTypeChange();loadCategories();$('#prodModal').showModal();}
 /**
  * Άνοιγμα είδους για επεξεργασία, με ΟΛΑ του τα στοιχεία μέσα.
  *
@@ -4168,6 +4175,9 @@ function editProduct(code,desc){
   $('#pdVat').value=vatCodeFromText(p.vat||p.vat_category);
   $('#pdUnit').value=unitCodeFromText(p.measurement_unit);
   $('#pdPrice').value=String(elNum(p.unit_price!==undefined?p.unit_price:(p.price||0))||0);
+  // Και ο TARIC: η αποθήκευση τον στέλνει πάντα, οπότε αν δεν γεμίσει εδώ, η
+  // επεξεργασία θα τον έσβηνε (το ίδιο λάθος που είχαν ΦΠΑ και τιμή).
+  $('#pdTaric').value=String(p.taric||'').replace(/\D/g,'');
   pdTypeChange();
   loadCategories(p.category_id||p.category||'');
   $('#prodModal').showModal();
@@ -4177,7 +4187,9 @@ async function saveProduct(){if(!$('#pdCode').value||!$('#pdDesc').value){toast(
   if(!$('#pdCategory').value){toast('Χρειάζεται Κατηγορία. Πάτα «🏷️ Νέα κατηγορία με προτεινόμενο χαρακτηρισμό» ή διάλεξε υπάρχουσα.','err');
     $('#pdCategory').style.outline='2px solid #ef4444';setTimeout(()=>{$('#pdCategory').style.outline='';},2600);$('#pdCategory').focus();return;}
   const isService=$('#pdType').value==='2';
-  const base={product_type:$('#pdType').value,product_description:$('#pdDesc').value,product_category:$('#pdCategory').value,vat_category:$('#pdVat').value,unit:isService?'':$('#pdUnit').value,unit_price:$('#pdPrice').value};
+  const taric=isService?'':String($('#pdTaric').value||'').replace(/\D/g,'');
+  if(taric&&taric.length!==10){toast('Ο κωδικός TARIC έχει 10 ψηφία (η ΑΑΔΕ δεν δέχεται άλλο μήκος)','err');$('#pdTaric').focus();return;}
+  const base={product_type:$('#pdType').value,product_description:$('#pdDesc').value,product_category:$('#pdCategory').value,vat_category:$('#pdVat').value,unit:isService?'':$('#pdUnit').value,unit_price:$('#pdPrice').value,taric_code:taric};
   const code=$('#pdCode').value;
   try{let d;if(PROD_EDIT)d=await api({update_product_code:PROD_EDIT,...base});else d=await api({new_product:1,product_code:code,...base});
     if(d.success===false)throw new Error(d.error||'σφάλμα');$('#prodModal').close();toast('Αποθηκεύτηκε','ok');
@@ -5963,7 +5975,7 @@ function cbTogglePanel(){const p=$('#cbPanel');p.classList.toggle('open');
     if(cbRecOn){try{cbStopLocalRec();}catch(e){}try{if(cbRec)cbRec.stop();}catch(e){}}
     return;
   }
-  {$('#cbInput').focus();cbWarmVoice();if(!$('#cbLog').children.length)cbBot('Γεια! Πες μου π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός 10 ευρώ», «νέος πελάτης», «νέο είδος», «νέα σειρά», «πήγαινε στην καρτέλα», ή «ψάξε …» για οτιδήποτε. Αποθηκεύω πάντα ΠΡΟΧΕΙΡΟ — ΜΑΡΚ παίρνει το παραστατικό μόνο όταν επιλέξεις «Οριστική Έκδοση».');}}
+  {$('#cbInput').focus();cbWarmVoice();if(!$('#cbLog').children.length)cbBot('Γεια! Πες μου π.χ. «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός είδους 1 αξία 10 ευρώ» (αντί για κωδικό, «περιγραφή είδους …»), «νέος πελάτης», «νέο είδος», «νέα σειρά», «πήγαινε στην καρτέλα», ή «ψάξε …» για οτιδήποτε. Αποθηκεύω πάντα ΠΡΟΧΕΙΡΟ — ΜΑΡΚ παίρνει το παραστατικό μόνο όταν επιλέξεις «Οριστική Έκδοση».');}}
 function cbClear(){$('#cbLog').innerHTML='';}
 function cbAdd(text,who,actionsHtml){const log=$('#cbLog');const d=document.createElement('div');d.className='cbMsg '+who;d.innerHTML=esc(text).replace(/\n/g,'<br>')+(actionsHtml||'');log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
 function cbMe(t){cbAdd(t,'me');}
@@ -6566,7 +6578,17 @@ function cbParseIssue(t){
   let item='';const mi=t.match(/ε[ίι]δος\s*[:\-]?\s*(.+)$/i);
   if(mi)item=mi[1].replace(/\s*(με\s+παρακρ\S*.*|καθαρ\S*\s*αξ\S*.*)$/i,'').trim();
   const qty=cbNum(/(\d+(?:[.,]\d+)?)\s*(?:τεμ|τεμάχ|τεμαχ|\bx\b|\bχ\b)/i,t)||1;
-  return {afm,customerRef:ref,net,withholdingPct:wpct,item,qty:qty||1};
+  // «κωδικός είδους 1» / «κωδ. 1» / «κωδικός 1» → το είδος ΜΕ ΑΚΡΙΒΕΙΑ. Το
+  // παράδειγμα του βοηθού το έγραφε από πάντα, αλλά ο κωδικός δεν διαβαζόταν:
+  // το είδος έμενε στην τύχη της αναζήτησης με περιγραφή.
+  const mc=t.match(/κωδ(?:ικ[όο]ς|\.)?\s*(?:ε[ίι]δους)?\s*[:\-]?\s*([A-Za-z0-9Α-Ωα-ω][\w\-\/.]*)/i);
+  let code='';
+  if(mc&&!/^(ε[ίι]δους|αξ[ίι]α|ποσ[όο])$/i.test(mc[1]))code=mc[1].replace(/[.,]+$/,'');
+  // «περιγραφή είδους ΒΑΦΗ ΛΕΥΚΗ αξία 10» → αναζήτηση με περιγραφή.
+  if(!item){const md=t.match(/περιγραφ\S*\s*(?:ε[ίι]δους)?\s*[:\-]?\s*(.+?)(?:\s*,?\s*(?:και\s+)?(?:καθαρ\S*|αξ[ίι]α|ποσ[όο]|\d+(?:[.,]\d+)?\s*(?:ευρώ|ευρω|€))|$)/i);
+    if(md)item=md[1].replace(/^[\s,.:;()\-]+|[\s,.:;()\-]+$/g,'').trim();
+    if(item&&!/[\wΑ-Ωα-ω]/.test(item))item='';}
+  return {afm,customerRef:ref,net,withholdingPct:wpct,item,qty:qty||1,code};
 }
 function cbResolveCustomer(ref,afm){const custs=ALL_CUSTOMERS.map(custFields);
   if(afm){const c=custs.find(x=>x.vat===afm);if(c)return c;}
@@ -6610,6 +6632,12 @@ async function cbContinue(t){const s=t.toLowerCase();
 async function cbResolveProduct(o){
   if(!Object.keys(PRODMAP).length)await loadProductList();
   let code=o.code||'';
+  if(code&&!PRODMAP[code]){
+    // Κωδικός που δεν υπάρχει: το λέμε, αντί να βγει παραστατικό με λάθος είδος.
+    const hit=Object.keys(PRODMAP).find(c=>c.toLowerCase()===code.toLowerCase());
+    if(hit)code=hit;
+    else{cbBot('⚠ Δεν βρήκα είδος με κωδικό «'+code+'».'+(o.item?' Ψάχνω με την περιγραφή.':' Διάλεξέ το στη φόρμα.'));code='';}
+  }
   if(!code&&o.item)code=cbFindProdByDesc(o.item);
   if(code){o.code=code;cbBot('✔ Βρήκα υπάρχον είδος: '+code+' — '+(PRODMAP[code]?.desc||''));return cbFinalizeIssue(o);}
   if(o.item){
@@ -6802,7 +6830,7 @@ const TOUR=[
   {sel:'#bkTable',view:'settings',title:'🏦 Λογαριασμοί & αυτόματη αποστολή',text:'Καταχώρησε τα IBAN της επιχείρησης — η τράπεζα βγαίνει από λίστα και το IBAN ελέγχεται πραγματικά (mod-97), οπότε λάθος ψηφίο δεν περνά. Όσα έχουν ✓ «στο email» γράφονται στα μηνύματα καρτέλας με <b>χρεωστικό</b> υπόλοιπο· μπορείς και να ανεβάσεις PDF με τους λογαριασμούς.'},
   {sel:'#bkAutoSend',view:'settings',title:'📤 Να φεύγει μόνο του',text:'Με τον διακόπτη ενεργό, κάθε παραστατικό που παίρνει ΜΑΡΚ στέλνεται αμέσως στον πελάτη με το PDF συνημμένο. Παρακάτω ορίζεις και <b>προγραμματισμένη αποστολή καρτελών</b>: ημέρα του μήνα, μόνο σε όσους χρωστούν, πάνω από ένα ποσό.'},
   {sel:'.search-trigger',title:'🔍 Γρήγορη αναζήτηση',text:'Πάτα <b>Ctrl+K</b> οποιαδήποτε στιγμή. Δεν ψάχνει μόνο πελάτες: γράψε <b>όνομα ενότητας</b> («πρόχειρα», «σειρές»), <b>ρύθμιση</b> («αντίγραφα», «2FA»), <b>κωδικό ή περιγραφή είδους</b>, <b>σειρά</b>, ή σκέτο <b>ΜΑΡΚ</b> για να ανοίξει το PDF του. Enter ανοίγει το πρώτο αποτέλεσμα.'},
-  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή <b>μίλα</b> και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός 10 ευρώ», «μαζική εκτύπωση», «παραστατικά», «πόσες αδιάβαστες», «πήγαινε στην καρτέλα», «<b>ψάξε</b> …» για αναζήτηση σε όλη την εφαρμογή. Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.<br><br>Στην εφαρμογή υπολογιστή ακούει και μιλά <b>εκτός δικτύου</b>: τίποτα δεν φεύγει από το μηχάνημα. Οι φωνητικές εντολές είναι αξιόπιστες για πλοήγηση και ερωτήσεις — τα ΑΦΜ γράψε τα.'},
+  {sel:'#cbToggle',title:'🎤 Ψηφιακός βοηθός',text:'Γράψε ή <b>μίλα</b> και εκτελεί: «έκδοση τιμολογίου στον 802012659 για 2 τεμάχια κωδικός είδους 1 αξία 10 ευρώ» (αντί για κωδικό, «περιγραφή είδους …»), «μαζική εκτύπωση», «παραστατικά», «πόσες αδιάβαστες», «πήγαινε στην καρτέλα», «<b>ψάξε</b> …» για αναζήτηση σε όλη την εφαρμογή. Πες «βοήθεια» για όλη τη λίστα. Ό,τι ετοιμάζει μένει <b>πρόχειρο</b> — ΜΑΡΚ παίρνεις μόνο εσύ.<br><br>Στην εφαρμογή υπολογιστή ακούει και μιλά <b>εκτός δικτύου</b>: τίποτα δεν φεύγει από το μηχάνημα. Οι φωνητικές εντολές είναι αξιόπιστες για πλοήγηση και ερωτήσεις — τα ΑΦΜ γράψε τα.'},
   {sel:'.side-actions',title:'🧭 Ξενάγηση & Εγχειρίδιο',text:'Εδώ, πάνω από τους διακόπτες, θα βρίσκεις πάντα την «Ξενάγηση» και το «Εγχειρίδιο» (PDF) για βοήθεια.'},
   {sel:'#themeToggle',title:'🌙 Θέμα & επεξηγήσεις',text:'Οι δύο διακόπτες κάτω από τις «ΡΥΘΜΙΣΕΙΣ» δουλεύουν ακριβώς όπως στην εφαρμογή υπολογιστή: «Φωτεινό θέμα» αλλάζει φωτεινό/σκοτεινό και «Βοηθητικά μηνύματα» εμφανίζει ή κρύβει τις επεξηγήσεις.'},
   {sel:'#custTable thead th:nth-child(3)',view:'customers',title:'📐 Οι πίνακες είναι δικοί σου',text:'Σύρε το <b>δεξί όριο</b> μιας κεφαλίδας για πλάτος, σύρε την <b>ίδια την κεφαλίδα</b> για να αλλάξεις σειρά στηλών, και πέρνα από πάνω για το <b>χωνί</b> φίλτρου. Πάνω από κάθε πίνακα υπάρχει και το «<b>⚙ Στήλες</b>»: διαλέγεις τι φαίνεται. Η διάταξη αποθηκεύεται στον λογαριασμό σου και σε ακολουθεί σε κάθε υπολογιστή.'},
@@ -6929,6 +6957,7 @@ const MANUAL=[
   ['Από την «Καρτέλα» ενός πελάτη έχεις δύο μαζικές ενέργειες για ΟΛΑ τα παραστατικά του διαστήματος:','p'],
   ['🖨️ <b>Μαζική εκτύπωση</b> — κατεβάζει τα PDF από την ΑΑΔΕ, τα ενώνει σε ένα αρχείο και ανοίγει προεπισκόπηση. Από εκεί τυπώνεις όλα μαζί με μία εργασία, αντί να ανοίγεις ένα-ένα.','li'],
   ['📄 <b>Παραστατικά</b> — τα <b>πιστωτικά</b> (5.1, 5.2, 11.4) φαίνονται με <b>μείον</b> και αφαιρούνται από τα σύνολα. Κάτω από τον πίνακα, σύνολο <b>ανά στήλη</b> (καθαρή, ΦΠΑ, σύνολο) για ό,τι φαίνεται — αναζήτηση και φίλτρα στηλών μετράνε. Πελάτες <b>χωρίς ΑΦΜ</b> εμφανίζονται με την επωνυμία τους: ρωτιέται μία φορά ανά παραστατικό και μένει στη μνήμη, ενώ η λίστα ανοίγει αμέσως από την τελευταία φόρτωση.','li'],
+  ['📦 <b>Είδη</b> — σε <b>αγαθό</b> υπάρχει προαιρετικό πεδίο <b>κωδικός TARIC</b> (η ΑΑΔΕ δέχεται μόνο 10 ψηφία). Η επεξεργασία αποθηκεύει πλέον κάθε αλλαγή: περιγραφή, κατηγορία, ΦΠΑ, τιμή, μονάδα και TARIC.','li'],
   ['🗜️ <b>ZIP παραστατικών</b> — πακετάρει τα ίδια PDF σε ένα αρχείο ZIP για αρχειοθέτηση ή αποστολή στον πελάτη. Κάθε αρχείο ονομάζεται «ημερομηνία σειρά-ΑΑ ΜΑΡΚ.pdf», ώστε να ταξινομούνται σωστά.','li'],
   ['Οι ίδιες ενέργειες υπάρχουν και στην εφαρμογή υπολογιστή (σελίδα «Παραστατικά», με επιλογή γραμμών μέσω checkbox). Λειτουργούν και όταν συνδέεσαι στον κεντρικό server (thin client) — η λήψη των PDF γίνεται από τον server, μέσα στα δικαιώματα του λογαριασμού σου.','p'],
   ['Όριο: 200 παραστατικά ανά παρτίδα. Αν κάποιο PDF δεν βρεθεί, τα υπόλοιπα προχωρούν κανονικά και ενημερώνεσαι για όσα έλειψαν.','p'],
