@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from .. import repo
 from ..config import Settings
-from ..doctypes import type_label, type_name
+from ..doctypes import signed, type_label, type_name
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
     count_without_pdf,
@@ -686,8 +686,9 @@ class DocumentsView(QWidget):
             r["invoice_type"] or "", type_name(r["invoice_type"]),
             r["issue_date"] or "", _gr_date(r["issue_date"]),
             "έσοδο" if is_income else "έξοδο",
-            money(r["net_value"] or 0), money(r["vat_amount"] or 0),
-            money(r["total_value"] or 0),
+            money(signed(r["net_value"], r["invoice_type"])),
+            money(signed(r["vat_amount"], r["invoice_type"])),
+            money(signed(r["total_value"], r["invoice_type"])),
             str(r["net_value"] or ""), str(r["vat_amount"] or ""),
             str(r["total_value"] or ""),
         ]
@@ -763,9 +764,10 @@ class DocumentsView(QWidget):
         root = self._settings.storage_root
 
         for i, r in enumerate(rows):
-            net += r["net_value"] or 0
-            vat_sum += r["vat_amount"] or 0
-            gross += r["total_value"] or 0
+            # Πιστωτικά ΑΦΑΙΡΟΥΝΤΑΙ: η myDATA τα δίνει με θετικά ποσά.
+            net += signed(r["net_value"], r["invoice_type"])
+            vat_sum += signed(r["vat_amount"], r["invoice_type"])
+            gross += signed(r["total_value"], r["invoice_type"])
 
             is_income = r["issuer_vat"] == self._vat
             other_vat = r["counter_vat"] if is_income else r["issuer_vat"]
@@ -804,9 +806,9 @@ class DocumentsView(QWidget):
                 _COL_TYPE: type_label(r["invoice_type"]),
                 4: other_name or "—", 5: other_vat or "—",
                 6: r["series"] or "—", 7: r["aa"] or "—",
-                _COL_NET: money(r["net_value"] or 0),
-                _COL_VAT: money(r["vat_amount"] or 0),
-                _COL_GROSS: money(r["total_value"] or 0),
+                _COL_NET: money(signed(r["net_value"], r["invoice_type"])),
+                _COL_VAT: money(signed(r["vat_amount"], r["invoice_type"])),
+                _COL_GROSS: money(signed(r["total_value"], r["invoice_type"])),
                 11: CLASSIFICATION_LABELS_EL[cls],
                 12: _STATUS_SHORT[status],
                 _COL_PRINTED: _gr_date(printed_iso) if printed_iso else "—",
@@ -822,7 +824,8 @@ class DocumentsView(QWidget):
                     amount = [r["net_value"], r["vat_amount"], r["total_value"]][
                         col - _COL_NET
                     ] or 0.0
-                    item = SortableItem(text, float(amount))
+                    # Ταξινόμηση με το ίδιο πρόσημο που φαίνεται.
+                    item = SortableItem(text, signed(amount, r["invoice_type"]))
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                           | Qt.AlignmentFlag.AlignVCenter)
                 else:

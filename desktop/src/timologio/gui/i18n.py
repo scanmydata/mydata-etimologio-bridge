@@ -90,11 +90,15 @@ class GreekTranslator(QTranslator):
         source: str,
         disambiguation: str | None = None,
         n: int = -1,
-    ) -> str:
+    ) -> str | None:
+        # ⚠️ `None`, ΟΧΙ `""`. Το PySide μετατρέπει το `""` σε μη-null κενό
+        # QString, και το Qt το διαβάζει ως «η μετάφραση ΕΙΝΑΙ το κενό»: κάθε
+        # δικό του κείμενο εκτός λεξικού έσβηνε. Έτσι το ζουμ της προεπισκόπησης
+        # εκτύπωσης («%1%») έβγαινε άδειο κουτί, με άδεια λίστα. Μόνο το `None`
+        # γίνεται null QString, που σημαίνει «δεν έχω μετάφραση».
         if context in _CONTEXTS:
-            return _STRINGS.get(source, "")
-        # Κενό string σημαίνει «δεν έχω μετάφραση» — το Qt κρατά το πρωτότυπο.
-        return ""
+            return _STRINGS.get(source)
+        return None
 
 
 def install(app) -> GreekTranslator:

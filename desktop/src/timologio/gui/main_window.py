@@ -63,6 +63,7 @@ from ..config import (
     save_start_minimized,
 )
 from ..coverage import to_gr
+from ..doctypes import signed_sql
 from .. import crypto as crypto_mod
 from ..crypto import Crypto
 from ..db import init_db
@@ -994,13 +995,13 @@ class MainWindow(QMainWindow):
         stats = {
             r["client_id"]: r
             for r in self.conn.execute(
-                """SELECT d.client_id, COUNT(*) c,
+                f"""SELECT d.client_id, COUNT(*) c,
                           SUM(d.status='downloaded') dn,
                           SUM(d.classification='unclassified') u,
                           COALESCE(SUM(CASE WHEN d.issuer_vat = c.vat
-                                            THEN d.total_value ELSE 0 END),0) income,
+                                            THEN {signed_sql('d.total_value', 'd.invoice_type')} ELSE 0 END),0) income,
                           COALESCE(SUM(CASE WHEN d.issuer_vat <> c.vat
-                                            THEN d.total_value ELSE 0 END),0) expense,
+                                            THEN {signed_sql('d.total_value', 'd.invoice_type')} ELSE 0 END),0) expense,
                           MAX(CASE WHEN d.status='downloaded'
                                    THEN d.updated_at END) last_dl
                    FROM documents d JOIN clients c ON c.id = d.client_id

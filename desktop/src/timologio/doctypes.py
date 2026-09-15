@@ -71,6 +71,27 @@ INVOICE_TYPE_NAMES: dict[str, str] = {
 }
 
 
+#: Πιστωτικά: ΜΕΙΩΝΟΥΝ έσοδα/έξοδα. Η myDATA τα γράφει με ΘΕΤΙΚΑ ποσά, οπότε
+#: αθροισμένα «σκέτα» φούσκωναν τα σύνολα αντί να τα μειώνουν.
+CREDIT_TYPES = frozenset({"5.1", "5.2", "11.4", "14.31"})
+
+
+def is_credit(code: str | None) -> bool:
+    return (code or "").strip() in CREDIT_TYPES
+
+
+def signed(amount: float | None, code: str | None) -> float:
+    """Το ποσό με το πρόσημο που του αναλογεί: αρνητικό για πιστωτικό."""
+    value = float(amount or 0)
+    return -abs(value) if is_credit(code) else value
+
+
+def signed_sql(column: str, type_column: str = "invoice_type") -> str:
+    """Το ίδιο, μέσα σε SQL — για αθροίσματα που γίνονται στη βάση."""
+    codes = ",".join(f"'{c}'" for c in sorted(CREDIT_TYPES))
+    return f"(CASE WHEN TRIM(COALESCE({type_column},'')) IN ({codes}) THEN -ABS({column}) ELSE {column} END)"
+
+
 def type_label(code: str) -> str:
     """«2.1» → «2.1 Τιμολόγιο Παροχής Υπηρεσιών».
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import coverage
+from .doctypes import signed, signed_sql
 from .models import (
     CLASSIFICATION_LABELS_EL,
     STATUS_LABELS_EL,
@@ -87,7 +88,7 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
     out = ClientAnalysis(vat=row["vat"], label=row["label"] or "")
 
     totals = conn.execute(
-        """SELECT COUNT(*) total,
+        f"""SELECT COUNT(*) total,
                   SUM(status='downloaded') downloaded,
                   SUM(status='no_provider_url') no_url,
                   SUM(status='viewer_only') viewer_only,
@@ -98,9 +99,9 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
                   SUM(classification='classified') classified,
                   SUM(classification='unclassified') unclassified,
                   SUM(classification='unknown') unknown_cls,
-                  COALESCE(SUM(net_value),0) net,
-                  COALESCE(SUM(vat_amount),0) vat,
-                  COALESCE(SUM(total_value),0) gross,
+                  COALESCE(SUM({signed_sql('net_value')}),0) net,
+                  COALESCE(SUM({signed_sql('vat_amount')}),0) vat,
+                  COALESCE(SUM({signed_sql('total_value')}),0) gross,
                   MIN(NULLIF(issue_date,'')) first_date,
                   MAX(NULLIF(issue_date,'')) last_date
            FROM documents WHERE client_id=?""",
@@ -126,8 +127,9 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
 
     for field, where in (("income", _INCOME), ("expense", _EXPENSE)):
         r = conn.execute(
-            f"""SELECT COUNT(*) n, COALESCE(SUM(net_value),0) net,
-                       COALESCE(SUM(vat_amount),0) vat, COALESCE(SUM(total_value),0) gross
+            f"""SELECT COUNT(*) n, COALESCE(SUM({signed_sql('net_value')}),0) net,
+                       COALESCE(SUM({signed_sql('vat_amount')}),0) vat,
+                       COALESCE(SUM({signed_sql('total_value')}),0) gross
                 FROM documents WHERE client_id = :cid AND {where}""",
             {"cid": cid, "vat": vat},
         ).fetchone()
@@ -136,7 +138,7 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
     out.by_type = [
         (r["invoice_type"] or "—", r["c"], r["v"] or 0.0)
         for r in conn.execute(
-            """SELECT invoice_type, COUNT(*) c, SUM(total_value) v
+            f"""SELECT invoice_type, COUNT(*) c, SUM({signed_sql('total_value')}) v
                FROM documents WHERE client_id=?
                GROUP BY invoice_type ORDER BY c DESC""",
             (cid,),
@@ -145,7 +147,7 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
     out.top_suppliers = [
         (r["issuer_name"] or "—", r["issuer_vat"] or "", r["c"], r["v"] or 0.0)
         for r in conn.execute(
-            """SELECT issuer_name, issuer_vat, COUNT(*) c, SUM(total_value) v
+            f"""SELECT issuer_name, issuer_vat, COUNT(*) c, SUM({signed_sql('total_value')}) v
                FROM documents
                WHERE client_id=? AND direction IN ('incoming','both') AND issuer_vat <> ''
                GROUP BY issuer_vat ORDER BY v DESC LIMIT 10""",
@@ -405,8 +407,8 @@ def _doc_row_values(r: sqlite3.Row) -> list:
         _DIRECTION_EL.get(r["direction"], r["direction"]),
         r["invoice_type"], r["issue_date"], r["series"], r["aa"],
         r["issuer_vat"], r["issuer_name"],
-        float(r["net_value"] or 0), float(r["vat_amount"] or 0),
-        float(r["total_value"] or 0),
+        signed(r["net_value"], r["invoice_type"]), signed(r["vat_amount"], r["invoice_type"]),
+        signed(r["total_value"], r["invoice_type"]),
         CLASSIFICATION_LABELS_EL[cls], status_el,
         r["local_path"] or r["xml_path"],
         # Ο σύνδεσμος του παρόχου — χρήσιμος ειδικά για παραστατικά με σφάλμα,
@@ -500,9 +502,9 @@ def export_documents(conn: sqlite3.Connection, path: Path, vat: str | None = Non
                 r["client_vat"], r["client_label"], r["mark"], r["direction"],
                 r["invoice_type"], r["issue_date"], r["series"], r["aa"],
                 r["issuer_vat"], r["issuer_name"],
-                f"{r['net_value']:.2f}".replace(".", ","),
-                f"{r['vat_amount']:.2f}".replace(".", ","),
-                f"{r['total_value']:.2f}".replace(".", ","),
+                f"{signed(r['net_value'], r['invoice_type']):.2f}".replace(".", ","),
+                f"{signed(r['vat_amount'], r['invoice_type']):.2f}".replace(".", ","),
+                f"{signed(r['total_value'], r['invoice_type']):.2f}".replace(".", ","),
                 CLASSIFICATION_LABELS_EL[cls],
                 r["status"], r["local_path"] or r["xml_path"],
                 # Σύνδεσμος παρόχου — για έλεγχο/inspect, ειδικά στα σφάλματα.
