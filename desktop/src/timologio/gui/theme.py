@@ -309,6 +309,33 @@ QListWidget::indicator:checked {{
 }}
 QListWidget::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
 QListWidget::item {{ padding: 4px 2px; }}
+/* Οι λίστες με πλαίσιο, όπως οι πίνακες: χωρίς αυτό η λίστα «Πελάτες» δεν
+   ξεχώριζε καθόλου από το κουτί γύρω της στο σκοτεινό θέμα. */
+QListWidget#scheduleClients {{
+    background: {p.panel};
+    alternate-background-color: {p.panel_alt};
+    border: 1px solid {p.line};
+    border-radius: 9px;
+    padding: 4px;
+    outline: none;
+}}
+/* Τα κουτιά (π.χ. «Πότε / Πελάτες / Κατάσταση» στον Χρονοπρογραμματισμό)
+   έπαιρναν το native περίγραμμα των Windows: γκρι σε σχεδόν μαύρο, αόρατο στο
+   σκοτεινό θέμα. Ρητό περίγραμμα και τίτλος στο χρώμα του τόνου. */
+QGroupBox {{
+    border: 1px solid {p.line};
+    border-radius: 11px;
+    margin-top: 12px;
+    padding-top: 8px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 6px;
+    color: {p.accent};
+    font-weight: 700;
+}}
 QHeaderView::section {{
     background: {p.bg};
     color: {p.muted};

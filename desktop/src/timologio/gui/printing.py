@@ -19,10 +19,10 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QEvent, QLocale, QObject, QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPrintPreviewWidget
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -130,6 +130,89 @@ def _fix_toolbar_icons(dialog: QPrintPreviewDialog) -> None:
     _fix_toolbar_combos(dialog)
 
 
+def _parse_zoom(text: str) -> float | None:
+    """«400,0%» / «125%» / «80.5» → 4.0 / 1.25 / 0.805, αλλιώς None."""
+    raw = (text or "").replace("%", "").replace(" ", "").strip().replace(",", ".")
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return max(1.0, min(1000.0, value)) / 100.0
+
+
+class _WheelZoom(QObject):
+    """Ctrl + ροδέλα = μεγέθυνση/σμίκρυνση, όπως σε κάθε viewer PDF."""
+
+    def __init__(self, preview: QPrintPreviewWidget, after: Callable[[], None]) -> None:
+        super().__init__(preview)
+        self._preview = preview
+        self._after = after
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if (
+            event.type() == QEvent.Type.Wheel
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self._preview.zoomIn()
+            elif delta < 0:
+                self._preview.zoomOut()
+            self._after()
+            return True
+        return False
+
+
+def _fix_zoom(dialog: QPrintPreviewDialog) -> None:
+    """Κάνει να δουλεύει το ζουμ: έτοιμες τιμές του dropdown και Ctrl+ροδέλα.
+
+    * **Dropdown.** Το Qt γράφει τις τιμές με τη μορφή της γλώσσας («400,0%»)
+      αλλά τις ξαναδιαβάζει με τελεία (``toFloat``). Με ελληνική υποδιαστολή η
+      ανάγνωση αποτύγχανε σιωπηλά και η επιλογή δεν έκανε τίποτα. Διαβάζουμε
+      εμείς την τιμή, με κόμμα ή τελεία.
+    * **Ctrl+ροδέλα.** Η προεπισκόπηση του Qt δεν το υποστηρίζει καθόλου.
+    """
+    preview = dialog.findChild(QPrintPreviewWidget)
+    combos = dialog.findChildren(QComboBox)
+    if preview is None or not combos:
+        return
+    combo = combos[0]
+    # Οι δύο «Προσαρμογή» είναι οι πρώτες checkable ενέργειες της γραμμής.
+    fits = [
+        a for tb in dialog.findChildren(QToolBar) for a in tb.actions()
+        if a.isCheckable() and not isinstance(a, QWidgetAction)
+    ][:2]
+
+    def show_factor() -> None:
+        combo.blockSignals(True)
+        combo.setEditText(QLocale().toString(preview.zoomFactor() * 100, "f", 1) + "%")
+        combo.blockSignals(False)
+
+    def apply(text: str) -> None:
+        factor = _parse_zoom(text)
+        if factor is None:
+            return
+        for action in fits:
+            action.setChecked(False)
+        preview.setZoomMode(QPrintPreviewWidget.ZoomMode.CustomZoom)
+        preview.setZoomFactor(factor)
+        show_factor()
+
+    combo.textActivated.connect(apply)
+    if combo.lineEdit() is not None:
+        combo.lineEdit().returnPressed.connect(lambda: apply(combo.currentText()))
+
+    def after_wheel() -> None:
+        for action in fits:
+            action.setChecked(False)
+        show_factor()
+
+    wheel = _WheelZoom(preview, after_wheel)
+    preview.installEventFilter(wheel)
+    for child in preview.findChildren(QWidget):
+        child.installEventFilter(wheel)
+
+
 def _wire_print_action(dialog: QPrintPreviewDialog, on_print: Callable[[], None]) -> None:
     """Συνδέει το κουμπί «Εκτύπωση» της γραμμής εργαλείων με το ``on_print``.
 
@@ -231,6 +314,7 @@ def print_pdfs(
     # Τα κουμπιά «Εκτύπωση / Ζουμ +/−» έδειχναν κενά περιγράμματα: τους δίνουμε
     # δικά μας εικονίδια. Το υπόλοιπο preview μένει αυτούσιο (native).
     _fix_toolbar_icons(dialog)
+    _fix_zoom(dialog)
     if on_print is not None:
         _wire_print_action(dialog, on_print)
     dialog.paintRequested.connect(render)

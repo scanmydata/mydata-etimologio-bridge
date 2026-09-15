@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTime, Signal
@@ -36,6 +37,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..schedule import DAY_NAMES, SyncSchedule
+
+
+def _alpha_key(text: str) -> str:
+    """Κλειδί αλφαβητικής σειράς: χωρίς τόνους/διαλυτικά, πεζά."""
+    decomposed = unicodedata.normalize("NFD", text or "")
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
 class SchedulePage(QWidget):
@@ -169,6 +176,7 @@ class SchedulePage(QWidget):
         picker.addLayout(tools)
 
         self.list = QListWidget()
+        self.list.setObjectName("scheduleClients")
         self.list.setMinimumHeight(160)
         self.list.itemChanged.connect(self._emit)
         picker.addWidget(self.list, 1)
@@ -224,7 +232,12 @@ class SchedulePage(QWidget):
     def set_clients(self, clients) -> None:
         """Οι πελάτες με κλειδί API, ως (ΑΦΜ, επωνυμία)."""
         chosen = set(self.selected_vats())
-        self._clients = [(str(v), str(n or "")) for v, n in clients]
+        # Αλφαβητικά κατά επωνυμία, χωρίς να μετρούν τόνοι και κεφαλαία
+        # («αλφα» πριν από «Έψιλον»). Όσοι δεν έχουν επωνυμία, στο τέλος κατά ΑΦΜ.
+        self._clients = sorted(
+            ((str(v), str(n or "").strip()) for v, n in clients),
+            key=lambda c: (not c[1] or c[1] == c[0], _alpha_key(c[1]), c[0]),
+        )
         self._loading = True
         try:
             self.list.clear()
