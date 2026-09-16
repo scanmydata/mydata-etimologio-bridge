@@ -2690,8 +2690,7 @@ function createInvoice(
     // Ο Τ.Κ. και η πόλη είναι ΥΠΟΧΡΕΩΤΙΚΑ μέσα στη διεύθυνση (myDATA AddressType).
     // Η λίστα πελατών δεν έχει Τ.Κ., οπότε η φόρμα συχνά ερχόταν χωρίς αυτόν —
     // και η οριστική έκδοση κοβόταν με «postalCode expected».
-    if (empty($delivery) && defined('COMPANY_VAT') && ($zip === '' || $city === '')
-            && ($address !== '' || $zip !== '' || $city !== '')) {
+    if (empty($delivery) && defined('COMPANY_VAT') && ($zip === '' || $city === '')) {
         $det = custDetailsFind(COMPANY_VAT, preg_match('/^\d{9}$/', $afm) ? $afm : '');
         if (!$det && preg_match('/^\d{9}$/', $afm)) {
             // Άγνωστος στη μνήμη: μία ματιά στη σελίδα του στην ΑΑΔΕ.
@@ -2855,11 +2854,15 @@ function createInvoice(
             'countryDocumentId' => '',
             'customerCode'      => '',
             'emailAddress'      => '',
+            // Ο «αριθμός» μόνος του είναι παγίδα: η ΑΑΔΕ βλέπει διεύθυνση που
+            // υπάρχει αλλά της λείπει ο υποχρεωτικός Τ.Κ. και κόβει το
+            // παραστατικό στην έκδοση («address … incomplete content»). Χωρίς
+            // Τ.Κ. και πόλη φεύγει ΟΛΟΚΛΗΡΗ κενή, οπότε δεν μπαίνει καθόλου.
             'address'           => [
                 'street'     => $address,
                 'postalCode' => $zip,
                 'city'       => $city,
-                'number'     => '0',
+                'number'     => ($zip !== '' && $city !== '') ? '0' : '',
             ],
         ],
 
@@ -3127,6 +3130,12 @@ function createCreditNote(
     $mirrorLines = [];
     $mirrorTaxes = [];
     $counterName = '';
+    // ΚΑΙ η διεύθυνση του λήπτη, από το ΙΔΙΟ το πρωτότυπο. Χωρίς αυτήν το
+    // πιστωτικό έφευγε με άδεια διεύθυνση και η ΑΑΔΕ το έκοβε στην οριστική
+    // έκδοση: «address … has incomplete content … expected postalCode». Ο Τ.Κ.
+    // δεν βρισκόταν αλλού: το Taxisnet δεν επιστρέφει τίποτα για ιδιώτες.
+    $counterStreet = $counterCity = $counterZip = '';
+    $counterCountry = 'GR';
     // Mirror the ORIGINAL's payment TYPE (5=επί πιστώσει, 3=μετρητά …). The credit note
     // is correlated to the original via the top-level `CorrelatedInvoice` = MARK scalar,
     // which is what lets AADE validate «πληρωτέο ≤ συσχετιζόμενο». It just needs a
@@ -3142,6 +3151,12 @@ function createCreditNote(
         $cp = $corr['counterpart'] ?? [];
         $counterName = (string)($cp['name'] ?? '');
         if ($buyer === '') $buyer = (string)($cp['vatNumber'] ?? '');
+        $cAddr = is_array($cp['address'] ?? null) ? $cp['address'] : [];
+        $counterStreet = (string)($cAddr['street'] ?? '');
+        $counterZip    = (string)($cAddr['postalCode'] ?? '');
+        $counterCity   = (string)($cAddr['city'] ?? '');
+        $cCountry = (string)($cp['country'] ?? '');
+        if ($cCountry !== '' && $cCountry !== '0') $counterCountry = $cCountry;
         $factor = ($amountOverride > 0 && $origNet > 0) ? min(1.0, round($amountOverride / $origNet, 6)) : 1.0;
         foreach (($corr['invoiceLines'] ?? []) as $ol) {
             $lnNet = round((float)($ol['netValueWithDiscount'] ?? 0) * $factor, 2);
@@ -3186,7 +3201,7 @@ function createCreditNote(
 
     $result = createInvoice(
         $ch, round($net, 2), $creditType, $payType, $description, '',
-        $buyer, $counterName, '', '', '', 'GR', '0',
+        $buyer, $counterName, $counterStreet, $counterCity, $counterZip, $counterCountry, '0',
         0, 0.0, $live, $originalMark, $notes, $rate, $vatCat,
         [], $mirrorLines, $creditSeries, $mirrorTaxes, $preview, $issueLang, [], $reuseTempId
     );
@@ -7093,6 +7108,12 @@ if ($listCustomers || $allCustomers) {
 }
 
 if ($searchInvoicesFlag) {
+    // ΠΡΟΣΟΧΗ: το φίλτρο BuyerVatNumber της ΑΑΔΕ **αγνοείται σιωπηλά για τα
+    // λιανικά (11.x)** — η αναζήτηση γυρίζει ΑΔΕΙΑ ενώ τα παραστατικά υπάρχουν
+    // με ακριβώς αυτό το ΑΦΜ (επαληθεύτηκε ζωντανά: ΑΠΥ 11.2 του 046307992 →
+    // 0 αποτελέσματα με το φίλτρο, 19 χωρίς). Στην οθόνη «Ακύρωση» αυτό
+    // σήμαινε ότι η απόδειξη ΔΕΝ εμφανιζόταν ποτέ για να ακυρωθεί. Ζητάμε το
+    // διάστημα και φιλτράρουμε εδώ: ίδιο κόστος, σωστό για κάθε τύπο.
     $result = searchInvoices(
         $ch,
         $issueDateFrom,
@@ -7100,11 +7121,18 @@ if ($searchInvoicesFlag) {
         $searchInvoiceType,
         $mark,
         $seriesFilter,
-        $buyerVatFilter,
+        '',
         $invoiceStatusFilter,
         $searchCounterpart,
         $searchB2G
     );
+    if ($buyerVatFilter !== '' && !empty($result['success'])) {
+        $result['invoices'] = array_values(array_filter(
+            (array)($result['invoices'] ?? []),
+            static fn($iv) => (string)($iv['buyer_vat'] ?? '') === $buyerVatFilter
+        ));
+        $result['count'] = count($result['invoices']);
+    }
     $namesOnly = !empty($_GET['names_only'] ?? $_POST['names_only'] ?? '');
     if (!empty($result['success'])) {
         // Η δεύτερη κλήση (παρασκήνιο) έχει περισσότερο χρόνο: ο πίνακας έχει

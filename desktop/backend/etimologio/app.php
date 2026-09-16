@@ -488,6 +488,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     .field{min-width:0}
     dialog .modal-body{max-width:96vw!important;padding:14px}
     #cbPanel{right:8px;left:8px;width:auto;bottom:86px}
+    #busyBox{left:10px;right:10px;max-width:none}
     .toast{left:10px;right:10px;max-width:none}
     .notif-panel{width:min(360px,92vw);right:-8px}
   }
@@ -500,7 +501,9 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   /* Κάρτα, όχι κουρτίνα. Το `z-index` είναι πάνω από τα modals της σελίδας·
      όταν υπάρχει ανοιχτό <dialog> η κάρτα ΜΕΤΑΚΟΜΙΖΕΙ μέσα του (το top layer
      δεν το φτάνει κανένα z-index) — δες `busyOn`. */
-  #busyBox{position:fixed;right:18px;bottom:18px;z-index:400;display:none;max-width:min(360px,90vw)}
+  /* Πάνω δεξιά, εκεί που κοιτά ο χρήστης μόλις πατήσει κάτι — και όχι στη
+     γωνία που κρύβει ο βοηθός. Το μήνυμα λέει ΤΙ τρέχει, με τα δευτερόλεπτα. */
+  #busyBox{position:fixed;right:18px;top:18px;z-index:400;display:none;max-width:min(360px,90vw)}
   #busyBox.on{display:block}
   .busy-box{display:flex;align-items:center;gap:14px;background:var(--panel);
     border:1px solid var(--line);border-left:4px solid var(--accent);
@@ -510,6 +513,8 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   .busy-box small{color:var(--muted)}
   .toast{pointer-events:none;position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
   .toast.show{opacity:1;transform:none}
+  /* Όσο τρέχει διεργασία, το μήνυμα κατεβαίνει από κάτω της αντί να κρύβεται. */
+  body.busy .toast{top:100px}
   .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--bad)}
   /* Η απώλεια σύνδεσης είναι ΚΑΤΑΣΤΑΣΗ, όχι συμβάν: ένα toast που φεύγει σε
      τρία δευτερόλεπτα αφήνει τον χρήστη να νομίζει ότι φταίει η εφαρμογή.
@@ -951,7 +956,9 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
         </div>
       </div>
 
-      <div class="panel" id="issueFormPanel">
+      <!-- Κρυφή ΕΞ ΑΡΧΗΣ: μέχρι να τρέξει η εκκίνηση (δύο κλήσεις δικτύου),
+           η γυμνή φόρμα έμενε στην οθόνη και ο οδηγός «άργαγε να ξεκινήσει». -->
+      <div class="panel" id="issueFormPanel" style="display:none">
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
           <span class="hint" id="issueMode"></span>
           <button class="ghost sm" onclick="wizReset()" title="Άλλαξε τύπο παραστατικού / πελάτη">↺ Αλλαγή επιλογής</button>
@@ -2227,6 +2234,56 @@ function netNoteReply(d){
   if(d.offline)netSetOffline(true,d.error||'');
   else if(NET_OFFLINE&&d.success)netRecheck(false);
 }
+
+// --- Τι τρέχει αυτή τη στιγμή ----------------------------------------------
+// ΚΑΘΕ κλήση προς τον server περνά από εδώ, οπότε η κάρτα πάνω δεξιά ανάβει
+// μόνη της — με το ΟΝΟΜΑ της δουλειάς και τα δευτερόλεπτα που τρέχει. Μέχρι
+// τώρα την άναβαν με το χέρι δύο-τρεις οθόνες· σε όλες τις άλλες (λήψη,
+// αποθήκευση, διαγραφή) ο χρήστης κοίταζε ακίνητη οθόνη και ξαναπατούσε το
+// κουμπί. Ανάβει μετά από 150ms, ώστε οι ακαριαίες κλήσεις (μνήμη) να μην
+// αναβοσβήνουν.
+const BUSY_DELAY=150;
+const BUSY_RULES=[
+  // Παρασκήνιο: δεν το ζήτησε ο χρήστης, δεν τον διακόπτουμε.
+  [/(?:^|&)(?:notif_count|notif_read|notif_read_all|netcheck|voice_caps|tts|work_ping|work_report|names_only|notify_due|prewarm)=/,''],
+  [/(?:^|&)(?:sync=newdocs|auth=local_tick|auth=backup_run)/,''],
+  [/(?:^|&)live=1/,'Οριστική έκδοση στην ΑΑΔΕ…'],
+  [/(?:^|&)bulk_issue=/,'Μαζική έκδοση…'],
+  [/(?:^|&)credit_note=/,'Πιστωτικό / ακύρωση…'],
+  [/(?:^|&)(?:preview|preview_temp)=/,'Προεπισκόπηση παραστατικού…'],
+  [/(?:^|&)(?:bulk_pdf|invoice_pdf|pdf)=/,'Ετοιμασία PDF…'],
+  [/(?:^|&)(?:email|send_mail|mail)[a-z_]*=/,'Αποστολή email…'],
+  [/(?:^|&)(?:backup|restore)[a-z_]*=/,'Αντίγραφο ασφαλείας…'],
+  [/(?:^|&)sync=/,'Συγχρονισμός με ΑΑΔΕ…'],
+  [/(?:^|&)search_invoices=/,'Λήψη παραστατικών…'],
+  [/(?:^|&)(?:ledger|card)[a-z_]*=/,'Φόρτωση καρτέλας…'],
+  [/(?:^|&)statistics=/,'Υπολογισμός στατιστικών…'],
+  [/(?:^|&)(?:delete|del)[a-z_]*=/,'Διαγραφή…'],
+  [/(?:^|&)(?:issue|new_|create_|update_|save_|set_|import_|add_)/,'Αποθήκευση…'],
+];
+function busyLabel(q){for(const r of BUSY_RULES)if(r[0].test(q))return r[1];return 'Φόρτωση δεδομένων…';}
+// Το «τι ζητήθηκε» ζει στο query (GET) ή στο σώμα (POST) — κοιτάμε και τα δύο.
+function busyQuery(url,init){
+  let q=url.indexOf('?')>=0?url.slice(url.indexOf('?')+1):'';
+  const b=init&&init.body;
+  if(typeof b==='string')q+='&'+b;
+  else if(b&&typeof URLSearchParams!=='undefined'&&b instanceof URLSearchParams)q+='&'+b.toString();
+  else if(b&&typeof FormData!=='undefined'&&b instanceof FormData){for(const k of b.keys())q+='&'+k+'=1';}
+  return q;
+}
+(function(){const rawFetch=window.fetch.bind(window);
+  window.fetch=function(input,init){
+    const url=typeof input==='string'?input:((input&&input.url)||'');
+    if(url.indexOf(API)!==0)return rawFetch(input,init);
+    const label=busyLabel(busyQuery(url,init));
+    if(!label)return rawFetch(input,init);
+    let on=false,tick=0;const t0=Date.now();
+    const t=setTimeout(()=>{on=true;busyOn(label,'');
+      tick=setInterval(()=>{const el=$('#busySub');
+        if(el)el.textContent=Math.round((Date.now()-t0)/1000)+' δευτ.';},1000);},BUSY_DELAY);
+    const done=()=>{clearTimeout(t);if(tick)clearInterval(tick);if(on)busyOff();};
+    return rawFetch(input,init).then(r=>{done();return r;},e=>{done();throw e;});
+  };})();
 
 // Navigation
 function showView(v){
@@ -3957,7 +4014,19 @@ async function loadCard(){const vat=$('#cardVat').value.trim();if(!vat){toast('�
   }catch(e){$('#cardCards').innerHTML='';toast('Καρτέλα: '+e.message,'err');}
 }
 async function cancelFromCard(mark){showView('cancel');$('#cxVat').value=CARD.customer_vat||'';$('#cxCust').value=CARD.customer_name||CARD.customer_vat||'';
-  await cxLoadInvoices();const idx=CX_INV.findIndex(i=>String(i.mark)===String(mark));if(idx>=0)cxPick(idx);toast('Επιλέχθηκε για πίστωση/ακύρωση','ok');}
+  await cxLoadInvoices();
+  let idx=CX_INV.findIndex(i=>String(i.mark)===String(mark));
+  // Εκτός διαστήματος (π.χ. περσινό παραστατικό) δεν εμφανιζόταν ΤΙΠΟΤΑ: ούτε
+  // κάρτα, ούτε αιτιολογία — μόνο ένα «επιλέχθηκε» που δεν ίσχυε. Το φέρνουμε
+  // με το ΜΑΡΚ του, που είναι μοναδικό και δεν εξαρτάται από ημερομηνίες.
+  if(idx<0){
+    try{const d=await api({search_invoices:1,mark:mark});
+      const hit=(d.invoices||[]).find(i=>String(i.mark)===String(mark));
+      if(hit){CX_INV=[hit].concat(CX_INV);idx=0;}
+    }catch(e){}
+  }
+  if(idx<0){toast('Το παραστατικό δεν βρέθηκε — ψάξε το με το διάστημα','err');return;}
+  cxPick(idx);toast('Επιλέχθηκε για πίστωση/ακύρωση','ok');}
 
 // Payments
 // Δύο δρόμοι για την ίδια φόρμα: από την Καρτέλα (ο πελάτης είναι δεδομένος) και
@@ -5057,9 +5126,11 @@ let CX_INV=[];
 function cxPick(idx){const i=CX_INV[idx];if(!i)return;const net=parseGr(i.net_value);window.__cxTempId=null;
   $('#cxSel').innerHTML=`<div class="card"><div class="modal-head" style="font-size:15px">Πιστωτικό για ΜΑΡΚ ${esc(i.mark)}</div>
     <div class="row">
+      <div class="field grow" style="min-width:280px"><label>Αιτιολογία ακύρωσης</label>
+        <input id="cxReason" placeholder="π.χ. λάθος τιμολόγηση" autofocus></div>
       <div class="field"><label>Καθαρή αξία πιστωτικού (€)</label><input id="cxAmount" type="number" step="0.01" min="0" value="${net.toFixed(2)}"></div>
-      <div class="field grow"><label>Αιτιολογία (προαιρετικό)</label><input id="cxReason" placeholder="Λόγος"></div>
     </div>
+    <div class="hint">Η αιτιολογία τυπώνεται στις <b>Παρατηρήσεις</b> του πιστωτικού. Κενή = «Ακύρωση/Πιστωτικό για ΜΑΡΚ ${esc(i.mark)}».</div>
     <div class="hint" style="margin-top:8px">👁 Προεπισκόπηση & 💾 Πρόχειρο = χωρίς υποβολή/ΜΑΡΚ. Μόνο το κόκκινο <b>Οριστική Έκδοση</b> υποβάλλει το πιστωτικό στην ΑΑΔΕ (ΜΑΡΚ).</div>
     <div class="row" style="margin-top:6px;align-items:center">
       <button class="info" onclick="previewCredit('${q1(i.mark)}')" title="Αποθηκεύει το πρόχειρο ΚΑΙ δείχνει το PDF — χωρίς υποβολή/ΜΑΡΚ. Επαναλαμβανόμενες προεπισκοπήσεις ενημερώνουν το ΙΔΙΟ πρόχειρο.">💾👁 Αποθήκευση &amp; Προεπισκόπηση</button>
@@ -7368,12 +7439,14 @@ function busyOn(msg,sub){
   const host=open||document.body;
   if(d.parentElement!==host)host.appendChild(d);
   d.classList.add('on');
+  document.body.classList.add('busy');
 }
 function busyOff(){
   const d=$('#busyBox');if(!d)return;
   BUSY_N=Math.max(0,BUSY_N-1);
   if(BUSY_N===0){
     d.classList.remove('on');
+    document.body.classList.remove('busy');
     if(d.parentElement!==document.body)document.body.appendChild(d);
   }
 }
@@ -7854,7 +7927,7 @@ function noAutofill(root){
     if(!el.name)el.name='etim-'+(el.id||Math.random().toString(36).slice(2));
   });
 }
-(async()=>{addEyes();addDatePickers();noAutofill();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
+(async()=>{wizShow(true);addEyes();addDatePickers();noAutofill();setupSections('#view-settings');setupSections('#view-admin');loadGridLayouts();await initAccounts();loadInvTypes();await loadProductList();loadCustomers();showView('issue');prewarmAll();
   pollNotifCount();setInterval(pollNotifCount,60000);
   // Ο έλεγχος ΑΑΔΕ αργεί (ζωντανή κλήση): δεν πρέπει να καθυστερεί το πρώτο
   // άνοιγμα, γι' αυτό τρέχει μετά — και μετά κάθε AADE_CHECK_MIN λεπτά.
