@@ -75,6 +75,8 @@ class ControlPanel(QWidget):
 
     #: Ο χρήστης άλλαξε το «εκκίνηση στο tray».
     start_minimized_changed = Signal(bool)
+    #: Ο χρήστης άλλαξε το «αυτόματη εκκίνηση με τα Windows».
+    autostart_changed = Signal(bool)
     #: Ζητήθηκε επανέλεγχος σύνδεσης (το κύριο παράθυρο ξαναφορτώνει τη λίστα).
     reconnect_requested = Signal()
     #: Το e-Τιμολόγιο να δουλέψει σε server (url) ή τοπικά (κενό url).
@@ -340,7 +342,7 @@ class ControlPanel(QWidget):
         return box
 
     def _settings_box(self) -> QWidget:
-        box = QGroupBox("Ρυθμίσεις δικτύου")
+        box = QGroupBox("Εκκίνηση και δίκτυο")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
@@ -360,6 +362,22 @@ class ControlPanel(QWidget):
         note.setWordWrap(True)
         note.setObjectName("muted")
         layout.addWidget(note)
+
+        # Δεύτερος διακόπτης, γιατί είναι δύο διαφορετικά πράγματα: το ένα λέει
+        # ΠΩΣ ανοίγει η εφαρμογή, το άλλο ΑΝ την ανοίγουν τα ίδια τα Windows.
+        # Μέχρι τώρα το δεύτερο ρυθμιζόταν ΜΟΝΟ στην εγκατάσταση: όποιος το
+        # προσπερνούσε εκεί, δεν είχε τρόπο να το ενεργοποιήσει ποτέ.
+        self.chk_autostart = ToggleSwitch("Αυτόματη εκκίνηση με τα Windows")
+        self.chk_autostart.setToolTip(
+            "Η εφαρμογή ανοίγει μόνη της σε κάθε σύνδεση του χρήστη"
+        )
+        self.chk_autostart.toggled.connect(self.autostart_changed.emit)
+        layout.addWidget(self.chk_autostart)
+
+        self.autostart_note = QLabel("")
+        self.autostart_note.setWordWrap(True)
+        self.autostart_note.setObjectName("muted")
+        layout.addWidget(self.autostart_note)
 
         # Κοινή χρήση: μόνο όπου ο φάκελος είναι όντως εδώ. Ένα τερματικό δεν
         # μοιράζει τον φάκελο του server — τον χρησιμοποιεί.
@@ -476,6 +494,25 @@ class ControlPanel(QWidget):
         self.chk_tray.blockSignals(True)
         self.chk_tray.setChecked(value)
         self.chk_tray.blockSignals(False)
+
+    def set_autostart(self, value: bool, vetoed: bool = False) -> None:
+        """Ο διακόπτης δείχνει την ΠΡΑΓΜΑΤΙΚΗ κατάσταση των Windows."""
+        self.chk_autostart.blockSignals(True)
+        self.chk_autostart.setChecked(value)
+        self.chk_autostart.blockSignals(False)
+        if vetoed:
+            self.autostart_note.setText(
+                "Η αυτόματη εκκίνηση είναι <b>απενεργοποιημένη από τα Windows</b> "
+                "(Διαχείριση εργασιών → Εφαρμογές εκκίνησης). Άναψε τον διακόπτη "
+                "για να ξαναενεργοποιηθεί."
+            )
+        else:
+            self.autostart_note.setText(
+                "Μαζί με την «Εκκίνηση στο tray» η εφαρμογή ανοίγει μόνη της "
+                "μόλις συνδεθείς στα Windows και κάθεται δίπλα στο ρολόι. Στα "
+                "Windows 10 το εικονίδιο μπορεί να κρύβεται πίσω από το βελάκι "
+                "«Εμφάνιση κρυφών εικονιδίων»."
+            )
 
     def refresh(self) -> None:
         self._refresh_identity()

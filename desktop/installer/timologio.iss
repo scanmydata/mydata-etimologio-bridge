@@ -13,7 +13,7 @@
 ; Software\scanmydata\TimologioDownloader (εκεί ζει ο φάκελος δεδομένων —
 ; μια αλλαγή εκεί θα άνοιγε την εφαρμογή σε ΑΔΕΙΑ βάση).
 #define AppName        "ScanmyData Suite"
-#define AppVersion     "0.4.32"
+#define AppVersion     "0.4.33"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -41,6 +41,11 @@ WizardStyle=modern
 DisableWelcomePage=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Windows 10 (1809, Οκτώβριος 2018) και νεότερα. Είναι το κατώφλι της Python
+; 3.14 και του Qt 6 που κουβαλά το πακέτο — σε παλιότερα Windows η εφαρμογή θα
+; εγκαθίστατο κανονικά και μετά δεν θα άνοιγε ποτέ, χωρίς να λέει γιατί. Εδώ ο
+; installer το λέει καθαρά, πριν αντιγράψει το πρώτο αρχείο.
+MinVersion=10.0.17763
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\ScanmyDataSuite.ico
 ; Στοιχεία εκδότη στο ίδιο το setup.exe. Ένα ανυπόγραφο installer ΧΩΡΙΣ VersionInfo
@@ -152,6 +157,15 @@ Root: HKCU; Subkey: "Software\scanmydata\TimologioDownloader"; ValueType: string
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
     ValueName: "TimologioDownloader"; ValueData: """{app}\{#AppExeName}"""; \
     Flags: uninsdeletevalue; Check: WantsAutostart
+; Ξετσεκαρισμένο σημαίνει «όχι»: χωρίς αυτό, μια παλιά καταχώρηση επιβίωνε για
+; πάντα και η επιλογή του χρήστη δεν είχε καμία ισχύ.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; \
+    ValueName: "TimologioDownloader"; Flags: deletevalue; Check: not WantsAutostart
+; Και το «βέτο» της Διαχείρισης εργασιών: τα Windows 10/11 δεν σβήνουν την
+; καταχώρηση όταν την απενεργοποιεί ο χρήστης — γράφουν εδώ ότι δεν επιτρέπεται.
+; Όποιος ζητά ρητά αυτόματη εκκίνηση, την εννοεί.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; \
+    ValueType: none; ValueName: "TimologioDownloader"; Flags: deletevalue; Check: WantsAutostart
 Root: HKCU; Subkey: "Software\scanmydata\TimologioDownloader"; ValueType: string; \
     ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
 
@@ -183,6 +197,10 @@ var
   TrayPage: TInputOptionWizardPage;
   TrayFromCommandLine: Boolean;
   DataDirFromCommandLine: Boolean;
+  // Υπάρχει ήδη εγκατάσταση; Τότε οι επιλογές της ΔΕΝ ξαναγράφονται από τις
+  // προτάσεις του ρόλου: μια ενημέρωση έσβηνε έτσι το «εκκίνηση στο tray» και
+  // την αυτόματη εκκίνηση κάθε φορά που ο χρήστης πατούσε απλώς «Επόμενο».
+  HasExistingInstall: Boolean;
   UninstDataDir: String;
   UninstRole: String;
 
@@ -283,7 +301,17 @@ begin
   end;
   if RegQueryStringValue(HKCU, 'Software\scanmydata\TimologioDownloader',
                          'StartMinimized', V) then
+  begin
     TrayPage.Values[OPT_TRAY] := V = '1';
+    HasExistingInstall := True;
+  end;
+  // Και η αυτόματη εκκίνηση: η αλήθεια είναι η ΚΑΤΑΧΩΡΗΣΗ των Windows, όχι ο
+  // ρόλος. Χωρίς αυτό, μια ενημέρωση έδειχνε το κουτάκι άδειο σε υπολογιστή
+  // που ξεκινά κανονικά με τα Windows — και το έσβηνε αν ο χρήστης πατούσε
+  // απλώς «Επόμενο».
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
+                         'TimologioDownloader', V) and (V <> '') then
+    TrayPage.Values[OPT_AUTOSTART] := True;
 end;
 
 procedure InitializeWizard;
@@ -333,7 +361,7 @@ procedure ApplyRoleDefaults;
 var
   IsServer: Boolean;
 begin
-  if TrayFromCommandLine then
+  if TrayFromCommandLine or HasExistingInstall then
     Exit;
   IsServer := RolePage.SelectedValueIndex = ROLE_SERVER;
   TrayPage.Values[OPT_TRAY] := IsServer;

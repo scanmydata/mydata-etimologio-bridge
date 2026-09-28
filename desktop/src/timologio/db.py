@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -170,30 +171,130 @@ def is_network_path(path: Path) -> bool:
         return False
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+#: Φάκελοι που συγχρονίζονται στο cloud. Το WAL θέλει shared memory (αρχείο
+#: `-shm`) που ο συγχρονισμός κλειδώνει και αντιγράφει πίσω από την πλάτη της
+#: SQLite — το αποτέλεσμα είναι «disk I/O error», ή χειρότερα, χαλασμένη βάση.
+CLOUD_MARKERS = ("onedrive", "dropbox", "google drive", "googledrive", "icloud",
+                 "pcloud", "mega", "yandexdisk", "nextcloud")
+
+
+def is_cloud_synced(path: Path) -> bool:
+    """Κάθεται η βάση μέσα σε φάκελο που συγχρονίζεται στο cloud;
+
+    Ο έλεγχος είναι στο ΟΝΟΜΑ της διαδρομής επίτηδες: ο πραγματικός φάκελος του
+    OneDrive λέγεται όπως θέλει ο χρήστης, αλλά όλοι οι συγχρονιστές βάζουν το
+    όνομά τους στη διαδρομή — και ένα λάθος «ναι» απλώς μας βάζει σε πιο
+    συντηρητικό journal, που δουλεύει παντού.
+    """
+    text = str(path).replace("\\", "/").lower()
+    return any(marker in text for marker in CLOUD_MARKERS)
+
+
+class DatabaseUnavailable(RuntimeError):
+    """Η βάση υπάρχει αλλά τα Windows δεν την αφήνουν να ανοίξει.
+
+    Ξεχωριστός τύπος ώστε η εκκίνηση να δείξει ΤΙ να κάνει ο χρήστης, αντί για
+    ένα «sqlite3.OperationalError: disk I/O error» που δεν λέει τίποτα.
+    """
+
+    def __init__(self, db_path: Path, cause: Exception) -> None:
+        self.db_path = db_path
+        self.cause = cause
+        super().__init__(
+            "Δεν ήταν δυνατό το άνοιγμα της βάσης:\n"
+            f"{db_path}\n\n"
+            "Τα Windows απάντησαν «disk I/O error». Οι συνηθισμένες αιτίες:\n"
+            "• Ο φάκελος δεδομένων συγχρονίζεται στο cloud (OneDrive, Dropbox, "
+            "Google Drive). Βγάλε τον φάκελο από τον συγχρονισμό.\n"
+            "• Το antivirus κρατούσε το αρχείο τη στιγμή της εκκίνησης — "
+            "δοκίμασε ξανά σε λίγο.\n"
+            "• Ο δικτυακός φάκελος (server) δεν απαντά αυτή τη στιγμή.\n"
+            "• Ο δίσκος είναι γεμάτος ή έχει πρόβλημα.\n\n"
+            f"Αναλυτικά: {cause}"
+        )
+
+
+def _sidecar_files(db_path: Path) -> tuple[Path, Path]:
+    return (Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm"))
+
+
+def _open(db_path: Path, wal: bool) -> sqlite3.Connection:
+    """Μία απόπειρα ανοίγματος, με το ζητούμενο journal."""
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
-
-    if is_network_path(db_path):
-        # ΚΡΙΣΙΜΟ: το WAL απαιτεί shared memory (αρχείο -shm) που δεν λειτουργεί
-        # πάνω από SMB — η SQLite το τεκμηριώνει ρητά και το αποτέλεσμα είναι
-        # φθορά βάσης, όχι απλώς αργή λειτουργία. Σε δικτυακό φάκελο γυρνάμε σε
-        # rollback journal, που δουλεύει με κλειδώματα αρχείου.
-        conn.execute("PRAGMA journal_mode=TRUNCATE")
-        # Σε δίκτυο το NORMAL δεν εγγυάται durability· η ταχύτητα δεν αξίζει τη
-        # βάση των πελατών.
-        conn.execute("PRAGMA synchronous=FULL")
-        # Πολλά τερματικά -> πιο γενναία αναμονή σε lock.
-        conn.execute("PRAGMA busy_timeout=20000")
-        log.info("Η βάση είναι σε δικτυακό φάκελο — journal_mode=TRUNCATE")
-    else:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-
-    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        if wal:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+        else:
+            # Το rollback journal δεν χρειάζεται καθόλου shared memory, οπότε
+            # δουλεύει και πάνω από SMB και μέσα σε φάκελο συγχρονισμού.
+            conn.execute("PRAGMA journal_mode=TRUNCATE")
+            # Εκεί το NORMAL δεν εγγυάται durability· η ταχύτητα δεν αξίζει τη
+            # βάση των πελατών.
+            conn.execute("PRAGMA synchronous=FULL")
+            # Πολλά τερματικά -> πιο γενναία αναμονή σε lock.
+            conn.execute("PRAGMA busy_timeout=20000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # Μια πραγματική ανάγνωση: το άνοιγμα από μόνο του είναι τεμπέλικο και
+        # το σφάλμα θα έσκαγε αργότερα, σε τυχαίο σημείο.
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def _drop_stale_shm(db_path: Path) -> bool:
+    """Πετά το `-shm` που άφησε πίσω του ένα βίαιο κλείσιμο.
+
+    Είναι ασφαλές: το `-shm` είναι ΠΑΡΑΓΩΓΟ αρχείο — η SQLite το ξαναφτιάχνει
+    από το `-wal` στο επόμενο άνοιγμα. Το `-wal` (που κρατά δεδομένα) δεν το
+    αγγίζουμε ΠΟΤΕ.
+    """
+    _wal, shm = _sidecar_files(db_path)
+    try:
+        if shm.exists():
+            shm.unlink()
+            log.warning("Αφαιρέθηκε ξεχασμένο %s", shm.name)
+            return True
+    except OSError as exc:
+        log.warning("Το %s δεν αφαιρέθηκε: %s", shm.name, exc)
+    return False
+
+
+def connect(db_path: Path) -> sqlite3.Connection:
+    """Ανοίγει τη βάση — και επιμένει όταν τα Windows λένε «disk I/O error».
+
+    Το σφάλμα εμφανιζόταν «κάποιες φορές» στην εκκίνηση και η εφαρμογή απλώς
+    δεν άνοιγε. Σχεδόν πάντα φταίει το shared memory του WAL: antivirus που
+    κρατά το `-shm` τη στιγμή της εκκίνησης, φάκελος που συγχρονίζεται στο
+    cloud, ή `-shm` ξεχασμένο από βίαιο κλείσιμο. Και τα τρία περνούν με
+    δεύτερη απόπειρα ή με journal που δεν χρησιμοποιεί shared memory.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    safe = is_network_path(db_path) or is_cloud_synced(db_path)
+    if safe:
+        log.info("Η βάση είναι σε δικτυακό/συγχρονιζόμενο φάκελο — journal_mode=TRUNCATE")
+
+    # 1) Κανονικά. 2) Ξανά μετά από ανάσα (antivirus). 3) Χωρίς το -shm.
+    # 4) Χωρίς καθόλου shared memory.
+    attempts = [(safe, 0.0, False), (safe, 0.4, False), (safe, 0.8, True), (True, 0.0, True)]
+    last: Exception | None = None
+    for wal_off, pause, drop_shm in attempts:
+        if pause:
+            time.sleep(pause)
+        if drop_shm:
+            _drop_stale_shm(db_path)
+        try:
+            return _open(db_path, wal=not wal_off)
+        except sqlite3.Error as exc:
+            last = exc
+            if "disk i/o error" not in str(exc).lower() and "unable to open" not in str(exc).lower():
+                raise
+            log.warning("Άνοιγμα βάσης απέτυχε (%s) — νέα απόπειρα", exc)
+    raise DatabaseUnavailable(db_path, last or sqlite3.OperationalError("disk I/O error"))
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

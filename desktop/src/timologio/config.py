@@ -52,7 +52,7 @@ ROLES = ("standalone", "server", "terminal")
 #: Η έκδοση που δηλώνει το κάθε instance στους υπόλοιπους του δικτύου. Κρατιέται
 #: εδώ ώστε να υπάρχει μία πηγή: το pyproject δεν διαβάζεται μέσα από το bundle
 #: του PyInstaller.
-APP_VERSION = "0.4.32"
+APP_VERSION = "0.4.33"
 
 ROLE_LABELS_EL = {
     "standalone": "Αυτόνομος υπολογιστής",
@@ -105,6 +105,112 @@ def save_start_minimized(value: bool) -> None:
             winreg.SetValueEx(key, "StartMinimized", 0, winreg.REG_SZ, "1" if value else "0")
     except OSError:
         pass
+
+
+# --- Αυτόματη εκκίνηση με τα Windows ----------------------------------------
+#: Το κλειδί που διαβάζουν τα Windows σε κάθε σύνδεση χρήστη. HKCU: ισχύει μόνο
+#: για αυτόν τον χρήστη και δεν θέλει δικαιώματα διαχειριστή.
+_RUN_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_RUN_NAME = "TimologioDownloader"
+#: Εδώ γράφει η «Εκκίνηση» της Διαχείρισης εργασιών όταν ο χρήστης (ή κάποιο
+#: «εργαλείο βελτιστοποίησης») απενεργοποιεί μια αυτόματη εκκίνηση. Τα Windows
+#: 10/11 ΔΕΝ σβήνουν την καταχώρηση — της βάζουν βέτο εδώ, και η εφαρμογή απλώς
+#: δεν ξεκινά ποτέ, ενώ το κλειδί Run δείχνει ότι όλα είναι εντάξει.
+_APPROVED_PATH = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+
+
+def autostart_command() -> str:
+    """Η γραμμή που γράφεται στο Run — πάντα σε εισαγωγικά.
+
+    Η διαδρομή περιέχει κενά («Program Files», «ScanmyData Suite»): χωρίς
+    εισαγωγικά τα Windows δοκιμάζουν να τρέξουν το πρώτο κομμάτι και η αυτόματη
+    εκκίνηση αποτυγχάνει σιωπηλά.
+    """
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable)}"'
+    return f'"{Path(sys.executable)}" -m timologio.gui.app'
+
+
+def autostart_vetoed() -> bool:
+    """Το έχει απενεργοποιήσει η «Εκκίνηση» των Windows;"""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _APPROVED_PATH) as key:
+            value, _ = winreg.QueryValueEx(key, _RUN_NAME)
+        # Πρώτο byte: 2 = εγκεκριμένο, 3 = απενεργοποιημένο από τον χρήστη.
+        return bool(value) and value[0] not in (2, 0)
+    except OSError:
+        return False
+
+
+def load_autostart() -> bool:
+    """Ξεκινά με τα Windows; Μόνο αν υπάρχει καταχώρηση ΚΑΙ δεν έχει βέτο."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_PATH) as key:
+            value, _ = winreg.QueryValueEx(key, _RUN_NAME)
+    except OSError:
+        return False
+    return bool(value) and not autostart_vetoed()
+
+
+def save_autostart(value: bool) -> None:
+    """Γράφει ή σβήνει την αυτόματη εκκίνηση."""
+    if os.name != "nt":
+        return
+    import winreg
+
+    try:
+        if value:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _RUN_PATH) as key:
+                winreg.SetValueEx(key, _RUN_NAME, 0, winreg.REG_SZ, autostart_command())
+            # Το βέτο της Διαχείρισης εργασιών φεύγει: ο χρήστης μόλις ζήτησε
+            # ρητά, μέσα από την εφαρμογή, να ξεκινά με τα Windows.
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER, _APPROVED_PATH, 0, winreg.KEY_ALL_ACCESS
+                ) as key:
+                    winreg.DeleteValue(key, _RUN_NAME)
+            except OSError:
+                pass
+        else:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _RUN_PATH, 0, winreg.KEY_ALL_ACCESS
+            ) as key:
+                winreg.DeleteValue(key, _RUN_NAME)
+    except OSError as exc:
+        log.warning("Αυτόματη εκκίνηση: %s", exc)
+
+
+def refresh_autostart() -> bool:
+    """Ξαναγράφει τη διαδρομή αν άλλαξε (μετακόμιση ή ενημέρωση).
+
+    Μια καταχώρηση που δείχνει σε διαγραμμένο φάκελο είναι χειρότερη από καμία:
+    δεν ξεκινά τίποτα και κανείς δεν το βλέπει. Επιστρέφει αν ξαναγράφτηκε.
+    """
+    if os.name != "nt" or not load_autostart():
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_PATH) as key:
+            current, _ = winreg.QueryValueEx(key, _RUN_NAME)
+    except OSError:
+        return False
+    wanted = autostart_command()
+    if str(current).strip().lower() == wanted.lower():
+        return False
+    save_autostart(True)
+    log.info("Η αυτόματη εκκίνηση δείχνει πλέον στο %s", wanted)
+    return True
 
 
 def consume_show_once() -> bool:

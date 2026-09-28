@@ -57,9 +57,13 @@ from ..backup import backup_dir, create_backup, list_backups, restore
 from ..config import (
     APP_VERSION,
     ROLE_LABELS_EL,
+    autostart_vetoed,
+    load_autostart,
     load_role,
     load_settings,
     load_start_minimized,
+    refresh_autostart,
+    save_autostart,
     save_start_minimized,
 )
 from ..coverage import to_gr
@@ -365,17 +369,70 @@ class MainWindow(QMainWindow):
         self._really_quit = False
         self._tray_notified = False
         self._tour_pending = False
+        # Αυτόματη εκκίνηση στα Windows 10: η εφαρμογή ξεκινά ΠΡΙΝ ο explorer
+        # στήσει τη γραμμή εργασιών, οπότε το εικονίδιο δεν έχει πού να μπει.
+        # Το Qt το ξαναβάζει μόλις εμφανιστεί η μπάρα, αλλά αν το παράθυρο έχει
+        # ήδη κρυφτεί ο χρήστης βλέπει ΤΙΠΟΤΑ: ούτε παράθυρο, ούτε εικονίδιο.
+        # Γι' αυτό ξαναδοκιμάζουμε, και κρυβόμαστε μόνο όταν το εικονίδιο μπήκε.
+        self._tray_tries = 0
+        self._hide_when_tray_ready = False
+        QTimer.singleShot(1500, self._ensure_tray_visible)
         # Στην πρώτη εμφάνιση μετά την εγκατάσταση (--show) δεν μαζευόμαστε στο
         # tray, ακόμη κι αν έτσι έχει ρυθμιστεί: ο χρήστης μόλις εγκατέστησε και
         # πρέπει να δει το πρόγραμμα. Από την επόμενη εκκίνηση ισχύει η ρύθμιση.
         if load_start_minimized() and not self._force_show:
             # Το hide() πρέπει να γίνει αφού το Qt δείξει το παράθυρο, αλλιώς σε
             # κάποια συστήματα εμφανίζεται μια στιγμή και μετά εξαφανίζεται.
-            QTimer.singleShot(0, self.hide)
+            QTimer.singleShot(0, self._hide_to_tray_if_possible)
+
+    def _hide_to_tray_if_possible(self) -> None:
+        """Κρύβεται ΜΟΝΟ αν υπάρχει tray να μαζευτεί.
+
+        Χωρίς αυτό, σε υπολογιστή όπου η περιοχή ειδοποιήσεων δεν είναι ακόμη
+        (ή καθόλου) διαθέσιμη, η εφαρμογή γινόταν αόρατη: ούτε παράθυρο, ούτε
+        εικονίδιο, και ο χρήστης την ξανάνοιγε ξανά και ξανά.
+        """
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        if QSystemTrayIcon.isSystemTrayAvailable() and self.tray.isVisible():
+            self.hide()
+            return
+        log.warning("Η περιοχή ειδοποιήσεων δεν είναι έτοιμη — το παράθυρο μένει ανοιχτό")
+        self._hide_when_tray_ready = True
+
+    def _ensure_tray_visible(self) -> None:
+        """Ξαναβάζει το εικονίδιο όσο η γραμμή εργασιών στήνεται (έως ~15 δευτ.)."""
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        tray = getattr(self, "tray", None)
+        if tray is None:
+            return
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            if not tray.isVisible():
+                tray.show()
+            if getattr(self, "_hide_when_tray_ready", False) and tray.isVisible():
+                self._hide_when_tray_ready = False
+                self.hide()
+            return
+        self._tray_tries += 1
+        if self._tray_tries <= 10:
+            QTimer.singleShot(1500, self._ensure_tray_visible)
 
     def _on_start_minimized(self, value: bool) -> None:
         save_start_minimized(value)
         log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
+        # «Ξεκίνα μαζεμένη» χωρίς «ξεκίνα με τα Windows» δεν ξεκινά ΤΙΠΟΤΑ: η
+        # ρύθμιση ίσχυε μόνο αν άνοιγε κάποιος την εφαρμογή με το χέρι. Όποιος
+        # ζητά το πρώτο, εννοεί και το δεύτερο.
+        if value and not load_autostart():
+            self._on_autostart(True)
+
+    def _on_autostart(self, value: bool) -> None:
+        save_autostart(value)
+        log.info("Αυτόματη εκκίνηση με τα Windows: %s", "ναι" if value else "όχι")
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.set_autostart(load_autostart(), autostart_vetoed())
 
     # ------------------------------------------- χρονοπρογραμματισμός λήψης
     def _load_schedule(self) -> SyncSchedule:
@@ -574,7 +631,12 @@ class MainWindow(QMainWindow):
             conn=self.conn,
         )
         self.control.set_start_minimized(load_start_minimized())
+        # Μια καταχώρηση που δείχνει σε παλιά διαδρομή (μετά από μετακόμιση ή
+        # επανεγκατάσταση αλλού) δεν ξεκινά τίποτα — και κανείς δεν το βλέπει.
+        refresh_autostart()
+        self.control.set_autostart(load_autostart(), autostart_vetoed())
         self.control.start_minimized_changed.connect(self._on_start_minimized)
+        self.control.autostart_changed.connect(self._on_autostart)
         self.control.reconnect_requested.connect(self.reload_clients)
         self.stack.addWidget(self.control)
 
