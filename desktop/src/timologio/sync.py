@@ -721,7 +721,60 @@ def sync_client(
         date_from=date_from, date_to=date_to,
         progress=progress, should_cancel=should_cancel,
     )
+    _auto_render_pass(
+        conn, client, settings, stats=stats,
+        progress=progress, should_cancel=should_cancel,
+    )
     return stats
+
+
+def _auto_render_pass(
+    conn: sqlite3.Connection,
+    client: Client,
+    settings: Settings,
+    *,
+    stats: RunStats,
+    progress: ProgressFn,
+    should_cancel: Callable[[], bool] | None,
+) -> None:
+    """Κατεβάζει ΜΟΝΟ ΤΟΥ όσα ο πάροχος δίνει μόνο ως σελίδα — όταν γίνεται.
+
+    Η ΕΣΚΑΠ (και όποιος άλλος μπει στο ``AUTO_RENDER_HOSTS``) δεν έχει αρχείο
+    PDF: δίνει εκτυπώσιμη σελίδα. Μέχρι τώρα αυτά έμεναν «μόνο online» και ο
+    λογιστής άνοιγε τον σύνδεσμο στον browser και έκανε «Αποθήκευση ως» ένα-ένα.
+    Η σελίδα όμως στοιχειοθετείται κανονικά σε αόρατο browser, χωρίς κανέναν
+    έλεγχο «είστε άνθρωπος», οπότε η λήψη γίνεται εδώ, μέσα στο ίδιο κατέβασμα.
+
+    Ό,τι χρειάζεται Edge/Chrome και δεν τα βρίσκει, μένει «μόνο online» όπως
+    πριν — με μήνυμα, όχι σφάλμα.
+    """
+    from .download.headless import find_browser
+    from .download.provider import is_auto_renderable
+
+    assert client.id is not None
+    rows = [
+        row
+        for row in repo.viewer_only_documents(conn, [client.vat])
+        if is_auto_renderable(row["downloading_invoice_url"])
+    ]
+    if not rows or (should_cancel and should_cancel()):
+        return
+    if find_browser() is None:
+        progress(
+            f"  ⧉ {len(rows)} παραστατικά χρειάζονται Edge ή Chrome για να γίνουν PDF"
+        )
+        return
+
+    progress(f"{client.vat}: {len(rows)} παραστατικά γίνονται PDF από τη σελίδα τους")
+    saved, failed, remaining = _render_viewer_batch(
+        conn, settings, rows, headed=False, patient=False, timeout=30.0,
+        progress=progress, should_cancel=should_cancel,
+    )
+    stats.pdfs_ok += saved
+    stats.viewer_only = max(0, stats.viewer_only - saved)
+    stats.failed += failed
+    if remaining:
+        progress(f"  ⧉ {len(remaining)} παραστατικά παραμένουν μόνο online")
 
 
 class AllBrowsersFailed(Exception):

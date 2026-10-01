@@ -10,6 +10,7 @@ from .provider import (
     ProviderUnavailable,
     epsilon_pdf_url,
     eskap_print_url,
+    is_auto_renderable,
     is_eskap,
     pdf_url,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "pdf_url",
     "epsilon_pdf_url",
     "eskap_print_url",
+    "is_auto_renderable",
     "is_eskap",
     "target_path",
     "resolve_path",

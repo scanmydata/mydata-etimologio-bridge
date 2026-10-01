@@ -32,6 +32,13 @@ _ESKAP_HOST = "eskap.gr"
 _ESKAP_PRINT_RE = re.compile(
     r"invoice_print\.php\?authentication_code=([A-Za-z0-9]+)", re.I
 )
+#: Ο ίδιος κωδικός, όταν δίνεται απευθείας στο query ενός συνδέσμου ΕΣΚΑΠ.
+_ESKAP_CODE_RE = re.compile(r"[?&]authentication_code=([A-Za-z0-9]+)", re.I)
+
+
+def _auth_code(url: str) -> str | None:
+    match = _ESKAP_CODE_RE.search(url or "")
+    return match.group(1) if match else None
 
 #: UA σαν browser: κάποιοι πάροχοι (eskap) γυρίζουν 403/άδειο χωρίς αυτό.
 _BROWSER_UA = (
@@ -158,6 +165,19 @@ def is_eskap(url: str) -> bool:
     return _host_matches(urlparse(url).netloc, _ESKAP_HOST)
 
 
+#: Πάροχοι που **δεν δίνουν αρχείο PDF** αλλά η σελίδα τους στοιχειοθετείται
+#: κανονικά σε αόρατο browser, χωρίς έλεγχο «είστε άνθρωπος». Για αυτούς η λήψη
+#: γίνεται ΜΟΝΗ ΤΗΣ στο κανονικό κατέβασμα — ο χρήστης δεν έχει λόγο να ανοίγει
+#: τη σελίδα και να κάνει «Αποθήκευση ως».
+AUTO_RENDER_HOSTS = (_ESKAP_HOST,)
+
+
+def is_auto_renderable(url: str) -> bool:
+    """Αν το παραστατικό μπορεί να γίνει PDF μόνο του, με αόρατο browser."""
+    netloc = urlparse(url or "").netloc
+    return any(_host_matches(netloc, host) for host in AUTO_RENDER_HOSTS)
+
+
 def eskap_print_url(
     url: str,
     *,
@@ -178,6 +198,18 @@ def eskap_print_url(
     """
     if not is_eskap(url):
         return None
+    p0 = urlparse(url)
+    # Ο σύνδεσμος μπορεί να ΕΙΝΑΙ ήδη ο εκτυπώσιμος — έτσι τον δίνει η ΕΣΚΑΠ όταν
+    # τον αντιγράφει ο χρήστης από το κουμπί «Εκτύπωση». Δεν έχει νόημα να
+    # κατεβάσουμε τη σελίδα για να ψάξουμε μέσα της τον εαυτό της (και δεν θα
+    # τον βρίσκαμε: η εκτυπώσιμη σελίδα δεν περιέχει τον σύνδεσμό της).
+    code = _auth_code(url)
+    if code and "invoice_print.php" in p0.path.lower():
+        return url
+    # Και η «σελίδα με χρώμιο» (/invoice.php?authentication_code=…) οδηγεί στον
+    # ίδιο κωδικό: γυρίζουμε κατευθείαν στην καθαρή μορφή, χωρίς δεύτερη κλήση.
+    if code:
+        return f"{p0.scheme}://{p0.netloc}/invoice_print.php?authentication_code={code}"
     sess = session or requests.Session()
     try:
         resp = sess.get(
@@ -214,6 +246,13 @@ class ProviderDownloader:
         eps = epsilon_pdf_url(url)
         if eps is not None:
             return self._fetch(eps, missing_is_viewer=True)
+        if is_eskap(url):
+            # Η ΕΣΚΑΠ δεν εκθέτει ΚΑΝΕΝΑ αρχείο PDF (δοκιμασμένο ζωντανά:
+            # invoice_pdf.php, ?pdf=1, ?format=pdf → 404 ή HTML). Το «/pdf» θα
+            # χάλαγε κιόλας τον κωδικό του συνδέσμου («…?authentication_code=
+            # ABC/pdf»). Περνά κατευθείαν στην απόδοση της σελίδας, που γίνεται
+            # αυτόματα στο ίδιο κατέβασμα.
+            raise NotAPdf("eskap: μόνο εκτυπώσιμη σελίδα, χωρίς αρχείο PDF")
         return self._fetch(pdf_url(url), missing_is_viewer=False)
 
     def _fetch(self, target: str, *, missing_is_viewer: bool) -> PdfResult:
