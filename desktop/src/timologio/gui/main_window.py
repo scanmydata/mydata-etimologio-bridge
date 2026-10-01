@@ -1678,6 +1678,7 @@ class MainWindow(QMainWindow):
             "folder": self.on_open_folder,
             "csv": self.on_export,
             "online_pdf": self.on_download_viewer_only,
+            "pending_pdf": self.on_download_backlog,
             "backup": self.on_backup,
             "restore": self.on_restore,
             "wipe": lambda: self.on_wipe(),
@@ -2164,6 +2165,65 @@ class MainWindow(QMainWindow):
             directions,
             unclassified_expenses_only=self.sync_page.smart_expenses_only(),
         )
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.message.connect(self._log)
+        self._worker.client_started.connect(self._on_client_started)
+        self._worker.client_finished.connect(self._on_client_finished)
+        self._worker.totals.connect(self._on_totals)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.busy.connect(self._on_busy)
+        self._thread.start()
+
+    # ------------------------------------------------- η ουρά που ξεχάστηκε
+    def on_download_backlog(self) -> None:
+        """Κατεβάζει ό,τι έμεινε «σε αναμονή», χωρίς να ξαναρωτήσει την ΑΑΔΕ.
+
+        Η ουρά μάζευε σιωπηλά: μια ακύρωση στη μέση, ένα κλείσιμο, ή «έξυπνη
+        λήψη» που αφήνει απ' έξω τα χαρακτηρισμένα. Τα παραστατικά φαίνονταν
+        κανονικά στη λίστα — απλώς δεν είχαν ποτέ PDF, και κανείς δεν τα
+        ξαναζητούσε.
+        """
+        if self._thread is not None or getattr(self, "_hl_thread", None) is not None:
+            QMessageBox.information(
+                self, "Εκτελείται ήδη",
+                "Περιμένετε να ολοκληρωθεί η τρέχουσα εργασία.",
+            )
+            return
+
+        rows = repo.pending_backlog(self.conn)
+        total = sum(int(row["n"]) for row in rows)
+        if not total:
+            QMessageBox.information(
+                self, "Λήψη εκκρεμών",
+                "Δεν εκκρεμεί κανένα PDF — όλα τα παραστατικά με σύνδεσμο "
+                "παρόχου έχουν κατέβει.",
+            )
+            return
+
+        top = "\n".join(
+            f"• {row['label'] or row['vat']}: {row['n']}" for row in rows[:8]
+        )
+        more = f"\n… και άλλοι {len(rows) - 8} πελάτες" if len(rows) > 8 else ""
+        if QMessageBox.question(
+            self, "Λήψη εκκρεμών",
+            f"<b>{total}</b> PDF εκκρεμούν σε {len(rows)} πελάτες.<br><br>"
+            "Θα ζητηθούν μόνο από τους παρόχους — <b>καμία</b> νέα κλήση στην "
+            "ΑΑΔΕ.<br><br><pre>" + top + more + "</pre>",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        vats = [str(row["vat"]) for row in rows]
+        create_backup(self.settings.db_path, reason="backlog")
+        self._set_running(True, len(vats))
+        self._show_page("sync")
+        self._log(f"── Λήψη {total} εκκρεμών PDF για {len(vats)} πελάτες")
+
+        self._thread = QThread(self)
+        self._worker = SyncWorker(vats, "", "", False, backlog_only=True)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.message.connect(self._log)
@@ -2996,6 +3056,15 @@ class MainWindow(QMainWindow):
             lines.append(
                 f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα '
                 "— δοκιμάστε ξανά «Έναρξη λήψης»</span>"
+            )
+        # Η ουρά δεν κρύβεται πια: μέχρι τώρα όσα έμεναν «σε αναμονή» (ακύρωση,
+        # κλείσιμο, έξυπνη λήψη) δεν τα ανέφερε κανείς — ο λογιστής έβλεπε
+        # παραστατικά χωρίς PDF και νόμιζε ότι ο πάροχος δεν τα δίνει.
+        backlog = sum(int(row["n"]) for row in repo.pending_backlog(self.conn))
+        if backlog:
+            lines.append(
+                f'<span style="color:{CURRENT.accent};">{backlog} PDF μένουν σε '
+                "αναμονή — «Λήψη εκκρεμών» από το μενού τα κατεβάζει όλα</span>"
             )
         box.setText("Η λήψη ολοκληρώθηκε.<br><br>" + "<br>".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Ok)

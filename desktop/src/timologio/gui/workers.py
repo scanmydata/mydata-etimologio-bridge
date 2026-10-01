@@ -41,8 +41,12 @@ class SyncWorker(QObject):
         directions: Sequence[Direction] | None = None,
         use_vies: bool = True,
         unclassified_expenses_only: bool = False,
+        backlog_only: bool = False,
     ) -> None:
         super().__init__()
+        #: Μόνο η ουρά: ό,τι έχει μείνει «σε αναμονή» από προηγούμενες λήψεις,
+        #: χωρίς νέα ανακάλυψη στην ΑΑΔΕ.
+        self._backlog_only = backlog_only
         self._vats = vats
         self._date_from = date_from
         self._date_to = date_to
@@ -65,7 +69,7 @@ class SyncWorker(QObject):
     @Slot()
     def run(self) -> None:
         from ..locking import LockBusy, SyncLock
-        from ..sync import sync_client
+        from ..sync import download_backlog, sync_client
 
         settings = load_settings()
         lock = SyncLock(settings.data_dir)
@@ -95,6 +99,20 @@ class SyncWorker(QObject):
 
                 self.client_started.emit(client.vat, client.label)
                 lock.touch()
+                if self._backlog_only:
+                    stats = download_backlog(
+                        conn, client, settings,
+                        progress=lambda m: self.message.emit(m),
+                        should_cancel=self._cancel.is_set,
+                    )
+                    found += stats.docs_found
+                    pdfs += stats.pdfs_ok
+                    viewer_only += stats.viewer_only
+                    failed += stats.failed
+                    conn.commit()
+                    self.client_finished.emit(client.vat, 0, stats.pdfs_ok, stats.failed)
+                    self.totals.emit(found, pdfs, no_url, viewer_only, failed)
+                    continue
                 stats = sync_client(
                     conn,
                     client,

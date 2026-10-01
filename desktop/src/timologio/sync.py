@@ -777,6 +777,41 @@ def _auto_render_pass(
         progress(f"  ⧉ {len(remaining)} παραστατικά παραμένουν μόνο online")
 
 
+def download_backlog(
+    conn: sqlite3.Connection,
+    client: Client,
+    settings: Settings,
+    *,
+    progress: ProgressFn = _noop,
+    should_cancel: Callable[[], bool] | None = None,
+) -> RunStats:
+    """Κατεβάζει ΟΣΑ εκκρεμούν για έναν πελάτη — χωρίς καμία κλήση στην ΑΑΔΕ.
+
+    Τα παραστατικά ανακαλύπτονται και κατεβαίνουν στο ίδιο πέρασμα· ό,τι δεν
+    προλάβει να κατέβει (ακύρωση, κλείσιμο, «έξυπνη λήψη» που αφήνει απ' έξω τα
+    χαρακτηρισμένα) έμενε «σε αναμονή» για πάντα — κανείς δεν το ξαναζητούσε,
+    και ο λογιστής έβλεπε παραστατικά χωρίς PDF χωρίς να ξέρει γιατί.
+
+    Εδώ η ουρά αδειάζει: μόνο οι πάροχοι, χωρίς ανακάλυψη, χωρίς VIES, χωρίς
+    φίλτρα — οπότε είναι και γρήγορο.
+    """
+    stats = RunStats()
+    assert client.id is not None
+    requeued = repo.requeue_errors(conn, client.id)
+    if requeued:
+        conn.commit()
+        progress(f"{client.vat}: επανάληψη λήψης για {requeued} με σφάλμα")
+    download_pending(
+        conn, client, settings, stats=stats,
+        progress=progress, should_cancel=should_cancel,
+    )
+    _auto_render_pass(
+        conn, client, settings, stats=stats,
+        progress=progress, should_cancel=should_cancel,
+    )
+    return stats
+
+
 class AllBrowsersFailed(Exception):
     """Κανένας από τους διαθέσιμους browsers δεν άνοιξε."""
 
