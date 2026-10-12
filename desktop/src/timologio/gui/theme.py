@@ -265,6 +265,16 @@ QCheckBox::indicator:checked {{
     image: url({check});
 }}
 QCheckBox::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
+/* Κλειδωμένο ΑΛΛΑ τσεκαρισμένο: η επιλογή πρέπει να ΦΑΙΝΕΤΑΙ. Όσο έτρεχε μια
+   λήψη, τα πεδία κλείδωναν σωστά — αλλά το ✓ ζωγραφιζόταν σε σκούρο πάνω σε
+   σκούρο και ο χρήστης δεν έβλεπε πια τι είχε επιλέξει (έσοδα; έξοδα; έξυπνη
+   λήψη;). Κρατάμε το χρώμα του τόνου, πιο σβηστό μόνο στο περίγραμμα. */
+QCheckBox::indicator:checked:disabled {{
+    background: {p.accent_deep};
+    border-color: {p.muted};
+    image: url({check});
+}}
+QCheckBox:disabled {{ color: {p.muted}; }}
 
 QTableWidget {{
     background: {p.panel};
@@ -291,6 +301,9 @@ QTableWidget::indicator:checked {{
     image: url({check});
 }}
 QTableWidget::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
+QTableWidget::indicator:checked:disabled {{
+    background: {p.accent_deep}; border-color: {p.muted}; image: url({check});
+}}
 
 /* Οι λίστες με κουτάκια (π.χ. «Πελάτες» στον Χρονοπρογραμματισμό) δεν είχαν
    ΚΑΝΕΝΑΝ κανόνα: το κουτάκι έμενε στο προεπιλεγμένο του Qt, ένα αχνό
@@ -308,6 +321,9 @@ QListWidget::indicator:checked {{
     image: url({check});
 }}
 QListWidget::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
+QListWidget::indicator:checked:disabled {{
+    background: {p.accent_deep}; border-color: {p.muted}; image: url({check});
+}}
 QListWidget::item {{ padding: 4px 2px; }}
 /* Οι λίστες με πλαίσιο, όπως οι πίνακες: χωρίς αυτό η λίστα «Πελάτες» δεν
    ξεχώριζε καθόλου από το κουτί γύρω της στο σκοτεινό θέμα. */

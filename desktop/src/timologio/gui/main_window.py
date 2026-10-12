@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -1315,6 +1316,12 @@ class MainWindow(QMainWindow):
             self.reload_clients()
 
     def _check_shown(self, checked: bool) -> None:
+        if not checked:
+            # «Αποεπιλογή όλων» σημαίνει ΚΑΝΕΝΑΣ — και ο ενεργός πελάτης είναι
+            # κι αυτός επιλογή: έμενε φωτισμένος πάνω δεξιά και η Λήψη συνέχιζε
+            # να λέει «1 επιλεγμένος», ενώ ο χρήστης μόλις τα είχε καθαρίσει όλα.
+            self.table.clearSelection()
+            self._set_pinned(None)
         self.table.blockSignals(True)
         for i in range(self.table.rowCount()):
             item = self.table.item(i, _COL_CHECK)
@@ -1334,6 +1341,11 @@ class MainWindow(QMainWindow):
         self.sync_page.set_target(downloadable, len(ready_vats))
         self._update_selcount()
         self.reload_clients()
+        if not checked:
+            # Μετά το ξαναχτίσιμο του πίνακα: η ετικέτα «Ενεργός πελάτης», το
+            # panel ανάλυσης και τα μενού ακολουθούν την άδεια επιλογή.
+            self.table.clearSelection()
+            self._on_selection(animate=False)
 
     def _selected_vats(self, only_ready: bool = True) -> list[str]:
         """Οι *φωτισμένες* γραμμές — για ανάλυση και εξαγωγές.
@@ -2202,18 +2214,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        top = "\n".join(
-            f"• {row['label'] or row['vat']}: {row['n']}" for row in rows[:8]
-        )
-        more = f"\n… και άλλοι {len(rows) - 8} πελάτες" if len(rows) > 8 else ""
-        if QMessageBox.question(
-            self, "Λήψη εκκρεμών",
-            f"<b>{total}</b> PDF εκκρεμούν σε {len(rows)} πελάτες.<br><br>"
-            "Θα ζητηθούν μόνο από τους παρόχους — <b>καμία</b> νέα κλήση στην "
-            "ΑΑΔΕ.<br><br><pre>" + top + more + "</pre>",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Yes,
-        ) != QMessageBox.StandardButton.Yes:
+        if not self._ask_backlog(rows, total):
             return
 
         vats = [str(row["vat"]) for row in rows]
@@ -2234,6 +2235,67 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._on_failed)
         self._worker.busy.connect(self._on_busy)
         self._thread.start()
+
+    def _ask_backlog(self, rows, total: int) -> bool:
+        """Η λίστα των πελατών με εκκρεμότητες, σε κανονικό πίνακα που κυλά.
+
+        Παλιά ήταν κείμενο μέσα σε `<pre>`: γραμματοσειρά μηχανής γραφής που δεν
+        ταίριαζε πουθενά αλλού, κομμένη στους οκτώ πρώτους και με ένα «… και
+        άλλοι 15 πελάτες» που δεν έλεγε ποιοι.
+        """
+        box = QDialog(self)
+        box.setWindowTitle("Λήψη εκκρεμών")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
+
+        head = QLabel(
+            f"<b>{total}</b> PDF εκκρεμούν σε <b>{len(rows)}</b> πελάτες.<br>"
+            "Θα ζητηθούν μόνο από τους παρόχους — <b>καμία</b> νέα κλήση στην ΑΑΔΕ."
+        )
+        head.setWordWrap(True)
+        layout.addWidget(head)
+
+        table = QTableWidget(len(rows), 2)
+        table.setObjectName("backlogTable")
+        table.setHorizontalHeaderLabels(["Πελάτης", "PDF"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setAlternatingRowColors(True)
+        for i, row in enumerate(rows):
+            name = QTableWidgetItem(str(row["label"] or row["vat"]))
+            name.setToolTip(f"ΑΦΜ {row['vat']}")
+            count = QTableWidgetItem(str(row["n"]))
+            count.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            table.setItem(i, 0, name)
+            table.setItem(i, 1, count)
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        # Ύψος για ~8 γραμμές: από εκεί και πέρα κυλά, αντί να γίνει το παράθυρο
+        # τρία μέτρα ή να κρυφτούν οι μισοί πελάτες.
+        table.setMinimumHeight(240)
+        layout.addWidget(table, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.Cancel
+        )
+        yes = buttons.button(QDialogButtonBox.StandardButton.Yes)
+        yes.setText("Λήψη τώρα")
+        yes.setObjectName("primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Άκυρο")
+        buttons.accepted.connect(box.accept)
+        buttons.rejected.connect(box.reject)
+        layout.addWidget(buttons)
+
+        box.resize(560, 420)
+        return box.exec() == QDialog.DialogCode.Accepted
 
     def on_cancel(self) -> None:
         if self._worker:

@@ -196,6 +196,68 @@ def parse_gr_date(text: str) -> QDate | None:
     return parsed if parsed.isValid() else None
 
 
+def type_date(buffer: str, char: str) -> str:
+    """Ένα πάτημα πλήκτρου πάνω στο ό,τι έχει ήδη γραφτεί — με τις καθέτους να
+    μπαίνουν **μόνες τους**.
+
+    «12102026» γίνεται «12/10/2026» όσο γράφεις· «12/10/26» γράφεται ακριβώς
+    όπως το πληκτρολογείς. Οι διαχωριστές «.» και «-» μετρούν ως κάθετος, γιατί
+    έτσι γράφει ο κόσμος τις ημερομηνίες.
+
+    Χωρίς αυτό, κάθε πάτημα πήγαινε στο «τμήμα» του QDateEdit: μια ημερομηνία
+    γραμμένη κανονικά έβγαινε «12/02//26» και, επειδή δεν διαβαζόταν,
+    **έμενε η παλιά** — σιωπηλά.
+    """
+    parts = buffer.split("/") if buffer else [""]
+    while len(parts) < 1:
+        parts.append("")
+    limits = (2, 2, 4)
+    if char.isdigit():
+        index = len(parts) - 1
+        if len(parts[index]) >= limits[min(index, 2)]:
+            if index >= 2:
+                return buffer          # το έτος γέμισε — αγνοούμε ό,τι περισσεύει
+            parts.append(char)
+        else:
+            parts[index] += char
+            # Αυτόματη κάθετος: μόλις γεμίσει η ημέρα ή ο μήνας.
+            if len(parts[index]) == limits[index] and index < 2:
+                parts.append("")
+    elif char in "/.-":
+        if not parts[-1] or len(parts) >= 3:
+            return buffer              # ούτε διπλή κάθετος, ούτε τέταρτο μέρος
+        parts.append("")
+    else:
+        return buffer
+    return "/".join(parts)
+
+
+def parse_typed_date(text: str, today: QDate | None = None) -> QDate | None:
+    """Ό,τι πρόλαβε να γράψει ο χρήστης → ημερομηνία.
+
+    Δέχεται και μισοτελειωμένα: «12/10» = φέτος, «1210» το ίδιο, «12102026»
+    χωρίς καθόλου καθέτους. Το κενό έτος συμπληρώνεται από το τρέχον.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    parsed = parse_gr_date(raw)
+    if parsed is not None:
+        return parsed
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 8:
+        return parse_gr_date(f"{digits[:2]}/{digits[2:4]}/{digits[4:]}")
+    if len(digits) == 6:
+        return parse_gr_date(f"{digits[:2]}/{digits[2:4]}/{digits[4:]}")
+    now = today or QDate.currentDate()
+    parts = [p for p in re.split(r"[/.\-\s]+", raw) if p]
+    if len(parts) == 2 and all(p.isdigit() for p in parts):
+        return parse_gr_date(f"{parts[0]}/{parts[1]}/{now.year()}")
+    if len(digits) == 4 and len(parts) == 1:
+        return parse_gr_date(f"{digits[:2]}/{digits[2:]}/{now.year()}")
+    return None
+
+
 class GrDateEdit(QDateEdit):
     """Ημερομηνία με ημερολόγιο και ελληνική μορφή ηη/μμ/εεεε.
 
@@ -226,6 +288,13 @@ class GrDateEdit(QDateEdit):
         # από το πεδίο άλλαζε σιωπηλά την ημερομηνία — το κλασικό «η ημερομηνία
         # αλλάζει μόνη της» που έκανε το datepicker να μοιάζει ασταθές.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        #: Ό,τι πληκτρολογεί ο χρήστης αυτή τη στιγμή (μισοτελειωμένο).
+        self._typed = ""
+        # Το ημερολόγιο δίνει ημερομηνία κατευθείαν: ό,τι μισογραμμένο υπήρχε
+        # δεν ισχύει πια, αλλιώς θα το «επανέφερε» το επόμενο focus-out.
+        calendar = self.calendarWidget()
+        if calendar is not None:
+            calendar.clicked.connect(lambda _d: setattr(self, "_typed", ""))
 
     def wheelEvent(self, event) -> None:  # noqa: N802 (Qt API)
         if not self.hasFocus():
@@ -258,6 +327,46 @@ class GrDateEdit(QDateEdit):
             return parsed.toString("dd/MM/yyyy")
         return super().fixup(text)
 
+    # --- δική μας πληκτρολόγηση ----------------------------------------
+    # Το QDateEdit γράφει «ανά τμήμα»: ο κέρσορας πηδά, οι κάθετοι διπλασιάζονται
+    # («12/02//26») και η ημερομηνία που πληκτρολογήθηκε χάνεται σιωπηλά. Εδώ
+    # κρατάμε εμείς ό,τι γράφεται και το μορφοποιούμε μόνοι μας.
+    def focusInEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().focusInEvent(event)
+        self._typed = ""
+        self.lineEdit().selectAll()
+
+    def _show_typed(self) -> None:
+        """Δείχνει ΑΚΡΙΒΩΣ ό,τι γράφτηκε, χωρίς να το «διορθώσει» το Qt.
+
+        Τα σήματα του πεδίου μπλοκάρονται επίτηδες: αλλιώς το QDateEdit
+        «ερμηνεύει» κάθε μισοτελειωμένο κείμενο και ξαναγράφει από κάτω τη δική
+        του εκδοχή — έτσι το «1/1/2025» γινόταν 01/01/2020 στη μέση της λέξης.
+        Η πραγματική ημερομηνία μπαίνει μία φορά, στο `commit_typed`.
+        """
+        line = self.lineEdit()
+        line.blockSignals(True)
+        line.setText(self._typed)
+        line.setCursorPosition(len(self._typed))
+        line.blockSignals(False)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        key = event.key()
+        char = event.text()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.commit_typed()
+            super().keyPressEvent(event)
+            return
+        if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            self._typed = (self._typed or self.lineEdit().text())[:-1].rstrip("/")
+            self._show_typed()
+            return
+        if char and (char.isdigit() or char in "/.-"):
+            self._typed = type_date(self._typed, char)
+            self._show_typed()
+            return
+        super().keyPressEvent(event)
+
     def commit_typed(self) -> None:
         """Διαβάζει ό,τι έγραψε ο χρήστης και το κάνει ημερομηνία.
 
@@ -268,18 +377,18 @@ class GrDateEdit(QDateEdit):
         αγνοείται **χωρίς μήνυμα** και το πεδίο να δείχνει την παλιά. Οπότε το
         κάνουμε ρητά, εμείς, όταν φύγει ο κέρσορας ή πατηθεί Enter.
         """
-        parsed = parse_gr_date(self.lineEdit().text())
-        if parsed is not None and parsed != self.date():
-            self.setDate(parsed)
+        parsed = parse_typed_date(self._typed or self.lineEdit().text())
+        if parsed is not None:
+            # Μέσα στα όρια του πεδίου, αλλιώς το Qt την απορρίπτει σιωπηλά.
+            parsed = max(self.minimumDate(), min(self.maximumDate(), parsed))
+            if parsed != self.date():
+                self.setDate(parsed)
+        self._typed = ""
+        self.lineEdit().setText(self.date().toString("dd/MM/yyyy"))
 
     def focusOutEvent(self, event) -> None:  # noqa: N802 (Qt API)
         self.commit_typed()
         super().focusOutEvent(event)
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt API)
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.commit_typed()
-        super().keyPressEvent(event)
 
     def gr(self) -> str:
         return self.date().toString("dd/MM/yyyy")
