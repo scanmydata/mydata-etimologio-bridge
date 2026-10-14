@@ -200,6 +200,42 @@ class SortableItem(QTableWidgetItem):
             return str(mine) < str(theirs)
 
 
+class _ColFilterBridge:
+    """Τα φίλτρα της προβολής, όπως τα βλέπει το μενού δεξιού κλικ.
+
+    Η προβολή Παραστατικών κρατά **δικά της** φίλτρα (φιλτράρει τη λίστα πριν
+    γεμίσει ο πίνακας, όχι κρύβοντας γραμμές). Η γέφυρα δίνει στο κοινό μενού
+    την ίδια τέσσερις-μεθόδων όψη που έχει και ο `TableColumnFilter`.
+    """
+
+    def __init__(self, view: DocumentsView) -> None:
+        self._view = view
+
+    @property
+    def filters(self) -> dict[int, set[str]]:
+        return self._view._col_filters  # noqa: SLF001
+
+    def can_filter(self, col: int) -> bool:
+        return col in _FILTERABLE_COLS
+
+    def filter_by(self, col: int, value: str | None) -> None:
+        if not self.can_filter(col):
+            return
+        if value is None:
+            self.filters.pop(col, None)
+        else:
+            self.filters[col] = {value}
+        self._view._fill()  # noqa: SLF001
+
+    def has_filters(self) -> bool:
+        return any(self.filters.values())
+
+    def clear(self) -> None:
+        if self.filters:
+            self.filters.clear()
+            self._view._fill()  # noqa: SLF001
+
+
 class DocumentsView(QWidget):
     """Λίστα παραστατικών με φίλτρα, σύνολα, άνοιγμα αρχείου και εξαγωγή ZIP."""
 
@@ -927,26 +963,27 @@ class DocumentsView(QWidget):
             return None
 
     def _table_context_menu(self, pos) -> None:
-        """Δεξί κλικ σε παραστατικό: αντιγραφή/άνοιγμα του συνδέσμου παρόχου —
-        ώστε ο χρήστης να τον κάνει μόνος του inspect (χρήσιμο στα σφάλματα)."""
+        """Δεξί κλικ σε παραστατικό: ο σύνδεσμος του παρόχου, **και** οι
+        ενέργειες του κελιού (αντιγραφή τιμής, φίλτρο με αυτή την τιμή)."""
+        from .table_filter import cell_menu_actions
+
         index = self.table.indexAt(pos)
         if not index.isValid():
             return
+        menu = QMenu(self.table)
         mark = self._mark_at_row(index.row())
         row = self._row_by_mark(mark) if mark else None
-        if row is None:
-            return
-        url = row["downloading_invoice_url"] or ""
-        menu = QMenu(self.table)
-        act_copy = menu.addAction("Αντιγραφή συνδέσμου παρόχου")
-        act_open = menu.addAction("Άνοιγμα συνδέσμου στον browser")
-        act_copy.setEnabled(bool(url))
-        act_open.setEnabled(bool(url))
-        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen is act_copy and url:
-            QApplication.clipboard().setText(url)
-        elif chosen is act_open and url:
-            QDesktopServices.openUrl(QUrl(url))
+        url = (row["downloading_invoice_url"] or "") if row is not None else ""
+        if url:
+            menu.addAction("Αντιγραφή συνδέσμου παρόχου").triggered.connect(
+                lambda _=False, u=url: QApplication.clipboard().setText(u)
+            )
+            menu.addAction("Άνοιγμα συνδέσμου στον browser").triggered.connect(
+                lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u))
+            )
+        cell_menu_actions(menu, self.table, pos, _ColFilterBridge(self))
+        if menu.actions():
+            menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _on_double_click(self, index) -> None:
         """Διπλό κλικ: αν η γραμμή εκκρεμεί ή απέτυχε, κατεβάζει το παραστατικό

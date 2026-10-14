@@ -601,6 +601,17 @@ class SideMenu(QWidget):
             if selectable:
                 button.set_active(key == name)
 
+    def set_action_busy(self, name: str, busy: bool) -> None:
+        """Φωτίζει μια **ενέργεια** όσο τρέχει (π.χ. «Λήψη εκκρεμών»).
+
+        Το `set_active` αφορά μόνο σελίδες: μια ενέργεια που ξεκινά δουλειά
+        έμενε σβηστή, και από το μενού δεν φαινόταν ότι τρέχει κάτι — ούτε ποια
+        από τις δύο λήψεις.
+        """
+        button = self._buttons.get(name)
+        if button is not None:
+            button.set_active(busy)
+
     def set_enabled_action(self, name: str, enabled: bool) -> None:
         if name in self._buttons:
             self._buttons[name].setEnabled(enabled)

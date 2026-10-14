@@ -145,6 +145,9 @@ class OnlineOnlyDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        from .table_filter import install_cell_menu
+
+        install_cell_menu(self.table)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(_COL_PARTY, QHeaderView.ResizeMode.Stretch)
         for col in (_COL_STATUS, _COL_DATE, _COL_HOST, _COL_ERR):

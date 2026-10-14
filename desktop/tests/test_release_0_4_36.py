@@ -210,7 +210,7 @@ def test_the_backlog_dialog_lists_everyone_in_a_real_table(app, tmp_path: Path, 
 
     QTimer.singleShot(0, grab)
     try:
-        assert window._ask_backlog(rows, 2276) is False     # «Άκυρο» = δεν ξεκινά
+        assert window._ask_backlog(rows, 2276) is None      # «Άκυρο» = δεν ξεκινά
         assert shown["rows"] == 12                          # ΟΛΟΙ, όχι οι οκτώ πρώτοι
         assert shown["first"] == "ΠΕΛΑΤΗΣ 1" and shown["last"] == "ΠΕΛΑΤΗΣ 12"
         assert shown["scrolls"]

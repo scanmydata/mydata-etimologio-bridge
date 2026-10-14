@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from ...gui.documents_view import SortableItem
 from ...gui.icons import icon
-from ...gui.table_filter import TableColumnFilter
+from ...gui.table_filter import TableColumnFilter, install_cell_menu
 from ...gui.theme import CURRENT
 from ...gui.widgets import persist_header
 from .base import date_key, fmt_date, parse_money
@@ -253,6 +253,7 @@ def make_sortable(
     sorted_key = f"etimologio/{key}/sorted"
     table.setSortingEnabled(True)
     column_filter = TableColumnFilter(table, filter_columns) if filter_columns else None
+    install_cell_menu(table, column_filter)
     persist_header(table, prefs, f"etimologio/{key}")
     header = table.horizontalHeader()
     if not bool(prefs.value(sorted_key, False, type=bool)):

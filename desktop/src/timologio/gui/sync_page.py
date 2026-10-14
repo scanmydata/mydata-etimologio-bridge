@@ -278,8 +278,9 @@ class SyncPage(QWidget):
         self.table = QTableWidget(0, len(_COLS))
         self.table.setHorizontalHeaderLabels([c[0] for c in _COLS])
         # Γρήγορα φίλτρα στην κεφαλίδα (ΑΦΜ, Επωνυμία) — πριν το setup_columns.
-        from .table_filter import TableColumnFilter
+        from .table_filter import TableColumnFilter, install_cell_menu
         self._col_filter = TableColumnFilter(self.table, (1, 2))
+        install_cell_menu(self.table, self._col_filter)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

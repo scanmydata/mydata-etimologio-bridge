@@ -524,7 +524,9 @@ def pending_documents(
     return list(conn.execute("\n".join(sql), params))
 
 
-def pending_backlog(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def pending_backlog(
+    conn: sqlite3.Connection, vats: list[str] | None = None
+) -> list[sqlite3.Row]:
     """Πόσα PDF εκκρεμούν, ανά πελάτη — η ουρά που δεν κατέβηκε ποτέ.
 
     «Σε αναμονή» σημαίνει: το παραστατικό έχει σύνδεσμο παρόχου, αλλά το PDF
@@ -532,15 +534,18 @@ def pending_backlog(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     σιωπηλά: μια ακύρωση στη μέση, ένα κλείσιμο, ή «έξυπνη λήψη» που αφήνει απ'
     έξω τα χαρακτηρισμένα.
     """
-    return list(conn.execute(
-        """SELECT c.vat, c.label, COUNT(*) AS n
-             FROM documents d JOIN clients c ON c.id = d.client_id
-            WHERE d.downloading_invoice_url <> ''
-              AND (d.status='pending'
-                   OR (d.status='failed_retryable'
-                       AND (d.next_retry_at='' OR d.next_retry_at <= datetime('now'))))
-         GROUP BY c.id ORDER BY n DESC, c.label"""
-    ))
+    sql = """SELECT c.vat, c.label, COUNT(*) AS n
+               FROM documents d JOIN clients c ON c.id = d.client_id
+              WHERE d.downloading_invoice_url <> ''
+                AND (d.status='pending'
+                     OR (d.status='failed_retryable'
+                         AND (d.next_retry_at='' OR d.next_retry_at <= datetime('now'))))"""
+    params: list[object] = []
+    if vats:
+        sql += f" AND c.vat IN ({','.join('?' * len(vats))})"
+        params.extend(vats)
+    sql += " GROUP BY c.id ORDER BY n DESC, c.label"
+    return list(conn.execute(sql, params))
 
 
 def viewer_only_documents(

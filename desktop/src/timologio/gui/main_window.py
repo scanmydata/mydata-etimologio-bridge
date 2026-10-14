@@ -113,7 +113,7 @@ _COLUMN_SPEC: list[tuple[str, int, str]] = [
 #: Έκδοση περιεχομένου ξενάγησης. Αύξησέ το όταν προστίθεται ουσιαστικά νέο βήμα:
 #: όσοι έχουν ήδη δει παλιότερη ξενάγηση την ξαναβλέπουν μία φορά — αλλά πάνω στα
 #: **δικά τους** δεδομένα (χωρίς εικονικούς πελάτες, χωρίς σβήσιμο).
-TOUR_VERSION = 2
+TOUR_VERSION = 3
 
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
 _STATUS_READY = "Διαθέσιμος"
@@ -875,7 +875,7 @@ class MainWindow(QMainWindow):
         # Γρήγορα φίλτρα στην κεφαλίδα (ΑΦΜ, Επωνυμία, Κατάσταση), όπως στα
         # παραστατικά. Πρέπει να μπει ΠΡΙΝ το setup_columns (που ρυθμίζει την
         # κεφαλίδα), γι' αυτό κρατάμε αναφορά ώστε να μην τον μαζέψει ο GC.
-        from .table_filter import TableColumnFilter
+        from .table_filter import TableColumnFilter, cell_menu_actions, install_cell_menu
         self._client_col_filter = TableColumnFilter(
             self.table, (_COL_VAT, _COL_LABEL, _COL_STATUS)
         )
@@ -1249,8 +1249,25 @@ class MainWindow(QMainWindow):
 
         Το checkbox ορίζει ποιοι μπαίνουν στις μαζικές ενέργειες (λήψη/διαγραφή).
         Το διπλό κλικ είναι ο γρήγορος τρόπος να τον βάλει/βγάλει χωρίς να
-        σημαδέψει το μικρό κουτάκι."""
-        self._toggle_checked({index.row()})
+        σημαδέψει το μικρό κουτάκι.
+
+        Δεύτερο διπλό κλικ στον **ίδιο** πελάτη σημαίνει «πάρ' τον από πάνω
+        μου»: έφευγε μόνο το τικ, αλλά η γραμμή έμενε φωτισμένη και πάνω δεξιά
+        συνέχιζε να γράφει «Ενεργός πελάτης», οπότε η επόμενη ενέργεια αφορούσε
+        ακόμη αυτόν.
+        """
+        row = index.row()
+        item = self.table.item(row, _COL_CHECK)
+        was_checked = item is not None and item.checkState() is Qt.CheckState.Checked
+        self._toggle_checked({row})
+        if not was_checked:
+            return
+        vat_item = self.table.item(row, _COL_VAT)
+        vat = vat_item.text() if vat_item is not None else ""
+        self.table.clearSelection()
+        if self._pinned_vat == vat:
+            self._set_pinned(None)
+        self._on_selection(animate=False)
 
     def _toggle_checked(self, rows: set[int]) -> None:
         self.table.blockSignals(True)
@@ -1845,6 +1862,8 @@ class MainWindow(QMainWindow):
             )
             bulk.triggered.connect(lambda: self.on_delete_clients(checked))
             menu.addAction(bulk)
+        # Και οι ενέργειες ΤΟΥ ΚΕΛΙΟΥ: αντιγραφή της τιμής, φίλτρο με αυτή.
+        cell_menu_actions(menu, self.table, point, self._client_col_filter)
         menu.exec(self.table.viewport().mapToGlobal(point))
 
     def on_edit_client(self, vat: str) -> None:
@@ -2214,14 +2233,24 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if not self._ask_backlog(rows, total):
+        # Όσοι είναι ήδη επιλεγμένοι (τικ ή φωτισμένη γραμμή) μπορούν να
+        # κατέβουν ΜΟΝΟΙ ΤΟΥΣ: με 2.000 εκκρεμή σε 23 πελάτες, το «όλοι» είναι
+        # ώρες — ενώ ο λογιστής συνήθως θέλει τον πελάτη που δουλεύει τώρα.
+        picked = sorted(self._checked) or self._online_only_vats() or []
+        picked_rows = [r for r in rows if str(r["vat"]) in set(picked)]
+        chosen = self._ask_backlog(rows, total, picked_rows)
+        if chosen is None:
             return
-
+        rows = chosen
         vats = [str(row["vat"]) for row in rows]
         create_backup(self.settings.db_path, reason="backlog")
         self._set_running(True, len(vats))
         self._show_page("sync")
-        self._log(f"── Λήψη {total} εκκρεμών PDF για {len(vats)} πελάτες")
+        self._log(
+            f"── Λήψη {sum(int(r['n']) for r in rows)} εκκρεμών PDF "
+            f"για {len(vats)} πελάτες"
+        )
+        self.menu.set_action_busy("pending_pdf", True)
 
         self._thread = QThread(self)
         self._worker = SyncWorker(vats, "", "", False, backlog_only=True)
@@ -2236,13 +2265,18 @@ class MainWindow(QMainWindow):
         self._worker.busy.connect(self._on_busy)
         self._thread.start()
 
-    def _ask_backlog(self, rows, total: int) -> bool:
+    def _ask_backlog(self, rows, total: int, picked_rows=None):
         """Η λίστα των πελατών με εκκρεμότητες, σε κανονικό πίνακα που κυλά.
+
+        Επιστρέφει τις γραμμές που θα κατέβουν, ή ``None`` αν ο χρήστης ακύρωσε.
 
         Παλιά ήταν κείμενο μέσα σε `<pre>`: γραμματοσειρά μηχανής γραφής που δεν
         ταίριαζε πουθενά αλλού, κομμένη στους οκτώ πρώτους και με ένα «… και
-        άλλοι 15 πελάτες» που δεν έλεγε ποιοι.
+        άλλοι 15 πελάτες» που δεν έλεγε ποιοι. Και ήταν «όλοι ή τίποτα».
         """
+        picked_rows = list(picked_rows or [])
+        picked_total = sum(int(r["n"]) for r in picked_rows)
+
         box = QDialog(self)
         box.setWindowTitle("Λήψη εκκρεμών")
         layout = QVBoxLayout(box)
@@ -2255,6 +2289,17 @@ class MainWindow(QMainWindow):
         )
         head.setWordWrap(True)
         layout.addWidget(head)
+
+        only_picked = QCheckBox(
+            f"Μόνο οι επιλεγμένοι πελάτες ({len(picked_rows)}) — "
+            f"{picked_total} PDF"
+        )
+        only_picked.setToolTip(
+            "Κατεβάζει τα εκκρεμή μόνο για όσους έχεις επιλέξει στους Πελάτες"
+        )
+        only_picked.setChecked(bool(picked_rows))
+        only_picked.setVisible(bool(picked_rows))
+        layout.addWidget(only_picked)
 
         table = QTableWidget(len(rows), 2)
         table.setObjectName("backlogTable")
@@ -2294,8 +2339,25 @@ class MainWindow(QMainWindow):
         buttons.rejected.connect(box.reject)
         layout.addWidget(buttons)
 
-        box.resize(560, 420)
-        return box.exec() == QDialog.DialogCode.Accepted
+        def repaint_rows() -> None:
+            """Ο πίνακας δείχνει ΤΙ θα κατέβει: τονίζει ή σβήνει τους υπόλοιπους."""
+            wanted = {str(r["vat"]) for r in (picked_rows if only_picked.isChecked() else rows)}
+            for i, row in enumerate(rows):
+                dim = str(row["vat"]) not in wanted
+                for col in (0, 1):
+                    cell = table.item(i, col)
+                    if cell is not None:
+                        cell.setForeground(
+                            QColor(CURRENT.line if dim else CURRENT.txt)
+                        )
+
+        only_picked.toggled.connect(lambda _on: repaint_rows())
+        repaint_rows()
+
+        box.resize(560, 440)
+        if box.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return picked_rows if only_picked.isChecked() else rows
 
     def on_cancel(self) -> None:
         if self._worker:
@@ -2428,6 +2490,7 @@ class MainWindow(QMainWindow):
         self._hl_dialog.setAutoClose(False)
         self._hl_dialog.setValue(0)
 
+        self.menu.set_action_busy("online_pdf", True)
         self._hl_thread = QThread(self)
         if headed:
             # Ορατό πέρασμα με μόνιμο προφίλ: ο χρήστης περνά ο ίδιος τυχόν έλεγχο
@@ -2507,6 +2570,7 @@ class MainWindow(QMainWindow):
         self._log(text)
 
     def _teardown_headless(self) -> None:
+        self.menu.set_action_busy("online_pdf", False)
         if getattr(self, "_hl_thread", None) is not None:
             self._hl_thread.quit()
             self._hl_thread.wait(5000)
@@ -2599,8 +2663,12 @@ class MainWindow(QMainWindow):
                 "η επιλογή σας και για τη λήψη και για μαζικές ενέργειες.\n\n"
                 "Για να σβήσετε πολλούς μαζί: τσεκάρετέ τους και πατήστε "
                 "Delete, ή δεξί κλικ → «Διαγραφή N επιλεγμένων πελατών».\n\n"
-                "Διπλό κλικ σε πελάτη τον (απο)επιλέγει γρήγορα. Με δεξί κλικ: "
-                "επεξεργασία, εκκαθάριση ή διαγραφή.",
+                "Διπλό κλικ σε πελάτη τον επιλέγει· δεύτερο διπλό κλικ στον "
+                "ίδιο τον αφήνει εντελώς — φεύγει και το τικ και ο «ενεργός "
+                "πελάτης» πάνω δεξιά. Το ίδιο κάνει το «Αποεπιλογή όλων».\n\n"
+                "Με δεξί κλικ: επεξεργασία, εκκαθάριση ή διαγραφή — και οι "
+                "ενέργειες του κελιού (αντιγραφή τιμής ή γραμμής, φίλτρο με "
+                "αυτή την τιμή).",
                 lambda: self.table,
                 lambda: self._show_page("clients"),
             ),
@@ -2612,7 +2680,11 @@ class MainWindow(QMainWindow):
                 "• Κλικ στην επικεφαλίδα ταξινομεί.\n"
                 "• Περνώντας πάνω από μια επικεφαλίδα (ΑΦΜ, επωνυμία, "
                 "κατάσταση…) εμφανίζεται ένα χωνί: πατήστε το για γρήγορο "
-                "φίλτρο με λίστα τιμών — όπως στο Excel.\n\n"
+                "φίλτρο με λίστα τιμών — όπως στο Excel.\n"
+                "• Δεξί κλικ σε κελί: αντιγραφή της τιμής ή ολόκληρης της "
+                "γραμμής (επικολλάται σε Excel) και «Φίλτρο: στήλη = τιμή».\n\n"
+                "Στα πεδία ημερομηνίας γράφετε ελεύθερα: 12102026, 12/10/26, "
+                "1/2/26 ή 12/10 — οι κάθετοι μπαίνουν μόνες τους.\n\n"
                 "Ό,τι ρυθμίσετε αποθηκεύεται και σας περιμένει την επόμενη φορά. "
                 "Η στήλη της επωνυμίας γεμίζει μόνη της τον χώρο που περισσεύει, "
                 "μέχρι να της δώσετε εσείς πλάτος.",
@@ -2671,6 +2743,19 @@ class MainWindow(QMainWindow):
                 lambda: self.menu.button("documents"),
             ),
             Step(
+                "6β. Ό,τι δεν κατέβηκε με τη μία",
+                "Δύο ενέργειες στο μενού ΔΕΔΟΜΕΝΑ, για ό,τι μένει πίσω:\n\n"
+                "• «Λήψη εκκρεμών»: παραστατικά που βρέθηκαν αλλά δεν πρόλαβαν "
+                "να κατέβουν (ακύρωση στη μέση, κλείσιμο, ή «Έξυπνη λήψη» που "
+                "αφήνει απ' έξω τα χαρακτηρισμένα). Ζητά τα αρχεία μόνο από τους "
+                "παρόχους — καμία νέα κλήση στην ΑΑΔΕ — για όλους ή μόνο για "
+                "τους επιλεγμένους πελάτες.\n\n"
+                "• «Λήψη μόνο-online»: για παρόχους που δείχνουν το παραστατικό "
+                "σε σελίδα αντί για αρχείο PDF. Όσο τρέχει μία από τις δύο, η "
+                "γραμμή της στο μενού μένει φωτισμένη.",
+                lambda: self.menu.button("pending_pdf"),
+            ),
+            Step(
                 "7. Πίνακας ελέγχου",
                 "ΣΥΣΤΗΜΑ → «Πίνακας ελέγχου»: δείχνει τον ρόλο του υπολογιστή, "
                 "τον φάκελο δεδομένων, το μέγεθος της βάσης και ποιος κατεβάζει "
@@ -2679,7 +2764,10 @@ class MainWindow(QMainWindow):
                 "ίδια βάση (πράσινο = ενεργός τώρα). Το «Έλεγχος σύνδεσης» "
                 "επιβεβαιώνει φάκελο, δικαιώματα και βάση, και λέει τι φταίει.\n\n"
                 "Το «Δοκιμή browser» ανοίγει αόρατα τον Edge/Chrome και ελέγχει "
-                "ότι η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά σας.",
+                "ότι η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά σας.\n\n"
+                "Εδώ είναι και οι δύο διακόπτες της εκκίνησης: «Εκκίνηση στο "
+                "tray» και «Αυτόματη εκκίνηση με τα Windows» — ο πρώτος ανάβει "
+                "και τον δεύτερο, γιατί χωρίς αυτόν δεν ξεκινά τίποτα μόνο του.",
                 lambda: self.menu.button("control"),
                 lambda: self._show_page("control"),
             ),
@@ -3147,6 +3235,7 @@ class MainWindow(QMainWindow):
             self._thread.wait(5000)
         self._thread = None
         self._worker = None
+        self.menu.set_action_busy("pending_pdf", False)
         self._set_running(False, 0)
 
     def _set_running(self, running: bool, total: int) -> None:

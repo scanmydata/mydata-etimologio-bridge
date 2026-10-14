@@ -230,6 +230,79 @@ def open_filter_popup(header: FilterHeader, col: int, title, values, selected,
     QTimer.singleShot(0, popup.show)
 
 
+def cell_menu_actions(menu, table: QTableWidget, pos, column_filter=None) -> None:
+    """Προσθέτει στο μενού δεξιού κλικ τις ενέργειες ΤΟΥ ΚΕΛΙΟΥ.
+
+    Δύο πράγματα που ο χρήστης τα δοκιμάζει ενστικτωδώς και δεν υπήρχαν:
+    **αντιγραφή** της τιμής (ένα ΑΦΜ, ένα ΜΑΡΚ, μια επωνυμία — για να πάει
+    αλλού) και **φίλτρο με αυτή την τιμή** (δείξε μου μόνο αυτά). Το φίλτρο
+    υπήρχε μόνο μέσα από το χωνί της κεφαλίδας, που πρέπει πρώτα να το βρεις.
+
+    Μπαίνει ως **προσθήκη** σε όποιο μενού έχει ήδη ο πίνακας: οι δικές του
+    ενέργειες (άνοιγμα, διαγραφή…) μένουν στην κορυφή, όπου τις ξέρει ο χρήστης.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    item = table.itemAt(pos)
+    if item is None:
+        return
+    row, col = item.row(), item.column()
+    value = (item.text() or "").strip()
+    if menu.actions():
+        menu.addSeparator()
+
+    def copy(text: str) -> None:
+        QGuiApplication.clipboard().setText(text)
+
+    if value:
+        short = value if len(value) <= 38 else value[:36] + "…"
+        act = menu.addAction(f"Αντιγραφή «{short}»")
+        act.setToolTip("Αντιγράφει το περιεχόμενο του κελιού")
+        act.triggered.connect(lambda _=False, v=value: copy(v))
+
+    cells = [
+        (table.item(row, c).text() or "").strip() if table.item(row, c) else ""
+        for c in range(table.columnCount())
+    ]
+    line = "\t".join(c for c in cells if c)
+    if line:
+        act = menu.addAction("Αντιγραφή ολόκληρης της γραμμής")
+        act.setToolTip("Οι τιμές χωρισμένες με tab — επικολλώνται σε Excel")
+        act.triggered.connect(lambda _=False, v=line: copy(v))
+
+    if column_filter is None:
+        return
+    header = table.horizontalHeaderItem(col)
+    name = (header.text() if header else "") or "στήλη"
+    if column_filter.can_filter(col) and value:
+        act = menu.addAction(f"Φίλτρο: {name} = «{value}»")
+        act.setToolTip("Δείχνει μόνο τις γραμμές με αυτή την τιμή")
+        act.triggered.connect(
+            lambda _=False, c=col, v=value: column_filter.filter_by(c, v)
+        )
+    if column_filter.filters.get(col):
+        act = menu.addAction(f"Καθάρισμα φίλτρου «{name}»")
+        act.triggered.connect(lambda _=False, c=col: column_filter.filter_by(c, None))
+    if column_filter.has_filters():
+        menu.addAction("Καθάρισμα όλων των φίλτρων").triggered.connect(
+            column_filter.clear
+        )
+
+
+def install_cell_menu(table: QTableWidget, column_filter=None) -> None:
+    """Δεξί κλικ σε πίνακα **χωρίς** δικό του μενού: αντιγραφή και φίλτρο."""
+    from PySide6.QtWidgets import QMenu
+
+    def show(pos) -> None:
+        menu = QMenu(table)
+        cell_menu_actions(menu, table, pos, column_filter)
+        if menu.actions():
+            menu.exec(table.viewport().mapToGlobal(pos))
+
+    table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    table.customContextMenuRequested.connect(show)
+
+
 class TableColumnFilter(QObject):
     """Γρήγορο φίλτρο στηλών για οποιονδήποτε ``QTableWidget``.
 
@@ -278,6 +351,25 @@ class TableColumnFilter(QObject):
             self.filtersChanged.emit()
 
         open_filter_popup(self._header, col, title or "Στήλη", values, selected, apply)
+
+    def can_filter(self, col: int) -> bool:
+        """Δέχεται φίλτρο αυτή η στήλη; (οι «στήλες-κουμπιά» δεν δέχονται)"""
+        return col in self._header._filterable  # noqa: SLF001
+
+    def filter_by(self, col: int, value: str | None) -> None:
+        """Φίλτρο με **μία** τιμή — ή καθάρισμα της στήλης με ``None``.
+
+        Η διαδρομή του δεξιού κλικ: ο χρήστης βλέπει μια τιμή και θέλει «μόνο
+        αυτά», χωρίς να ανοίξει λίστα και να ξετσεκάρει τα υπόλοιπα.
+        """
+        if not self.can_filter(col):
+            return
+        if value is None:
+            self.filters.pop(col, None)
+        else:
+            self.filters[col] = {value}
+        self.apply()
+        self.filtersChanged.emit()
 
     def clear(self) -> None:
         """Καθαρίζει όλα τα φίλτρα στήλης και ξαναδείχνει τις γραμμές."""
