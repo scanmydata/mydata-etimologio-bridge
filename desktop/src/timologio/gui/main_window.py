@@ -89,6 +89,10 @@ from .side_menu import SideMenu
 from .sync_page import SyncPage
 from .theme import CURRENT, apply_theme, money, paint_title_bar
 from .tour import Step, Tour
+# Στο επίπεδο του αρχείου, ΟΧΙ μέσα στη συνάρτηση που στήνει τον πίνακα: το
+# μενού δεξιού κλικ ζει σε άλλη μέθοδο, και ένα τοπικό import άφηνε εκεί
+# NameError — που έριχνε ΟΛΟΚΛΗΡΟ το μενού, όχι μόνο τις νέες ενέργειες.
+from .table_filter import cell_menu_actions
 from .tray import Tray
 from . import unlock, updater
 from .widgets import resort, setup_columns
@@ -875,7 +879,7 @@ class MainWindow(QMainWindow):
         # Γρήγορα φίλτρα στην κεφαλίδα (ΑΦΜ, Επωνυμία, Κατάσταση), όπως στα
         # παραστατικά. Πρέπει να μπει ΠΡΙΝ το setup_columns (που ρυθμίζει την
         # κεφαλίδα), γι' αυτό κρατάμε αναφορά ώστε να μην τον μαζέψει ο GC.
-        from .table_filter import TableColumnFilter, cell_menu_actions, install_cell_menu
+        from .table_filter import TableColumnFilter
         self._client_col_filter = TableColumnFilter(
             self.table, (_COL_VAT, _COL_LABEL, _COL_STATUS)
         )
@@ -2223,9 +2227,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Φωτίζεται ΜΕ ΤΟ ΠΑΤΗΜΑ, όχι όταν ξεκινήσει η λήψη: ο χρήστης θέλει να
+        # βλέπει πού βρίσκεται όσο διαβάζει τον διάλογο. Σβήνει σε κάθε έξοδο
+        # που δεν καταλήγει σε λήψη.
+        self.menu.set_action_busy("pending_pdf", True)
         rows = repo.pending_backlog(self.conn)
         total = sum(int(row["n"]) for row in rows)
         if not total:
+            self.menu.set_action_busy("pending_pdf", False)
             QMessageBox.information(
                 self, "Λήψη εκκρεμών",
                 "Δεν εκκρεμεί κανένα PDF — όλα τα παραστατικά με σύνδεσμο "
@@ -2238,8 +2247,9 @@ class MainWindow(QMainWindow):
         # ώρες — ενώ ο λογιστής συνήθως θέλει τον πελάτη που δουλεύει τώρα.
         picked = sorted(self._checked) or self._online_only_vats() or []
         picked_rows = [r for r in rows if str(r["vat"]) in set(picked)]
-        chosen = self._ask_backlog(rows, total, picked_rows)
+        chosen = self._ask_backlog(rows, total, picked_rows, picked)
         if chosen is None:
+            self.menu.set_action_busy("pending_pdf", False)
             return
         rows = chosen
         vats = [str(row["vat"]) for row in rows]
@@ -2265,7 +2275,7 @@ class MainWindow(QMainWindow):
         self._worker.busy.connect(self._on_busy)
         self._thread.start()
 
-    def _ask_backlog(self, rows, total: int, picked_rows=None):
+    def _ask_backlog(self, rows, total: int, picked_rows=None, picked_vats=None):
         """Η λίστα των πελατών με εκκρεμότητες, σε κανονικό πίνακα που κυλά.
 
         Επιστρέφει τις γραμμές που θα κατέβουν, ή ``None`` αν ο χρήστης ακύρωσε.
@@ -2290,15 +2300,22 @@ class MainWindow(QMainWindow):
         head.setWordWrap(True)
         layout.addWidget(head)
 
+        # Το κουτάκι φαίνεται όποτε ΥΠΑΡΧΕΙ επιλογή — ακόμη κι όταν οι
+        # επιλεγμένοι δεν έχουν εκκρεμή. Κρυμμένο, έμοιαζε σαν να μην υπάρχει
+        # καθόλου η δυνατότητα, και ο χρήστης κατέβαζε όλη την ουρά.
+        chosen_count = len(picked_vats if picked_vats is not None else picked_rows)
         only_picked = QCheckBox(
-            f"Μόνο οι επιλεγμένοι πελάτες ({len(picked_rows)}) — "
-            f"{picked_total} PDF"
+            f"Μόνο οι επιλεγμένοι πελάτες ({chosen_count}) — {picked_total} PDF"
+            if picked_rows else
+            f"Οι επιλεγμένοι πελάτες ({chosen_count}) δεν έχουν εκκρεμή PDF"
         )
         only_picked.setToolTip(
-            "Κατεβάζει τα εκκρεμή μόνο για όσους έχεις επιλέξει στους Πελάτες"
+            "Κατεβάζει τα εκκρεμή μόνο για όσους έχεις επιλέξει (τικ ή "
+            "φωτισμένη γραμμή) στους Πελάτες"
         )
         only_picked.setChecked(bool(picked_rows))
-        only_picked.setVisible(bool(picked_rows))
+        only_picked.setEnabled(bool(picked_rows))
+        only_picked.setVisible(bool(chosen_count))
         layout.addWidget(only_picked)
 
         table = QTableWidget(len(rows), 2)
@@ -2372,7 +2389,12 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- λήψη «μόνο online»
     def on_download_viewer_only(self) -> None:
         """Κατεβάζει με headless browser όσα παραστατικά ο πάροχος δείχνει
-        μόνο online (SPA προβολές που δεν δίνουν PDF στο downloadingInvoiceUrl)."""
+        μόνο online (SPA προβολές που δεν δίνουν PDF στο downloadingInvoiceUrl).
+
+        Η γραμμή του μενού φωτίζεται με το πάτημα και σβήνει σε κάθε έξοδο που
+        δεν καταλήγει σε λήψη — ο χρήστης βλέπει πού βρίσκεται.
+        """
+        self.menu.set_action_busy("online_pdf", True)
         # Αυτο-επούλωση: αν έμεινε αναφορά σε παλιό thread που έχει ήδη τελειώσει
         # (π.χ. μετά από ακύρωση), την καθαρίζουμε ώστε η επανεκκίνηση να δουλέψει
         # αντί να κολλήσει σε ψεύτικο «εκτελείται ήδη».
@@ -2385,6 +2407,10 @@ class MainWindow(QMainWindow):
                 self, "Εκτελείται ήδη",
                 "Περιμένετε να ολοκληρωθεί η τρέχουσα εργασία.",
             )
+            # Αν τρέχει ΑΥΤΗ η λήψη, η γραμμή της μένει φωτισμένη — αλλιώς θα
+            # έσβηνε ακριβώς τη στιγμή που ο χρήστης ρωτά «τι τρέχει;».
+            if hl is None:
+                self.menu.set_action_busy("online_pdf", False)
             return
 
         # Οι μόνο-online ενέργειες αφορούν τον επιλεγμένο (ενεργό) πελάτη.
@@ -2410,6 +2436,7 @@ class MainWindow(QMainWindow):
                 "Αυτά εμφανίζονται όταν ένας πάροχος δείχνει το παραστατικό μόνο "
                 "στη σελίδα του, χωρίς αρχείο PDF.",
             )
+            self.menu.set_action_busy("online_pdf", False)
             return
 
         # Δύο δρόμοι: (α) μέσω του browser του χρήστη — δουλεύει και για
@@ -2450,6 +2477,7 @@ class MainWindow(QMainWindow):
             self._open_online_only_browser(vats)
             return
         if clicked not in (btn_auto, btn_auto_headed):
+            self.menu.set_action_busy("online_pdf", False)
             return
 
         from ..download import headless
@@ -2463,6 +2491,7 @@ class MainWindow(QMainWindow):
                 "10/11· αν λείπει, εγκαταστήστε τον Edge ή τον Chrome — ή "
                 "χρησιμοποιήστε την επιλογή «Μέσω του browser μου».",
             )
+            self.menu.set_action_busy("online_pdf", False)
             return
 
         self._start_headless_worker(vats, n, headed=clicked == btn_auto_headed)
@@ -2551,9 +2580,12 @@ class MainWindow(QMainWindow):
 
         rows = repo.viewer_only_documents(self.conn, vats)
         if not rows:
+            self.menu.set_action_busy("online_pdf", False)
             return
         dialog = OnlineOnlyDialog(self.conn, self.settings, rows, self)
         dialog.exec()
+        # Η καθοδηγούμενη λήψη τελείωσε μαζί με το παράθυρο.
+        self.menu.set_action_busy("online_pdf", False)
         if dialog.changed:
             self.reload_clients()
             self._on_selection()

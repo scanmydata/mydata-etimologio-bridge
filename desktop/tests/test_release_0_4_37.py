@@ -166,7 +166,10 @@ def test_the_dialog_offers_the_selected_clients():
     src = (SRC / "gui" / "main_window.py").read_text(encoding="utf-8")
     fn = src[src.index("def _ask_backlog"):src.index("def on_cancel")]
     assert "Μόνο οι επιλεγμένοι πελάτες" in fn
-    assert "only_picked.setVisible(bool(picked_rows))" in fn
+    # Ορατό όποτε ΥΠΑΡΧΕΙ επιλογή — ακόμη κι αν οι επιλεγμένοι δεν έχουν ουρά
+    # (δες 0.4.38: κρυμμένο κουτάκι έμοιαζε με «δεν υπάρχει η δυνατότητα»).
+    assert "only_picked.setVisible(bool(chosen_count))" in fn
+    assert "only_picked.setEnabled(bool(picked_rows))" in fn
     assert "return picked_rows if only_picked.isChecked() else rows" in fn
     handler = src[src.index("def on_download_backlog"):src.index("def _ask_backlog")]
     assert "picked = sorted(self._checked) or self._online_only_vats() or []" in handler
