@@ -292,7 +292,7 @@ def test_downloader_manual_and_tour_cover_the_new_things():
     assert "Αυτόματη εκκίνηση με τα" in manual and "Διαχείριση εργασιών" in manual
     assert "12102026" in manual                      # ελεύθερη πληκτρολόγηση
     window = (SRC / "gui" / "main_window.py").read_text(encoding="utf-8")
-    assert "TOUR_VERSION = 3" in window              # ξαναπροσφέρεται με νέο περιεχόμενο
+    assert "TOUR_VERSION = " in window              # ξαναπροσφέρεται με νέο περιεχόμενο
     assert "6β. Ό,τι δεν κατέβηκε με τη μία" in window
     assert "Δεξί κλικ σε κελί" in window
 

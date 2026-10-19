@@ -225,12 +225,17 @@ def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> 
             client_id, mark, direction, invoice_type, issuer_vat, issuer_name,
             counter_vat, counter_name, series, aa, issue_date,
             net_value, vat_amount, total_value,
+            withheld_amount, deductions_amount, amounts_v,
             downloading_invoice_url, provider_host, status)
         VALUES(:client_id, :mark, :direction, :invoice_type, :issuer_vat, :issuer_name,
                :counter_vat, :counter_name, :series, :aa, :issue_date,
                :net_value, :vat_amount, :total_value,
+               :withheld, :deductions, 1,
                :url, :host, :status)
         ON CONFLICT(client_id, mark) DO UPDATE SET
+          withheld_amount = excluded.withheld_amount,
+          deductions_amount = excluded.deductions_amount,
+          amounts_v = 1,
           direction = CASE WHEN documents.direction <> excluded.direction
                            THEN 'both' ELSE documents.direction END,
           downloading_invoice_url = CASE WHEN excluded.downloading_invoice_url <> ''
@@ -257,6 +262,8 @@ def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> 
             "net_value": doc.net_value,
             "vat_amount": doc.vat_amount,
             "total_value": doc.total_value,
+            "withheld": doc.withheld_amount,
+            "deductions": doc.deductions_amount,
             "url": doc.downloading_invoice_url,
             "host": doc.provider_host,
             "status": status.value,
@@ -498,9 +505,10 @@ def pending_documents(
     """Ό,τι αξίζει προσπάθεια τώρα: νέα + retryable που ωρίμασαν.
 
     Με ``unclassified_expenses_only`` (έξυπνη λήψη) περιορίζεται σε **αχαρακτήριστα
-    έξοδα** (εκδότης ≠ ο πελάτης, classification='unclassified') μέσα στο διάστημα
-    ``[date_from_iso, date_to_iso]`` — έτσι κατεβαίνουν μόνο τα PDF που χρειάζεται
-    ο λογιστής για να χαρακτηρίσει, και η λήψη τρέχει πολύ πιο γρήγορα.
+    έξοδα** (εκδότης ≠ ο πελάτης, classification='unclassified') — έτσι κατεβαίνουν
+    μόνο τα PDF που χρειάζεται ο λογιστής για να χαρακτηρίσει.
+
+    Το διάστημα ``[date_from_iso, date_to_iso]`` περιορίζει ΚΑΘΕ λήψη, όταν δοθεί.
     """
     sql = [
         """SELECT * FROM documents
@@ -514,12 +522,14 @@ def pending_documents(
         # Έξοδο = ο εκδότης είναι κάποιος άλλος, όχι ο πελάτης.
         sql.append("AND classification='unclassified' AND issuer_vat <> ?")
         params.append(client_vat)
-        if date_from_iso:
-            sql.append("AND issue_date >= ?")
-            params.append(date_from_iso)
-        if date_to_iso:
-            sql.append("AND issue_date <= ?")
-            params.append(date_to_iso)
+    # Το διάστημα ισχύει πάντα, όχι μόνο στην έξυπνη λήψη: τα στοιχεία
+    # κατεβαίνουν για όλη τη χρήση, αλλά PDF μόνο για όσα ζήτησε ο χρήστης.
+    if date_from_iso:
+        sql.append("AND issue_date >= ?")
+        params.append(date_from_iso)
+    if date_to_iso:
+        sql.append("AND issue_date <= ?")
+        params.append(date_to_iso)
     sql.append("ORDER BY issue_date, mark")
     return list(conn.execute("\n".join(sql), params))
 
@@ -600,3 +610,58 @@ def log_event(
            VALUES(?,?,?,?,?,?)""",
         (run_id, client_vat, mark, level, event, detail[:1000]),
     )
+
+
+def needs_amount_refresh(
+    conn: sqlite3.Connection, client_id: int, direction: Direction,
+    date_from_iso: str, date_to_iso: str,
+) -> bool:
+    """Υπάρχουν παραστατικά του διαστήματος χωρίς παρακρατήσεις/κρατήσεις;
+
+    Γράφτηκαν από έκδοση που δεν τις διάβαζε. Ο cursor δεν θα τα ξαναέφερνε
+    ποτέ (έχουν MARK μικρότερο), οπότε η λήψη πρέπει να ξεκινήσει από την αρχή.
+    """
+    row = conn.execute(
+        """SELECT 1 FROM documents
+            WHERE client_id=? AND amounts_v=0 AND direction IN (?, 'both')
+              AND issue_date >= ? AND issue_date <= ? LIMIT 1""",
+        (client_id, direction.value, date_from_iso, date_to_iso),
+    ).fetchone()
+    return row is not None
+
+
+def withheld_unclassified(
+    conn: sqlite3.Connection, vats: list[str], date_from_iso: str, date_to_iso: str,
+) -> list[sqlite3.Row]:
+    """Αχαρακτήριστα παραστατικά με παρακρατούμενο φόρο, ανά πελάτη.
+
+    Είναι η εκκρεμότητα που κοστίζει: ο φόρος έχει παρακρατηθεί και πρέπει να
+    αποδοθεί, αλλά όσο το παραστατικό μένει αχαρακτήριστο δεν φαίνεται πουθενά.
+    """
+    if not vats:
+        return []
+    marks = ",".join("?" * len(vats))
+    return list(conn.execute(
+        f"""SELECT c.vat, c.label, COUNT(*) AS n,
+                   COALESCE(SUM(d.withheld_amount), 0) AS amount
+              FROM documents d JOIN clients c ON c.id = d.client_id
+             WHERE c.vat IN ({marks})
+               AND d.classification = 'unclassified'
+               AND d.withheld_amount > 0
+               AND d.issue_date >= ? AND d.issue_date <= ?
+             GROUP BY c.id ORDER BY n DESC, c.label""",
+        [*vats, date_from_iso, date_to_iso],
+    ))
+
+
+def document_years(conn: sqlite3.Connection) -> list[int]:
+    """Τα έτη για τα οποία υπάρχουν παραστατικά στη βάση."""
+    years = []
+    for row in conn.execute(
+        "SELECT DISTINCT substr(issue_date, 1, 4) AS y FROM documents WHERE issue_date <> ''"
+    ):
+        try:
+            years.append(int(row["y"]))
+        except (TypeError, ValueError):
+            pass
+    return years

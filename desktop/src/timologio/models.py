@@ -109,6 +109,10 @@ class Document:
     net_value: float = 0.0
     vat_amount: float = 0.0
     total_value: float = 0.0
+    #: Παρακρατούμενοι φόροι (totalWithheldAmount) και κρατήσεις
+    #: (totalDeductionsAmount): αφαιρούνται από το πληρωτέο, δεν μπαίνουν στο σύνολο.
+    withheld_amount: float = 0.0
+    deductions_amount: float = 0.0
     downloading_invoice_url: str = ""
     provider_host: str = ""
     classification: Classification = Classification.UNKNOWN

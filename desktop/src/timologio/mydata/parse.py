@@ -88,10 +88,12 @@ def parse_invoice(invoice: ET.Element, direction: Direction) -> Document:
     issuer_vat, issuer_name = _party(invoice, "issuer")
     counter_vat, counter_name = _party(invoice, "counterpart")
 
-    net = vat = total = 0.0
+    net = vat = total = withheld = deductions = 0.0
     summary = invoice.find("ns:invoiceSummary", NS)
     if summary is not None:
         net = _to_float(summary.findtext("ns:totalNetValue", "0", NS))
+        withheld = _to_float(summary.findtext("ns:totalWithheldAmount", "0", NS))
+        deductions = _to_float(summary.findtext("ns:totalDeductionsAmount", "0", NS))
         vat = _to_float(summary.findtext("ns:totalVatAmount", "0", NS))
         total = _to_float(summary.findtext("ns:totalGrossValue", "0", NS)) or round(
             net + vat, 2
@@ -117,6 +119,8 @@ def parse_invoice(invoice: ET.Element, direction: Direction) -> Document:
         net_value=round(net, 2),
         vat_amount=round(vat, 2),
         total_value=round(total, 2),
+        withheld_amount=round(withheld, 2),
+        deductions_amount=round(deductions, 2),
         downloading_invoice_url=url,
         provider_host=urlsplit(url).netloc if url else "",
     )

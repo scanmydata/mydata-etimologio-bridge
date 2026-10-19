@@ -34,6 +34,7 @@ from .download import (
     write_atomic,
 )
 from .download.storage import client_folder, find_client_folder, long_path
+from .fiscal import discovery_window
 from .models import (
     Client,
     Direction,
@@ -98,6 +99,17 @@ def discover(
             elif incremental:
                 progress(
                     f"{client.vat}: νέα περίοδος — πλήρης έλεγχος {direction.value}"
+                )
+            if cursor != "0" and repo.needs_amount_refresh(
+                conn, client.id, direction,
+                coverage.to_iso(date_from), coverage.to_iso(date_to),
+            ):
+                # Παραστατικά από παλιότερη έκδοση, χωρίς παρακρατήσεις: ο cursor
+                # δεν θα τα ξαναέφερνε ποτέ. Μία φορά από την αρχή, και τέλος.
+                cursor = "0"
+                progress(
+                    f"{client.vat}: συμπλήρωση παρακρατήσεων — πλήρης έλεγχος "
+                    f"{direction.value}"
                 )
 
             docs = api.fetch(
@@ -252,7 +264,11 @@ def download_pending(
     (single writer) γράφει.
 
     Με ``unclassified_expenses_only`` (έξυπνη λήψη) κατεβαίνουν μόνο τα PDF των
-    αχαρακτήριστων εξόδων στο επιλεγμένο διάστημα — πολύ πιο γρήγορα.
+    αχαρακτήριστων εξόδων — πολύ πιο γρήγορα.
+
+    Το ``date_from``/``date_to`` (όταν δοθούν) ορίζουν ποια PDF κατεβαίνουν. Η
+    ανακάλυψη καλύπτει όλη τη χρήση, οπότε η βάση έχει και παραστατικά έξω από
+    το διάστημα· αυτά μένουν «σε αναμονή» για τη «Λήψη εκκρεμών».
 
     Η ακύρωση σταματά ΑΜΕΣΩΣ το πρόγραμμα εργασιών: παύουμε να καταναλώνουμε
     αποτελέσματα και ακυρώνουμε όσα δεν ξεκίνησαν (``cancel_futures``). Οι λίγες
@@ -263,8 +279,8 @@ def download_pending(
         conn, client.id,
         unclassified_expenses_only=unclassified_expenses_only,
         client_vat=client.vat,
-        date_from_iso=_gr_to_iso(date_from) if unclassified_expenses_only else "",
-        date_to_iso=_gr_to_iso(date_to) if unclassified_expenses_only else "",
+        date_from_iso=_gr_to_iso(date_from),
+        date_to_iso=_gr_to_iso(date_to),
     )
     if not rows:
         return
@@ -641,17 +657,29 @@ def sync_client(
     directions: Sequence[Direction] = BOTH_WAYS,
     use_vies: bool = True,
     unclassified_expenses_only: bool = False,
+    whole_year: bool = True,
     progress: ProgressFn = _noop,
     should_cancel: Callable[[], bool] | None = None,
 ) -> RunStats:
     stats = RunStats()
+    # Τα στοιχεία (σύνολα, χαρακτηρισμός, παρακρατήσεις) ζητούνται για ΟΛΗ τη
+    # χρήση ως σήμερα· το διάστημα του χρήστη ορίζει μόνο ποια PDF κατεβαίνουν.
+    # Αλλιώς τα έσοδα/έξοδα της ανάλυσης θα ήταν όσα έτυχε να ζητηθούν.
+    disc_from, disc_to = (
+        discovery_window(date_from, date_to) if whole_year else (date_from, date_to)
+    )
+    if (disc_from, disc_to) != (date_from, date_to):
+        progress(
+            f"{client.vat}: στοιχεία όλης της χρήσης {disc_from} – {disc_to}, "
+            f"PDF για {date_from} – {date_to}"
+        )
     try:
         stats.docs_found = discover(
             conn,
             client,
             settings,
-            date_from=date_from,
-            date_to=date_to,
+            date_from=disc_from,
+            date_to=disc_to,
             incremental=incremental,
             directions=directions,
             progress=progress,

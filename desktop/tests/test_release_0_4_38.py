@@ -119,11 +119,17 @@ def test_the_sync_and_documents_menus_open(app, window):
     assert any(a.startswith("Αντιγραφή «") for a in seen.get("sync", []))
 
     docs = window.docs
+    # Μέγεθος ρητά: χωρίς αυτό η θέση της στήλης εξαρτάται από τα πλάτη που
+    # έτυχε να έχει αποθηκευμένα ο υπολογιστής (μητρώο) και το κλικ πέφτει
+    # έξω από τον ορατό πίνακα.
+    # (Μόνο resize — ΟΧΙ setColumnWidth: τα πλάτη αποθηκεύονται στο μητρώο
+    # του χρήστη και ένα test δεν έχει δουλειά να τα αλλάζει.)
+    docs.table.resize(1600, 400)
     docs.table.setRowCount(1)
     for col in range(docs.table.columnCount()):
         docs.table.setItem(0, col, QTableWidgetItem(f"κ{col}"))
     QTimer.singleShot(200, _grab_menu(app, seen, "docs"))
-    docs._table_context_menu(docs.table.visualItemRect(docs.table.item(0, 2)).center())
+    docs._table_context_menu(docs.table.visualItemRect(docs.table.item(0, 1)).center())
     assert any(a.startswith("Αντιγραφή «") for a in seen.get("docs", []))
 
 

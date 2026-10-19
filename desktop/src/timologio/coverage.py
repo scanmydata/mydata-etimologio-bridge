@@ -200,3 +200,19 @@ def gaps_for_client(conn: sqlite3.Connection, client_id: int) -> list[Range]:
     out, _ = summary(conn, client_id, Direction.OUTGOING)
     both = merge(inc + out)
     return gaps(both)
+
+
+def year_summary(
+    conn: sqlite3.Connection, client_id: int, start: date, end: date
+) -> tuple[list[Range], list[Range]]:
+    """(καλυμμένα, κενά) μέσα σε μία χρήση — όπως το ``gaps_for_client``, αλλά
+    με παράθυρο: «κενό» είναι και η αρχή ή το τέλος της χρήσης που δεν ζητήθηκε
+    ποτέ, όχι μόνο ό,τι πέφτει ανάμεσα σε δύο λήψεις."""
+    window = Range(start.isoformat(), end.isoformat())
+    both = merge(fetch(conn, client_id, Direction.INCOMING)
+                 + fetch(conn, client_id, Direction.OUTGOING))
+    covered = merge([
+        Range(max(r.start, window.start), min(r.end, window.end))
+        for r in both if not (r.end < window.start or r.start > window.end)
+    ])
+    return covered, gaps(both, within=window)

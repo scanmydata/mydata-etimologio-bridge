@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..fiscal import discovery_window, year_bounds_iso, year_window
 from ..models import Direction
 from .icons import icon
 from .theme import CURRENT
@@ -34,7 +35,7 @@ _COLS: list[tuple[str, int, str]] = [
     ("", 30, "Επιλέξτε ποιοι θα κατέβουν"),
     ("ΑΦΜ", 96, ""),
     ("Επωνυμία", 0, "Διπλό κλικ για επιλογή/αποεπιλογή"),
-    ("Παρ.", 70, "Παραστατικά που έχουν ήδη ληφθεί"),
+    ("Παρ.", 70, "Παραστατικά της επιλεγμένης χρήσης που έχουν ήδη ληφθεί"),
     ("Τελευταία", 100, "Πότε έγινε η τελευταία λήψη"),
 ]
 
@@ -58,13 +59,20 @@ _PRESETS: list[tuple[str, str]] = [
     ("Προηγούμενος μήνας", "prev_month"),
     ("Τρέχον τρίμηνο", "quarter"),
     ("Προηγούμενο τρίμηνο", "prev_quarter"),
-    ("Φέτος", "year"),
-    ("Πέρσι", "prev_year"),
+    ("Όλη η χρήση", "year"),
+    ("Προηγούμενη χρήση", "prev_year"),
 ]
 
 
-def _period(key: str) -> tuple[date, date]:
+def _period(key: str, year: int | None = None) -> tuple[date, date]:
+    """Τα όρια μιας γρήγορης περιόδου. Οι δύο «χρήσεις» μετρούν από τη χρήση
+    που έχει επιλέξει ο χρήστης, όχι από το ημερολόγιο."""
     today = date.today()
+    year = year or today.year
+    if key == "year":
+        return year_window(year, today)
+    if key == "prev_year":
+        return year_window(year - 1, today)
     if key == "month":
         return today.replace(day=1), today
     if key == "prev_month":
@@ -98,6 +106,7 @@ class SyncPage(QWidget):
         super().__init__(parent)
         self.checked: set[str] = set()
         self._prefs = prefs
+        self._year = date.today().year
         self._rows: list[sqlite3.Row] = []
         self._build()
 
@@ -161,6 +170,17 @@ class SyncPage(QWidget):
         dates.addWidget(self.chk_full)
         dates.addStretch()
         box.addLayout(dates)
+
+        # Τι θα ζητηθεί στ' αλήθεια από την ΑΑΔΕ. Τα σύνολα της ανάλυσης είναι
+        # σωστά μόνο με όλη τη χρήση στη βάση, οπότε το διάστημα πάνω ορίζει
+        # ΜΟΝΟ ποια PDF κατεβαίνουν — και αυτό πρέπει να φαίνεται.
+        self.scope_note = QLabel("")
+        self.scope_note.setObjectName("muted")
+        self.scope_note.setWordWrap(True)
+        box.addWidget(self.scope_note)
+        self.date_from.dateChanged.connect(lambda _: self._update_scope_note())
+        self.date_to.dateChanged.connect(lambda _: self._update_scope_note())
+        self._update_scope_note()
 
         kinds = QHBoxLayout()
         kinds.setSpacing(7)
@@ -292,8 +312,24 @@ class SyncPage(QWidget):
         self.table.doubleClicked.connect(self._toggle_current)
         root.addWidget(self.table, 1)
 
+    def _update_scope_note(self) -> None:
+        start, end = discovery_window(self.date_from.gr(), self.date_to.gr())
+        self.scope_note.setText(
+            f"ℹ Στοιχεία (σύνολα, χαρακτηρισμός, παρακρατήσεις) για όλη τη χρήση: "
+            f"<b>{start} – {end}</b>.  PDF μόνο για το διάστημα "
+            f"{self.date_from.gr()} – {self.date_to.gr()}."
+        )
+
+    def set_fiscal_year(self, year: int) -> None:
+        """Νέα χρήση: το διάστημα γίνεται ολόκληρη η χρήση (ως σήμερα)."""
+        self._year = year
+        start, end = year_window(year)
+        self.date_from.set_gr(start.strftime("%d/%m/%Y"))
+        self.date_to.set_gr(end.strftime("%d/%m/%Y"))
+        self._update_scope_note()
+
     def _apply_preset(self, key: str) -> None:
-        start, end = _period(key)
+        start, end = _period(key, self._year)
         self.date_from.set_gr(start.strftime("%d/%m/%Y"))
         self.date_to.set_gr(end.strftime("%d/%m/%Y"))
 
@@ -326,10 +362,11 @@ class SyncPage(QWidget):
             conn.execute(
                 """SELECT c.vat, c.label,
                           COALESCE(MAX(d.updated_at), '') AS last_run,
-                          COUNT(d.id) AS docs
+                          COALESCE(SUM(d.issue_date >= ? AND d.issue_date <= ?), 0) AS docs
                    FROM clients c LEFT JOIN documents d ON d.client_id = c.id
                    WHERE c.status = 'ready'
-                   GROUP BY c.id ORDER BY c.label, c.vat"""
+                   GROUP BY c.id ORDER BY c.label, c.vat""",
+                year_bounds_iso(self._year),
             )
         )
         self._fill()

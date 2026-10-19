@@ -314,6 +314,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE documents ADD COLUMN print_date TEXT NOT NULL DEFAULT ''"
         )
 
+    # Παρακρατούμενοι φόροι και κρατήσεις (από το invoiceSummary). Οι παλιές
+    # εγγραφές δεν τα έχουν· το `amounts_v` = 0 λέει στη λήψη ότι πρέπει να
+    # ξαναζητήσει μία φορά το διάστημά τους από την αρχή (όχι με cursor), ώστε
+    # να γεμίσουν — αλλιώς θα έμεναν για πάντα μηδενικά.
+    for column, ddl in (
+        ("withheld_amount", "REAL NOT NULL DEFAULT 0"),
+        ("deductions_amount", "REAL NOT NULL DEFAULT 0"),
+        ("amounts_v", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE documents ADD COLUMN {column} {ddl}")
+
     # Επαναταξινόμηση των «οριστικών σφαλμάτων» που στην πραγματικότητα είναι
     # παραστατικά μόνο-online (ο πάροχος έδωσε σελίδα προβολής αντί για PDF).
     # Δεν ήταν ποτέ σφάλμα· ο νέος κώδικας τα σημειώνει ως viewer_only, και εδώ

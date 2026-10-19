@@ -177,8 +177,10 @@ class AnalysisPanel(QScrollArea):
         layout.addWidget(label)
         layout.addStretch()
 
-    def show_client(self, conn: sqlite3.Connection, vat: str) -> None:
-        analysis = analyse_client(conn, vat)
+    def show_client(
+        self, conn: sqlite3.Connection, vat: str, year: int | None = None
+    ) -> None:
+        analysis = analyse_client(conn, vat, year)
         if analysis is None:
             self.show_placeholder("Ο πελάτης δεν βρέθηκε.")
             return
@@ -205,6 +207,11 @@ class AnalysisPanel(QScrollArea):
         root.addWidget(title)
 
         period = f"{_gr(a.first_date)} έως {_gr(a.last_date)}" if a.first_date else "καμία λήψη"
+        if a.year:
+            # Η χρήση μπροστά: όλοι οι αριθμοί από κάτω αφορούν μόνο αυτήν.
+            period = f"Χρήση {a.year}  ·  " + (
+                period if a.first_date else "κανένα παραστατικό ακόμη"
+            )
         sub = QLabel(f"ΑΦΜ {a.vat}  ·  {period}")
         sub.setObjectName("muted")
         root.addWidget(sub)
@@ -235,7 +242,8 @@ class AnalysisPanel(QScrollArea):
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(3)
-        for col, header in enumerate(["", "Πλήθος", "Καθαρή", "ΦΠΑ", "Σύνολο"]):
+        for col, header in enumerate(["", "Πλήθος", "Καθαρή", "ΦΠΑ", "Σύνολο",
+                                      "Παρακρ./Κρατ."]):
             h = QLabel(header)
             h.setObjectName("statLabel")
             if col:
@@ -263,7 +271,8 @@ class AnalysisPanel(QScrollArea):
             grid.addWidget(link, row, 0)
             for col, value in enumerate(
                 [str(totals.count), money(totals.net), money(totals.vat),
-                 money(totals.gross)], start=1
+                 money(totals.gross), money(totals.withheld + totals.deductions)],
+                start=1
             ):
                 label = QLabel(value + (" €" if col > 1 else ""))
                 label.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -287,12 +296,22 @@ class AnalysisPanel(QScrollArea):
              "Δεν υπόκεινται σε χαρακτηρισμό εξόδων (π.χ. δελτία διακίνησης)"),
         ]:
             self._tile(row, StatTile(str(value), caption, color, key, tip))
+        if a.unclassified_withheld:
+            # Η ακριβή εκκρεμότητα: φόρος παρακρατήθηκε, αλλά όσο το
+            # παραστατικό μένει αχαρακτήριστο δεν φαίνεται στα βιβλία.
+            self._tile(row, StatTile(
+                str(a.unclassified_withheld), "Αχαρακτ. με παρακράτηση",
+                CURRENT.bad, "unclassified_withheld",
+                "Αχαρακτήριστα παραστατικά που έχουν παρακρατούμενο φόρο — "
+                "κλικ για τη λίστα"))
         layout.addLayout(row)
         root.addWidget(frame)
 
         # --- κάλυψη & κενά
         if a.covered or a.gaps:
-            frame, layout = _card("ΚΑΛΥΨΗ ΗΜΕΡΟΜΗΝΙΩΝ")
+            frame, layout = _card(
+                f"ΚΑΛΥΨΗ ΧΡΗΣΗΣ {a.year}" if a.year else "ΚΑΛΥΨΗ ΗΜΕΡΟΜΗΝΙΩΝ"
+            )
             if a.covered:
                 text = " · ".join(r.label() for r in a.covered[:4])
                 if len(a.covered) > 4:

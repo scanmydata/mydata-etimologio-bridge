@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from .. import repo
 from ..config import Settings
 from ..doctypes import signed, type_label, type_name
+from ..fiscal import year_window
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
     count_without_pdf,
@@ -74,6 +75,10 @@ _COLS: list[tuple[str, int, str]] = [
     ("Καθαρή", 84, "Καθαρή αξία"),
     ("ΦΠΑ", 72, ""),
     ("Σύνολο", 88, "Συνολική αξία"),
+    # Αφαιρούνται από το πληρωτέο και ΔΕΝ περιέχονται στο «Σύνολο» της myDATA.
+    ("Παρακρ./Κρατ.", 112,
+     "Παρακρατούμενοι φόροι και κρατήσεις (π.χ. 20% παρακράτηση αμοιβών).\n"
+     "Το tooltip κάθε κελιού δείχνει την ανάλυση."),
     ("Χαρακτ.", 116, "Κατάσταση χαρακτηρισμού (χαρακτηρισμένο ή όχι)"),
     ("Κατάσταση", 104, "Αν κατέβηκε το PDF του παρόχου"),
     ("Εκτυπώθηκε", 96, "Ημερομηνία εκτύπωσης (κενό = δεν έχει εκτυπωθεί ακόμη)"),
@@ -100,9 +105,10 @@ _COL_TYPE = 3
 _COL_PARTY = 4
 _COL_VATNO = 5
 _COL_NET, _COL_VAT, _COL_GROSS = 8, 9, 10
-_COL_CLS = 11
-_COL_STATUS = 12
-_COL_PRINTED = 13
+_COL_WITHHELD = 11
+_COL_CLS = 12
+_COL_STATUS = 13
+_COL_PRINTED = 14
 _COL_OPEN = len(_COLS) - 1
 
 #: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και οι
@@ -132,6 +138,8 @@ CLS_FILTERS: list[tuple[str, str]] = [
     ("unclassified", "Αχαρακτήριστα"),
     ("classified", "Χαρακτηρισμένα"),
     ("unknown_cls", "Χωρίς στοιχείο E3"),
+    ("unclassified_withheld", "Αχαρακτ. με παρακράτηση"),
+    ("withheld", "Με παρακρατήσεις/κρατήσεις"),
 ]
 
 #: Ποιο κουτί «κατέχει» κάθε κλειδί, ώστε ένα κλικ σε πλακίδιο της ανάλυσης να
@@ -256,6 +264,8 @@ class DocumentsView(QWidget):
         # Φίλτρα ανά στήλη (Excel-style): {λογική στήλη -> επιτρεπτές τιμές}.
         # Απουσία/κενό σύνολο = καμία επιλογή ακόμη σε αυτή τη στήλη.
         self._col_filters: dict[int, set[str]] = {}
+        #: Η χρήση που δείχνει η προβολή (None = όλα τα έτη).
+        self._year: int | None = None
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -340,7 +350,7 @@ class DocumentsView(QWidget):
         first.addWidget(self.combo_status)
 
         first.addWidget(QLabel("Χαρακτηρισμός:"))
-        self.combo_cls = self._combo(CLS_FILTERS, 156,
+        self.combo_cls = self._combo(CLS_FILTERS, 210,
                                      "Κατάσταση χαρακτηρισμού (χαρακτηρισμένο ή όχι)")
         first.addWidget(self.combo_cls)
         first.addStretch()
@@ -465,6 +475,7 @@ class DocumentsView(QWidget):
         for key, caption in [
             ("count", "Παραστατικά"), ("net", "Καθαρή αξία"),
             ("vat", "ΦΠΑ"), ("gross", "Σύνολο"),
+            ("withheld", "Παρακρατήσεις/Κρατήσεις"),
         ]:
             box = QVBoxLayout()
             cap = QLabel(caption)
@@ -517,7 +528,7 @@ class DocumentsView(QWidget):
         self._conn = conn
         self._vat = vat
         self._label = label
-        self.title.setText(f"{label}  ·  {vat}")
+        self._update_title()
 
         combos = [*self._axis_combos.values(), self.combo_supplier, self.combo_type]
         for widget in combos:
@@ -544,6 +555,31 @@ class DocumentsView(QWidget):
         # ανήκει στο κουμπί «Ανανέωση», που το ζήτησε ρητά.
         self._reconcile_quietly()
         self.reload()
+
+    def _update_title(self) -> None:
+        text = f"{self._label}  ·  {self._vat}"
+        if self._year:
+            text += f"  ·  Χρήση {self._year}"
+        self.title.setText(text)
+
+    def set_year(self, year: int | None) -> None:
+        """Αλλάζει τη χρήση: η προβολή δείχνει μόνο τα παραστατικά της.
+
+        Το «Διάστημα» ακολουθεί τα όρια της χρήσης, ώστε όταν ενεργοποιηθεί να
+        ξεκινά από κάτι λογικό και όχι από άλλο έτος.
+        """
+        if year == self._year:
+            return
+        self._year = year
+        if year:
+            start, end = year_window(year)
+            for edit, day in ((self.date_from, start), (self.date_to, end)):
+                edit.blockSignals(True)
+                edit.set_gr(day.strftime("%d/%m/%Y"))
+                edit.blockSignals(False)
+        if self._vat:
+            self._update_title()
+            self.reload()
 
     @staticmethod
     def _select_data(combo: QComboBox, value: str) -> None:
@@ -686,6 +722,7 @@ class DocumentsView(QWidget):
             invoice_type=self.combo_type.currentData() or "",
             date_from=self.date_from.gr() if use_dates else "",
             date_to=self.date_to.gr() if use_dates else "",
+            year=self._year,
         )
         self._update_banner()
         self._fill()
@@ -727,6 +764,8 @@ class DocumentsView(QWidget):
             money(signed(r["total_value"], r["invoice_type"])),
             str(r["net_value"] or ""), str(r["vat_amount"] or ""),
             str(r["total_value"] or ""),
+            money(_amount(r, "withheld_amount")) if _amount(r, "withheld_amount") else "",
+            "παρακράτηση" if _amount(r, "withheld_amount") else "",
         ]
         if "print_date" in keys and r["print_date"]:
             parts.extend([r["print_date"], _gr_date(r["print_date"])])
@@ -796,11 +835,14 @@ class DocumentsView(QWidget):
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
-        net = vat_sum = gross = 0.0
+        net = vat_sum = gross = withheld_sum = 0.0
         root = self._settings.storage_root
 
         for i, r in enumerate(rows):
+            withheld = _amount(r, "withheld_amount")
+            deductions = _amount(r, "deductions_amount")
             # Πιστωτικά ΑΦΑΙΡΟΥΝΤΑΙ: η myDATA τα δίνει με θετικά ποσά.
+            withheld_sum += signed(withheld + deductions, r["invoice_type"])
             net += signed(r["net_value"], r["invoice_type"])
             vat_sum += signed(r["vat_amount"], r["invoice_type"])
             gross += signed(r["total_value"], r["invoice_type"])
@@ -845,8 +887,10 @@ class DocumentsView(QWidget):
                 _COL_NET: money(signed(r["net_value"], r["invoice_type"])),
                 _COL_VAT: money(signed(r["vat_amount"], r["invoice_type"])),
                 _COL_GROSS: money(signed(r["total_value"], r["invoice_type"])),
-                11: CLASSIFICATION_LABELS_EL[cls],
-                12: _STATUS_SHORT[status],
+                _COL_WITHHELD: money(signed(withheld + deductions, r["invoice_type"]))
+                if withheld or deductions else "—",
+                _COL_CLS: CLASSIFICATION_LABELS_EL[cls],
+                _COL_STATUS: _STATUS_SHORT[status],
                 _COL_PRINTED: _gr_date(printed_iso) if printed_iso else "—",
             }
             for col, text in cells.items():
@@ -856,6 +900,12 @@ class DocumentsView(QWidget):
                     item = SortableItem(text, _type_sort_key(r["invoice_type"]))
                 elif col == _COL_PRINTED:
                     item = SortableItem(text, printed_iso)
+                elif col == _COL_WITHHELD:
+                    item = SortableItem(
+                        text, signed(withheld + deductions, r["invoice_type"])
+                    )
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight
+                                          | Qt.AlignmentFlag.AlignVCenter)
                 elif col in (_COL_NET, _COL_VAT, _COL_GROSS):
                     amount = [r["net_value"], r["vat_amount"], r["total_value"]][
                         col - _COL_NET
@@ -868,14 +918,22 @@ class DocumentsView(QWidget):
                     item = QTableWidgetItem(text)
                 if col == _COL_KIND:
                     item.setForeground(QColor(CURRENT.ok if is_income else CURRENT.warn))
-                if col == 11:
+                if col == _COL_CLS:
                     item.setForeground(QColor(_cls_color(cls)))
-                if col == 12:
+                if col == _COL_STATUS:
                     item.setForeground(QColor(_status_color(status)))
                 if col == _COL_PRINTED and printed_iso:
                     item.setForeground(QColor(CURRENT.ok))
                 item.setData(_MARK_ROLE, r["mark"])
-                item.setToolTip(tip)
+                if col == _COL_WITHHELD and (withheld or deductions):
+                    item.setToolTip(
+                        f"Παρακρατούμενοι φόροι: {money(withheld)} €\n"
+                        f"Κρατήσεις: {money(deductions)} €\n{tip}"
+                    )
+                    if cls is Classification.UNCLASSIFIED and withheld:
+                        item.setForeground(QColor(CURRENT.warn))
+                else:
+                    item.setToolTip(tip)
                 self.table.setItem(i, col, item)
 
             rel = r["local_path"] or r["xml_path"]
@@ -892,6 +950,7 @@ class DocumentsView(QWidget):
         self._total_labels["net"].setText(f"{money(net)} €")
         self._total_labels["vat"].setText(f"{money(vat_sum)} €")
         self._total_labels["gross"].setText(f"{money(gross)} €")
+        self._total_labels["withheld"].setText(f"{money(withheld_sum)} €")
         self._update_totals_caption()
         self._update_clear_visibility()
         header = self.table.horizontalHeader()
@@ -1296,6 +1355,11 @@ class DocumentsView(QWidget):
             os.startfile(target)  # noqa: S606
         else:
             subprocess.Popen(["xdg-open", str(target)])
+
+
+def _amount(r: sqlite3.Row, column: str) -> float:
+    """Ποσό που μπορεί να λείπει από γραμμή παλιού σχήματος (ή από tests)."""
+    return float(r[column] or 0.0) if column in r.keys() else 0.0
 
 
 def _gr_date(iso: str) -> str:

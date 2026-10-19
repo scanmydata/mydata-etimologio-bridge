@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import coverage
 from .doctypes import signed, signed_sql
+from .fiscal import year_bounds_iso, year_window
 from .models import (
     CLASSIFICATION_LABELS_EL,
     STATUS_LABELS_EL,
@@ -40,6 +41,8 @@ class Totals:
     net: float = 0.0
     vat: float = 0.0
     gross: float = 0.0
+    withheld: float = 0.0
+    deductions: float = 0.0
 
 
 @dataclass
@@ -59,6 +62,12 @@ class ClientAnalysis:
     classified: int = 0
     unclassified: int = 0
     unknown_classification: int = 0
+    #: Αχαρακτήριστα που έχουν παρακρατούμενο φόρο — η ακριβή εκκρεμότητα.
+    unclassified_withheld: int = 0
+    withheld: float = 0.0
+    deductions: float = 0.0
+    #: Η χρήση που αφορά η σύνοψη (None = όλα τα έτη).
+    year: int | None = None
     net_value: float = 0.0
     vat_amount: float = 0.0
     total_value: float = 0.0
@@ -80,12 +89,24 @@ class ClientAnalysis:
         self.expense = self.expense or Totals()
 
 
-def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
+def analyse_client(
+    conn: sqlite3.Connection, vat: str, year: int | None = None
+) -> ClientAnalysis | None:
+    """Σύνοψη ενός πελάτη — για μία χρήση (``year``) ή για όλα τα έτη."""
     row = conn.execute("SELECT id, vat, label FROM clients WHERE vat=?", (vat,)).fetchone()
     if row is None:
         return None
     cid = row["id"]
-    out = ClientAnalysis(vat=row["vat"], label=row["label"] or "")
+    out = ClientAnalysis(vat=row["vat"], label=row["label"] or "", year=year)
+
+    # Το ίδιο φίλτρο έτους σε κάθε ερώτημα: αλλιώς τα πλακίδια θα μετρούσαν
+    # άλλη χρήση από τα σύνολα και ένα κλικ θα άνοιγε διαφορετικά παραστατικά.
+    params: dict[str, object] = {"cid": cid, "vat": vat, "y0": "", "y1": "9999"}
+    if year:
+        params["y0"], params["y1"] = year_bounds_iso(year)
+    scope = "client_id = :cid AND issue_date >= :y0 AND issue_date <= :y1"
+    if not year:
+        scope = "client_id = :cid"
 
     totals = conn.execute(
         f"""SELECT COUNT(*) total,
@@ -99,13 +120,16 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
                   SUM(classification='classified') classified,
                   SUM(classification='unclassified') unclassified,
                   SUM(classification='unknown') unknown_cls,
+                  SUM(classification='unclassified' AND withheld_amount > 0) uncls_withheld,
                   COALESCE(SUM({signed_sql('net_value')}),0) net,
                   COALESCE(SUM({signed_sql('vat_amount')}),0) vat,
                   COALESCE(SUM({signed_sql('total_value')}),0) gross,
+                  COALESCE(SUM({signed_sql('withheld_amount')}),0) withheld,
+                  COALESCE(SUM({signed_sql('deductions_amount')}),0) deductions,
                   MIN(NULLIF(issue_date,'')) first_date,
                   MAX(NULLIF(issue_date,'')) last_date
-           FROM documents WHERE client_id=?""",
-        (cid,),
+           FROM documents WHERE {scope}""",
+        params,
     ).fetchone()
 
     out.total = totals["total"] or 0
@@ -119,9 +143,12 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
     out.classified = totals["classified"] or 0
     out.unclassified = totals["unclassified"] or 0
     out.unknown_classification = totals["unknown_cls"] or 0
+    out.unclassified_withheld = totals["uncls_withheld"] or 0
     out.net_value = totals["net"] or 0.0
     out.vat_amount = totals["vat"] or 0.0
     out.total_value = totals["gross"] or 0.0
+    out.withheld = totals["withheld"] or 0.0
+    out.deductions = totals["deductions"] or 0.0
     out.first_date = totals["first_date"] or ""
     out.last_date = totals["last_date"] or ""
 
@@ -129,19 +156,22 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
         r = conn.execute(
             f"""SELECT COUNT(*) n, COALESCE(SUM({signed_sql('net_value')}),0) net,
                        COALESCE(SUM({signed_sql('vat_amount')}),0) vat,
-                       COALESCE(SUM({signed_sql('total_value')}),0) gross
-                FROM documents WHERE client_id = :cid AND {where}""",
-            {"cid": cid, "vat": vat},
+                       COALESCE(SUM({signed_sql('total_value')}),0) gross,
+                       COALESCE(SUM({signed_sql('withheld_amount')}),0) withheld,
+                       COALESCE(SUM({signed_sql('deductions_amount')}),0) deductions
+                FROM documents WHERE {scope} AND {where}""",
+            params,
         ).fetchone()
-        setattr(out, field, Totals(r["n"], r["net"], r["vat"], r["gross"]))
+        setattr(out, field, Totals(r["n"], r["net"], r["vat"], r["gross"],
+                                   r["withheld"], r["deductions"]))
 
     out.by_type = [
         (r["invoice_type"] or "—", r["c"], r["v"] or 0.0)
         for r in conn.execute(
             f"""SELECT invoice_type, COUNT(*) c, SUM({signed_sql('total_value')}) v
-               FROM documents WHERE client_id=?
+               FROM documents WHERE {scope}
                GROUP BY invoice_type ORDER BY c DESC""",
-            (cid,),
+            params,
         )
     ]
     out.top_suppliers = [
@@ -149,13 +179,18 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
         for r in conn.execute(
             f"""SELECT issuer_name, issuer_vat, COUNT(*) c, SUM({signed_sql('total_value')}) v
                FROM documents
-               WHERE client_id=? AND direction IN ('incoming','both') AND issuer_vat <> ''
+               WHERE {scope} AND direction IN ('incoming','both') AND issuer_vat <> ''
                GROUP BY issuer_vat ORDER BY v DESC LIMIT 10""",
-            (cid,),
+            params,
         )
     ]
-    out.covered, out.gaps = coverage.summary(conn, cid)
-    out.gaps = coverage.gaps_for_client(conn, cid)
+    if year:
+        # Μέσα σε μία χρήση, «κενό» είναι ό,τι από 1/1 ως σήμερα δεν ζητήθηκε
+        # ποτέ — ακόμη και η αρχή της χρήσης, που αλλιώς δεν θα φαινόταν.
+        out.covered, out.gaps = coverage.year_summary(conn, cid, *year_window(year))
+    else:
+        out.covered, out.gaps = coverage.summary(conn, cid)
+        out.gaps = coverage.gaps_for_client(conn, cid)
     return out
 
 
@@ -260,6 +295,10 @@ DOC_FILTERS: dict[str, str] = {
     "unclassified": "d.classification='unclassified'",
     "classified": "d.classification='classified'",
     "unknown_cls": "d.classification='unknown'",
+    # Αχαρακτήριστα με παρακρατούμενο φόρο: ο σύνδεσμος της ειδοποίησης στο
+    # τέλος της λήψης ανοίγει ακριβώς αυτά.
+    "unclassified_withheld": "d.classification='unclassified' AND d.withheld_amount > 0",
+    "withheld": "(d.withheld_amount > 0 OR d.deductions_amount > 0)",
     "income": "d.issuer_vat = c.vat",
     "expense": "d.issuer_vat <> c.vat",
 }
@@ -275,8 +314,12 @@ def documents_for(
     invoice_type: str = "",
     date_from: str = "",
     date_to: str = "",
+    year: int | None = None,
 ) -> list[sqlite3.Row]:
     """Τα παραστατικά ενός πελάτη, προαιρετικά φιλτραρισμένα.
+
+    Με ``year`` μένουν μόνο όσα ανήκουν στη χρήση — το «κουτί» μέσα στο οποίο
+    δουλεύει ο χρήστης.
 
     Τα φίλτρα συνδυάζονται με ΚΑΙ: το `filter_key` και όσα δοθούν στο
     `extra_filters` ισχύουν ταυτόχρονα, ώστε να μπορεί κανείς να ζητήσει π.χ.
@@ -306,6 +349,9 @@ def documents_for(
     if date_to:
         clauses.append("d.issue_date <= :dto")
         params["dto"] = coverage.to_iso(date_to)
+    if year:
+        clauses.append("d.issue_date >= :y0 AND d.issue_date <= :y1")
+        params["y0"], params["y1"] = year_bounds_iso(year)
 
     return list(
         conn.execute(
@@ -387,10 +433,12 @@ _DOC_HEADERS = [
     "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
     "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
     "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο", "Σύνδεσμος παρόχου",
+    "Παρακρατούμενοι φόροι", "Κρατήσεις",
 ]
 #: Δείκτες (0-based) των αριθμητικών στηλών — γράφονται ως πραγματικοί αριθμοί
-#: στο Excel, ώστε να ταξινομούνται/αθροίζονται σωστά.
-_DOC_NUMERIC_COLS = (10, 11, 12)
+#: στο Excel, ώστε να ταξινομούνται/αθροίζονται σωστά. Οι παρακρατήσεις μπήκαν
+#: στο τέλος ώστε να μη μετακινηθούν οι στήλες που ήδη διαβάζουν άλλοι.
+_DOC_NUMERIC_COLS = (10, 11, 12, 17, 18)
 
 _DIRECTION_EL = {"incoming": "Έσοδο", "outgoing": "Έξοδο", "both": "Έσοδο/Έξοδο"}
 
@@ -414,22 +462,39 @@ def _doc_row_values(r: sqlite3.Row) -> list:
         # Ο σύνδεσμος του παρόχου — χρήσιμος ειδικά για παραστατικά με σφάλμα,
         # ώστε ο χρήστης να τον ανοίξει/κάνει inspect μόνος του.
         r["downloading_invoice_url"] or "",
+        signed(_amount(r, "withheld_amount"), r["invoice_type"]),
+        signed(_amount(r, "deductions_amount"), r["invoice_type"]),
     ]
 
 
-def _documents_rows(conn: sqlite3.Connection, vat: str | None) -> list[sqlite3.Row]:
+def _amount(r: sqlite3.Row, column: str) -> float:
+    """Ποσό που μπορεί να λείπει από γραμμή παλιού σχήματος."""
+    return float(r[column] or 0.0) if column in r.keys() else 0.0
+
+
+def _documents_rows(
+    conn: sqlite3.Connection, vat: str | None, year: int | None = None
+) -> list[sqlite3.Row]:
     sql = """SELECT c.vat client_vat, c.label client_label, d.*
              FROM documents d JOIN clients c ON c.id = d.client_id"""
-    params: tuple = ()
+    where: list[str] = []
+    params: list = []
     if vat:
-        sql += " WHERE c.vat = ?"
-        params = (vat,)
+        where.append("c.vat = ?")
+        params.append(vat)
+    if year:
+        # Η εξαγωγή ακολουθεί τη χρήση που βλέπει ο χρήστης στην οθόνη.
+        where.append("d.issue_date >= ? AND d.issue_date <= ?")
+        params.extend(year_bounds_iso(year))
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY c.vat, d.issue_date, d.mark"
     return list(conn.execute(sql, params))
 
 
 def export_documents_xlsx(
-    conn: sqlite3.Connection, path: Path, vat: str | None = None
+    conn: sqlite3.Connection, path: Path, vat: str | None = None,
+    year: int | None = None,
 ) -> int:
     """Αναλυτική κατάσταση σε Excel (.xlsx), ως **πραγματικός πίνακας**.
 
@@ -441,7 +506,7 @@ def export_documents_xlsx(
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.table import Table, TableStyleInfo
 
-    rows = _documents_rows(conn, vat)
+    rows = _documents_rows(conn, vat, year)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()
@@ -468,7 +533,7 @@ def export_documents_xlsx(
     ws.add_table(table)
 
     # Λογικά πλάτη στηλών ώστε να διαβάζονται χωρίς χειροκίνητο τέντωμα.
-    widths = [12, 30, 18, 12, 10, 12, 8, 8, 12, 30, 13, 11, 13, 16, 20, 40]
+    widths = [12, 30, 18, 12, 10, 12, 8, 8, 12, 30, 13, 11, 13, 16, 20, 40, 40, 14, 12]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
@@ -477,17 +542,12 @@ def export_documents_xlsx(
     return len(rows)
 
 
-def export_documents(conn: sqlite3.Connection, path: Path, vat: str | None = None) -> int:
+def export_documents(
+    conn: sqlite3.Connection, path: Path, vat: str | None = None,
+    year: int | None = None,
+) -> int:
     """Αναλυτική κατάσταση παραστατικών σε CSV."""
-    sql = """SELECT c.vat client_vat, c.label client_label, d.*
-             FROM documents d JOIN clients c ON c.id = d.client_id"""
-    params: tuple = ()
-    if vat:
-        sql += " WHERE c.vat = ?"
-        params = (vat,)
-    sql += " ORDER BY c.vat, d.issue_date, d.mark"
-
-    rows = list(conn.execute(sql, params))
+    rows = _documents_rows(conn, vat, year)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh, delimiter=";")
@@ -495,6 +555,7 @@ def export_documents(conn: sqlite3.Connection, path: Path, vat: str | None = Non
             "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
             "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
             "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο", "Σύνδεσμος παρόχου",
+            "Παρακρατούμενοι φόροι", "Κρατήσεις",
         ])
         for r in rows:
             cls = Classification(r["classification"] or "unknown")
@@ -509,5 +570,7 @@ def export_documents(conn: sqlite3.Connection, path: Path, vat: str | None = Non
                 r["status"], r["local_path"] or r["xml_path"],
                 # Σύνδεσμος παρόχου — για έλεγχο/inspect, ειδικά στα σφάλματα.
                 r["downloading_invoice_url"] or "",
+                f"{signed(_amount(r, 'withheld_amount'), r['invoice_type']):.2f}".replace(".", ","),
+                f"{signed(_amount(r, 'deductions_amount'), r['invoice_type']):.2f}".replace(".", ","),
             ])
     return len(rows)

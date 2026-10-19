@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -67,8 +67,9 @@ from ..config import (
     save_autostart,
     save_start_minimized,
 )
-from ..coverage import to_gr
+from ..coverage import to_gr, to_iso
 from ..doctypes import signed_sql
+from ..fiscal import discovery_window, resolve_year, year_bounds_iso, year_choices
 from .. import crypto as crypto_mod
 from ..crypto import Crypto
 from ..db import init_db
@@ -106,18 +107,18 @@ _COLUMN_SPEC: list[tuple[str, int, str]] = [
     ("ΑΦΜ", 84, ""),
     ("Επωνυμία", 0, "Διπλό κλικ για τα παραστατικά του πελάτη"),
     ("Κατάσταση", 96, "Αν ο πελάτης έχει κλειδί myDATA API"),
-    ("Παρ.", 54, "Σύνολο παραστατικών"),
-    ("PDF", 54, "Παραστατικά που κατέβηκαν ως PDF"),
-    ("Αχαρ.", 54, "Αχαρακτήριστα κατά το RequestE3Info"),
-    ("Έσοδα", 88, "Αξία όσων εξέδωσε ο πελάτης"),
-    ("Έξοδα", 88, "Αξία όσων εξέδωσαν άλλοι προς αυτόν"),
+    ("Παρ.", 54, "Σύνολο παραστατικών — στην επιλεγμένη χρήση"),
+    ("PDF", 54, "Παραστατικά που κατέβηκαν ως PDF — στην επιλεγμένη χρήση"),
+    ("Αχαρ.", 54, "Αχαρακτήριστα κατά το RequestE3Info — στην επιλεγμένη χρήση"),
+    ("Έσοδα", 88, "Αξία όσων εξέδωσε ο πελάτης — στην επιλεγμένη χρήση"),
+    ("Έξοδα", 88, "Αξία όσων εξέδωσαν άλλοι προς αυτόν — στην επιλεγμένη χρήση"),
     ("Τελευταία λήψη", 132, "Ημερομηνία και ώρα της τελευταίας επιτυχούς λήψης"),
 ]
 
 #: Έκδοση περιεχομένου ξενάγησης. Αύξησέ το όταν προστίθεται ουσιαστικά νέο βήμα:
 #: όσοι έχουν ήδη δει παλιότερη ξενάγηση την ξαναβλέπουν μία φορά — αλλά πάνω στα
 #: **δικά τους** δεδομένα (χωρίς εικονικούς πελάτες, χωρίς σβήσιμο).
-TOUR_VERSION = 3
+TOUR_VERSION = 4
 
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
 _STATUS_READY = "Διαθέσιμος"
@@ -126,6 +127,8 @@ _STATUS_NO_KEY = "Χωρίς κλειδί"
 _STATUS_LOCKED = "Κλειδί κλειδωμένο"
 _COLUMNS = [c[0] for c in _COLUMN_SPEC]
 _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
+#: «Το παραστατικό ανήκει στην επιλεγμένη χρήση» — για τα μετρητά των Πελατών.
+_IN_YEAR = "(d.issue_date >= :y0 AND d.issue_date <= :y1)"
 _COL_LAST = 9
 
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
@@ -206,6 +209,20 @@ class MainWindow(QMainWindow):
         #: αποκρυπτογράφηση ανά πελάτη) και πρέπει να είναι πάντα φρέσκο.
         self._locked_vats: set[str] = set()
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
+        #: Η χρήση στην οποία δουλεύει ο χρήστης. Μια χειροκίνητη επιλογή
+        #: ισχύει μέσα στο ημερολογιακό έτος που έγινε· με την αλλαγή του χρόνου
+        #: η εφαρμογή περνά μόνη της στη νέα χρήση (δείτε fiscal.resolve_year).
+        self._fiscal_year = resolve_year(
+            self._prefs.value("fiscal/year", 0, type=int),
+            self._prefs.value("fiscal/chosen_in", 0, type=int),
+        )
+        self._calendar_year = date.today().year
+        #: Οι πελάτες και το διάστημα (ISO) της τελευταίας λήψης — για την
+        #: ειδοποίηση «αχαρακτήριστα με παρακράτηση» στο τέλος της.
+        self._sync_vats: list[str] = []
+        self._sync_window: tuple[str, str] = ("", "")
+        #: Τι ανοίγει ένα κλικ στην ειδοποίηση των Windows (ΑΦΜ πελάτη).
+        self._alert_vat: str | None = None
         #: Πότε έτρεξε τελευταία φορά ΠΡΟΓΡΑΜΜΑΤΙΣΜΕΝΗ λήψη. Επιβιώνει σε
         #: επανεκκίνηση: αλλιώς ένα άνοιγμα-κλείσιμο της εφαρμογής μετά την ώρα
         #: του ραντεβού θα ξανακατέβαζε τα πάντα, κάθε φορά.
@@ -259,6 +276,7 @@ class MainWindow(QMainWindow):
         self._sched_timer = QTimer(self)
         self._sched_timer.setInterval(60_000)
         self._sched_timer.timeout.connect(self._check_schedule)
+        self._sched_timer.timeout.connect(self._check_fiscal_rollover)
         self._sched_timer.start()
         QTimer.singleShot(400, self._maybe_first_run_tour)
         if self._connection_problem:
@@ -371,6 +389,8 @@ class MainWindow(QMainWindow):
     def _setup_tray(self) -> None:
         self.tray = Tray(self, self.windowIcon(), ROLE_LABELS_EL.get(self._role, ""))
         self.tray.show()
+        # Κλικ στην ειδοποίηση του τέλους της λήψης: ανοίγει ό,τι αναφέρει.
+        self.tray.messageClicked.connect(self._on_tray_message_clicked)
         self._really_quit = False
         self._tray_notified = False
         self._tour_pending = False
@@ -605,6 +625,24 @@ class MainWindow(QMainWindow):
         # μηνύματα προόδου.
         topbar = QHBoxLayout()
         topbar.setContentsMargins(2, 0, 2, 0)
+        # Η χρήση, πάνω αριστερά και πάντα ορατή: ό,τι δείχνουν πελάτες,
+        # παραστατικά και ανάλυση αφορά ΜΟΝΟ αυτήν.
+        self.fiscal_caption = QLabel("ΧΡΗΣΗ")
+        self.fiscal_caption.setObjectName("statLabel")
+        topbar.addWidget(self.fiscal_caption)
+        self.fiscal_combo = QComboBox()
+        self.fiscal_combo.setObjectName("fiscalYear")
+        self.fiscal_combo.setMinimumWidth(92)
+        self.fiscal_combo.setToolTip(
+            "Η χρήση (φορολογικό έτος) στην οποία δουλεύετε.\n\n"
+            "Πελάτες, παραστατικά, ανάλυση και εξαγωγές δείχνουν μόνο αυτήν.\n"
+            "Αλλάζει μόνη της με την αλλαγή του χρόνου· αλλάξτε την εδώ αν\n"
+            "χρειάζεται να δουλέψετε σε προηγούμενη χρήση."
+        )
+        self.fiscal_combo.setStyleSheet("font-weight:700;")
+        self._fill_fiscal_combo()
+        self.fiscal_combo.currentIndexChanged.connect(self._on_fiscal_combo)
+        topbar.addWidget(self.fiscal_combo)
         topbar.addStretch()
         self.active_client = QLabel("Κανένας πελάτης επιλεγμένος")
         self.active_client.setToolTip("Ο πελάτης στον οποίο δουλεύετε τώρα")
@@ -626,6 +664,9 @@ class MainWindow(QMainWindow):
 
         self.docs = DocumentsView(self.settings, self._prefs)
         self.docs.back_requested.connect(lambda: self._show_page("clients"))
+        self.docs.set_year(self._fiscal_year)
+        self.sync_page.set_fiscal_year(self._fiscal_year)
+        self._update_window_title()
         self.stack.addWidget(self.docs)
 
         self.control = ControlPanel(
@@ -703,6 +744,77 @@ class MainWindow(QMainWindow):
         self.menu.set_active("clients")
         self.menu.set_enabled_action("documents", False)
         self._chrome_for("launcher")
+
+    # ---------------------------------------------------------------- χρήση
+    def _fill_fiscal_combo(self) -> None:
+        combo = self.fiscal_combo
+        combo.blockSignals(True)
+        combo.clear()
+        years = year_choices(repo.document_years(self.conn))
+        if self._fiscal_year not in years:
+            years = sorted({*years, self._fiscal_year}, reverse=True)
+        for year in years:
+            combo.addItem(str(year), year)
+        combo.setCurrentIndex(max(combo.findData(self._fiscal_year), 0))
+        combo.blockSignals(False)
+
+    def _update_window_title(self) -> None:
+        self.setWindowTitle(
+            f"Timologio Downloader — Λήψη Παραστατικών myDATA — Χρήση {self._fiscal_year}"
+        )
+
+    def _on_fiscal_combo(self, index: int) -> None:
+        year = self.fiscal_combo.itemData(index)
+        if year:
+            self._set_fiscal_year(int(year), manual=True)
+
+    def _set_fiscal_year(self, year: int, *, manual: bool) -> None:
+        """Αλλάζει τη χρήση σε όλο το πρόγραμμα με μία κίνηση."""
+        if manual:
+            self._prefs.setValue("fiscal/year", year)
+            self._prefs.setValue("fiscal/chosen_in", date.today().year)
+        if year == self._fiscal_year and self.fiscal_combo.currentData() == year:
+            return
+        self._fiscal_year = year
+        self._fill_fiscal_combo()
+        self._update_window_title()
+        # Όσο τρέχει λήψη το διάστημά της μένει ως έχει — αλλάζει στο τέλος.
+        if self._thread is None:
+            self.sync_page.set_fiscal_year(year)
+        self.docs.set_year(year)
+        self.reload_clients()
+        self._on_selection(animate=False)
+        self._log(f"Χρήση {year}")
+
+    def _check_fiscal_rollover(self) -> None:
+        """Αλλαγή της μέρας και του χρόνου, ενώ η εφαρμογή μένει ανοιχτή.
+
+        Μέρα: το «Έως» της λήψης που έδειχνε «σήμερα» προχωρά στη νέα μέρα —
+        αλλιώς μια εφαρμογή που ζει εβδομάδες στο tray θα έκανε τις
+        προγραμματισμένες λήψεις με το «Έως» της μέρας που ξεκίνησε.
+        Χρόνος: η εφαρμογή περνά μόνη της στη νέα χρήση.
+        """
+        today = date.today()
+        last = getattr(self, "_last_today", today)
+        self._last_today = today
+        if today != last and self._thread is None:
+            if self.sync_page.date_to.gr() == last.strftime("%d/%m/%Y"):
+                self.sync_page.date_to.set_gr(today.strftime("%d/%m/%Y"))
+        if today.year == self._calendar_year:
+            return
+        self._calendar_year = today.year
+        self._prefs.setValue("fiscal/year", today.year)
+        self._prefs.setValue("fiscal/chosen_in", today.year)
+        if self._fiscal_year != today.year:
+            self._set_fiscal_year(today.year, manual=False)
+            self._notify_done(
+                f"Νέα χρήση {today.year}",
+                "Η εφαρμογή πέρασε στη νέα χρήση. Η προηγούμενη μένει "
+                "διαθέσιμη από την επιλογή «Χρήση» πάνω αριστερά.",
+            )
+
+    def _year_iso(self) -> tuple[str, str]:
+        return year_bounds_iso(self._fiscal_year)
 
     def _build_status_bar(self) -> None:
         """Η γραμμή κατάστασης μένει για τα προσωρινά μηνύματα (showMessage).
@@ -1062,17 +1174,20 @@ class MainWindow(QMainWindow):
         stats = {
             r["client_id"]: r
             for r in self.conn.execute(
-                f"""SELECT d.client_id, COUNT(*) c,
-                          SUM(d.status='downloaded') dn,
-                          SUM(d.classification='unclassified') u,
-                          COALESCE(SUM(CASE WHEN d.issuer_vat = c.vat
+                # Τα μετρητά αφορούν τη χρήση (το «iy»)· η τελευταία λήψη όχι —
+                # είναι γεγονός του υπολογιστή, όχι της χρήσης.
+                f"""SELECT d.client_id, SUM({_IN_YEAR}) c,
+                          SUM({_IN_YEAR} AND d.status='downloaded') dn,
+                          SUM({_IN_YEAR} AND d.classification='unclassified') u,
+                          COALESCE(SUM(CASE WHEN {_IN_YEAR} AND d.issuer_vat = c.vat
                                             THEN {signed_sql('d.total_value', 'd.invoice_type')} ELSE 0 END),0) income,
-                          COALESCE(SUM(CASE WHEN d.issuer_vat <> c.vat
+                          COALESCE(SUM(CASE WHEN {_IN_YEAR} AND d.issuer_vat <> c.vat
                                             THEN {signed_sql('d.total_value', 'd.invoice_type')} ELSE 0 END),0) expense,
                           MAX(CASE WHEN d.status='downloaded'
                                    THEN d.updated_at END) last_dl
                    FROM documents d JOIN clients c ON c.id = d.client_id
-                   GROUP BY d.client_id"""
+                   GROUP BY d.client_id""",
+                dict(zip(("y0", "y1"), self._year_iso())),
             )
         }
         # Ώρα τελευταίας λήψης ανά ΑΦΜ, έτοιμη για εμφάνιση/ταξινόμηση.
@@ -1401,7 +1516,7 @@ class MainWindow(QMainWindow):
         self._pinned_vat = vats[0] if len(vats) == 1 else self._pinned_vat
         if vats:
             if len(vats) == 1:
-                self.analysis.show_client(self.conn, vats[0])
+                self.analysis.show_client(self.conn, vats[0], self._fiscal_year)
             else:
                 self.analysis.show_placeholder(f"{len(vats)} πελάτες επιλεγμένοι.")
             already = self._panel_open
@@ -1587,6 +1702,11 @@ class MainWindow(QMainWindow):
         chooser = name == "launcher"
         self.menu.setVisible(not chooser)
         self.active_client.setVisible(not chooser and name != "etimologio")
+        # Η χρήση αφορά όλη τη Λήψη Παραστατικών — όχι την οθόνη επιλογής ούτε
+        # το e-Τιμολόγιο, που έχει δικές του περιόδους.
+        downloader = not chooser and name != "etimologio"
+        self.fiscal_caption.setVisible(downloader)
+        self.fiscal_combo.setVisible(downloader)
         # Η γραμμή κατάστασης μετρά ΠΕΛΑΤΕΣ ΤΗΣ ΛΗΨΗΣ («155 πελάτες · 40
         # διαθέσιμοι · …»). Μέσα στο e-Τιμολόγιο δεν σημαίνει τίποτα και έμενε
         # εκεί σαν υπόλειμμα άλλης εφαρμογής — τη σβήνουμε και την επαναφέρουμε
@@ -1636,7 +1756,7 @@ class MainWindow(QMainWindow):
     def _leave_etimologio(self) -> None:
         """Επιστροφή στον Timologio Downloader."""
         self.menu.set_mode("downloader")
-        self.setWindowTitle("Timologio Downloader — Λήψη Παραστατικών myDATA")
+        self._update_window_title()
         self._set_mode_icon(etimologio=False)
         self._show_page("clients")
 
@@ -2183,6 +2303,11 @@ class MainWindow(QMainWindow):
             return
 
         create_backup(self.settings.db_path, reason="sync")
+        self._sync_vats = list(vats)
+        wide_from, wide_to = discovery_window(
+            self.sync_page.date_from.gr(), self.sync_page.date_to.gr()
+        )
+        self._sync_window = (to_iso(wide_from), to_iso(wide_to))
         self._set_running(True, len(vats))
         self._show_page("sync")
         self._log(
@@ -2705,6 +2830,16 @@ class MainWindow(QMainWindow):
                 lambda: self._show_page("clients"),
             ),
             Step(
+                "Η χρήση",
+                "Πάνω αριστερά φαίνεται η χρήση (φορολογικό έτος) στην οποία "
+                "δουλεύετε. Όλο το πρόγραμμα μετρά μέσα σε αυτήν: πελάτες, "
+                "λεπτομέρειες του πελάτη, παραστατικά, εξαγωγές και λήψη.\n\n"
+                "Αλλάζει μόνη της με την αλλαγή του χρόνου. Για να δουλέψετε σε "
+                "προηγούμενη χρήση, διαλέξτε τη από τη λίστα.",
+                lambda: self.fiscal_combo,
+                lambda: self._show_page("clients"),
+            ),
+            Step(
                 "3. Φτιάξτε τους πίνακες όπως θέλετε",
                 "Σε κάθε πίνακα της εφαρμογής:\n\n"
                 "• Σύρετε το όριο μιας επικεφαλίδας για να αλλάξετε πλάτος.\n"
@@ -2726,7 +2861,9 @@ class MainWindow(QMainWindow):
             Step(
                 "4. Η ανάλυση",
                 "Για τον επιλεγμένο πελάτη βλέπετε έσοδα, έξοδα, τι κατέβηκε "
-                "και τι έμεινε αχαρακτήριστο.\n\n"
+                "και τι έμεινε αχαρακτήριστο — για την επιλεγμένη χρήση, μαζί "
+                "με τις παρακρατήσεις/κρατήσεις και τα κενά της χρήσης που δεν "
+                "έχουν ζητηθεί ακόμη («Λήψη κενού»).\n\n"
                 "Κάθε πλακίδιο είναι κουμπί: πατήστε το και ο πίνακας "
                 "παραστατικών ανοίγει φιλτραρισμένος σε αυτό ακριβώς.\n\n"
                 "Το panel είναι δικό σας: το κουμπί «Λεπτομέρειες» πάνω από τον "
@@ -2740,6 +2877,11 @@ class MainWindow(QMainWindow):
                 "Διαλέξτε περίοδο, αν θέλετε έσοδα, έξοδα ή και τα δύο, και "
                 "ποιοι πελάτες θα κατέβουν. Ο ενεργός πελάτης έρχεται εδώ "
                 "αυτόματα επιλεγμένος και τσεκαρισμένος.\n\n"
+                "Η περίοδος ορίζει ποια PDF κατεβαίνουν. Τα στοιχεία (ποσά, "
+                "χαρακτηρισμός, παρακρατήσεις) έρχονται πάντα για ΟΛΗ τη χρήση "
+                "ως σήμερα, ώστε τα σύνολα να είναι σωστά. Αν κάποιος πελάτης "
+                "έχει αχαρακτήριστα με παρακρατούμενο φόρο, η σύνοψη στο τέλος "
+                "το λέει με σύνδεσμο «δείξε τα».\n\n"
                 "Η εφαρμογή ζητά μόνο ό,τι είναι νεότερο από την προηγούμενη "
                 "φορά, οπότε η δεύτερη λήψη είναι σχεδόν ακαριαία.\n\n"
                 "Βιάζεστε; Με την «Έξυπνη λήψη» κατεβαίνουν PDF μόνο για τα "
@@ -2757,6 +2899,9 @@ class MainWindow(QMainWindow):
                 "Ο πίνακας ανοίγει στα αχαρακτήριστα — αυτά που θέλουν δουλειά "
                 "από εσάς. Η μπλε ταινία σας το θυμίζει· «Καθαρισμός» για όλα.\n\n"
                 "Τα φίλτρα συνδυάζονται: π.χ. έξοδα ΚΑΙ ελήφθησαν PDF.\n\n"
+                "Η στήλη «Παρακρ./Κρατ.» δείχνει παρακρατούμενους φόρους και "
+                "κρατήσεις (ανάλυση στο tooltip)· στον «Χαρακτηρισμό» υπάρχει "
+                "και το φίλτρο «Αχαρακτ. με παρακράτηση».\n\n"
                 "Τσεκάρετε παραστατικά (η επιλογή μετράει ακόμη κι αν ένα φίλτρο "
                 "τα κρύβει) και: «Εξαγωγή σε ZIP» για να τα πακετάρετε, ή "
                 "«Μαζική εκτύπωση» που ανοίγει προεπισκόπηση και τυπώνει από εκεί.\n\n"
@@ -3093,7 +3238,7 @@ class MainWindow(QMainWindow):
         base = (
             f"παραστατικά {vats[0]} {_safe_name(self._label_for(vats[0]))}".strip()
             if len(vats) == 1 else "παραστατικά"
-        )
+        ) + f" {self._fiscal_year}"
 
         # 1) Επιλογή μορφής από αναπτυσσόμενο μενού (roller) — Excel ή CSV.
         dialog = QDialog(self)
@@ -3101,7 +3246,9 @@ class MainWindow(QMainWindow):
         dialog.setMinimumWidth(420)
         box_lay = QVBoxLayout(dialog)
         box_lay.setSpacing(10)
-        box_lay.addWidget(QLabel(f"Μορφή αρχείου για <b>{who}</b>:"))
+        box_lay.addWidget(QLabel(
+            f"Μορφή αρχείου για <b>{who}</b> — χρήση <b>{self._fiscal_year}</b>:"
+        ))
         combo = QComboBox()
         combo.addItem("Excel (.xlsx) — ταξινομήσιμος πίνακας με φίλτρα", "excel")
         combo.addItem("CSV (.csv) — απλό κείμενο για εισαγωγή αλλού", "csv")
@@ -3149,7 +3296,7 @@ class MainWindow(QMainWindow):
                         f"{target.stem} {vat} {_safe_name(self._label_for(vat))}"
                         f"{target.suffix}".replace("  ", " ")
                     )
-                total += writer(self.conn, target, vat)
+                total += writer(self.conn, target, vat, self._fiscal_year)
         self._log(f"Εξήχθησαν {total} παραστατικά για {who} ({kind})")
         QMessageBox.information(
             self, "Η εξαγωγή ολοκληρώθηκε",
@@ -3211,10 +3358,65 @@ class MainWindow(QMainWindow):
             body = f"{found} παραστατικά · {pdfs} PDF"
             if failed:
                 body += f" · {failed} σφάλματα"
+            alerts = self._withheld_alerts()
+            self._alert_vat = alerts[0]["vat"] if alerts else None
+            if alerts:
+                n = sum(int(a["n"]) for a in alerts)
+                body += (
+                    f"\n⚠ {n} αχαρακτήριστα με παρακρατούμενο φόρο"
+                    + (f" ({alerts[0]['label'] or alerts[0]['vat']})" if len(alerts) == 1 else "")
+                    + " — κλικ για προβολή"
+                )
             self._notify_done("Η λήψη ολοκληρώθηκε", body)
-            self._show_sync_summary(totals)
+            self._show_sync_summary(totals, alerts)
 
-    def _show_sync_summary(self, totals: tuple[int, int, int, int, int] | None) -> None:
+    def _withheld_alerts(self) -> list:
+        """Αχαρακτήριστα με παρακρατούμενο φόρο στους πελάτες της λήψης.
+
+        Μετρά όλη τη χρήση που ανανεώθηκε (όχι μόνο το διάστημα των PDF): η
+        εκκρεμότητα υπάρχει όπου κι αν πέφτει μέσα στο έτος.
+        """
+        start, end = self._sync_window
+        if not self._sync_vats or not start or not end:
+            return []
+        try:
+            return repo.withheld_unclassified(self.conn, self._sync_vats, start, end)
+        except Exception:  # noqa: BLE001 — η ειδοποίηση δεν ρίχνει τη λήψη
+            log.exception("Ο έλεγχος παρακρατήσεων απέτυχε")
+            return []
+
+    def open_withheld(self, vat: str) -> None:
+        """Ο σύνδεσμος της ειδοποίησης: τα αχαρακτήριστα με παρακράτηση του
+        πελάτη, φιλτραρισμένα — με ένα κλικ, χωρίς αναζήτηση."""
+        if not vat:
+            return
+        self.bring_to_front()
+        # Ο πελάτης γίνεται ο ενεργός, ώστε μενού και ανάλυση να συμφωνούν με
+        # ό,τι ανοίγει.
+        self.table.clearSelection()
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, _COL_VAT)
+            if item is not None and item.text() == vat:
+                self.table.selectRow(i)
+                break
+        self._set_pinned(vat)
+        with self._busy("Φόρτωση παραστατικών…"):
+            self.docs.show_client(
+                self.conn, vat, self._label_for(vat), "unclassified_withheld"
+            )
+            self._show_page("documents")
+            self._refresh_tooltips()
+
+    def _on_tray_message_clicked(self) -> None:
+        vat, self._alert_vat = self._alert_vat, None
+        if vat:
+            self.open_withheld(vat)
+        else:
+            self.bring_to_front()
+
+    def _show_sync_summary(
+        self, totals: tuple[int, int, int, int, int] | None, alerts=None
+    ) -> None:
         """Popup επιτυχίας στο τέλος της λήψης — αλλιώς ο χρήστης δεν ξέρει αν
         τελείωσε ή αν απλώς σταμάτησε η μπάρα."""
         found, pdfs, no_url, viewer_only, failed = totals or (0, 0, 0, 0, 0)
@@ -3248,8 +3450,31 @@ class MainWindow(QMainWindow):
                 f'<span style="color:{CURRENT.accent};">{backlog} PDF μένουν σε '
                 "αναμονή — «Λήψη εκκρεμών» από το μενού τα κατεβάζει όλα</span>"
             )
+        # Αχαρακτήριστα με παρακρατούμενο φόρο: σύνδεσμος ανά πελάτη που ανοίγει
+        # κατευθείαν τα παραστατικά, ήδη φιλτραρισμένα.
+        for alert in alerts or []:
+            who = alert["label"] or alert["vat"]
+            lines.append(
+                f'<span style="color:{CURRENT.bad};">⚠ <b>{who}</b>: {alert["n"]} '
+                f'αχαρακτήριστα με παρακρατούμενο φόρο ({money(alert["amount"])} €)'
+                f'</span> — <a href="withheld:{alert["vat"]}" '
+                f'style="color:{CURRENT.accent}; font-weight:700;">δείξε τα</a>'
+            )
         box.setText("Η λήψη ολοκληρώθηκε.<br><br>" + "<br>".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        if alerts:
+            label = box.findChild(QLabel, "qt_msgbox_label")
+            if label is not None:
+                label.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextBrowserInteraction
+                )
+                label.setOpenExternalLinks(False)
+                label.linkActivated.connect(
+                    lambda href: (box.accept(), self.open_withheld(href.partition(":")[2]))
+                )
+            if len(alerts) == 1:
+                show = box.addButton("Δείξε τα", QMessageBox.ButtonRole.ActionRole)
+                show.clicked.connect(lambda: self.open_withheld(alerts[0]["vat"]))
         box.exec()
 
     def _on_busy(self, message: str) -> None:
