@@ -31,6 +31,7 @@ class SyncWorker(QObject):
     finished = Signal(bool)                # ολοκληρώθηκε χωρίς ακύρωση
     failed = Signal(str)
     busy = Signal(str)                     # άλλος υπολογιστής κατεβάζει ήδη
+    problem = Signal(str, str, str)        # vat, label, γιατί δεν ολοκληρώθηκε
 
     def __init__(
         self,
@@ -135,6 +136,8 @@ class SyncWorker(QObject):
                     conn, run_id, client_vat=client.vat, event="sync",
                     detail=f"found={stats.docs_found} pdf={stats.pdfs_ok}",
                 )
+                if stats.problem:
+                    self.problem.emit(client.vat, client.label, stats.problem)
                 conn.commit()
                 self.client_finished.emit(
                     client.vat, stats.docs_found, stats.pdfs_ok, stats.failed

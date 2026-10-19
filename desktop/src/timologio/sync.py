@@ -79,8 +79,16 @@ def discover(
     # Οι πελάτες του Excel είναι συχνά και αντισυμβαλλόμενοι μεταξύ τους —
     # τζάμπα επωνυμίες για το μητρώο.
     repo.seed_suppliers_from_clients(conn)
+    # Commit ΠΡΙΝ από το δίκτυο: μια ανοιχτή εγγραφή κρατά κλειδωμένη τη βάση
+    # για όλους τους άλλους (το παράθυρο, άλλα τερματικά) όσο κρατά η κλήση
+    # στην ΑΑΔΕ — και για όλη τη χρήση αυτό είναι λεπτά, όχι δευτερόλεπτα.
+    conn.commit()
 
-    with MydataClient(client.mydata_user, client.mydata_key, settings) as api:
+    with MydataClient(
+        client.mydata_user, client.mydata_key, settings,
+        on_wait=lambda text: progress(f"{client.vat}: {text}"),
+        should_cancel=should_cancel,
+    ) as api:
         for direction in directions:
             if should_cancel and should_cancel():
                 break
@@ -112,10 +120,26 @@ def discover(
                     f"{direction.value}"
                 )
 
-            docs = api.fetch(
-                direction, mark=cursor, date_from=date_from, date_to=date_to,
-                should_cancel=should_cancel,
-            )
+            try:
+                docs = api.fetch(
+                    direction, mark=cursor, date_from=date_from, date_to=date_to,
+                    should_cancel=should_cancel,
+                )
+            except MydataError as exc:
+                # Τα παραστατικά που πρόλαβαν να έρθουν κρατιούνται· ο cursor και
+                # η κάλυψη ΔΕΝ προχωρούν, οπότε η επόμενη λήψη ξαναζητά την ουρά.
+                partial = getattr(exc, "partial", None) or []
+                if partial:
+                    repo.learn_supplier_names(conn, partial)
+                    for doc in partial:
+                        repo.upsert_document(conn, client.id, doc)
+                    conn.commit()
+                    found += len(partial)
+                    progress(
+                        f"{client.vat}: κρατήθηκαν {len(partial)} {direction.value} "
+                        "που πρόλαβαν να έρθουν"
+                    )
+                raise
             # Πρώτα μαθαίνουμε επωνυμίες, μετά γράφουμε: έτσι ένα παραστατικό
             # χωρίς <name> παίρνει την επωνυμία που είδαμε σε άλλο του ίδιου ΑΦΜ
             # μέσα στην ίδια παρτίδα.
@@ -156,6 +180,24 @@ def discover(
                 progress(f"{client.vat}: χαρακτηρισμός για {updated} παραστατικά")
 
     return found
+
+
+def problem_text(exc: MydataError) -> str:
+    """Τι να διαβάσει ο χρήστης όταν η ΑΑΔΕ δεν άφησε να ολοκληρωθεί η λήψη."""
+    from .mydata.errors import RateLimitError, TransientError
+
+    if isinstance(exc, RateLimitError):
+        return (
+            "Προσωρινός περιορισμός από την ΑΑΔΕ (πολλά αιτήματα σε λίγο χρόνο). "
+            "Η λήψη δεν ολοκληρώθηκε — ό,τι πρόλαβε να έρθει κρατήθηκε· "
+            "δοκιμάστε ξανά σε λίγα λεπτά."
+        )
+    if isinstance(exc, TransientError):
+        return (
+            "Η ΑΑΔΕ δεν απάντησε (σφάλμα ή καθυστέρηση στον server της). "
+            "Δοκιμάστε ξανά σε λίγο."
+        )
+    return exc.message_el
 
 
 def _save_xml(conn: sqlite3.Connection, settings: Settings, client: Client, doc) -> None:
@@ -208,7 +250,9 @@ def resolve_names_via_vies(
                 resolved += 1
             else:
                 repo.record_vies_miss(conn, vat)
-    conn.commit()
+            # Ένα commit ανά απάντηση: αλλιώς η βάση έμενε κλειδωμένη για όλες
+            # τις (έως 200) αναζητήσεις στο VIES.
+            conn.commit()
     if resolved:
         progress(f"VIES: βρέθηκαν {resolved} επωνυμίες")
     return resolved
@@ -697,11 +741,13 @@ def sync_client(
     except AuthError as exc:
         # Μόνο αυτός ο πελάτης σταματά· ο cursor μένει ως έχει.
         stats.failed += 1
+        stats.problem = exc.message_el
         progress(f"{client.vat}: {exc.message_el}")
         return stats
     except MydataError as exc:
         stats.failed += 1
-        progress(f"{client.vat}: {exc.message_el}")
+        stats.problem = problem_text(exc)
+        progress(f"{client.vat}: {stats.problem}")
         return stats
 
     assert client.id is not None
@@ -733,8 +779,10 @@ def sync_client(
     # πάροχος ήταν στιγμιαία εκτός) ξαναμπαίνουν στην ουρά και ξαναδοκιμάζονται
     # τώρα — χωρίς να χρειάζεται να κάνει κάτι ο χρήστης.
     requeued = repo.requeue_errors(conn, client.id)
+    # Πάντα commit: το UPDATE ανοίγει συναλλαγή ακόμη κι όταν δεν αλλάζει
+    # γραμμή, και θα έμενε ανοιχτή όσο μιλάμε με τους παρόχους.
+    conn.commit()
     if requeued:
-        conn.commit()
         progress(f"{client.vat}: επανάληψη λήψης για {requeued} με σφάλμα")
 
     stats.no_url = int(
@@ -826,8 +874,10 @@ def download_backlog(
     stats = RunStats()
     assert client.id is not None
     requeued = repo.requeue_errors(conn, client.id)
+    # Πάντα commit: το UPDATE ανοίγει συναλλαγή ακόμη κι όταν δεν αλλάζει
+    # γραμμή, και θα έμενε ανοιχτή όσο μιλάμε με τους παρόχους.
+    conn.commit()
     if requeued:
-        conn.commit()
         progress(f"{client.vat}: επανάληψη λήψης για {requeued} με σφάλμα")
     download_pending(
         conn, client, settings, stats=stats,

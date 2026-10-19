@@ -220,6 +220,8 @@ class MainWindow(QMainWindow):
         #: Οι πελάτες και το διάστημα (ISO) της τελευταίας λήψης — για την
         #: ειδοποίηση «αχαρακτήριστα με παρακράτηση» στο τέλος της.
         self._sync_vats: list[str] = []
+        #: Πελάτες που η ΑΑΔΕ δεν άφησε να ολοκληρωθούν: (ΑΦΜ, επωνυμία, γιατί).
+        self._sync_problems: list[tuple[str, str, str]] = []
         self._sync_window: tuple[str, str] = ("", "")
         #: Τι ανοίγει ένα κλικ στην ειδοποίηση των Windows (ΑΦΜ πελάτη).
         self._alert_vat: str | None = None
@@ -2304,6 +2306,7 @@ class MainWindow(QMainWindow):
 
         create_backup(self.settings.db_path, reason="sync")
         self._sync_vats = list(vats)
+        self._sync_problems = []
         wide_from, wide_to = discovery_window(
             self.sync_page.date_from.gr(), self.sync_page.date_to.gr()
         )
@@ -2334,6 +2337,7 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.busy.connect(self._on_busy)
+        self._worker.problem.connect(self._on_client_problem)
         self._thread.start()
 
     # ------------------------------------------------- η ουρά που ξεχάστηκε
@@ -2398,6 +2402,7 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.busy.connect(self._on_busy)
+        self._worker.problem.connect(self._on_client_problem)
         self._thread.start()
 
     def _ask_backlog(self, rows, total: int, picked_rows=None, picked_vats=None):
@@ -3308,6 +3313,12 @@ class MainWindow(QMainWindow):
         self._log(f"── {vat} {label}")
         self.progress_label.setText(f"Λήψη: {label or vat}")
 
+    def _on_client_problem(self, vat: str, label: str, text: str) -> None:
+        """Η ΑΑΔΕ δεν άφησε τον πελάτη να ολοκληρωθεί — φαίνεται ΤΩΡΑ στη μπάρα
+        και ξανά στη σύνοψη, όχι σαν σκέτο «1 σφάλμα»."""
+        self._sync_problems.append((vat, label, text))
+        self._log(f"⚠ {label or vat}: {text}")
+
     def _on_client_finished(self, vat: str, found: int, pdfs: int, failed: int) -> None:
         self.progress.setValue(self.progress.value() + 1)
         note = f", {failed} σφάλματα" if failed else ""
@@ -3358,6 +3369,8 @@ class MainWindow(QMainWindow):
             body = f"{found} παραστατικά · {pdfs} PDF"
             if failed:
                 body += f" · {failed} σφάλματα"
+            if self._sync_problems:
+                body += f"\n⚠ {len(self._sync_problems)} πελάτες δεν ολοκληρώθηκαν (ΑΑΔΕ)"
             alerts = self._withheld_alerts()
             self._alert_vat = alerts[0]["vat"] if alerts else None
             if alerts:
@@ -3449,6 +3462,12 @@ class MainWindow(QMainWindow):
             lines.append(
                 f'<span style="color:{CURRENT.accent};">{backlog} PDF μένουν σε '
                 "αναμονή — «Λήψη εκκρεμών» από το μενού τα κατεβάζει όλα</span>"
+            )
+        # Πελάτες που σταμάτησαν από την ΑΑΔΕ (περιορισμός αιτημάτων κ.λπ.):
+        # ονομαστικά και με την αιτία, όχι μέσα σε ένα ανώνυμο «N σφάλματα».
+        for vat, label, text in getattr(self, "_sync_problems", []):
+            lines.append(
+                f'<span style="color:{CURRENT.bad};">⚠ <b>{label or vat}</b>: {text}</span>'
             )
         # Αχαρακτήριστα με παρακρατούμενο φόρο: σύνδεσμος ανά πελάτη που ανοίγει
         # κατευθείαν τα παραστατικά, ήδη φιλτραρισμένα.

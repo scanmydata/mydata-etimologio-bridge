@@ -114,8 +114,8 @@ _COL_OPEN = len(_COLS) - 1
 #: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και οι
 #: ημερομηνίες) που αξίζει να φιλτράρονται με λίστα — όχι ποσά/αύξοντες αριθμούς.
 _FILTERABLE_COLS = (
-    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_CLS,
-    _COL_STATUS, _COL_PRINTED,
+    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_WITHHELD,
+    _COL_CLS, _COL_STATUS, _COL_PRINTED,
 )
 
 #: Τρεις ανεξάρτητοι άξονες αντί για έναν κατάλογο αμοιβαία αποκλειόμενων
@@ -686,7 +686,7 @@ class DocumentsView(QWidget):
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(
                 self, "Ανανέωση",
-                f"Ο έλεγχος του φακέλου δεν ολοκληρώθηκε:\n{exc}",
+                f"Ο έλεγχος του φακέλου δεν ολοκληρώθηκε:\n{_busy_text(exc)}",
             )
             self.reload()
             return
@@ -794,12 +794,21 @@ class DocumentsView(QWidget):
         if col == _COL_PRINTED:
             pd = r["print_date"] if "print_date" in r.keys() else ""
             return _gr_date(pd) if pd else "—"
+        if col == _COL_WITHHELD:
+            # Ίδιο κείμενο με το κελί: «—» = χωρίς παρακράτηση, ώστε με ένα
+            # ξετσεκάρισμα να μένουν μόνο όσα έχουν.
+            amount = _amount(r, "withheld_amount") + _amount(r, "deductions_amount")
+            return money(signed(amount, r["invoice_type"])) if amount else "—"
         return ""
 
     def _distinct_col_values(self, col: int) -> list[str]:
         """Οι μοναδικές τιμές μιας στήλης στο τρέχον σύνολο (πριν τα φίλτρα
         στήλης), ταξινομημένες — για τη λίστα του γρήγορου φίλτρου."""
-        return sorted({self._col_value(r, col) for r in self._rows})
+        values = {self._col_value(r, col) for r in self._rows}
+        if col == _COL_WITHHELD:
+            # Ποσά: αριθμητικά, όχι αλφαβητικά («200,00» πριν από «1.240,00»).
+            return sorted(values, key=_money_key)
+        return sorted(values)
 
     def _open_col_filter(self, col: int) -> None:
         """Ανοίγει το ενσωματωμένο γρήγορο φίλτρο κάτω από την κεφαλίδα."""
@@ -1067,6 +1076,11 @@ class DocumentsView(QWidget):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             status, message = download_single(self._conn, self._settings, row)
+        except Exception as exc:  # noqa: BLE001
+            # Το PDF μπορεί να έχει ήδη γραφτεί στον δίσκο και να απέτυχε μόνο
+            # η σημείωση στη βάση (π.χ. απασχολημένη από λήψη που τρέχει). Ο
+            # έλεγχος φακέλου θα το βρει· η λίστα όμως ανανεώνεται ΠΑΝΤΑ.
+            status, message = None, _busy_text(exc)
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -1074,7 +1088,11 @@ class DocumentsView(QWidget):
             # Δεν υπάρχει PDF παρόχου — συνέχισε τη λήψη μέσω του browser.
             self._download_online_row(row)
             return
-        self.reload()
+        try:
+            if status is None:
+                self._reconcile_quietly()
+        finally:
+            self.reload()
         if status not in (DocStatus.DOWNLOADED,):
             QMessageBox.warning(self, "Λήψη παραστατικού", message)
 
@@ -1355,6 +1373,24 @@ class DocumentsView(QWidget):
             os.startfile(target)  # noqa: S606
         else:
             subprocess.Popen(["xdg-open", str(target)])
+
+
+def _busy_text(exc: Exception) -> str:
+    """Το «database is locked» στη γλώσσα του χρήστη."""
+    if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
+        return (
+            "Η βάση είναι απασχολημένη αυτή τη στιγμή — πιθανότατα τρέχει λήψη "
+            "(εδώ ή σε άλλον υπολογιστή). Δοκιμάστε ξανά σε λίγα δευτερόλεπτα."
+        )
+    return str(exc)
+
+
+def _money_key(text: str) -> float:
+    """«1.240,00» -> 1240.0· το «—» πρώτο."""
+    try:
+        return float(text.replace(".", "").replace(",", "."))
+    except ValueError:
+        return float("-inf")
 
 
 def _amount(r: sqlite3.Row, column: str) -> float:

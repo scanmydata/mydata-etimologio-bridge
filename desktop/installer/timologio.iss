@@ -13,7 +13,7 @@
 ; Software\scanmydata\TimologioDownloader (εκεί ζει ο φάκελος δεδομένων —
 ; μια αλλαγή εκεί θα άνοιγε την εφαρμογή σε ΑΔΕΙΑ βάση).
 #define AppName        "ScanmyData Suite"
-#define AppVersion     "0.4.39"
+#define AppVersion     "0.4.40"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 

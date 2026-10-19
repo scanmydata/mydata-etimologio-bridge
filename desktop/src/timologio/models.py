@@ -135,6 +135,8 @@ class Document:
 
 @dataclass
 class RunStats:
+    #: Γιατί δεν ολοκληρώθηκε ο πελάτης (π.χ. περιορισμός ΑΑΔΕ) — κενό αν όλα καλά.
+    problem: str = ""
     docs_found: int = 0
     pdfs_ok: int = 0
     no_url: int = 0

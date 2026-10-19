@@ -78,11 +78,17 @@ class _CredentialProbe(QObject):
 
     def run(self) -> None:
         from ..mydata.client import MydataClient
-        from ..mydata.errors import AuthError, MissingKeyError, MydataError
+        from ..mydata.errors import (
+            AuthError,
+            MissingKeyError,
+            MydataError,
+            RateLimitError,
+        )
 
         date_from, date_to = current_month()
         try:
-            with MydataClient(self._user, self._key, self._settings) as api:
+            with MydataClient(self._user, self._key, self._settings,
+                              retry=False) as api:
                 rows = api.check_credentials(
                     date_from=date_from, date_to=date_to, entity_vat=self._vat
                 )
@@ -94,6 +100,19 @@ class _CredentialProbe(QObject):
                 False,
                 "Η ΑΑΔΕ απέρριψε τα διαπιστευτήρια (403). Ελέγξτε ότι το κλειδί "
                 "είναι το «Api myData» και ότι ο χρήστης αντιστοιχεί σε αυτό.",
+            )
+            return
+        except RateLimitError as exc:
+            # 429 ΔΕΝ σημαίνει λάθος κωδικούς: η ΑΑΔΕ απλώς ζητά να περιμένουμε
+            # (μετρημένο: Retry-After 272″ μετά από ~10 γρήγορα αιτήματα).
+            if exc.retry_after:
+                wait = f" σε ~{max(1, round(exc.retry_after / 60))} λεπτά"
+            else:
+                wait = " σε λίγα λεπτά"
+            self.done.emit(
+                False,
+                "Προσωρινός περιορισμός από την ΑΑΔΕ (πολλά αιτήματα σε λίγο "
+                f"χρόνο) — ΔΕΝ φταίνε οι κωδικοί. Δοκιμάστε ξανά{wait}.",
             )
             return
         except MydataError as exc:
