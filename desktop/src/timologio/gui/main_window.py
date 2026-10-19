@@ -788,9 +788,10 @@ class MainWindow(QMainWindow):
         # Όσο τρέχει λήψη το διάστημά της μένει ως έχει — αλλάζει στο τέλος.
         if self._thread is None:
             self.sync_page.set_fiscal_year(year)
-        self.docs.set_year(year)
-        self.reload_clients()
-        self._on_selection(animate=False)
+        with self._busy(f"Χρήση {year}…"):
+            self.docs.set_year(year)
+            self.reload_clients()
+            self._on_selection(animate=False)
         self._log(f"Χρήση {year}")
 
     def _check_fiscal_rollover(self) -> None:

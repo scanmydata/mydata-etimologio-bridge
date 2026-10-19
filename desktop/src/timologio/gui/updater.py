@@ -118,13 +118,16 @@ class Updater(QObject):
         root.addWidget(head)
 
         # --- Σημειώσεις έκδοσης (τι νέο υπάρχει), σε κυλιόμενο πλαίσιο.
-        if info.notes:
+        if info.notes or info.notes_html:
             caption = QLabel("Τι νέο υπάρχει σε αυτή την έκδοση:")
             caption.setStyleSheet("font-weight:600;")
             root.addWidget(caption)
             notes = QTextBrowser()
             notes.setOpenExternalLinks(True)
-            notes.setMarkdown(info.notes)
+            if info.notes:
+                notes.setMarkdown(info.notes)
+            else:
+                notes.setHtml(info.notes_html)
             notes.setMinimumHeight(220)
             root.addWidget(notes, 1)
 

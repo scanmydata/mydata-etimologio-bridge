@@ -109,7 +109,7 @@ def test_empty_checkboxes_stand_out_from_the_background(app) -> None:
     from timologio.gui.theme import DARK, build
 
     qss = build(DARK)
-    for widget in ("QCheckBox", "QTableWidget", "QListWidget"):
+    for widget in ("QCheckBox", "QTableView", "QListWidget"):
         block = qss[qss.index(widget + "::indicator {"):]
         block = block[: block.index("}")]
         assert f"2px solid {DARK.muted}" in block, widget

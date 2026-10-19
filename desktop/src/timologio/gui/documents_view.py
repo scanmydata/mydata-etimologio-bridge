@@ -10,7 +10,16 @@ import unicodedata
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -25,7 +34,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QTableWidget,
+    QTableView,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -46,7 +55,7 @@ from ..reports import (
 from .icons import icon
 from .table_filter import FilterHeader
 from .theme import CURRENT, money
-from .widgets import GrDateEdit, resort, setup_columns
+from .widgets import GrDateEdit, setup_columns
 
 log = logging.getLogger(__name__)
 
@@ -243,6 +252,232 @@ class _ColFilterBridge:
             self.filters.clear()
             self._view._fill()  # noqa: SLF001
 
+_RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+_CENTER = Qt.AlignmentFlag.AlignCenter
+_DISPLAY = Qt.ItemDataRole.DisplayRole
+_TIP = Qt.ItemDataRole.ToolTipRole
+_FG = Qt.ItemDataRole.ForegroundRole
+_ALIGN = Qt.ItemDataRole.TextAlignmentRole
+_DECO = Qt.ItemDataRole.DecorationRole
+_CHECK = Qt.ItemDataRole.CheckStateRole
+
+
+class _DocModel(QAbstractTableModel):
+    """Τα παραστατικά ως μοντέλο: ο πίνακας ζητά ΜΟΝΟ τα κελιά που φαίνονται.
+
+    Ήταν `QTableWidget`, δηλαδή ένα αντικείμενο ανά κελί: 320.000 για πελάτη με
+    20.000 παραστατικά, ~5 δευτερόλεπτα πάγωμα σε κάθε εναλλαγή πελάτη, φίλτρο
+    και αναζήτηση. Τώρα το γέμισμα είναι μια λίστα Python· τα κελιά χτίζονται
+    όταν εμφανιστούν, για τις ~30 γραμμές της οθόνης. Το ίδιο και ο έλεγχος «αν
+    υπάρχει το αρχείο στον δίσκο»: γινόταν για ΚΑΘΕ γραμμή, τώρα μόνο για όσες
+    βλέπει ο χρήστης.
+    """
+
+    def __init__(self, view: DocumentsView) -> None:
+        super().__init__(view)
+        self._view = view
+        self.rows: list[sqlite3.Row] = []
+        self._cells: dict[int, dict[int, tuple]] = {}   # γραμμή -> κελιά
+        self._files: dict[str, bool] = {}               # ΜΑΡΚ -> υπάρχει αρχείο
+
+    # ---------------------------------------------------------- γέμισμα
+    def set_rows(self, rows: list[sqlite3.Row]) -> None:
+        self.beginResetModel()
+        self.rows = rows
+        self._cells.clear()
+        self._files.clear()
+        self.endResetModel()
+
+    def refresh(self) -> None:
+        """Ξαναχτίζει τα ορατά κελιά (π.χ. νέα χρώματα θέματος)."""
+        self._cells.clear()
+        if self.rows:
+            self.dataChanged.emit(
+                self.index(0, 0), self.index(len(self.rows) - 1, len(_COLS) - 1)
+            )
+
+    def checks_changed(self) -> None:
+        if self.rows:
+            self.dataChanged.emit(
+                self.index(0, _COL_CHECK), self.index(len(self.rows) - 1, _COL_CHECK),
+                [_CHECK],
+            )
+
+    # ---------------------------------------------------------- Qt API
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
+        return 0 if parent.isValid() else len(_COLS)
+
+    def headerData(self, section, orientation, role=_DISPLAY):
+        if orientation == Qt.Orientation.Horizontal and 0 <= section < len(_COLS):
+            if role == _DISPLAY:
+                return _COLS[section][0]
+            if role == _TIP:
+                return _COLS[section][2] or None
+        return None
+
+    def flags(self, index: QModelIndex):
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if index.column() == _COL_CHECK:
+            flags |= Qt.ItemFlag.ItemIsUserCheckable
+        return flags
+
+    def data(self, index: QModelIndex, role=_DISPLAY):
+        if not index.isValid() or index.row() >= len(self.rows):
+            return None
+        r = self.rows[index.row()]
+        if role == _MARK_ROLE:
+            return r["mark"]
+        col = index.column()
+        if col == _COL_CHECK and role == _CHECK:
+            return (Qt.CheckState.Checked if r["mark"] in self._view._checked
+                    else Qt.CheckState.Unchecked)
+        cells = self._cells.get(index.row())
+        if cells is None:
+            cells = self._cells[index.row()] = self._view._row_cells(r)
+        cell = cells.get(col)
+        if cell is None:
+            return None
+        text, sort_key, color, tip, align, deco, act = cell
+        if role == _DISPLAY:
+            return text
+        if role == _TIP:
+            return tip
+        if role == _FG:
+            return QColor(color) if color else None
+        if role == _ALIGN:
+            return align
+        if role == _DECO:
+            return deco
+        if role == _SORT_ROLE:
+            return sort_key
+        if role == _ACT_ROLE:
+            return act
+        return None
+
+    def setData(self, index: QModelIndex, value, role=_CHECK) -> bool:
+        if role != _CHECK or index.column() != _COL_CHECK or not index.isValid():
+            return False
+        mark = self.rows[index.row()]["mark"]
+        if getattr(value, "value", value) == Qt.CheckState.Checked.value:
+            self._view._checked.add(mark)
+        else:
+            self._view._checked.discard(mark)
+        self.dataChanged.emit(index, index, [_CHECK])
+        self._view._update_totals_caption()
+        return True
+
+    def sort(self, column: int, order=Qt.SortOrder.AscendingOrder) -> None:
+        """Κλικ στην κεφαλίδα: ταξινόμηση της λίστας, όχι 20.000 αντικειμένων."""
+        self.layoutAboutToBeChanged.emit()
+        self._view._sort_rows(self.rows, column, order)
+        self._cells.clear()
+        self.layoutChanged.emit()
+
+    def has_file(self, r: sqlite3.Row) -> bool:
+        mark = r["mark"]
+        known = self._files.get(mark)
+        if known is None:
+            rel = r["local_path"] or r["xml_path"]
+            try:
+                known = bool(rel) and (self._view._settings.storage_root / rel).exists()
+            except OSError:
+                known = False
+            self._files[mark] = known
+        return known
+
+
+class _Cell:
+    """Ένα κελί του μοντέλου με την όψη του `QTableWidgetItem` (text/data/…)."""
+
+    __slots__ = ("_index",)
+
+    def __init__(self, index: QModelIndex) -> None:
+        self._index = index
+
+    def index(self) -> QModelIndex:
+        return self._index
+
+    def row(self) -> int:
+        return self._index.row()
+
+    def column(self) -> int:
+        return self._index.column()
+
+    def text(self) -> str:
+        return str(self._index.data(_DISPLAY) or "")
+
+    def toolTip(self) -> str:
+        return str(self._index.data(_TIP) or "")
+
+    def data(self, role):
+        return self._index.data(role)
+
+    def checkState(self) -> Qt.CheckState:
+        value = self._index.data(_CHECK)
+        return value if isinstance(value, Qt.CheckState) else Qt.CheckState(value or 0)
+
+    def setCheckState(self, state: Qt.CheckState) -> None:
+        self._index.model().setData(self._index, state, _CHECK)
+
+
+class _HeaderCell:
+    __slots__ = ("_text",)
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:
+        return self._text
+
+    def setToolTip(self, _tip: str) -> None:
+        """Τα tooltips της κεφαλίδας τα δίνει το μοντέλο (headerData)."""
+
+
+class _DocTable(QTableView):
+    """`QTableView` με τις λίγες μεθόδους του `QTableWidget` που χρησιμοποιούν
+    τα κοινά βοηθητικά (μενού κελιού, στήλες, φίλτρα κεφαλίδας)."""
+
+    cellClicked = Signal(int, int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.clicked.connect(lambda i: self.cellClicked.emit(i.row(), i.column()))
+
+    def rowCount(self) -> int:
+        model = self.model()
+        return model.rowCount() if model is not None else 0
+
+    def columnCount(self) -> int:
+        model = self.model()
+        return model.columnCount() if model is not None else 0
+
+    def item(self, row: int, col: int) -> _Cell | None:
+        if not (0 <= row < self.rowCount() and 0 <= col < self.columnCount()):
+            return None
+        return _Cell(self.model().index(row, col))
+
+    def itemAt(self, pos) -> _Cell | None:
+        index = self.indexAt(pos)
+        return _Cell(index) if index.isValid() else None
+
+    def cellWidget(self, row: int, col: int):
+        return self.indexWidget(self.model().index(row, col))
+
+    def visualItemRect(self, cell: _Cell):
+        return self.visualRect(cell.index())
+
+    def horizontalHeaderItem(self, col: int) -> _HeaderCell | None:
+        if not 0 <= col < self.columnCount():
+            return None
+        text = self.model().headerData(col, Qt.Orientation.Horizontal, _DISPLAY)
+        return _HeaderCell(str(text or ""))
+
+    def setHorizontalHeaderLabels(self, _labels) -> None:
+        """Οι επικεφαλίδες έρχονται από το μοντέλο."""
+
 
 class DocumentsView(QWidget):
     """Λίστα παραστατικών με φίλτρα, σύνολα, άνοιγμα αρχείου και εξαγωγή ZIP."""
@@ -438,7 +673,9 @@ class DocumentsView(QWidget):
         self.search.textChanged.connect(lambda _: self._search_timer.start())
         root.addWidget(self.search)
 
-        self.table = QTableWidget(0, len(_COLS))
+        self.table = _DocTable()
+        self.model = _DocModel(self)
+        self.table.setModel(self.model)
         header = FilterHeader(_FILTERABLE_COLS, self.table)
         header.filterClicked.connect(self._open_col_filter)
         self.table.setHorizontalHeader(header)
@@ -463,7 +700,6 @@ class DocumentsView(QWidget):
         self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_context_menu)
-        self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, 1)
 
         self.totals = QFrame()
@@ -840,14 +1076,10 @@ class DocumentsView(QWidget):
         for col, allowed in self._col_filters.items():
             if allowed:
                 rows = [r for r in rows if self._col_value(r, col) in allowed]
+        rows = list(rows)
 
-        self.table.blockSignals(True)
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
         net = vat_sum = gross = withheld_sum = 0.0
-        root = self._settings.storage_root
-
-        for i, r in enumerate(rows):
+        for r in rows:
             withheld = _amount(r, "withheld_amount")
             deductions = _amount(r, "deductions_amount")
             # Πιστωτικά ΑΦΑΙΡΟΥΝΤΑΙ: η myDATA τα δίνει με θετικά ποσά.
@@ -856,104 +1088,14 @@ class DocumentsView(QWidget):
             vat_sum += signed(r["vat_amount"], r["invoice_type"])
             gross += signed(r["total_value"], r["invoice_type"])
 
-            is_income = r["issuer_vat"] == self._vat
-            other_vat = r["counter_vat"] if is_income else r["issuer_vat"]
-            other_name = r["counter_name"] if is_income else r["issuer_name"]
-            status = DocStatus(r["status"])
-            cls = Classification(r["classification"] or "unknown")
-
-            # Για παραστατικά με σφάλμα δείχνουμε τον σύνδεσμο του παρόχου στο
-            # tooltip, ώστε ο χρήστης να τον δει (και με δεξί κλικ να τον
-            # αντιγράψει/ανοίξει και να κάνει ο ίδιος inspect).
-            url = r["downloading_invoice_url"] or ""
-            is_error = status in (
-                DocStatus.FAILED_RETRYABLE, DocStatus.FAILED_PERMANENT
-            )
-            tip = f"ΜΑΡΚ {r['mark']}"
-            if is_error and url:
-                tip += (
-                    "\nΣφάλμα λήψης — σύνδεσμος παρόχου "
-                    f"(δεξί κλικ → Αντιγραφή/Άνοιγμα):\n{url}"
-                )
-
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-                           | Qt.ItemFlag.ItemIsSelectable)
-            check.setCheckState(
-                Qt.CheckState.Checked if r["mark"] in self._checked
-                else Qt.CheckState.Unchecked
-            )
-            check.setData(_MARK_ROLE, r["mark"])
-            self.table.setItem(i, _COL_CHECK, check)
-
-            printed_iso = r["print_date"] if "print_date" in r.keys() else ""
-            cells = {
-                _COL_DATE: _gr_date(r["issue_date"]),
-                _COL_KIND: "Έσοδο" if is_income else "Έξοδο",
-                _COL_TYPE: type_label(r["invoice_type"]),
-                4: other_name or "—", 5: other_vat or "—",
-                6: r["series"] or "—", 7: r["aa"] or "—",
-                _COL_NET: money(signed(r["net_value"], r["invoice_type"])),
-                _COL_VAT: money(signed(r["vat_amount"], r["invoice_type"])),
-                _COL_GROSS: money(signed(r["total_value"], r["invoice_type"])),
-                _COL_WITHHELD: money(signed(withheld + deductions, r["invoice_type"]))
-                if withheld or deductions else "—",
-                _COL_CLS: CLASSIFICATION_LABELS_EL[cls],
-                _COL_STATUS: _STATUS_SHORT[status],
-                _COL_PRINTED: _gr_date(printed_iso) if printed_iso else "—",
-            }
-            for col, text in cells.items():
-                if col == _COL_DATE:
-                    item = SortableItem(text, r["issue_date"] or "")
-                elif col == _COL_TYPE:
-                    item = SortableItem(text, _type_sort_key(r["invoice_type"]))
-                elif col == _COL_PRINTED:
-                    item = SortableItem(text, printed_iso)
-                elif col == _COL_WITHHELD:
-                    item = SortableItem(
-                        text, signed(withheld + deductions, r["invoice_type"])
-                    )
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight
-                                          | Qt.AlignmentFlag.AlignVCenter)
-                elif col in (_COL_NET, _COL_VAT, _COL_GROSS):
-                    amount = [r["net_value"], r["vat_amount"], r["total_value"]][
-                        col - _COL_NET
-                    ] or 0.0
-                    # Ταξινόμηση με το ίδιο πρόσημο που φαίνεται.
-                    item = SortableItem(text, signed(amount, r["invoice_type"]))
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight
-                                          | Qt.AlignmentFlag.AlignVCenter)
-                else:
-                    item = QTableWidgetItem(text)
-                if col == _COL_KIND:
-                    item.setForeground(QColor(CURRENT.ok if is_income else CURRENT.warn))
-                if col == _COL_CLS:
-                    item.setForeground(QColor(_cls_color(cls)))
-                if col == _COL_STATUS:
-                    item.setForeground(QColor(_status_color(status)))
-                if col == _COL_PRINTED and printed_iso:
-                    item.setForeground(QColor(CURRENT.ok))
-                item.setData(_MARK_ROLE, r["mark"])
-                if col == _COL_WITHHELD and (withheld or deductions):
-                    item.setToolTip(
-                        f"Παρακρατούμενοι φόροι: {money(withheld)} €\n"
-                        f"Κρατήσεις: {money(deductions)} €\n{tip}"
-                    )
-                    if cls is Classification.UNCLASSIFIED and withheld:
-                        item.setForeground(QColor(CURRENT.warn))
-                else:
-                    item.setToolTip(tip)
-                self.table.setItem(i, col, item)
-
-            rel = r["local_path"] or r["xml_path"]
-            self.table.setItem(
-                i, _COL_OPEN,
-                self._open_item(r, bool(rel) and (root / rel).exists()),
-            )
-
-        self.table.setSortingEnabled(True)
-        resort(self.table, _COL_DATE)
-        self.table.blockSignals(False)
+        # Η ταξινόμηση που διάλεξε ο χρήστης (κλικ σε κεφαλίδα) επιβιώνει κάθε
+        # ξαναγέμισμα· αλλιώς τα νεότερα πρώτα.
+        header = self.table.horizontalHeader()
+        if getattr(self.table, "_sort_chosen", False) and header.sortIndicatorSection() >= 0:
+            self._sort_rows(rows, header.sortIndicatorSection(), header.sortIndicatorOrder())
+        else:
+            self._sort_rows(rows, _COL_DATE, Qt.SortOrder.DescendingOrder)
+        self.model.set_rows(rows)
         self._shown = rows
         self._total_labels["count"].setText(str(len(rows)))
         self._total_labels["net"].setText(f"{money(net)} €")
@@ -962,9 +1104,105 @@ class DocumentsView(QWidget):
         self._total_labels["withheld"].setText(f"{money(withheld_sum)} €")
         self._update_totals_caption()
         self._update_clear_visibility()
-        header = self.table.horizontalHeader()
         if isinstance(header, FilterHeader):
             header.set_active({c for c, v in self._col_filters.items() if v})
+
+    def _sort_key(self, col: int):
+        """Το κλειδί ταξινόμησης μιας στήλης — ίδιο με αυτό που «βλέπει» ο χρήστης:
+        ημερομηνίες χρονολογικά, ποσά αριθμητικά με το πρόσημο που φαίνεται,
+        τύποι κατά τη σειρά του Παραρτήματος."""
+        if col == _COL_DATE:
+            return lambda r: r["issue_date"] or ""
+        if col == _COL_TYPE:
+            return lambda r: _type_sort_key(r["invoice_type"])
+        if col == _COL_PRINTED:
+            return lambda r: (r["print_date"] if "print_date" in r.keys() else "") or ""
+        if col in (_COL_NET, _COL_VAT, _COL_GROSS):
+            field = {_COL_NET: "net_value", _COL_VAT: "vat_amount",
+                     _COL_GROSS: "total_value"}[col]
+            return lambda r: signed(r[field] or 0.0, r["invoice_type"])
+        if col == _COL_WITHHELD:
+            return lambda r: signed(
+                _amount(r, "withheld_amount") + _amount(r, "deductions_amount"),
+                r["invoice_type"],
+            )
+        if col == _COL_CHECK:
+            return lambda r: r["mark"] in self._checked
+        if col == 6:
+            return lambda r: r["series"] or "—"
+        if col == 7:
+            return lambda r: r["aa"] or "—"
+        if col in _FILTERABLE_COLS:
+            return lambda r: self._col_value(r, col)
+        return lambda r: 0
+
+    def _sort_rows(self, rows: list[sqlite3.Row], col: int, order) -> None:
+        rows.sort(key=self._sort_key(col),
+                  reverse=order == Qt.SortOrder.DescendingOrder)
+
+    def _row_cells(self, r: sqlite3.Row) -> dict[int, tuple]:
+        """Τα κελιά ΜΙΑΣ γραμμής: {στήλη: (κείμενο, κλειδί ταξινόμησης, χρώμα,
+        tooltip, στοίχιση, εικονίδιο, ενέργεια)}. Καλείται μόνο για όσες
+        γραμμές εμφανίζονται."""
+        withheld = _amount(r, "withheld_amount")
+        deductions = _amount(r, "deductions_amount")
+        is_income = r["issuer_vat"] == self._vat
+        other_vat = r["counter_vat"] if is_income else r["issuer_vat"]
+        other_name = r["counter_name"] if is_income else r["issuer_name"]
+        status = DocStatus(r["status"])
+        cls = Classification(r["classification"] or "unknown")
+
+        # Για παραστατικά με σφάλμα δείχνουμε τον σύνδεσμο του παρόχου στο
+        # tooltip, ώστε ο χρήστης να τον δει (και με δεξί κλικ να τον
+        # αντιγράψει/ανοίξει και να κάνει ο ίδιος inspect).
+        url = r["downloading_invoice_url"] or ""
+        is_error = status in (
+            DocStatus.FAILED_RETRYABLE, DocStatus.FAILED_PERMANENT
+        )
+        tip = f"ΜΑΡΚ {r['mark']}"
+        if is_error and url:
+            tip += (
+                "\nΣφάλμα λήψης — σύνδεσμος παρόχου "
+                f"(δεξί κλικ → Αντιγραφή/Άνοιγμα):\n{url}"
+            )
+
+        printed_iso = (r["print_date"] if "print_date" in r.keys() else "") or ""
+        texts = {
+            _COL_DATE: _gr_date(r["issue_date"]),
+            _COL_KIND: "Έσοδο" if is_income else "Έξοδο",
+            _COL_TYPE: type_label(r["invoice_type"]),
+            4: other_name or "—", 5: other_vat or "—",
+            6: r["series"] or "—", 7: r["aa"] or "—",
+            _COL_NET: money(signed(r["net_value"], r["invoice_type"])),
+            _COL_VAT: money(signed(r["vat_amount"], r["invoice_type"])),
+            _COL_GROSS: money(signed(r["total_value"], r["invoice_type"])),
+            _COL_WITHHELD: money(signed(withheld + deductions, r["invoice_type"]))
+            if withheld or deductions else "—",
+            _COL_CLS: CLASSIFICATION_LABELS_EL[cls],
+            _COL_STATUS: _STATUS_SHORT[status],
+            _COL_PRINTED: _gr_date(printed_iso) if printed_iso else "—",
+        }
+        colors = {
+            _COL_KIND: CURRENT.ok if is_income else CURRENT.warn,
+            _COL_CLS: _cls_color(cls),
+            _COL_STATUS: _status_color(status),
+            _COL_PRINTED: CURRENT.ok if printed_iso else "",
+        }
+        cells: dict[int, tuple] = {_COL_CHECK: ("", None, "", tip, None, None, None)}
+        for col, text in texts.items():
+            align = _RIGHT if col in (_COL_NET, _COL_VAT, _COL_GROSS, _COL_WITHHELD) else None
+            cell_tip = tip
+            color = colors.get(col, "")
+            if col == _COL_WITHHELD and (withheld or deductions):
+                cell_tip = (
+                    f"Παρακρατούμενοι φόροι: {money(withheld)} €\n"
+                    f"Κρατήσεις: {money(deductions)} €\n{tip}"
+                )
+                if cls is Classification.UNCLASSIFIED and withheld:
+                    color = CURRENT.warn
+            cells[col] = (text, None, color, cell_tip, align, None, None)
+        cells[_COL_OPEN] = self._open_cell(r)
+        return cells
 
     def _update_totals_caption(self) -> None:
         picked = len(self._checked)
@@ -981,23 +1219,14 @@ class DocumentsView(QWidget):
         else:
             self._selected_badge.setVisible(False)
 
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if item.column() != _COL_CHECK:
-            return
-        mark = item.data(_MARK_ROLE)
-        if not mark:
-            return
-        if item.checkState() is Qt.CheckState.Checked:
-            self._checked.add(mark)
-        else:
-            self._checked.discard(mark)
-        self._update_totals_caption()
-
     def _mark_at_row(self, table_row: int) -> str | None:
-        item = self.table.item(table_row, _COL_CHECK)
-        return item.data(_MARK_ROLE) if item is not None else None
+        rows = self.model.rows
+        return rows[table_row]["mark"] if 0 <= table_row < len(rows) else None
 
     def _row_by_mark(self, mark: str) -> sqlite3.Row | None:
+        for r in self.model.rows:
+            if r["mark"] == mark:
+                return r
         for r in self._rows:
             if r["mark"] == mark:
                 return r
@@ -1098,38 +1327,25 @@ class DocumentsView(QWidget):
 
     def _toggle_current(self) -> None:
         """Διπλό κλικ οπουδήποτε στη γραμμή αλλάζει το checkbox."""
-        self.table.blockSignals(True)
-        for row in {i.row() for i in self.table.selectedIndexes()}:
-            item = self.table.item(row, _COL_CHECK)
-            if item is None:
+        selected = self.table.selectionModel().selectedIndexes()
+        for row in {i.row() for i in selected}:
+            mark = self._mark_at_row(row)
+            if mark is None:
                 continue
-            checked = item.checkState() is Qt.CheckState.Checked
-            item.setCheckState(
-                Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked
-            )
-            mark = item.data(_MARK_ROLE)
-            if checked:
+            if mark in self._checked:
                 self._checked.discard(mark)
             else:
                 self._checked.add(mark)
-        self.table.blockSignals(False)
+        self.model.checks_changed()
         self._update_totals_caption()
 
     def _check_all(self, value: bool) -> None:
-        self.table.blockSignals(True)
-        for i in range(self.table.rowCount()):
-            item = self.table.item(i, _COL_CHECK)
-            if item is None:
-                continue
-            item.setCheckState(
-                Qt.CheckState.Checked if value else Qt.CheckState.Unchecked
-            )
-            mark = item.data(_MARK_ROLE)
+        for r in self.model.rows:
             if value:
-                self._checked.add(mark)
+                self._checked.add(r["mark"])
             else:
-                self._checked.discard(mark)
-        self.table.blockSignals(False)
+                self._checked.discard(r["mark"])
+        self.model.checks_changed()
         self._update_totals_caption()
 
     # ---------------------------------------------------------- αρχεία
@@ -1277,56 +1493,40 @@ class DocumentsView(QWidget):
                 "Κανένα από τα επιλεγμένα PDF δεν μπόρεσε να διαβαστεί.",
             )
 
-    def _open_item(self, row: sqlite3.Row, has_file: bool) -> QTableWidgetItem:
+    def _open_cell(self, row: sqlite3.Row) -> tuple:
         """Το κελί «άνοιγμα» — εικονίδιο σε κελί, όχι κουμπί-widget.
 
         Ήταν `QWidget` με layout και `QPushButton` μέσα, δηλαδή **δύο widgets
-        ανά γραμμή**. Σε πελάτη με 8.000 παραστατικά αυτά μόνα τους έτρωγαν
-        περίπου τρία δευτερόλεπτα κάθε φορά που γέμιζε ο πίνακας — και ο
-        πίνακας γεμίζει σε κάθε αναζήτηση, φίλτρο και ανανέωση. Ένα κελί με
-        εικονίδιο κάνει την ίδια δουλειά με το κλικ (δείτε `_on_cell_clicked`)
-        και κοστίζει όσο κάθε άλλο κελί.
+        ανά γραμμή**: σε πελάτη με 8.000 παραστατικά έτρωγαν περίπου τρία
+        δευτερόλεπτα σε κάθε γέμισμα. Ένα κελί με εικονίδιο κάνει την ίδια
+        δουλειά με το κλικ (δείτε `_on_cell_clicked`). Ο έλεγχος «υπάρχει το
+        αρχείο;» γίνεται μόνο για όσες γραμμές εμφανίζονται.
         """
-        item = QTableWidgetItem()
-        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         path = row["local_path"] or row["xml_path"]
         online_url = (
             row["downloading_invoice_url"]
             if row["status"] == DocStatus.VIEWER_ONLY.value else ""
         )
-        if path and has_file:
+        if path and self.model.has_file(row):
             is_pdf = bool(row["local_path"])
-            item.setIcon(
-                icon("pdf" if is_pdf else "csv",
-                     CURRENT.ok if is_pdf else CURRENT.muted)
-            )
-            item.setToolTip(
-                "Άνοιγμα του PDF" if is_pdf
-                else "Άνοιγμα του XML (δεν υπάρχει PDF παρόχου)"
-            )
-            item.setData(_ACT_ROLE, "open")
-        elif online_url:
+            return ("", None, "", "Άνοιγμα του PDF" if is_pdf
+                    else "Άνοιγμα του XML (δεν υπάρχει PDF παρόχου)", _CENTER,
+                    icon("pdf" if is_pdf else "csv",
+                         CURRENT.ok if is_pdf else CURRENT.muted), "open")
+        if online_url:
             # Μόνο online: καθοδηγούμενη λήψη μέσω του browser, με αυτόματη
             # αρχειοθέτηση — ίδια ροή/αποθήκευση με το popup «Λήψη μόνο-online».
-            item.setIcon(icon("link", CURRENT.accent))
-            item.setToolTip(
-                "Λήψη μόνο-online μέσω του browser σας (αποθηκεύεται αυτόματα)"
-            )
-            item.setData(_ACT_ROLE, "online")
-        else:
-            item.setIcon(icon("cancel", CURRENT.muted))
-            item.setToolTip("Δεν υπάρχει αρχείο για αυτό το παραστατικό")
-        return item
+            return ("", None, "",
+                    "Λήψη μόνο-online μέσω του browser σας (αποθηκεύεται αυτόματα)",
+                    _CENTER, icon("link", CURRENT.accent), "online")
+        return ("", None, "", "Δεν υπάρχει αρχείο για αυτό το παραστατικό", _CENTER,
+                icon("cancel", CURRENT.muted), None)
 
     def _on_cell_clicked(self, table_row: int, col: int) -> None:
         """Ένα κλικ στη στήλη ανοίγματος κάνει ό,τι έκανε το παλιό κουμπί."""
         if col != _COL_OPEN:
             return
-        item = self.table.item(table_row, col)
-        if item is None:
-            return
-        action = item.data(_ACT_ROLE)
+        action = self.model.index(table_row, col).data(_ACT_ROLE)
         mark = self._mark_at_row(table_row)
         row = self._row_by_mark(mark) if mark else None
         if row is None:

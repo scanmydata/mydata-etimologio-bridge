@@ -276,7 +276,7 @@ QCheckBox::indicator:checked:disabled {{
 }}
 QCheckBox:disabled {{ color: {p.muted}; }}
 
-QTableWidget {{
+QTableView {{
     background: {p.panel};
     alternate-background-color: {p.panel_alt};
     border: 1px solid {p.line};
@@ -286,22 +286,22 @@ QTableWidget {{
     selection-color: {p.txt};
     outline: none;
 }}
-QTableWidget::item {{ padding: 5px 7px; border: none; }}
-QTableWidget::item:selected {{ background: {p.chip}; }}
-QTableWidget::indicator {{
+QTableView::item {{ padding: 5px 7px; border: none; }}
+QTableView::item:selected {{ background: {p.chip}; }}
+QTableView::indicator {{
     width: 16px; height: 16px;
     border: 2px solid {p.muted};
     border-radius: 4px;
     background: {p.panel};
 }}
-QTableWidget::indicator:hover {{ border-color: {p.accent}; }}
-QTableWidget::indicator:checked {{
+QTableView::indicator:hover {{ border-color: {p.accent}; }}
+QTableView::indicator:checked {{
     background: {p.accent_deep};
     border-color: {p.accent};
     image: url({check});
 }}
-QTableWidget::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
-QTableWidget::indicator:checked:disabled {{
+QTableView::indicator:disabled {{ background: {p.panel_alt}; border-color: {p.line}; }}
+QTableView::indicator:checked:disabled {{
     background: {p.accent_deep}; border-color: {p.muted}; image: url({check});
 }}
 

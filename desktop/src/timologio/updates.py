@@ -17,17 +17,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-#: Τα repos που κοιτάζουμε, με σειρά προτεραιότητας. ΔΥΟ, όχι ένα: το προϊόν
-#: μετακόμισε στο `mydata-etimologio-bridge` (εκεί ζει πια ολόκληρο — Downloader
-#: + e-Τιμολόγιο Pro), αλλά οι ήδη εγκατεστημένες εκδόσεις ρωτούν ακόμη το παλιό.
-#: Ρωτώντας ΚΑΙ ΤΑ ΔΥΟ και κρατώντας τη νεότερη έκδοση, μια κυκλοφορία σε όποιο
-#: από τα δύο φτάνει σε όλους — και δεν ξανακολλάει το προϊόν επειδή το release
-#: βγήκε «στο λάθος repo».
-OWNER_REPOS = (
-    "scanmydata/mydata-etimologio-bridge",
-    "scanmydata/MyData-Invoice-Downloader",
-)
-OWNER_REPO = OWNER_REPOS[0]
+#: Το ΜΟΝΟ repo που ρωτάμε: εκεί ζει ολόκληρο το προϊόν (Downloader +
+#: e-Τιμολόγιο Pro). Το παλιό `MyData-Invoice-Downloader` δεν ρωτιέται πια.
+OWNER_REPO = "scanmydata/mydata-etimologio-bridge"
 API_URL = f"https://api.github.com/repos/{OWNER_REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{OWNER_REPO}/releases/latest"
 
@@ -61,6 +53,7 @@ class UpdateInfo:
     asset_name: str = ""
     asset_size: int = 0
     notes: str = ""       # σημειώσεις έκδοσης (Markdown από το GitHub release)
+    notes_html: str = ""  # ή σε HTML, όταν ήρθαν από τη σελίδα αντί για το API
 
     @property
     def is_newer(self) -> bool:
@@ -75,30 +68,84 @@ class UpdateInfo:
 def check(current: str, timeout: int = 8) -> UpdateInfo:
     """Ρωτά το GitHub για την τελευταία έκδοση. Σηκώνει εξαίρεση αν αποτύχει.
 
-    Ρωτά ΟΛΑ τα ``OWNER_REPOS`` και κρατά τη νεότερη κυκλοφορία. Ένα repo που
-    δεν απαντά (404, δίκτυο) αγνοείται· αν δεν απαντήσει ΚΑΝΕΝΑ, η εξαίρεση του
-    πρώτου ταξιδεύει προς τα πάνω — ο χρήστης πρέπει να δει πραγματικό σφάλμα,
-    όχι ψεύτικο «είστε ενημερωμένοι».
+    Πρώτα η **σελίδα εκδόσεων** (χωρίς όριο ερωτήσεων) και μόνο αν αυτή δεν
+    απαντήσει, το **API** (60 ερωτήσεις την ώρα ανά IP — σε γραφείο με πολλούς
+    υπολογιστές πίσω από την ίδια σύνδεση τελείωναν: «403 rate limit
+    exceeded»). Αν αποτύχουν και τα δύο, ταξιδεύει το σφάλμα της σελίδας: ο
+    χρήστης πρέπει να δει πραγματικό σφάλμα, όχι ψεύτικο «είστε ενημερωμένοι».
     """
-    best: UpdateInfo | None = None
-    first_error: Exception | None = None
-    for repo in OWNER_REPOS:
+    try:
+        return _check_repo_web(OWNER_REPO, current, timeout)
+    except Exception as web_exc:            # noqa: BLE001 — δες docstring
+        log.info("έλεγχος έκδοσης: η σελίδα δεν απάντησε (%s) — δοκιμή API", web_exc)
         try:
-            info = _check_repo(repo, current, timeout)
-        except Exception as exc:            # noqa: BLE001 — δες docstring
-            log.warning("έλεγχος έκδοσης: το %s δεν απάντησε (%s)", repo, exc)
-            if first_error is None:
-                first_error = exc
-            continue
-        if best is None or parse_version(info.latest) > parse_version(best.latest):
-            best = info
-    if best is None:
-        raise first_error if first_error is not None else RuntimeError("κανένα repo")
-    return best
+            return _check_repo_api(OWNER_REPO, current, timeout)
+        except Exception as api_exc:        # noqa: BLE001
+            log.warning("έλεγχος έκδοσης: ούτε το API απάντησε (%s)", api_exc)
+            raise web_exc from None
 
 
-def _check_repo(repo: str, current: str, timeout: int) -> UpdateInfo:
-    """Η τελευταία κυκλοφορία ΕΝΟΣ repo. Σηκώνει εξαίρεση αν δεν απαντήσει."""
+def _check_repo_web(repo: str, current: str, timeout: int) -> UpdateInfo:
+    """Η τελευταία κυκλοφορία χωρίς το API.
+
+    - το tag: το ``/releases/latest`` ανακατευθύνει στο ``/releases/tag/vX``,
+    - ο installer: από τη λίστα αρχείων ``/releases/expanded_assets/vX``,
+    - οι σημειώσεις: από το ``releases.atom`` (HTML).
+    """
+    import html
+    import re
+    import xml.etree.ElementTree as ET
+
+    import requests
+
+    base = f"https://github.com/{repo}"
+    head = requests.get(f"{base}/releases/latest", timeout=timeout, allow_redirects=False)
+    location = str(head.headers.get("Location") or "")
+    if "/releases/tag/" not in location:
+        head.raise_for_status()
+        raise RuntimeError(f"καμία κυκλοφορία στο {repo}")
+    tag = location.rsplit("/releases/tag/", 1)[1].split("?")[0].strip("/")
+
+    asset_url = asset_name = ""
+    asset_size = 0
+    page = requests.get(f"{base}/releases/expanded_assets/{tag}", timeout=timeout)
+    page.raise_for_status()
+    found = re.search(r'href="(/[^"]+/releases/download/[^"]+\.exe)"', page.text, re.I)
+    if found:
+        asset_url = "https://github.com" + html.unescape(found.group(1))
+        asset_name = asset_url.rsplit("/", 1)[1]
+        try:
+            size = requests.head(asset_url, timeout=timeout, allow_redirects=True)
+            asset_size = int(size.headers.get("Content-Length") or 0)
+        except Exception:  # noqa: BLE001 — το μέγεθος είναι μόνο για εμφάνιση
+            asset_size = 0
+
+    notes_html = ""
+    try:
+        feed = requests.get(f"{base}/releases.atom", timeout=timeout)
+        feed.raise_for_status()
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        for entry in ET.fromstring(feed.content).findall("a:entry", ns):
+            link = entry.find("a:link", ns)
+            if link is not None and str(link.get("href", "")).endswith(f"/tag/{tag}"):
+                notes_html = (entry.findtext("a:content", "", ns) or "").strip()
+                break
+    except Exception:  # noqa: BLE001 — οι σημειώσεις είναι προαιρετικές
+        notes_html = ""
+
+    return UpdateInfo(
+        current=current,
+        latest=tag.lstrip("vV") or "?",
+        url=f"{base}/releases/tag/{tag}",
+        asset_url=asset_url,
+        asset_name=asset_name,
+        asset_size=asset_size,
+        notes_html=notes_html,
+    )
+
+
+def _check_repo_api(repo: str, current: str, timeout: int) -> UpdateInfo:
+    """Η τελευταία κυκλοφορία μέσω του API του GitHub."""
     import requests
 
     response = requests.get(

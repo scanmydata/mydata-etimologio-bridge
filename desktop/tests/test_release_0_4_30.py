@@ -120,7 +120,8 @@ def test_documents_table_and_totals_are_signed():
     src = (SRC / "gui" / "documents_view.py").read_text(encoding="utf-8")
     assert 'net += signed(r["net_value"], r["invoice_type"])' in src
     assert '_COL_GROSS: money(signed(r["total_value"], r["invoice_type"])),' in src
-    assert 'SortableItem(text, signed(amount, r["invoice_type"]))' in src
+    # Ταξινόμηση ποσών με το ίδιο πρόσημο που φαίνεται.
+    assert 'return lambda r: signed(r[field] or 0.0, r["invoice_type"])' in src
 
 
 def test_exports_and_home_screen_are_signed():

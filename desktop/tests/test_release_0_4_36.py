@@ -137,7 +137,7 @@ def test_a_locked_checkbox_still_shows_its_tick(name):
 
     palette = theme.DARK if name == "dark" else theme.LIGHT
     qss = theme.build(palette)
-    for widget in ("QCheckBox", "QTableWidget", "QListWidget"):
+    for widget in ("QCheckBox", "QTableView", "QListWidget"):
         block = qss[qss.index(f"{widget}::indicator:checked:disabled"):]
         block = block[:block.index("}") + 1]
         assert palette.accent_deep in block, widget
