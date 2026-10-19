@@ -14,7 +14,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -299,10 +299,14 @@ def download_pending(
     unclassified_expenses_only: bool = False,
     date_from: str = "",
     date_to: str = "",
+    retail: str = "include",
     progress: ProgressFn = _noop,
     should_cancel: Callable[[], bool] | None = None,
 ) -> None:
     """Κατεβάζει ό,τι εκκρεμεί για έναν πελάτη.
+
+    ``retail``: "include" (όλα), "skip" (χωρίς τις αποδείξεις λιανικής του
+    πελάτη — η κανονική λήψη) ή "only" (μόνο αυτές, όταν τις ζητήσει ο χρήστης).
 
     Τα workers δεν αγγίζουν sqlite: επιστρέφουν αποτέλεσμα και ο βρόχος εδώ
     (single writer) γράφει.
@@ -325,6 +329,7 @@ def download_pending(
         client_vat=client.vat,
         date_from_iso=_gr_to_iso(date_from),
         date_to_iso=_gr_to_iso(date_to),
+        retail=retail,
     )
     if not rows:
         return
@@ -343,12 +348,16 @@ def download_pending(
     pool_exec = ThreadPoolExecutor(max_workers=settings.max_workers)
     try:
         futures = [pool_exec.submit(job, row) for row in rows]
-        for fut in futures:
-            if should_cancel and should_cancel():
-                break
+        # Με τη σειρά που ΤΕΛΕΙΩΝΟΥΝ, όχι με τη σειρά της λίστας: αλλιώς ένα
+        # αργό αίτημα κρατούσε πίσω την καταγραφή όλων των επόμενων — η μπάρα
+        # «πάγωνε» για λεπτά και μετά έγραφε χίλια μαζί, και μια «Ακύρωση» μέσα
+        # στο κενό πετούσε PDF που είχαν ήδη κατέβει.
+        for fut in as_completed(futures):
             row, outcome = fut.result()
             _persist_outcome(conn, client, settings, row, outcome, stats, pool, progress)
             conn.commit()
+            if should_cancel and should_cancel():
+                break
     finally:
         # wait=False + cancel_futures: δεν κρεμάμε το UI περιμένοντας ό,τι τρέχει.
         pool_exec.shutdown(wait=False, cancel_futures=True)
@@ -795,6 +804,7 @@ def sync_client(
         conn, client, settings, stats=stats,
         unclassified_expenses_only=unclassified_expenses_only,
         date_from=date_from, date_to=date_to,
+        retail="skip",
         progress=progress, should_cancel=should_cancel,
     )
     _auto_render_pass(
@@ -858,10 +868,16 @@ def download_backlog(
     client: Client,
     settings: Settings,
     *,
+    retail: str = "include",
+    date_from: str = "",
+    date_to: str = "",
     progress: ProgressFn = _noop,
     should_cancel: Callable[[], bool] | None = None,
 ) -> RunStats:
     """Κατεβάζει ΟΣΑ εκκρεμούν για έναν πελάτη — χωρίς καμία κλήση στην ΑΑΔΕ.
+
+    Με ``retail="only"`` (και διάστημα) κατεβαίνουν μόνο οι αποδείξεις λιανικής
+    του πελάτη: η απάντηση «ναι» στην ερώτηση του τέλους της λήψης.
 
     Τα παραστατικά ανακαλύπτονται και κατεβαίνουν στο ίδιο πέρασμα· ό,τι δεν
     προλάβει να κατέβει (ακύρωση, κλείσιμο, «έξυπνη λήψη» που αφήνει απ' έξω τα
@@ -881,12 +897,14 @@ def download_backlog(
         progress(f"{client.vat}: επανάληψη λήψης για {requeued} με σφάλμα")
     download_pending(
         conn, client, settings, stats=stats,
+        retail=retail, date_from=date_from, date_to=date_to,
         progress=progress, should_cancel=should_cancel,
     )
-    _auto_render_pass(
-        conn, client, settings, stats=stats,
-        progress=progress, should_cancel=should_cancel,
-    )
+    if retail != "only":
+        _auto_render_pass(
+            conn, client, settings, stats=stats,
+            progress=progress, should_cancel=should_cancel,
+        )
     return stats
 
 

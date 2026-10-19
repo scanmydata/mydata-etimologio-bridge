@@ -501,6 +501,7 @@ def pending_documents(
     client_vat: str = "",
     date_from_iso: str = "",
     date_to_iso: str = "",
+    retail: str = "include",
 ) -> list[sqlite3.Row]:
     """Ό,τι αξίζει προσπάθεια τώρα: νέα + retryable που ωρίμασαν.
 
@@ -521,6 +522,14 @@ def pending_documents(
     if unclassified_expenses_only:
         # Έξοδο = ο εκδότης είναι κάποιος άλλος, όχι ο πελάτης.
         sql.append("AND classification='unclassified' AND issuer_vat <> ?")
+        params.append(client_vat)
+    # Αποδείξεις λιανικής που εξέδωσε ο ίδιος ο πελάτης (11.x): σε πελάτες με
+    # μεγάλη κίνηση είναι οι μισές εκκρεμότητες, και τα σύνολά τους τα έχουμε
+    # ήδη από την ΑΑΔΕ. Η κανονική λήψη τις αφήνει «σε αναμονή» ("skip") και
+    # ρωτά στο τέλος· η λήψη τους γίνεται μόνο αν το ζητήσει ο χρήστης ("only").
+    if retail in ("skip", "only"):
+        own_retail = "(invoice_type LIKE '11.%' AND issuer_vat = ?)"
+        sql.append(f"AND {'NOT ' if retail == 'skip' else ''}{own_retail}")
         params.append(client_vat)
     # Το διάστημα ισχύει πάντα, όχι μόνο στην έξυπνη λήψη: τα στοιχεία
     # κατεβαίνουν για όλη τη χρήση, αλλά PDF μόνο για όσα ζήτησε ο χρήστης.
@@ -665,3 +674,33 @@ def document_years(conn: sqlite3.Connection) -> list[int]:
         except (TypeError, ValueError):
             pass
     return years
+
+
+def pending_retail_receipts(
+    conn: sqlite3.Connection, vats: list[str], date_from_iso: str = "",
+    date_to_iso: str = "",
+) -> list[sqlite3.Row]:
+    """Αποδείξεις λιανικής του ίδιου του πελάτη που έχουν PDF και περιμένουν.
+
+    Η κανονική λήψη τις αφήνει πίσω· αυτή η λίστα τροφοδοτεί την ερώτηση στο
+    τέλος της λήψης («να κατέβουν και αυτές;»).
+    """
+    if not vats:
+        return []
+    sql = f"""SELECT c.vat, c.label, COUNT(*) AS n
+                FROM documents d JOIN clients c ON c.id = d.client_id
+               WHERE c.vat IN ({','.join('?' * len(vats))})
+                 AND d.downloading_invoice_url <> ''
+                 AND d.invoice_type LIKE '11.%' AND d.issuer_vat = c.vat
+                 AND (d.status='pending'
+                      OR (d.status='failed_retryable'
+                          AND (d.next_retry_at='' OR d.next_retry_at <= datetime('now'))))"""
+    params: list[object] = list(vats)
+    if date_from_iso:
+        sql += " AND d.issue_date >= ?"
+        params.append(date_from_iso)
+    if date_to_iso:
+        sql += " AND d.issue_date <= ?"
+        params.append(date_to_iso)
+    sql += " GROUP BY c.id ORDER BY n DESC, c.label"
+    return list(conn.execute(sql, params))

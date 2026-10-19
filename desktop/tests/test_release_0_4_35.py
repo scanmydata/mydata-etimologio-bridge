@@ -104,7 +104,8 @@ def test_backlog_download_asks_the_providers_only(db, monkeypatch, tmp_path: Pat
     assert stats.pdfs_ok == 2
     # Καμία ημερομηνία, κανένα φίλτρο «έξυπνης λήψης»: όλη η ουρά.
     assert "unclassified_expenses_only" not in calls["kwargs"]
-    assert "date_from" not in calls["kwargs"]
+    assert not calls["kwargs"].get("date_from") and not calls["kwargs"].get("date_to")
+    assert calls["kwargs"].get("retail", "include") == "include"
 
 
 def test_backlog_never_calls_aade():

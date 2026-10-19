@@ -253,6 +253,7 @@ def test_finishing_a_sync_raises_the_alert(window, monkeypatch):
     window._sync_vats = [VAT]
     window._sync_window = ("2026-01-01", "2026-12-31")
     window._last_totals = (3, 0, 0, 0, 0)
+    window._run_kind = "sync"          # από 0.4.41: μόνο η κανονική λήψη ειδοποιεί
     window._on_finished(True)
     assert [a["vat"] for a in got["alerts"]] == [VAT]
     assert window._alert_vat == VAT                       # κλικ στην ειδοποίηση

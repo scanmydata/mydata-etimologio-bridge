@@ -43,8 +43,11 @@ class SyncWorker(QObject):
         use_vies: bool = True,
         unclassified_expenses_only: bool = False,
         backlog_only: bool = False,
+        retail_only: bool = False,
     ) -> None:
         super().__init__()
+        #: Μόνο οι αποδείξεις λιανικής του πελάτη, στο διάστημα της λήψης.
+        self._retail_only = retail_only
         #: Μόνο η ουρά: ό,τι έχει μείνει «σε αναμονή» από προηγούμενες λήψεις,
         #: χωρίς νέα ανακάλυψη στην ΑΑΔΕ.
         self._backlog_only = backlog_only
@@ -103,6 +106,9 @@ class SyncWorker(QObject):
                 if self._backlog_only:
                     stats = download_backlog(
                         conn, client, settings,
+                        retail="only" if self._retail_only else "include",
+                        date_from=self._date_from if self._retail_only else "",
+                        date_to=self._date_to if self._retail_only else "",
                         progress=lambda m: self.message.emit(m),
                         should_cancel=self._cancel.is_set,
                     )

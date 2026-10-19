@@ -222,6 +222,11 @@ class MainWindow(QMainWindow):
         self._sync_vats: list[str] = []
         #: Πελάτες που η ΑΑΔΕ δεν άφησε να ολοκληρωθούν: (ΑΦΜ, επωνυμία, γιατί).
         self._sync_problems: list[tuple[str, str, str]] = []
+        #: Τι τρέχει: "sync" (κανονική λήψη), "backlog" (λήψη εκκρεμών) ή
+        #: "retail" (οι αποδείξεις λιανικής μετά από ερώτηση).
+        self._run_kind = ""
+        #: Το διάστημα PDF (ISO) της τελευταίας κανονικής λήψης.
+        self._sync_pdf_range: tuple[str, str] = ("", "")
         self._sync_window: tuple[str, str] = ("", "")
         #: Τι ανοίγει ένα κλικ στην ειδοποίηση των Windows (ΑΦΜ πελάτη).
         self._alert_vat: str | None = None
@@ -2307,6 +2312,10 @@ class MainWindow(QMainWindow):
         create_backup(self.settings.db_path, reason="sync")
         self._sync_vats = list(vats)
         self._sync_problems = []
+        self._run_kind = "sync"
+        self._sync_pdf_range = (
+            to_iso(self.sync_page.date_from.gr()), to_iso(self.sync_page.date_to.gr())
+        )
         wide_from, wide_to = discovery_window(
             self.sync_page.date_from.gr(), self.sync_page.date_to.gr()
         )
@@ -2383,6 +2392,8 @@ class MainWindow(QMainWindow):
         rows = chosen
         vats = [str(row["vat"]) for row in rows]
         create_backup(self.settings.db_path, reason="backlog")
+        self._run_kind = "backlog"
+        self._sync_problems = []
         self._set_running(True, len(vats))
         self._show_page("sync")
         self._log(
@@ -2887,6 +2898,8 @@ class MainWindow(QMainWindow):
                 "ως σήμερα, ώστε τα σύνολα να είναι σωστά. Αν κάποιος πελάτης "
                 "έχει αχαρακτήριστα με παρακρατούμενο φόρο, η σύνοψη στο τέλος "
                 "το λέει με σύνδεσμο «δείξε τα».\n\n"
+                "Οι αποδείξεις λιανικής που εξέδωσε ο ίδιος ο πελάτης μένουν σε "
+                "αναμονή· στο τέλος η εφαρμογή ρωτά αν θέλετε να κατέβουν.\n\n"
                 "Η εφαρμογή ζητά μόνο ό,τι είναι νεότερο από την προηγούμενη "
                 "φορά, οπότε η δεύτερη λήψη είναι σχεδόν ακαριαία.\n\n"
                 "Βιάζεστε; Με την «Έξυπνη λήψη» κατεβαίνουν PDF μόνο για τα "
@@ -3371,7 +3384,9 @@ class MainWindow(QMainWindow):
                 body += f" · {failed} σφάλματα"
             if self._sync_problems:
                 body += f"\n⚠ {len(self._sync_problems)} πελάτες δεν ολοκληρώθηκαν (ΑΑΔΕ)"
-            alerts = self._withheld_alerts()
+            # Οι ειδοποιήσεις για τα στοιχεία της ΑΑΔΕ αφορούν μόνο την κανονική
+            # λήψη· η λήψη εκκρεμών/αποδείξεων δεν ρώτησε καν την ΑΑΔΕ.
+            alerts = self._withheld_alerts() if self._run_kind == "sync" else []
             self._alert_vat = alerts[0]["vat"] if alerts else None
             if alerts:
                 n = sum(int(a["n"]) for a in alerts)
@@ -3382,6 +3397,73 @@ class MainWindow(QMainWindow):
                 )
             self._notify_done("Η λήψη ολοκληρώθηκε", body)
             self._show_sync_summary(totals, alerts)
+            if self._run_kind == "sync":
+                self._offer_retail_receipts()
+
+    def _offer_retail_receipts(self) -> None:
+        """Στο τέλος της λήψης: «βρέθηκαν αποδείξεις λιανικής — να κατέβουν;».
+
+        Η κανονική λήψη αφήνει «σε αναμονή» τις αποδείξεις λιανικής που εξέδωσε
+        ο ίδιος ο πελάτης: σε πελάτη με μεγάλη κίνηση είναι χιλιάδες, τα σύνολά
+        τους τα έχουμε ήδη από την ΑΑΔΕ, και τα PDF τους σπάνια χρειάζονται. Η
+        ερώτηση εμφανίζεται όποια σελίδα κι αν είναι ανοιχτή.
+        """
+        start, end = self._sync_pdf_range
+        try:
+            rows = repo.pending_retail_receipts(self.conn, self._sync_vats, start, end)
+        except Exception:  # noqa: BLE001 — μια ερώτηση δεν ρίχνει τη λήψη
+            log.exception("Ο έλεγχος αποδείξεων λιανικής απέτυχε")
+            return
+        if not rows:
+            return
+        total = sum(int(r["n"]) for r in rows)
+        minutes = max(1, round(total / 5 / 60))  # ~5 PDF/δευτ. (μετρημένο)
+        who = "<br>".join(
+            f"• <b>{r['label'] or r['vat']}</b>: {_thousands(int(r['n']))}"
+            for r in rows[:8]
+        )
+        if len(rows) > 8:
+            who += f"<br>• … και άλλοι {len(rows) - 8} πελάτες"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Αποδείξεις λιανικής")
+        box.setText(
+            f"Βρέθηκαν <b>{_thousands(total)}</b> αποδείξεις λιανικής με PDF ({to_gr(start)} – {to_gr(end)}) "
+            "που <b>δεν</b> κατέβηκαν, για να μην καθυστερήσει η λήψη.<br><br>"
+            f"{who}<br><br>"
+            "Τα ποσά τους είναι ήδη στη βάση (σύνολα, ανάλυση). "
+            f"Να κατέβουν και τα PDF τους; (περίπου {minutes} λεπτά)"
+        )
+        go = box.addButton("Λήψη τώρα", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Όχι — μένουν σε αναμονή", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(go)
+        box.exec()
+        if box.clickedButton() is go:
+            self._start_retail_download([str(r["vat"]) for r in rows], start, end)
+
+    def _start_retail_download(self, vats: list[str], start: str, end: str) -> None:
+        """Κατεβάζει ΜΟΝΟ τις αποδείξεις λιανικής, στο διάστημα της λήψης."""
+        if self._thread is not None or not vats:
+            return
+        self._run_kind = "retail"
+        self._sync_problems = []
+        self._set_running(True, len(vats))
+        self._log(f"── Λήψη αποδείξεων λιανικής για {len(vats)} πελάτες "
+                  f"({to_gr(start)} – {to_gr(end)})")
+        self._thread = QThread(self)
+        self._worker = SyncWorker(vats, to_gr(start), to_gr(end), False,
+                                  backlog_only=True, retail_only=True)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.message.connect(self._log)
+        self._worker.client_started.connect(self._on_client_started)
+        self._worker.client_finished.connect(self._on_client_finished)
+        self._worker.totals.connect(self._on_totals)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.busy.connect(self._on_busy)
+        self._worker.problem.connect(self._on_client_problem)
+        self._thread.start()
 
     def _withheld_alerts(self) -> list:
         """Αχαρακτήριστα με παρακρατούμενο φόρο στους πελάτες της λήψης.
@@ -3600,6 +3682,11 @@ def _fmt_last_download(iso: str | None) -> tuple[str, float]:
         return "—", 0.0
     local = stamp.astimezone()
     return local.strftime("%d/%m/%Y %H:%M"), stamp.timestamp()
+
+
+def _thousands(n: int) -> str:
+    """12345 -> «12.345»."""
+    return f"{n:,}".replace(",", ".")
 
 
 def _safe_name(label: str) -> str:
