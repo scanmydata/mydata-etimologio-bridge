@@ -254,12 +254,14 @@ class AnalysisPanel(QScrollArea):
             [
                 ("Έσοδα", a.income, CURRENT.ok, "income",
                  "Παραστατικά που εξέδωσε ο πελάτης — χωρίς μισθοδοσίες, "
-                 "αποσβέσεις, ενοίκια-έξοδο και δελτία αποστολής. Από πώληση "
+                 "αποσβέσεις, ενοίκια-έξοδο. Δελτία αποστολής και αυτοπαραδόσεις "
+                 "φαίνονται στη λίστα αλλά δεν μετρούν. Από πώληση "
                  "παγίου μετρά μόνο το κέρδος (E3_566), όχι η αξία (E3_880)."),
                 ("Έξοδα", a.expense, CURRENT.warn, "expense",
                  "Παραστατικά που εξέδωσαν άλλοι προς τον πελάτη, και οι "
                  "εγγραφές εξόδων του ίδιου (μισθοδοσία, αποσβέσεις, "
-                 "ενοίκιο-έξοδο, λιανικά έξοδα). Χωρίς δελτία αποστολής."),
+                 "ενοίκιο-έξοδο, λιανικά έξοδα). Τα δελτία αποστολής φαίνονται "
+                 "στη λίστα αλλά δεν μετρούν."),
             ],
             start=1,
         ):
@@ -284,6 +286,21 @@ class AnalysisPanel(QScrollArea):
                 grid.addWidget(label, row, col)
         grid.setColumnStretch(0, 1)
         layout.addLayout(grid)
+        if a.income_uncounted or a.expense_uncounted:
+            # Φαίνονται στη λίστα (κλικ στα Έσοδα/Έξοδα) αλλά όχι στα σύνολα:
+            # το να το λέμε ρητά εξηγεί γιατί η λίστα έχει περισσότερα.
+            parts = []
+            if a.income_uncounted:
+                parts.append(f"{a.income_uncounted} στα έσοδα")
+            if a.expense_uncounted:
+                parts.append(f"{a.expense_uncounted} στα έξοδα")
+            note = QLabel(
+                f"+ {' και '.join(parts)}: δελτία αποστολής / αυτοπαραδόσεις — "
+                "εμφανίζονται στη λίστα, δεν μετρούν στα σύνολα."
+            )
+            note.setWordWrap(True)
+            note.setObjectName("statLabel")
+            layout.addWidget(note)
         root.addWidget(frame)
 
         # --- χαρακτηρισμός

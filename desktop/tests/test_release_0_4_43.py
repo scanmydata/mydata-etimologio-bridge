@@ -81,8 +81,9 @@ def test_the_kind_follows_the_type_not_only_the_issuer():
     assert doc_kind(VAT, VAT, "16.1") == "expense"       # ενοίκιο-έξοδο
     assert doc_kind(VAT, VAT, "13.30") == "expense"
     assert doc_kind(VAT, VAT, "14.5") == "expense"
-    assert doc_kind(VAT, VAT, "9.3") == "other"
-    assert doc_kind(OTHER, VAT, "9.3") == "other"
+    # 0.4.44: τα δελτία φαίνονται κατά τον εκδότη (δεν μετρούν στα σύνολα).
+    assert doc_kind(VAT, VAT, "9.3") == "income"
+    assert doc_kind(OTHER, VAT, "9.3") == "expense"
     assert doc_kind(OTHER, VAT, "1.1") == "expense"
 
 
@@ -131,8 +132,11 @@ def test_income_excludes_payroll_and_counts_only_the_asset_profit(conn):
 
 def test_the_income_link_opens_exactly_what_was_counted(conn):
     a = reports.analyse_client(conn, VAT, 2026)
-    assert len(reports.documents_for(conn, VAT, "income", year=2026)) == a.income.count
-    assert len(reports.documents_for(conn, VAT, "expense", year=2026)) == a.expense.count
+    # Η λίστα έχει και τα δελτία αποστολής, που δεν μετρούν στα σύνολα (0.4.44).
+    assert (len(reports.documents_for(conn, VAT, "income", year=2026))
+            == a.income.count + a.income_uncounted)
+    assert (len(reports.documents_for(conn, VAT, "expense", year=2026))
+            == a.expense.count + a.expense_uncounted)
 
 
 def test_the_export_direction_is_no_longer_reversed(conn, tmp_path):
@@ -140,7 +144,7 @@ def test_the_export_direction_is_no_longer_reversed(conn, tmp_path):
     assert rows["9"][3] == "Έξοδο"        # τιμολόγιο προμηθευτή (incoming)
     assert rows["1"][3] == "Έσοδο"
     assert rows["6"][3] == "Έξοδο"        # μισθοδοσία
-    assert rows["8"][3] == "—"            # δελτίο αποστολής
+    assert rows["8"][3] == "Έσοδο"        # δελτίο αποστολής του πελάτη (0.4.44)
 
 
 def test_the_documents_view_uses_the_same_rule(conn, tmp_path):
@@ -155,9 +159,10 @@ def test_the_documents_view_uses_the_same_rule(conn, tmp_path):
                             QSettings(str(tmp_path / "p.ini"), QSettings.Format.IniFormat))
     page.show_client(conn, VAT, "CHARGELINE ΙΚΕ", "income")
     kinds = {r["mark"]: page._col_value(r, dv._COL_KIND) for r in page.model.rows}
-    assert set(kinds) == {"1", "2", "3", "4", "5"} and set(kinds.values()) == {"Έσοδο"}
-    # Τα σύνολα κάτω από τον πίνακα συμφωνούν με την ανάλυση.
-    assert page._total_labels["count"].text() == "5"
+    assert set(kinds) == {"1", "2", "3", "4", "5", "8"} and set(kinds.values()) == {"Έσοδο"}
+    # Τα σύνολα κάτω από τον πίνακα συμφωνούν με την ανάλυση (το δελτίο 8
+    # φαίνεται, δεν μετρά — 0.4.44).
+    assert page._total_labels["count"].text() == "5 (+1 χωρίς αξία)"
     assert page._total_labels["net"].text() == f"{dv.money(1350.0)} €"
     row = next(i for i, r in enumerate(page.model.rows) if r["mark"] == "2")
     assert "E3_880" in page.table.item(row, dv._COL_NET).toolTip()

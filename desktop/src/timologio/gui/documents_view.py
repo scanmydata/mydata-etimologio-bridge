@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 
 from .. import repo
 from ..config import Settings
-from ..doctypes import doc_kind, signed, type_label, type_name
+from ..doctypes import counts_in_totals, doc_kind, signed, type_label, type_name
 from ..fiscal import year_window
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
@@ -1086,7 +1086,13 @@ class DocumentsView(QWidget):
         rows = list(rows)
 
         net = vat_sum = gross = withheld_sum = 0.0
+        uncounted = 0
         for r in rows:
+            # Δελτία αποστολής και αυτοπαραδόσεις: στη λίστα, όχι στα σύνολα —
+            # ίδια με την ανάλυση.
+            if not counts_in_totals(r["invoice_type"]):
+                uncounted += 1
+                continue
             withheld = _amount(r, "withheld_amount")
             deductions = _amount(r, "deductions_amount")
             # Πιστωτικά ΑΦΑΙΡΟΥΝΤΑΙ: η myDATA τα δίνει με θετικά ποσά.
@@ -1110,7 +1116,14 @@ class DocumentsView(QWidget):
             self._sort_rows(rows, _COL_DATE, Qt.SortOrder.DescendingOrder)
         self.model.set_rows(rows)
         self._shown = rows
-        self._total_labels["count"].setText(str(len(rows)))
+        self._total_labels["count"].setText(
+            f"{len(rows) - uncounted} (+{uncounted} χωρίς αξία)" if uncounted
+            else str(len(rows))
+        )
+        self._total_labels["count"].setToolTip(
+            f"{uncounted} δελτία αποστολής / αυτοπαραδόσεις εμφανίζονται στη "
+            "λίστα αλλά δεν μετρούν στα σύνολα." if uncounted else ""
+        )
         self._total_labels["net"].setText(f"{money(net)} €")
         self._total_labels["vat"].setText(f"{money(vat_sum)} €")
         self._total_labels["gross"].setText(f"{money(gross)} €")
@@ -1161,6 +1174,7 @@ class DocumentsView(QWidget):
         deductions = _amount(r, "deductions_amount")
         is_income = r["issuer_vat"] == self._vat   # για τον «άλλο»
         kind = self._kind(r)
+        counting = counts_in_totals(r["invoice_type"])
         other_vat = r["counter_vat"] if is_income else r["issuer_vat"]
         other_name = r["counter_name"] if is_income else r["issuer_name"]
         status = DocStatus(r["status"])
@@ -1208,7 +1222,12 @@ class DocumentsView(QWidget):
             cell_tip = tip
             color = colors.get(col, "")
             asset = _amount(r, "asset_sale_amount")
-            if col in (_COL_NET, _COL_GROSS) and asset and kind == "income":
+            if col in (_COL_NET, _COL_VAT, _COL_GROSS) and not counting:
+                color = CURRENT.muted
+                cell_tip = (
+                    "Δελτίο αποστολής / αυτοπαράδοση — δεν μετρά στα σύνολα.\n" + tip
+                )
+            elif col in (_COL_NET, _COL_GROSS) and asset and kind == "income":
                 cell_tip = (
                     f"Πώληση παγίου (E3_880): {money(asset)} € — δεν μετρά στα "
                     "έσοδα· μετρά μόνο το κέρδος (E3_566).\n" + tip

@@ -84,44 +84,53 @@ CREDIT_TYPES = frozenset({"5.1", "5.2", "11.4", "14.31"})
 SELF_EXPENSE_TYPES = frozenset({"15.1", "16.1", "17.1", "17.2", "17.5", "17.6"})
 SELF_EXPENSE_PREFIXES = ("13.", "14.")
 
-#: Ούτε έσοδο ούτε έξοδο: δελτία αποστολής (καμία αξία).
-NEUTRAL_TYPES = frozenset({"9.3"})
+#: Εμφανίζονται στα έσοδα ή στα έξοδα (κατά τον εκδότη) αλλά ΔΕΝ μετρούν στα
+#: σύνολα: δελτία αποστολής (διακίνηση, όχι συναλλαγή) και αυτοπαραδόσεις /
+#: ιδιοχρησιμοποιήσεις (εσωτερική κίνηση, όχι πώληση).
+NON_COUNTING_TYPES = frozenset({"6.1", "6.2", "9.3"})
 
 
 def doc_kind(issuer_vat: str | None, client_vat: str, code: str | None) -> str:
-    """«income», «expense» ή «other» για ένα παραστατικό του πελάτη.
+    """«income» ή «expense» για ένα παραστατικό του πελάτη.
 
     Έσοδο = το εξέδωσε ο πελάτης, εκτός από τις εγγραφές εξόδων που καταχωρεί ο
-    ίδιος. Έξοδο = το εξέδωσε άλλος, ή είναι εγγραφή εξόδων του πελάτη. Τα
-    δελτία αποστολής δεν είναι τίποτα από τα δύο.
+    ίδιος. Έξοδο = το εξέδωσε άλλος, ή είναι εγγραφή εξόδων του πελάτη. Αν
+    μετρά στα σύνολα το λέει χωριστά το `counts_in_totals`.
     """
     code = (code or "").strip()
-    if code in NEUTRAL_TYPES:
-        return "other"
     if code in SELF_EXPENSE_TYPES or code.startswith(SELF_EXPENSE_PREFIXES):
         return "expense"
     return "income" if (issuer_vat or "") == client_vat else "expense"
 
 
-def _type_sql(type_column: str) -> tuple[str, str]:
-    """(είναι εγγραφή εξόδων, είναι ουδέτερο) σε SQL."""
+def counts_in_totals(code: str | None) -> bool:
+    """Μετρά στο αποτέλεσμα (πλήθος και ποσά εσόδων/εξόδων); Όχι για δελτία
+    αποστολής και αυτοπαραδόσεις — φαίνονται στις λίστες, όχι στα σύνολα."""
+    return (code or "").strip() not in NON_COUNTING_TYPES
+
+
+def _type_sql(type_column: str) -> str:
+    """«Είναι εγγραφή εξόδων του πελάτη» σε SQL."""
     t = f"TRIM(COALESCE({type_column},''))"
     own = ",".join(f"'{c}'" for c in sorted(SELF_EXPENSE_TYPES))
     prefixes = " OR ".join(f"{t} LIKE '{p}%'" for p in SELF_EXPENSE_PREFIXES)
-    neutral = ",".join(f"'{c}'" for c in sorted(NEUTRAL_TYPES))
-    return f"({t} IN ({own}) OR {prefixes})", f"{t} IN ({neutral})"
+    return f"({t} IN ({own}) OR {prefixes})"
 
 
 def income_sql(issuer_column: str, client_vat: str, type_column: str = "invoice_type") -> str:
     """Το `doc_kind(...) == "income"` μέσα σε SQL."""
-    own_expense, neutral = _type_sql(type_column)
-    return f"({issuer_column} = {client_vat} AND NOT {own_expense} AND NOT {neutral})"
+    return f"({issuer_column} = {client_vat} AND NOT {_type_sql(type_column)})"
 
 
 def expense_sql(issuer_column: str, client_vat: str, type_column: str = "invoice_type") -> str:
     """Το `doc_kind(...) == "expense"` μέσα σε SQL."""
-    own_expense, neutral = _type_sql(type_column)
-    return f"(NOT {neutral} AND ({own_expense} OR {issuer_column} <> {client_vat}))"
+    return f"({_type_sql(type_column)} OR {issuer_column} <> {client_vat})"
+
+
+def counting_sql(type_column: str = "invoice_type") -> str:
+    """Το `counts_in_totals(...)` μέσα σε SQL."""
+    codes = ",".join(f"'{c}'" for c in sorted(NON_COUNTING_TYPES))
+    return f"(TRIM(COALESCE({type_column},'')) NOT IN ({codes}))"
 
 
 def is_credit(code: str | None) -> bool:

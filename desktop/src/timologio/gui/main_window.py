@@ -68,7 +68,7 @@ from ..config import (
     save_start_minimized,
 )
 from ..coverage import to_gr, to_iso
-from ..doctypes import expense_sql, income_sql, signed_sql
+from ..doctypes import counting_sql, expense_sql, income_sql, signed_sql
 from ..fiscal import discovery_window, resolve_year, year_bounds_iso, year_choices
 from .. import crypto as crypto_mod
 from ..crypto import Crypto
@@ -130,8 +130,11 @@ _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
 #: «Το παραστατικό ανήκει στην επιλεγμένη χρήση» — για τα μετρητά των Πελατών.
 _IN_YEAR = "(d.issue_date >= :y0 AND d.issue_date <= :y1)"
 #: Έσοδα/έξοδα της λίστας πελατών — ο ίδιος κανόνας με την ανάλυση.
-_INCOME_SQL = income_sql("d.issuer_vat", "c.vat", "d.invoice_type")
-_EXPENSE_SQL = expense_sql("d.issuer_vat", "c.vat", "d.invoice_type")
+#: Δελτία αποστολής και αυτοπαραδόσεις δεν μετρούν στα ποσά.
+_INCOME_SQL = (f'{income_sql("d.issuer_vat", "c.vat", "d.invoice_type")}'
+               f' AND {counting_sql("d.invoice_type")}')
+_EXPENSE_SQL = (f'{expense_sql("d.issuer_vat", "c.vat", "d.invoice_type")}'
+                f' AND {counting_sql("d.invoice_type")}')
 _COL_LAST = 9
 
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]

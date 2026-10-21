@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import coverage
-from .doctypes import doc_kind, expense_sql, income_sql, signed, signed_sql
+from .doctypes import counting_sql, doc_kind, expense_sql, income_sql, signed, signed_sql
 from .fiscal import year_bounds_iso, year_window
 from .models import (
     CLASSIFICATION_LABELS_EL,
@@ -27,7 +27,9 @@ from .models import (
 
 #: Έσοδα = ό,τι εξέδωσε ο ίδιος ο πελάτης, ΕΚΤΟΣ από τις εγγραφές εξόδων που
 #: καταχωρεί ο ίδιος (μισθοδοσία, αποσβέσεις, ενοίκια-έξοδο, 13.x/14.x) και τα
-#: δελτία αποστολής. Δείτε `doctypes.doc_kind`.
+#: δελτία αποστολής. Δείτε `doctypes.doc_kind`. Τα δελτία αποστολής και οι
+#: αυτοπαραδόσεις εμφανίζονται στη λίστα εσόδων/εξόδων αλλά ΔΕΝ μετρούν στα
+#: σύνολα (`_COUNTS`).
 #:
 #: ΔΕΝ αρκεί το direction. Τα παραστατικά τύπου 13.x/14.x (λιανικά έξοδα,
 #: τιμολόγια αυτοπαράδοσης) τα υποβάλλει ο ΛΗΠΤΗΣ, οπότε εμφανίζονται στα
@@ -36,6 +38,7 @@ from .models import (
 #: ενοίκια-έξοδο, 7 δελτία αποστολής).
 _INCOME = income_sql("issuer_vat", ":vat")
 _EXPENSE = expense_sql("issuer_vat", ":vat")
+_COUNTS = counting_sql("invoice_type")
 
 
 @dataclass
@@ -69,6 +72,9 @@ class ClientAnalysis:
     unclassified_withheld: int = 0
     withheld: float = 0.0
     deductions: float = 0.0
+    #: Δελτία αποστολής / αυτοπαραδόσεις: στη λίστα εσόδων/εξόδων, όχι στα σύνολα.
+    income_uncounted: int = 0
+    expense_uncounted: int = 0
     #: Η χρήση που αφορά η σύνοψη (None = όλα τα έτη).
     year: int | None = None
     net_value: float = 0.0
@@ -166,11 +172,16 @@ def analyse_client(
                        COALESCE(SUM({signed_sql('total_value')}{asset}),0) gross,
                        COALESCE(SUM({signed_sql('withheld_amount')}),0) withheld,
                        COALESCE(SUM({signed_sql('deductions_amount')}),0) deductions
-                FROM documents WHERE {scope} AND {where}""",
+                FROM documents WHERE {scope} AND {where} AND {_COUNTS}""",
             params,
         ).fetchone()
         setattr(out, field, Totals(r["n"], r["net"], r["vat"], r["gross"],
                                    r["withheld"], r["deductions"]))
+        uncounted = conn.execute(
+            f"SELECT COUNT(*) FROM documents WHERE {scope} AND {where} AND NOT {_COUNTS}",
+            params,
+        ).fetchone()[0]
+        setattr(out, f"{field}_uncounted", uncounted or 0)
 
     out.by_type = [
         (r["invoice_type"] or "—", r["c"], r["v"] or 0.0)
@@ -450,7 +461,7 @@ _DOC_NUMERIC_COLS = (10, 11, 12, 17, 18)
 #: Η στήλη «Κατεύθυνση» της εξαγωγής: έσοδο/έξοδο για τον πελάτη. Έγραφε
 #: «Έσοδο» στα ΛΗΦΘΕΝΤΑ (incoming), δηλαδή ανάποδα· τώρα ο ίδιος κανόνας με
 #: την ανάλυση (`doc_kind`).
-_KIND_EL = {"income": "Έσοδο", "expense": "Έξοδο", "other": "—"}
+_KIND_EL = {"income": "Έσοδο", "expense": "Έξοδο"}
 
 
 def _doc_row_values(r: sqlite3.Row) -> list:
