@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import coverage
-from .doctypes import signed, signed_sql
+from .doctypes import doc_kind, expense_sql, income_sql, signed, signed_sql
 from .fiscal import year_bounds_iso, year_window
 from .models import (
     CLASSIFICATION_LABELS_EL,
@@ -25,14 +25,17 @@ from .models import (
 )
 
 
-#: Έσοδα = ό,τι εξέδωσε ο ίδιος ο πελάτης.
+#: Έσοδα = ό,τι εξέδωσε ο ίδιος ο πελάτης, ΕΚΤΟΣ από τις εγγραφές εξόδων που
+#: καταχωρεί ο ίδιος (μισθοδοσία, αποσβέσεις, ενοίκια-έξοδο, 13.x/14.x) και τα
+#: δελτία αποστολής. Δείτε `doctypes.doc_kind`.
 #:
 #: ΔΕΝ αρκεί το direction. Τα παραστατικά τύπου 13.x/14.x (λιανικά έξοδα,
 #: τιμολόγια αυτοπαράδοσης) τα υποβάλλει ο ΛΗΠΤΗΣ, οπότε εμφανίζονται στα
-#: «εκδοθέντα» (RequestTransmittedDocs) ενώ είναι ΕΞΟΔΑ. Μετρημένο σε πραγματικό
-#: πελάτη: 24 τέτοια παραστατικά θα κατατάσσονταν λάθος ως έσοδα.
-_INCOME = "issuer_vat = :vat"
-_EXPENSE = "issuer_vat <> :vat"
+#: «εκδοθέντα» (RequestTransmittedDocs) ενώ είναι ΕΞΟΔΑ. Ούτε αρκεί ο εκδότης:
+#: CHARGELINE ΙΚΕ, 235 «εκδοθέντα» αλλά 204 έσοδα (22 μισθοδοσίες, 2
+#: ενοίκια-έξοδο, 7 δελτία αποστολής).
+_INCOME = income_sql("issuer_vat", ":vat")
+_EXPENSE = expense_sql("issuer_vat", ":vat")
 
 
 @dataclass
@@ -152,11 +155,15 @@ def analyse_client(
     out.first_date = totals["first_date"] or ""
     out.last_date = totals["last_date"] or ""
 
-    for field, where in (("income", _INCOME), ("expense", _EXPENSE)):
+    # Στα έσοδα, η αξία πώλησης παγίου (E3_880) αφαιρείται: μετρά μόνο το
+    # κέρδος από την πώληση (E3_566), που έρχεται ως δική του εγγραφή.
+    for field, where, asset in (("income", _INCOME, " - asset_sale_amount"),
+                                ("expense", _EXPENSE, "")):
         r = conn.execute(
-            f"""SELECT COUNT(*) n, COALESCE(SUM({signed_sql('net_value')}),0) net,
+            f"""SELECT COUNT(*) n,
+                       COALESCE(SUM({signed_sql('net_value')}{asset}),0) net,
                        COALESCE(SUM({signed_sql('vat_amount')}),0) vat,
-                       COALESCE(SUM({signed_sql('total_value')}),0) gross,
+                       COALESCE(SUM({signed_sql('total_value')}{asset}),0) gross,
                        COALESCE(SUM({signed_sql('withheld_amount')}),0) withheld,
                        COALESCE(SUM({signed_sql('deductions_amount')}),0) deductions
                 FROM documents WHERE {scope} AND {where}""",
@@ -299,8 +306,8 @@ DOC_FILTERS: dict[str, str] = {
     # τέλος της λήψης ανοίγει ακριβώς αυτά.
     "unclassified_withheld": "d.classification='unclassified' AND d.withheld_amount > 0",
     "withheld": "(d.withheld_amount > 0 OR d.deductions_amount > 0)",
-    "income": "d.issuer_vat = c.vat",
-    "expense": "d.issuer_vat <> c.vat",
+    "income": income_sql("d.issuer_vat", "c.vat", "d.invoice_type"),
+    "expense": expense_sql("d.issuer_vat", "c.vat", "d.invoice_type"),
 }
 
 
@@ -440,7 +447,10 @@ _DOC_HEADERS = [
 #: στο τέλος ώστε να μη μετακινηθούν οι στήλες που ήδη διαβάζουν άλλοι.
 _DOC_NUMERIC_COLS = (10, 11, 12, 17, 18)
 
-_DIRECTION_EL = {"incoming": "Έσοδο", "outgoing": "Έξοδο", "both": "Έσοδο/Έξοδο"}
+#: Η στήλη «Κατεύθυνση» της εξαγωγής: έσοδο/έξοδο για τον πελάτη. Έγραφε
+#: «Έσοδο» στα ΛΗΦΘΕΝΤΑ (incoming), δηλαδή ανάποδα· τώρα ο ίδιος κανόνας με
+#: την ανάλυση (`doc_kind`).
+_KIND_EL = {"income": "Έσοδο", "expense": "Έξοδο", "other": "—"}
 
 
 def _doc_row_values(r: sqlite3.Row) -> list:
@@ -452,7 +462,7 @@ def _doc_row_values(r: sqlite3.Row) -> list:
         status_el = r["status"]
     return [
         r["client_vat"], r["client_label"], r["mark"],
-        _DIRECTION_EL.get(r["direction"], r["direction"]),
+        _KIND_EL[doc_kind(r["issuer_vat"], r["client_vat"], r["invoice_type"])],
         r["invoice_type"], r["issue_date"], r["series"], r["aa"],
         r["issuer_vat"], r["issuer_name"],
         signed(r["net_value"], r["invoice_type"]), signed(r["vat_amount"], r["invoice_type"]),

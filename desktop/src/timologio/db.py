@@ -322,6 +322,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("withheld_amount", "REAL NOT NULL DEFAULT 0"),
         ("deductions_amount", "REAL NOT NULL DEFAULT 0"),
         ("amounts_v", "INTEGER NOT NULL DEFAULT 0"),
+        # Ποσό χαρακτηρισμένο ως αξία πώλησης παγίου (E3_880_x) — από το
+        # RequestE3Info, που ζητείται για όλη τη χρήση σε κάθε λήψη. Δεν μετρά
+        # στα έσοδα· μετρά μόνο το κέρδος (E3_566).
+        ("asset_sale_amount", "REAL NOT NULL DEFAULT 0"),
     ):
         if column not in existing:
             conn.execute(f"ALTER TABLE documents ADD COLUMN {column} {ddl}")

@@ -25,7 +25,7 @@ from ..config import (
 from collections.abc import Callable
 
 from ..models import Classification, Direction, Document, OperationCancelled
-from .e3 import parse_e3
+from .e3 import E3Map, parse_e3
 from .errors import AuthError, MydataError, RateLimitError, TransientError
 from .parse import extract_cursors, parse_documents
 
@@ -257,7 +257,7 @@ class MydataClient:
         if entity_vat:
             params["entityVatNumber"] = entity_vat
 
-        result: dict[str, Classification] = {}
+        result = E3Map()
         seen_tokens: set[str] = set()
 
         while True:

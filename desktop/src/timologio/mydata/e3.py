@@ -39,10 +39,32 @@ def classify_category(category: str) -> Classification:
     return Classification.CLASSIFIED
 
 
-def parse_e3(payload: bytes) -> dict[str, Classification]:
+class E3Map(dict):
+    """MARK -> κατάσταση χαρακτηρισμού, και δίπλα το ``asset_sales``:
+    MARK -> ποσό χαρακτηρισμένο ως αξία πώλησης παγίου (E3_880_x).
+
+    Υποκλάση του dict ώστε όποιος θέλει μόνο την κατάσταση να μη χρειάζεται
+    να ξέρει τίποτα άλλο."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.asset_sales: dict[str, float] = {}
+
+    def update(self, other=(), **kwargs) -> None:  # type: ignore[override]
+        super().update(other, **kwargs)
+        for mark, amount in getattr(other, "asset_sales", {}).items():
+            self.asset_sales[mark] = self.asset_sales.get(mark, 0.0) + amount
+
+
+#: Αξία πώλησης παγίων (E3_880_001…004). Στα έσοδα μετρά μόνο το κέρδος από
+#: την πώληση (E3_566), όχι η αξία πώλησης.
+ASSET_SALE_PREFIX = "E3_880"
+
+
+def parse_e3(payload: bytes) -> E3Map:
     """MARK -> κατάσταση χαρακτηρισμού, για όσα MARK έχουν εγγραφή E3."""
     root = ET.fromstring(payload)
-    out: dict[str, Classification] = {}
+    out = E3Map()
     for node in root.iter():
         if _local(node.tag) != "E3Info":
             continue
@@ -51,6 +73,12 @@ def parse_e3(payload: bytes) -> dict[str, Classification]:
         if not mark:
             continue
         status = classify_category(fields.get("V_Class_Category", ""))
+        if fields.get("V_Class_Type", "").upper().startswith(ASSET_SALE_PREFIX):
+            try:
+                amount = float(fields.get("V_Class_Value") or 0)
+            except ValueError:
+                amount = 0.0
+            out.asset_sales[mark] = round(out.asset_sales.get(mark, 0.0) + amount, 2)
         # Αν ένα MARK έχει πολλές γραμμές E3, αρκεί μία αχαρακτήριστη για να
         # θεωρηθεί ότι θέλει δουλειά.
         if out.get(mark) is not Classification.UNCLASSIFIED:

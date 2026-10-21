@@ -281,10 +281,16 @@ def set_classifications(
     """
     if not mapping:
         return 0
+    # Η αξία πώλησης παγίου (E3_880) γράφεται για ΚΑΘΕ MARK με εγγραφή E3 —
+    # και ως μηδέν: αν ο λογιστής άλλαξε τον χαρακτηρισμό, το παλιό ποσό
+    # πρέπει να φύγει.
+    assets = getattr(mapping, "asset_sales", {})
     conn.executemany(
-        """UPDATE documents SET classification=?, updated_at=datetime('now')
+        """UPDATE documents SET classification=?, asset_sale_amount=?,
+                  updated_at=datetime('now')
            WHERE client_id=? AND mark=?""",
-        [(status.value, client_id, mark) for mark, status in mapping.items()],
+        [(status.value, float(assets.get(mark, 0.0)), client_id, mark)
+         for mark, status in mapping.items()],
     )
     return len(mapping)
 

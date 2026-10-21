@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 
 from .. import repo
 from ..config import Settings
-from ..doctypes import signed, type_label, type_name
+from ..doctypes import doc_kind, signed, type_label, type_name
 from ..fiscal import year_window
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
@@ -985,7 +985,6 @@ class DocumentsView(QWidget):
         Έτσι η αναζήτηση πιάνει ΚΑΘΕ στήλη: ΑΦΜ, σειρά, συναλλασσόμενο, τύπο,
         ημερομηνία (και στη μορφή ηη/μμ/εεεε), είδος, ποσά (και όπως εμφανίζονται
         και σε ακατέργαστη μορφή, ώστε «1234» να βρίσκει και «1.234,56»)."""
-        is_income = r["issuer_vat"] == self._vat
         keys = r.keys()
         parts = [
             r["mark"], r["series"] or "", r["aa"] or "",
@@ -994,7 +993,7 @@ class DocumentsView(QWidget):
             # Και ο κωδικός και η ονομασία: «2.1» και «υπηρεσι» βρίσκουν το ίδιο.
             r["invoice_type"] or "", type_name(r["invoice_type"]),
             r["issue_date"] or "", _gr_date(r["issue_date"]),
-            "έσοδο" if is_income else "έξοδο",
+            self._kind_text(r).lower(),
             money(signed(r["net_value"], r["invoice_type"])),
             money(signed(r["vat_amount"], r["invoice_type"])),
             money(signed(r["total_value"], r["invoice_type"])),
@@ -1010,11 +1009,13 @@ class DocumentsView(QWidget):
     def _col_value(self, r: sqlite3.Row, col: int) -> str:
         """Η εμφανιζόμενη τιμή μιας γραμμής σε μια φιλτραρίσιμη στήλη — ίδια με
         αυτήν που δείχνει ο πίνακας, ώστε τα φίλτρα στήλης να ταιριάζουν οπτικά."""
+        # Ο «άλλος» κρίνεται από τον εκδότη· το έσοδο/έξοδο από τον τύπο (μια
+        # μισθοδοσία την εκδίδει ο πελάτης, αλλά είναι έξοδο).
         is_income = r["issuer_vat"] == self._vat
         if col == _COL_DATE:
             return _gr_date(r["issue_date"])
         if col == _COL_KIND:
-            return "Έσοδο" if is_income else "Έξοδο"
+            return self._kind_text(r)
         if col == _COL_TYPE:
             return type_label(r["invoice_type"])
         if col == _COL_PARTY:
@@ -1036,6 +1037,12 @@ class DocumentsView(QWidget):
             amount = _amount(r, "withheld_amount") + _amount(r, "deductions_amount")
             return money(signed(amount, r["invoice_type"])) if amount else "—"
         return ""
+
+    def _kind(self, r: sqlite3.Row) -> str:
+        return doc_kind(r["issuer_vat"], self._vat, r["invoice_type"])
+
+    def _kind_text(self, r: sqlite3.Row) -> str:
+        return {"income": "Έσοδο", "expense": "Έξοδο"}.get(self._kind(r), "—")
 
     def _distinct_col_values(self, col: int) -> list[str]:
         """Οι μοναδικές τιμές μιας στήλης στο τρέχον σύνολο (πριν τα φίλτρα
@@ -1087,6 +1094,12 @@ class DocumentsView(QWidget):
             net += signed(r["net_value"], r["invoice_type"])
             vat_sum += signed(r["vat_amount"], r["invoice_type"])
             gross += signed(r["total_value"], r["invoice_type"])
+            # Ίδια σύνολα με την ανάλυση: η αξία πώλησης παγίου (E3_880) δεν
+            # είναι έσοδο — μετρά μόνο το κέρδος (E3_566).
+            asset = _amount(r, "asset_sale_amount")
+            if asset and self._kind(r) == "income":
+                net -= asset
+                gross -= asset
 
         # Η ταξινόμηση που διάλεξε ο χρήστης (κλικ σε κεφαλίδα) επιβιώνει κάθε
         # ξαναγέμισμα· αλλιώς τα νεότερα πρώτα.
@@ -1146,7 +1159,8 @@ class DocumentsView(QWidget):
         γραμμές εμφανίζονται."""
         withheld = _amount(r, "withheld_amount")
         deductions = _amount(r, "deductions_amount")
-        is_income = r["issuer_vat"] == self._vat
+        is_income = r["issuer_vat"] == self._vat   # για τον «άλλο»
+        kind = self._kind(r)
         other_vat = r["counter_vat"] if is_income else r["issuer_vat"]
         other_name = r["counter_name"] if is_income else r["issuer_name"]
         status = DocStatus(r["status"])
@@ -1169,7 +1183,7 @@ class DocumentsView(QWidget):
         printed_iso = (r["print_date"] if "print_date" in r.keys() else "") or ""
         texts = {
             _COL_DATE: _gr_date(r["issue_date"]),
-            _COL_KIND: "Έσοδο" if is_income else "Έξοδο",
+            _COL_KIND: self._kind_text(r),
             _COL_TYPE: type_label(r["invoice_type"]),
             4: other_name or "—", 5: other_vat or "—",
             6: r["series"] or "—", 7: r["aa"] or "—",
@@ -1183,7 +1197,7 @@ class DocumentsView(QWidget):
             _COL_PRINTED: _gr_date(printed_iso) if printed_iso else "—",
         }
         colors = {
-            _COL_KIND: CURRENT.ok if is_income else CURRENT.warn,
+            _COL_KIND: {"income": CURRENT.ok, "expense": CURRENT.warn}.get(kind, CURRENT.muted),
             _COL_CLS: _cls_color(cls),
             _COL_STATUS: _status_color(status),
             _COL_PRINTED: CURRENT.ok if printed_iso else "",
@@ -1193,6 +1207,12 @@ class DocumentsView(QWidget):
             align = _RIGHT if col in (_COL_NET, _COL_VAT, _COL_GROSS, _COL_WITHHELD) else None
             cell_tip = tip
             color = colors.get(col, "")
+            asset = _amount(r, "asset_sale_amount")
+            if col in (_COL_NET, _COL_GROSS) and asset and kind == "income":
+                cell_tip = (
+                    f"Πώληση παγίου (E3_880): {money(asset)} € — δεν μετρά στα "
+                    "έσοδα· μετρά μόνο το κέρδος (E3_566).\n" + tip
+                )
             if col == _COL_WITHHELD and (withheld or deductions):
                 cell_tip = (
                     f"Παρακρατούμενοι φόροι: {money(withheld)} €\n"
