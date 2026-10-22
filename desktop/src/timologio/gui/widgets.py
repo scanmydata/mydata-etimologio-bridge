@@ -296,6 +296,14 @@ class GrDateEdit(QDateEdit):
         if calendar is not None:
             calendar.clicked.connect(lambda _d: setattr(self, "_typed", ""))
 
+    def set_range(self, start: date | None, end: date | None) -> None:
+        """Περιορίζει τις επιλέξιμες ημερομηνίες (π.χ. στη χρήση). ``None`` =
+        τα γενικά όρια. Ό,τι είναι ήδη γραμμένο έξω από τα όρια μετακινείται
+        στο κοντινότερο άκρο — το ημερολόγιο δεν δείχνει άλλο έτος."""
+        low = QDate(start) if start else QDate(2000, 1, 1)
+        high = QDate(end) if end else QDate.currentDate().addYears(1)
+        self.setDateRange(low, high)
+
     def wheelEvent(self, event) -> None:  # noqa: N802 (Qt API)
         if not self.hasFocus():
             # Δεν το καταναλώνουμε: αφήνουμε τη σελίδα από κάτω να κυλήσει.

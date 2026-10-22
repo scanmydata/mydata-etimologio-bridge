@@ -673,6 +673,9 @@ class MainWindow(QMainWindow):
         self.sync_page.cancel_requested.connect(self.on_cancel)
         self.sync_page.selection_changed.connect(self._on_sync_selection)
         self.sync_page.refresh_requested.connect(self.reload_clients)
+        self.sync_page.fiscal_year_requested.connect(
+            lambda year: self._set_fiscal_year(year, manual=True)
+        )
         self.stack.addWidget(self.sync_page)
 
         self.docs = DocumentsView(self.settings, self._prefs)

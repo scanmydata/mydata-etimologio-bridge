@@ -19,13 +19,19 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QLocale, QObject, QRect, QSize, Qt
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import QEvent, QLocale, QObject, QRect, QSettings, QSize, Qt
+from PySide6.QtGui import QAction, QImage, QPageLayout, QPainter
 from PySide6.QtPdf import QPdfDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPrintPreviewWidget
+from PySide6.QtPrintSupport import (
+    QPrintDialog,
+    QPrinter,
+    QPrintPreviewDialog,
+    QPrintPreviewWidget,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QLineEdit,
     QToolBar,
     QWidgetAction,
@@ -213,22 +219,6 @@ def _fix_zoom(dialog: QPrintPreviewDialog) -> None:
         child.installEventFilter(wheel)
 
 
-def _wire_print_action(dialog: QPrintPreviewDialog, on_print: Callable[[], None]) -> None:
-    """Συνδέει το κουμπί «Εκτύπωση» της γραμμής εργαλείων με το ``on_print``.
-
-    Έτσι, μόλις ο χρήστης στείλει τα παραστατικά στον εκτυπωτή, καταγράφεται η
-    ημερομηνία εκτύπωσης (στήλη «Εκτυπώθηκε»). Η εκτύπωση είναι η τελευταία
-    ενέργεια (θέση 14) της σταθερής γραμμής του Qt."""
-    for toolbar in dialog.findChildren(QToolBar):
-        actions = [
-            a for a in toolbar.actions()
-            if not a.isSeparator() and not isinstance(a, QWidgetAction)
-        ]
-        if len(actions) > 14:
-            actions[14].triggered.connect(lambda *_: on_print())
-            return
-
-
 #: Ανάλυση απόδοσης της σελίδας σε εικόνα. 200 DPI διαβάζεται άνετα και κρατά
 #: μια σελίδα A4 γύρω στα ~15MP αντί για ~35MP στα 300 DPI.
 RENDER_DPI = 200
@@ -243,16 +233,166 @@ def _load(doc: QPdfDocument, path: Path) -> bool:
     return doc.status() == QPdfDocument.Status.Ready and doc.pageCount() > 0
 
 
+#: Μία θέση στην εκτύπωση: (έγγραφο, σελίδα) ή ``None`` = λευκή σελίδα.
+Slot = tuple[int, int] | None
+
+
+def layout_pages(page_counts: list[int], duplex: bool) -> list[Slot]:
+    """Η σειρά των σελίδων στο χαρτί.
+
+    Με **εμπρός-πίσω** κάθε έγγραφο ξεκινά σε ΔΙΚΟ του φύλλο: μετά από έγγραφο
+    με μονό αριθμό σελίδων μπαίνει μια λευκή, ώστε το επόμενο να μην τυπωθεί
+    στην πίσω όψη του. Έτσι ένα δισέλιδο τιμολόγιο γίνεται ένα φύλλο εμπρός-πίσω
+    και δύο μονοσέλιδα γίνονται δύο φύλλα — όχι το ένα στην πλάτη του άλλου.
+    """
+    slots: list[Slot] = []
+    last = len(page_counts) - 1
+    for d, count in enumerate(page_counts):
+        slots.extend((d, p) for p in range(count))
+        if duplex and count % 2 and d < last:
+            slots.append(None)
+    return slots
+
+
+class PrintJob:
+    """Τα έγγραφα μιας μαζικής εκτύπωσης και πώς ζωγραφίζονται στο χαρτί."""
+
+    def __init__(self, docs: list[QPdfDocument], prefs: QSettings | None = None) -> None:
+        self.docs = docs
+        self.prefs = prefs if prefs is not None else QSettings(
+            "scanmydata", "TimologioDownloader"
+        )
+        self.duplex = bool(self.prefs.value("print/duplex", False, type=bool))
+        self.landscape = bool(self.prefs.value("print/landscape", False, type=bool))
+        self._cache: dict[tuple[int, int], QImage] = {}
+
+    def slots(self, duplex: bool | None = None) -> list[Slot]:
+        return layout_pages([d.pageCount() for d in self.docs],
+                            self.duplex if duplex is None else duplex)
+
+    def render(self, printer: QPrinter, duplex: bool | None = None) -> None:
+        # Ο δείκτης αναμονής μπαίνει/βγαίνει ΜΕΣΑ στο render (ισοσκελισμένο), ώστε
+        # να μη μένει ποτέ κολλημένος.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        painter = QPainter()
+        try:
+            if not painter.begin(printer):
+                return
+            for i, slot in enumerate(self.slots(duplex)):
+                if i:
+                    printer.newPage()
+                if slot is not None:      # λευκή σελίδα: τίποτα να ζωγραφιστεί
+                    _draw_page(painter, printer, self.docs[slot[0]], slot[1], self._cache)
+        finally:
+            if painter.isActive():
+                painter.end()
+            QApplication.restoreOverrideCursor()
+
+    def print_to(self, printer: QPrinter, parent: QWidget | None = None) -> bool:
+        """Ο διάλογος εκτύπωσης και η ίδια η εκτύπωση. ``True`` αν τυπώθηκε.
+
+        ΓΙΑΤΙ ΔΙΚΟ ΜΑΣ και όχι το κουμπί του Qt: ο διάλογος εκτύπωσης των
+        Windows ξαναγεμίζει τον εκτυπωτή με τις προεπιλογές του οδηγού του. Ο
+        οριζόντιος προσανατολισμός που διάλεξε ο χρήστης στην προεπισκόπηση
+        χανόταν και το χαρτί έβγαινε κατακόρυφο. Τώρα, μετά τον διάλογο, ισχύει
+        ό,τι φαίνεται στην προεπισκόπηση.
+
+        Εμπρός-πίσω: αν το ζήτησε ο χρήστης εδώ **ή** στον διάλογο των Windows
+        (ή είναι η προεπιλογή του εκτυπωτή), τα έγγραφα τοποθετούνται έτσι ώστε
+        το καθένα να ξεκινά σε νέο φύλλο.
+        """
+        orientation = printer.pageLayout().orientation()
+        dialog = QPrintDialog(printer, parent)
+        dialog.setWindowTitle("Εκτύπωση")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        printer.setPageOrientation(orientation)
+        duplex = self.duplex or printer.duplex() != QPrinter.DuplexMode.DuplexNone
+        printer.setDuplex(
+            QPrinter.DuplexMode.DuplexAuto if duplex else QPrinter.DuplexMode.DuplexNone
+        )
+        self.render(printer, duplex)
+        self.landscape = orientation == QPageLayout.Orientation.Landscape
+        self.prefs.setValue("print/landscape", self.landscape)
+        self.prefs.setValue("print/duplex", self.duplex)
+        return True
+
+    def close(self) -> None:
+        for doc in self.docs:
+            doc.close()
+
+
+def _native_print_action(dialog: QPrintPreviewDialog) -> tuple[QToolBar, QAction] | None:
+    for toolbar in dialog.findChildren(QToolBar):
+        actions = [
+            a for a in toolbar.actions()
+            if not a.isSeparator() and not isinstance(a, QWidgetAction)
+        ]
+        if len(actions) > 14:
+            return toolbar, actions[14]
+    return None
+
+
+def _install_print_controls(
+    dialog: QPrintPreviewDialog,
+    printer: QPrinter,
+    job: PrintJob,
+    on_print: Callable[[], None] | None,
+) -> tuple[QAction, QAction] | None:
+    """«Εμπρός-πίσω» και δική μας «Εκτύπωση» στη θέση της native."""
+    found = _native_print_action(dialog)
+    if found is None:
+        return None
+    toolbar, native = found
+    native.setVisible(False)
+    preview = dialog.findChild(QPrintPreviewWidget)
+
+    duplex = QAction("Εμπρός-πίσω", dialog)
+    duplex.setCheckable(True)
+    duplex.setChecked(job.duplex)
+    duplex.setToolTip(
+        "Εκτύπωση και στις δύο όψεις του χαρτιού.\n"
+        "Κάθε παραστατικό ξεκινά σε δικό του φύλλο: ένα δισέλιδο τυπώνεται\n"
+        "εμπρός-πίσω, δύο μονοσέλιδα σε δύο φύλλα (όχι το ένα πίσω από το άλλο)."
+    )
+
+    def toggle(on: bool) -> None:
+        job.duplex = on
+        if preview is not None:
+            preview.updatePreview()    # να φανούν και οι λευκές σελίδες
+
+    duplex.toggled.connect(toggle)
+
+    act = QAction(icon("printer", CURRENT.txt), "Εκτύπωση", dialog)
+    act.setToolTip("Εκτύπωση")
+    act.setStatusTip("Εκτύπωση")
+
+    def do_print() -> None:
+        if job.print_to(printer, dialog):
+            if on_print is not None:
+                on_print()
+            dialog.accept()
+
+    act.triggered.connect(do_print)
+    toolbar.insertAction(native, duplex)
+    toolbar.insertAction(native, act)
+    button = toolbar.widgetForAction(duplex)
+    if button is not None:
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    return duplex, act
+
+
 def print_pdfs(
     paths: list[Path],
     parent: QWidget | None = None,
     on_print: Callable[[], None] | None = None,
+    prefs: QSettings | None = None,
 ) -> tuple[int, int]:
     """Ανοίγει προεπισκόπηση εκτύπωσης για όλα τα PDF. Επιστρέφει ``(έτοιμα,
     απέτυχαν)`` — «έτοιμα» = παραστατικά που μπήκαν στην προεπισκόπηση.
 
     Η ίδια η εκτύπωση γίνεται από τη γραμμή εργαλείων της προεπισκόπησης. Το
-    προαιρετικό ``on_print`` καλείται όταν ο χρήστης πατήσει «Εκτύπωση» εκεί.
+    προαιρετικό ``on_print`` καλείται όταν ο χρήστης τυπώσει από εκεί.
     """
     paths = [p for p in paths if p.exists()]
     if not paths:
@@ -262,52 +402,29 @@ def print_pdfs(
     # προεπισκόπηση ώστε να αποδίδουμε σελίδες on-demand.
     QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     docs: list[QPdfDocument] = []
-    pages: list[tuple[QPdfDocument, int]] = []
     failed = 0
     try:
         for path in paths:
             doc = QPdfDocument(parent)
             if _load(doc, path):
                 docs.append(doc)
-                pages.extend((doc, i) for i in range(doc.pageCount()))
             else:
                 failed += 1
                 log.warning("Το PDF δεν φορτώθηκε για εκτύπωση: %s", path)
     finally:
         QApplication.restoreOverrideCursor()
 
-    if not pages:
+    if not docs:
         return 0, failed
 
-    cache: dict[tuple[int, int], QImage] = {}
-
-    def render(printer: QPrinter) -> None:
-        # Ο δείκτης αναμονής μπαίνει/βγαίνει ΜΕΣΑ στο render (ισοσκελισμένο), ώστε
-        # να μη μένει ποτέ κολλημένος: παλιά τον βάζαμε γύρω από το exec() του
-        # modal, οπότε ο κέρσορας έδειχνε «loading» σε όλη τη διάρκεια της
-        # προεπισκόπησης και η γραμμή εργαλείων έμοιαζε παγωμένη.
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        painter = QPainter()
-        try:
-            if not painter.begin(printer):
-                return
-            first = True
-            for doc, page in pages:
-                if not first:
-                    printer.newPage()
-                first = False
-                _draw_page(painter, printer, doc, page, cache)
-        finally:
-            if painter.isActive():
-                painter.end()
-            QApplication.restoreOverrideCursor()
-
+    job = PrintJob(docs, prefs)
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    if job.landscape:
+        printer.setPageOrientation(QPageLayout.Orientation.Landscape)
 
-    # Native προεπισκόπηση του Qt: φέρνει έτοιμη τη δική της γραμμή εργαλείων με
-    # τα εικονίδια και τα hints της (ζουμ, πλάτος/σελίδα, πλοήγηση, διάταξη,
-    # ρύθμιση σελίδας και το κουμπί εκτύπωσης). Το μόνο που φτιάχνουμε εμείς
-    # είναι τι ζωγραφίζεται (render) και ο δείκτης αναμονής.
+    # Native προεπισκόπηση του Qt: φέρνει έτοιμη τη δική της γραμμή εργαλείων
+    # (ζουμ, πλάτος/σελίδα, πλοήγηση, διάταξη, ρύθμιση σελίδας). Δικά μας: τι
+    # ζωγραφίζεται, το «Εμπρός-πίσω» και το κουμπί της εκτύπωσης.
     dialog = QPrintPreviewDialog(printer, parent)
     dialog.setWindowTitle("Προεπισκόπηση εκτύπωσης")
     dialog.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -315,16 +432,14 @@ def print_pdfs(
     # δικά μας εικονίδια. Το υπόλοιπο preview μένει αυτούσιο (native).
     _fix_toolbar_icons(dialog)
     _fix_zoom(dialog)
-    if on_print is not None:
-        _wire_print_action(dialog, on_print)
-    dialog.paintRequested.connect(render)
+    _install_print_controls(dialog, printer, job, on_print)
+    dialog.paintRequested.connect(lambda p: job.render(p))
     if parent is not None:
         dialog.resize(parent.size())
     try:
         dialog.exec()
     finally:
-        for doc in docs:
-            doc.close()
+        job.close()
     return len(docs), failed
 
 

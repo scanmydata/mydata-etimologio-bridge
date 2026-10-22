@@ -807,12 +807,15 @@ class DocumentsView(QWidget):
         if year == self._year:
             return
         self._year = year
-        if year:
-            start, end = year_window(year)
-            for edit, day in ((self.date_from, start), (self.date_to, end)):
-                edit.blockSignals(True)
+        start, end = year_window(year) if year else (None, None)
+        for edit, day in ((self.date_from, start), (self.date_to, end)):
+            edit.blockSignals(True)
+            # Το «Διάστημα» μένει μέσα στη χρήση που βλέπει ο χρήστης.
+            edit.set_range(date(year, 1, 1) if year else None,
+                           date(year, 12, 31) if year else None)
+            if day:
                 edit.set_gr(day.strftime("%d/%m/%Y"))
-                edit.blockSignals(False)
+            edit.blockSignals(False)
         if self._vat:
             self._update_title()
             self.reload()

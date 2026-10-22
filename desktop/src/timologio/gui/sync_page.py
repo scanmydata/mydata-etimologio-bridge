@@ -99,6 +99,8 @@ class SyncPage(QWidget):
 
     sync_requested = Signal()
     cancel_requested = Signal()
+    #: «Προηγούμενη χρήση»: ζητά αλλαγή της ενεργής χρήσης σε όλο το πρόγραμμα.
+    fiscal_year_requested = Signal(int)
     selection_changed = Signal(int)
     refresh_requested = Signal()
 
@@ -140,11 +142,13 @@ class SyncPage(QWidget):
 
         presets = QHBoxLayout()
         presets.setSpacing(6)
+        self._preset_buttons: dict[str, QPushButton] = {}
         for text, key in _PRESETS:
             button = QPushButton(text)
             button.setToolTip(f"Ορισμός περιόδου: {text.lower()}")
             button.clicked.connect(lambda _=False, k=key: self._apply_preset(k))
             presets.addWidget(button)
+            self._preset_buttons[key] = button
         presets.addStretch()
         box.addLayout(presets)
 
@@ -324,11 +328,29 @@ class SyncPage(QWidget):
         """Νέα χρήση: το διάστημα γίνεται ολόκληρη η χρήση (ως σήμερα)."""
         self._year = year
         start, end = year_window(year)
+        # Οι ημερομηνίες μένουν ΜΕΣΑ στη χρήση: το ημερολόγιο δεν πηγαίνει σε
+        # άλλο έτος — για άλλη χρήση αλλάζει η χρήση (πάνω αριστερά).
+        for edit in (self.date_from, self.date_to):
+            edit.set_range(date(year, 1, 1), date(year, 12, 31))
         self.date_from.set_gr(start.strftime("%d/%m/%Y"))
         self.date_to.set_gr(end.strftime("%d/%m/%Y"))
+        # Μήνας/τρίμηνο μετρούν από σήμερα: έχουν νόημα μόνο στην τρέχουσα χρήση.
+        current = year == date.today().year
+        for key in ("month", "prev_month", "quarter", "prev_quarter"):
+            button = self._preset_buttons[key]
+            button.setEnabled(current)
+            button.setToolTip(
+                f"Ορισμός περιόδου: {button.text().lower()}" if current
+                else "Μόνο στην τρέχουσα χρήση"
+            )
         self._update_scope_note()
 
     def _apply_preset(self, key: str) -> None:
+        if key == "prev_year" and self._year:
+            # Άλλη χρήση = αλλαγή της ενεργής χρήσης σε όλο το πρόγραμμα (το
+            # κάνει το κύριο παράθυρο, που ξαναστήνει και τα όρια εδώ).
+            self.fiscal_year_requested.emit(self._year - 1)
+            return
         start, end = _period(key, self._year)
         self.date_from.set_gr(start.strftime("%d/%m/%Y"))
         self.date_to.set_gr(end.strftime("%d/%m/%Y"))
