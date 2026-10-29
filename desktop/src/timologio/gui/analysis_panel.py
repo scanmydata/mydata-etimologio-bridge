@@ -235,6 +235,12 @@ class AnalysisPanel(QScrollArea):
         if a.failed:
             self._tile(tiles, StatTile(str(a.failed), "Σφάλματα", CURRENT.bad, "failed",
                                        "Απέτυχε η λήψη — κλικ για τη λίστα"))
+        if a.duplicates:
+            self._tile(tiles, StatTile(
+                str(a.duplicates), "Διπλές υποβολές", CURRENT.muted, "duplicates",
+                "Το ίδιο παραστατικό (ίδιο UID) διαβιβάστηκε ξανά με νέο ΜΑΡΚ. "
+                "Μετρά μόνο η νεότερη διαβίβαση· οι παλιότερες είναι κρυμμένες "
+                "από λίστες και σύνολα. Κλικ για να τις δείτε."))
         root.addLayout(tiles)
 
         # --- έσοδα / έξοδα

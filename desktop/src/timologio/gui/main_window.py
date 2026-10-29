@@ -128,7 +128,8 @@ _STATUS_LOCKED = "Κλειδί κλειδωμένο"
 _COLUMNS = [c[0] for c in _COLUMN_SPEC]
 _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
 #: «Το παραστατικό ανήκει στην επιλεγμένη χρήση» — για τα μετρητά των Πελατών.
-_IN_YEAR = "(d.issue_date >= :y0 AND d.issue_date <= :y1)"
+#: Μέσα στη χρήση — και ΟΧΙ οι παλιότερες διαβιβάσεις του ίδιου παραστατικού.
+_IN_YEAR = "(d.issue_date >= :y0 AND d.issue_date <= :y1 AND d.superseded = 0)"
 #: Έσοδα/έξοδα της λίστας πελατών — ο ίδιος κανόνας με την ανάλυση.
 #: Δελτία αποστολής και αυτοπαραδόσεις δεν μετρούν στα ποσά.
 _INCOME_SQL = (f'{income_sql("d.issuer_vat", "c.vat", "d.invoice_type")}'

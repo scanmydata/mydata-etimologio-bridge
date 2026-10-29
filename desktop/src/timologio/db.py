@@ -326,9 +326,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # RequestE3Info, που ζητείται για όλη τη χρήση σε κάθε λήψη. Δεν μετρά
         # στα έσοδα· μετρά μόνο το κέρδος (E3_566).
         ("asset_sale_amount", "REAL NOT NULL DEFAULT 0"),
+        # UID και καύσιμα: έρχονται με την επόμενη λήψη (το `amounts_v` < 2 τη
+        # βάζει να ξαναζητήσει τη χρήση από την αρχή). `superseded` = 1: το ίδιο
+        # παραστατικό ξαναδιαβιβάστηκε με νεότερο MARK — κρυμμένο παντού.
+        ("uid", "TEXT NOT NULL DEFAULT ''"),
+        ("fuel_codes", "TEXT NOT NULL DEFAULT ''"),
+        ("superseded", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if column not in existing:
             conn.execute(f"ALTER TABLE documents ADD COLUMN {column} {ddl}")
+    mark_duplicates(conn)
 
     # Επαναταξινόμηση των «οριστικών σφαλμάτων» που στην πραγματικότητα είναι
     # παραστατικά μόνο-online (ο πάροχος έδωσε σελίδα προβολής αντί για PDF).
@@ -339,6 +346,42 @@ def _migrate(conn: sqlite3.Connection) -> None:
            WHERE status='failed_permanent'
              AND error_text LIKE 'Ο πάροχος επέστρεψε σελίδα%'"""
     )
+
+
+def mark_duplicates(conn: sqlite3.Connection, client_id: int | None = None) -> int:
+    """Σημειώνει ως `superseded` τις παλιότερες διαβιβάσεις του ίδιου παραστατικού.
+
+    Μετρημένο (ΝΤΟΥΣΙΑΣ, 2026): ίδιος εκδότης, σειρά, α/α, ημερομηνία και ποσό
+    σε 2 ή 3 MARK — και ίδιο UID στην ΑΑΔΕ. Είναι η ίδια απόδειξη/τιμολόγιο
+    που ο πάροχος έστειλε ξανά. Κρατάμε το **νεότερο** MARK· τα υπόλοιπα
+    μένουν στη βάση (φίλτρο «Διπλές υποβολές») αλλά δεν μετρούν πουθενά.
+
+    Κλειδί: το UID· όσο λείπει (εγγραφές πριν την 0.4.46), εκδότης + ημερομηνία
+    + τύπος + σειρά + α/α + ποσό — τα ίδια στοιχεία από τα οποία φτιάχνεται το
+    UID, με το ποσό στη θέση της εγκατάστασης ώστε δύο υποκαταστήματα με ίδια
+    σειρά να μη μπερδευτούν. Επιστρέφει πόσα σημειώθηκαν.
+    """
+    where, params = ("WHERE client_id = ?", [client_id]) if client_id else ("", [])
+    conn.execute(f"UPDATE documents SET superseded = 0 {where}", params)
+    cur = conn.execute(
+        f"""UPDATE documents SET superseded = 1 WHERE id IN (
+               SELECT id FROM (
+                 SELECT id, ROW_NUMBER() OVER (
+                          PARTITION BY client_id,
+                            CASE WHEN uid <> '' THEN uid
+                                 WHEN aa <> '' THEN
+                              issuer_vat || '|' || issue_date || '|' || invoice_type || '|'
+                              || series || '|' || aa || '|' || printf('%.2f', total_value)
+                                 -- Χωρίς UID και α/α δεν υπάρχει τρόπος να πούμε
+                                 -- ότι δύο εγγραφές είναι το ίδιο παραστατικό.
+                                 ELSE 'mark:' || mark
+                            END
+                          ORDER BY CAST(mark AS INTEGER) DESC) AS rn
+                   FROM documents {where})
+               WHERE rn > 1)""",
+        params,
+    )
+    return cur.rowcount
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:

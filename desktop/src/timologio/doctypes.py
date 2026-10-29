@@ -133,6 +133,45 @@ def counting_sql(type_column: str = "invoice_type") -> str:
     return f"(TRIM(COALESCE({type_column},'')) NOT IN ({codes}))"
 
 
+#: Κωδικοί καυσίμων του myDATA (Παράρτημα 8.17).
+FUEL_NAMES: dict[str, str] = {
+    "10": "Benzine 95RON",
+    "11": "Benzine 95RON+",
+    "12": "Benzine 100RON",
+    "13": "Benzine LRP",
+    "14": "Βενζίνη αεροπλάνων",
+    "15": "Ειδικό καύσιμο αεριωθουμένων",
+    "20": "Diesel",
+    "21": "Diesel premium",
+    "30": "Diesel Heating",
+    "31": "Diesel Heating premium",
+    "32": "Diesel Light",
+    "33": "Diesel άλλων χρήσεων",
+    "34": "Diesel ναυτιλίας",
+    "35": "Κηροζίνη JP1",
+    "36": "Κηροζίνη άλλων χρήσεων",
+    "37": "Μαζούτ",
+    "38": "Μαζούτ ναυτιλίας",
+    "40": "LPG (υγραέριο)",
+    "41": "Υγραέριο/μεθάνιο κινητήρων (χύδην)",
+    "42": "Υγραέριο/μεθάνιο θέρμανσης (χύδην)",
+    "43": "Υγραέριο/μεθάνιο κινητήρων (φιάλες)",
+    "44": "Υγραέριο/μεθάνιο θέρμανσης (φιάλες)",
+    "50": "CNG (πεπιεσμένο φυσικό αέριο)",
+    "60": "Αρωματικοί υδρογονάνθρακες (2707)",
+    "61": "Κυκλικοί υδρογονάνθρακες (2902)",
+    "70": "Ελαφρύ πετρέλαιο (White spirit)",
+    "71": "Ελαφριά λάδια",
+    "72": "Βιοντίζελ",
+}
+
+
+def fuel_label(codes: str | None) -> str:
+    """«10,20» → «Benzine 95RON, Diesel». Άγνωστος κωδικός μένει ως αριθμός."""
+    parts = [c.strip() for c in (codes or "").split(",") if c.strip()]
+    return ", ".join(FUEL_NAMES.get(c, c) for c in parts)
+
+
 def is_credit(code: str | None) -> bool:
     return (code or "").strip() in CREDIT_TYPES
 

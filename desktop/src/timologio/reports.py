@@ -15,7 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import coverage
-from .doctypes import counting_sql, doc_kind, expense_sql, income_sql, signed, signed_sql
+from .doctypes import (
+    counting_sql,
+    doc_kind,
+    expense_sql,
+    fuel_label,
+    income_sql,
+    signed,
+    signed_sql,
+)
 from .fiscal import year_bounds_iso, year_window
 from .models import (
     CLASSIFICATION_LABELS_EL,
@@ -75,6 +83,8 @@ class ClientAnalysis:
     #: Δελτία αποστολής / αυτοπαραδόσεις: στη λίστα εσόδων/εξόδων, όχι στα σύνολα.
     income_uncounted: int = 0
     expense_uncounted: int = 0
+    #: Παλιότερες διαβιβάσεις του ίδιου παραστατικού (ίδιο UID): κρυμμένες.
+    duplicates: int = 0
     #: Η χρήση που αφορά η σύνοψη (None = όλα τα έτη).
     year: int | None = None
     net_value: float = 0.0
@@ -113,9 +123,10 @@ def analyse_client(
     params: dict[str, object] = {"cid": cid, "vat": vat, "y0": "", "y1": "9999"}
     if year:
         params["y0"], params["y1"] = year_bounds_iso(year)
-    scope = "client_id = :cid AND issue_date >= :y0 AND issue_date <= :y1"
+    scope = ("client_id = :cid AND superseded = 0"
+             " AND issue_date >= :y0 AND issue_date <= :y1")
     if not year:
-        scope = "client_id = :cid"
+        scope = "client_id = :cid AND superseded = 0"
 
     totals = conn.execute(
         f"""SELECT COUNT(*) total,
@@ -159,6 +170,10 @@ def analyse_client(
     out.withheld = totals["withheld"] or 0.0
     out.deductions = totals["deductions"] or 0.0
     out.first_date = totals["first_date"] or ""
+    out.duplicates = conn.execute(
+        f"SELECT COUNT(*) FROM documents WHERE {scope.replace('superseded = 0', 'superseded = 1')}",
+        params,
+    ).fetchone()[0] or 0
     out.last_date = totals["last_date"] or ""
 
     # Στα έσοδα, η αξία πώλησης παγίου (E3_880) αφαιρείται: μετρά μόνο το
@@ -281,7 +296,7 @@ def suppliers_of(conn: sqlite3.Connection, vat: str) -> list[tuple[str, str, int
                            THEN d.issuer_name ELSE d.counter_name END AS n,
                       COUNT(*) c
                FROM documents d JOIN clients c ON c.id = d.client_id
-               WHERE c.vat = ?
+               WHERE c.vat = ? AND d.superseded = 0
                GROUP BY v HAVING v <> '' ORDER BY c DESC""",
             (vat,),
         )
@@ -294,7 +309,7 @@ def invoice_types_of(conn: sqlite3.Connection, vat: str) -> list[tuple[str, int]
         for r in conn.execute(
             """SELECT d.invoice_type t, COUNT(*) c
                FROM documents d JOIN clients c ON c.id = d.client_id
-               WHERE c.vat = ? AND d.invoice_type <> ''
+               WHERE c.vat = ? AND d.invoice_type <> '' AND d.superseded = 0
                GROUP BY t ORDER BY t""",
             (vat,),
         )
@@ -317,6 +332,8 @@ DOC_FILTERS: dict[str, str] = {
     # τέλος της λήψης ανοίγει ακριβώς αυτά.
     "unclassified_withheld": "d.classification='unclassified' AND d.withheld_amount > 0",
     "withheld": "(d.withheld_amount > 0 OR d.deductions_amount > 0)",
+    # Οι παλιότερες διαβιβάσεις του ίδιου παραστατικού — μόνο όταν ζητηθούν.
+    "duplicates": "d.superseded = 1",
     "income": income_sql("d.issuer_vat", "c.vat", "d.invoice_type"),
     "expense": expense_sql("d.issuer_vat", "c.vat", "d.invoice_type"),
 }
@@ -345,6 +362,8 @@ def documents_for(
     αμοιβαία αποκλειόμενων επιλογών.
     """
     clauses = ["c.vat = :vat"]
+    if "duplicates" not in (filter_key, *extra_filters):
+        clauses.append("d.superseded = 0")
     for key in (filter_key, *extra_filters):
         clause = DOC_FILTERS.get(key or "all", "")
         if clause:
@@ -451,7 +470,7 @@ _DOC_HEADERS = [
     "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
     "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
     "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο", "Σύνδεσμος παρόχου",
-    "Παρακρατούμενοι φόροι", "Κρατήσεις",
+    "Παρακρατούμενοι φόροι", "Κρατήσεις", "Καύσιμα",
 ]
 #: Δείκτες (0-based) των αριθμητικών στηλών — γράφονται ως πραγματικοί αριθμοί
 #: στο Excel, ώστε να ταξινομούνται/αθροίζονται σωστά. Οι παρακρατήσεις μπήκαν
@@ -485,6 +504,7 @@ def _doc_row_values(r: sqlite3.Row) -> list:
         r["downloading_invoice_url"] or "",
         signed(_amount(r, "withheld_amount"), r["invoice_type"]),
         signed(_amount(r, "deductions_amount"), r["invoice_type"]),
+        fuel_label(r["fuel_codes"] if "fuel_codes" in r.keys() else ""),
     ]
 
 
@@ -498,7 +518,7 @@ def _documents_rows(
 ) -> list[sqlite3.Row]:
     sql = """SELECT c.vat client_vat, c.label client_label, d.*
              FROM documents d JOIN clients c ON c.id = d.client_id"""
-    where: list[str] = []
+    where: list[str] = ["d.superseded = 0"]
     params: list = []
     if vat:
         where.append("c.vat = ?")

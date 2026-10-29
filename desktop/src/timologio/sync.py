@@ -21,6 +21,7 @@ from pathlib import Path
 from . import coverage, repo
 from .config import Settings
 from .crypto import Crypto
+from .db import mark_duplicates
 from .download import (
     HostPool,
     NotAPdf,
@@ -161,6 +162,13 @@ def discover(
                 repo.advance_cursor(conn, client.id, direction, max(marks, key=int))
             coverage.record(conn, client.id, direction, date_from, date_to)
             conn.commit()
+
+        # Το ίδιο παραστατικό διαβιβασμένο ξανά (ίδιο UID, νεότερο MARK): μένει
+        # μόνο η νεότερη διαβίβαση στις λίστες και στα σύνολα.
+        dups = mark_duplicates(conn, client.id)
+        conn.commit()
+        if dups:
+            progress(f"{client.vat}: {dups} διπλές υποβολές (ίδιο παραστατικό, νέο ΜΑΡΚ) κρύφτηκαν")
 
         # Ο χαρακτηρισμός ζητείται πάντα για ΟΛΟ το παράθυρο, ανεξάρτητα από
         # τους cursors: ένα παραστατικό που κατέβηκε χθες μπορεί να

@@ -115,6 +115,12 @@ class Document:
     deductions_amount: float = 0.0
     downloading_invoice_url: str = ""
     provider_host: str = ""
+    #: Η ταυτότητα του παραστατικού στην ΑΑΔΕ (εκδότης, ημερομηνία, εγκατάσταση,
+    #: τύπος, σειρά, α/α). Ίδιο UID με άλλο MARK = το ίδιο παραστατικό,
+    #: διαβιβασμένο ξανά.
+    uid: str = ""
+    #: Οι κωδικοί καυσίμου των γραμμών (fuelCode), π.χ. «10,20».
+    fuel_codes: str = ""
     classification: Classification = Classification.UNKNOWN
     xml_blob: bytes | None = field(default=None, repr=False)
     """Το raw <invoice> element — σώζεται μόνο όταν λείπει provider URL."""

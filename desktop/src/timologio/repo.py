@@ -211,6 +211,11 @@ def list_clients(conn: sqlite3.Connection, only_ready: bool = False) -> list[sql
     return list(conn.execute(sql + " ORDER BY vat"))
 
 
+#: Έκδοση των στοιχείων που διαβάζουμε από την ΑΑΔΕ. 1 = παρακρατήσεις,
+#: 2 = UID και καύσιμα. Μικρότερη τιμή = η λήψη ξαναζητά τη χρήση από την αρχή.
+DATA_V = 2
+
+
 def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> None:
     """Μία εγγραφή ανά MARK.
 
@@ -225,17 +230,19 @@ def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> 
             client_id, mark, direction, invoice_type, issuer_vat, issuer_name,
             counter_vat, counter_name, series, aa, issue_date,
             net_value, vat_amount, total_value,
-            withheld_amount, deductions_amount, amounts_v,
+            withheld_amount, deductions_amount, amounts_v, uid, fuel_codes,
             downloading_invoice_url, provider_host, status)
         VALUES(:client_id, :mark, :direction, :invoice_type, :issuer_vat, :issuer_name,
                :counter_vat, :counter_name, :series, :aa, :issue_date,
                :net_value, :vat_amount, :total_value,
-               :withheld, :deductions, 1,
+               :withheld, :deductions, :dv, :uid, :fuel,
                :url, :host, :status)
         ON CONFLICT(client_id, mark) DO UPDATE SET
           withheld_amount = excluded.withheld_amount,
           deductions_amount = excluded.deductions_amount,
-          amounts_v = 1,
+          amounts_v = :dv,
+          uid = CASE WHEN excluded.uid <> '' THEN excluded.uid ELSE documents.uid END,
+          fuel_codes = excluded.fuel_codes,
           direction = CASE WHEN documents.direction <> excluded.direction
                            THEN 'both' ELSE documents.direction END,
           downloading_invoice_url = CASE WHEN excluded.downloading_invoice_url <> ''
@@ -259,6 +266,9 @@ def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> 
             "series": doc.series,
             "aa": doc.aa,
             "issue_date": doc.issue_date,
+            "uid": doc.uid,
+            "fuel": doc.fuel_codes,
+            "dv": DATA_V,
             "net_value": doc.net_value,
             "vat_amount": doc.vat_amount,
             "total_value": doc.total_value,
@@ -519,7 +529,7 @@ def pending_documents(
     """
     sql = [
         """SELECT * FROM documents
-               WHERE client_id=? AND downloading_invoice_url <> ''
+               WHERE client_id=? AND downloading_invoice_url <> '' AND superseded = 0
                  AND (status='pending'
                       OR (status='failed_retryable'
                           AND (next_retry_at='' OR next_retry_at <= datetime('now'))))"""
@@ -561,7 +571,7 @@ def pending_backlog(
     """
     sql = """SELECT c.vat, c.label, COUNT(*) AS n
                FROM documents d JOIN clients c ON c.id = d.client_id
-              WHERE d.downloading_invoice_url <> ''
+              WHERE d.downloading_invoice_url <> '' AND d.superseded = 0
                 AND (d.status='pending'
                      OR (d.status='failed_retryable'
                          AND (d.next_retry_at='' OR d.next_retry_at <= datetime('now'))))"""
@@ -584,7 +594,8 @@ def viewer_only_documents(
     sql = (
         """SELECT d.*, c.vat AS client_vat, c.label AS client_label
            FROM documents d JOIN clients c ON c.id = d.client_id
-           WHERE d.status='viewer_only' AND d.downloading_invoice_url <> ''"""
+           WHERE d.status='viewer_only' AND d.downloading_invoice_url <> ''
+             AND d.superseded = 0"""
     )
     params: list[object] = []
     if vats:
@@ -638,9 +649,9 @@ def needs_amount_refresh(
     """
     row = conn.execute(
         """SELECT 1 FROM documents
-            WHERE client_id=? AND amounts_v=0 AND direction IN (?, 'both')
+            WHERE client_id=? AND amounts_v < ? AND direction IN (?, 'both')
               AND issue_date >= ? AND issue_date <= ? LIMIT 1""",
-        (client_id, direction.value, date_from_iso, date_to_iso),
+        (client_id, DATA_V, direction.value, date_from_iso, date_to_iso),
     ).fetchone()
     return row is not None
 
@@ -661,7 +672,7 @@ def withheld_unclassified(
                    COALESCE(SUM(d.withheld_amount), 0) AS amount
               FROM documents d JOIN clients c ON c.id = d.client_id
              WHERE c.vat IN ({marks})
-               AND d.classification = 'unclassified'
+               AND d.classification = 'unclassified' AND d.superseded = 0
                AND d.withheld_amount > 0
                AND d.issue_date >= ? AND d.issue_date <= ?
              GROUP BY c.id ORDER BY n DESC, c.label""",
@@ -696,7 +707,7 @@ def pending_retail_receipts(
     sql = f"""SELECT c.vat, c.label, COUNT(*) AS n
                 FROM documents d JOIN clients c ON c.id = d.client_id
                WHERE c.vat IN ({','.join('?' * len(vats))})
-                 AND d.downloading_invoice_url <> ''
+                 AND d.downloading_invoice_url <> '' AND d.superseded = 0
                  AND d.invoice_type LIKE '11.%' AND d.issuer_vat = c.vat
                  AND (d.status='pending'
                       OR (d.status='failed_retryable'

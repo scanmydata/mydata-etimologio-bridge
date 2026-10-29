@@ -42,7 +42,14 @@ from PySide6.QtWidgets import (
 
 from .. import repo
 from ..config import Settings
-from ..doctypes import counts_in_totals, doc_kind, signed, type_label, type_name
+from ..doctypes import (
+    counts_in_totals,
+    doc_kind,
+    fuel_label,
+    signed,
+    type_label,
+    type_name,
+)
 from ..fiscal import year_window
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
@@ -81,6 +88,9 @@ _COLS: list[tuple[str, int, str]] = [
     ("ΑΦΜ", 82, ""),
     ("Σειρά", 66, ""),
     ("Α/Α", 58, "Αύξων αριθμός"),
+    # Από το fuelCode των γραμμών (Παράρτημα 8.17): τι καύσιμο πούλησε ή
+    # αγόρασε ο πελάτης. Κενό = όχι καύσιμα.
+    ("Καύσιμο", 130, "Είδος καυσίμου των γραμμών του παραστατικού (κωδικός myDATA)"),
     ("Καθαρή", 84, "Καθαρή αξία"),
     ("ΦΠΑ", 72, ""),
     ("Σύνολο", 88, "Συνολική αξία"),
@@ -113,19 +123,24 @@ _COL_KIND = 2
 _COL_TYPE = 3
 _COL_PARTY = 4
 _COL_VATNO = 5
-_COL_NET, _COL_VAT, _COL_GROSS = 8, 9, 10
-_COL_WITHHELD = 11
-_COL_CLS = 12
-_COL_STATUS = 13
-_COL_PRINTED = 14
+_COL_SERIES = 6
+_COL_FUEL = 8
+_COL_NET, _COL_VAT, _COL_GROSS = 9, 10, 11
+_COL_WITHHELD = 12
+_COL_CLS = 13
+_COL_STATUS = 14
+_COL_PRINTED = 15
 _COL_OPEN = len(_COLS) - 1
 
 #: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και οι
 #: ημερομηνίες) που αξίζει να φιλτράρονται με λίστα — όχι ποσά/αύξοντες αριθμούς.
 _FILTERABLE_COLS = (
-    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_WITHHELD,
-    _COL_CLS, _COL_STATUS, _COL_PRINTED,
+    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_SERIES, _COL_FUEL,
+    _COL_NET, _COL_VAT, _COL_GROSS, _COL_WITHHELD, _COL_CLS, _COL_STATUS, _COL_PRINTED,
 )
+
+#: Στήλες ποσών: η λίστα του φίλτρου ταξινομείται αριθμητικά, όχι αλφαβητικά.
+_MONEY_COLS = (_COL_NET, _COL_VAT, _COL_GROSS, _COL_WITHHELD)
 
 #: Τρεις ανεξάρτητοι άξονες αντί για έναν κατάλογο αμοιβαία αποκλειόμενων
 #: επιλογών: αλλιώς το «έξοδα ΚΑΙ ελήφθησαν PDF» ήταν αδύνατο να ζητηθεί.
@@ -141,6 +156,9 @@ STATUS_FILTERS: list[tuple[str, str]] = [
     ("viewer_only", "Μόνο online προβολή"),
     ("failed", "Σφάλματα"),
     ("pending", "Σε αναμονή"),
+    # Το ίδιο παραστατικό διαβιβασμένο ξανά με νέο ΜΑΡΚ: κρυμμένο παντού, εδώ
+    # για έλεγχο.
+    ("duplicates", "Διπλές υποβολές"),
 ]
 CLS_FILTERS: list[tuple[str, str]] = [
     ("all", "Όλα"),
@@ -1004,6 +1022,7 @@ class DocumentsView(QWidget):
             str(r["total_value"] or ""),
             money(_amount(r, "withheld_amount")) if _amount(r, "withheld_amount") else "",
             "παρακράτηση" if _amount(r, "withheld_amount") else "",
+            self._fuel_text(r) if self._fuel_text(r) != "—" else "",
         ]
         if "print_date" in keys and r["print_date"]:
             parts.extend([r["print_date"], _gr_date(r["print_date"])])
@@ -1025,6 +1044,14 @@ class DocumentsView(QWidget):
             return (r["counter_name"] if is_income else r["issuer_name"]) or "—"
         if col == _COL_VATNO:
             return (r["counter_vat"] if is_income else r["issuer_vat"]) or "—"
+        if col == _COL_SERIES:
+            return r["series"] or "—"
+        if col == _COL_FUEL:
+            return self._fuel_text(r)
+        if col in (_COL_NET, _COL_VAT, _COL_GROSS):
+            field = {_COL_NET: "net_value", _COL_VAT: "vat_amount",
+                     _COL_GROSS: "total_value"}[col]
+            return money(signed(r[field], r["invoice_type"]))
         if col == _COL_CLS:
             return CLASSIFICATION_LABELS_EL[
                 Classification(r["classification"] or "unknown")
@@ -1041,6 +1068,11 @@ class DocumentsView(QWidget):
             return money(signed(amount, r["invoice_type"])) if amount else "—"
         return ""
 
+    @staticmethod
+    def _fuel_text(r: sqlite3.Row) -> str:
+        codes = r["fuel_codes"] if "fuel_codes" in r.keys() else ""
+        return fuel_label(codes) or "—"
+
     def _kind(self, r: sqlite3.Row) -> str:
         return doc_kind(r["issuer_vat"], self._vat, r["invoice_type"])
 
@@ -1051,7 +1083,7 @@ class DocumentsView(QWidget):
         """Οι μοναδικές τιμές μιας στήλης στο τρέχον σύνολο (πριν τα φίλτρα
         στήλης), ταξινομημένες — για τη λίστα του γρήγορου φίλτρου."""
         values = {self._col_value(r, col) for r in self._rows}
-        if col == _COL_WITHHELD:
+        if col in _MONEY_COLS:
             # Ποσά: αριθμητικά, όχι αλφαβητικά («200,00» πριν από «1.240,00»).
             return sorted(values, key=_money_key)
         return sorted(values)
@@ -1157,7 +1189,7 @@ class DocumentsView(QWidget):
             )
         if col == _COL_CHECK:
             return lambda r: r["mark"] in self._checked
-        if col == 6:
+        if col == _COL_SERIES:
             return lambda r: r["series"] or "—"
         if col == 7:
             return lambda r: r["aa"] or "—"
@@ -1204,6 +1236,7 @@ class DocumentsView(QWidget):
             _COL_TYPE: type_label(r["invoice_type"]),
             4: other_name or "—", 5: other_vat or "—",
             6: r["series"] or "—", 7: r["aa"] or "—",
+            _COL_FUEL: self._fuel_text(r),
             _COL_NET: money(signed(r["net_value"], r["invoice_type"])),
             _COL_VAT: money(signed(r["vat_amount"], r["invoice_type"])),
             _COL_GROSS: money(signed(r["total_value"], r["invoice_type"])),

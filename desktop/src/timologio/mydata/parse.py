@@ -99,6 +99,14 @@ def parse_invoice(invoice: ET.Element, direction: Direction) -> Document:
             net + vat, 2
         )
 
+    # Καύσιμα: ο κωδικός κάθε γραμμής (Παράρτημα 8.17). Το 999 («λοιπές
+    # χρεώσεις») δεν είναι καύσιμο.
+    fuels = sorted(
+        {_strip(node.text) for node in invoice.iter() if _local(node.tag) == "fuelCode"}
+        - {"", "999"},
+        key=lambda c: (len(c), c),
+    )
+
     url = _strip(invoice.findtext("ns:downloadingInvoiceUrl", "", NS))
     if not url:
         url = find_by_localnames(invoice, {"downloadingInvoiceUrl"})
@@ -123,6 +131,8 @@ def parse_invoice(invoice: ET.Element, direction: Direction) -> Document:
         deductions_amount=round(deductions, 2),
         downloading_invoice_url=url,
         provider_host=urlsplit(url).netloc if url else "",
+        uid=_strip(invoice.findtext("ns:uid", "", NS)) or find_by_localnames(invoice, {"uid"}),
+        fuel_codes=",".join(fuels),
     )
     if not url:
         # Χωρίς PDF παρόχου κρατάμε το raw XML — έχει issuer, γραμμές, σύνολα.

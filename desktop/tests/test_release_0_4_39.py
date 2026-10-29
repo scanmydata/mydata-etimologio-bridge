@@ -115,7 +115,7 @@ def test_old_rows_get_flagged_for_a_one_off_refresh(conn):
     upsert_document(conn, cid, Document(mark="1", withheld_amount=210.0,
                                         direction=Direction.INCOMING))
     row = conn.execute("SELECT withheld_amount, amounts_v FROM documents WHERE mark='1'").fetchone()
-    assert (row["withheld_amount"], row["amounts_v"]) == (210.0, 1)
+    assert (row["withheld_amount"], row["amounts_v"]) == (210.0, repo.DATA_V)
 
 
 def test_reports_are_per_fiscal_year(conn):
