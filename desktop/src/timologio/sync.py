@@ -922,6 +922,7 @@ class AllBrowsersFailed(Exception):
 
 def _open_renderer_with_fallback(
     browsers, browser_idx, *, headed, should_cancel, progress, profile_dir=None,
+    stealth_cls=None,
 ):
     """Ανοίγει renderer δοκιμάζοντας τους browsers με τη σειρά (Edge → Chrome).
 
@@ -935,6 +936,19 @@ def _open_renderer_with_fallback(
     γιατί το ίδιο προφίλ δεν μοιράζεται ανάμεσα σε Edge και Chrome.
     """
     from .download.headless import HeadlessCancelled, HeadlessError, HeadlessRenderer
+
+    # Stealth mode (undetected-chromedriver): one Chrome, no browser list — UC
+    # launches/patches its own. On init failure treat as «σs all browsers failed».
+    if stealth_cls is not None:
+        try:
+            per_profile = str(Path(profile_dir) / "uc") if profile_dir else None
+            return stealth_cls(should_cancel=should_cancel,
+                               profile_dir=per_profile), browser_idx
+        except HeadlessCancelled:
+            raise
+        except HeadlessError as exc:
+            log.warning("Stealth browser δεν άνοιξει: %s", exc)
+            raise AllBrowsersFailed()
 
     idx = browser_idx
     while idx < len(browsers):
@@ -992,6 +1006,7 @@ def _render_viewer_batch(
     should_cancel: Callable[[], bool] | None,
     on_done: Callable[[], None] | None = None,
     profile_dir: str | None = None,
+    stealth_cls: Callable | None = None,
 ) -> tuple[int, int, list[sqlite3.Row]]:
     """Αποδίδει μια παρτίδα «μόνο online» **σειριακά, με έναν browser**.
 
@@ -1018,7 +1033,7 @@ def _render_viewer_batch(
     # Fallback browsers: αν ο πρώτος (Edge) δεν ανοίγει — «σφάλμα browser» —
     # δοκιμάζουμε τον επόμενο (Chrome). Ο δείκτης προχωρά μόνιμα ώστε να μην
     # ξαναδοκιμάζουμε browser που ήδη απέτυχε να ξεκινήσει.
-    browsers = find_browsers()
+    browsers = [] if stealth_cls is not None else find_browsers()
     browser_idx = 0
     cancelled = False
     # Προσωρινός φάκελος όπου κατεβάζει ο browser τα PDF του κουμπιού του παρόχου
@@ -1043,7 +1058,7 @@ def _render_viewer_batch(
                     renderer, browser_idx = _open_renderer_with_fallback(
                         browsers, browser_idx, headed=headed,
                         should_cancel=should_cancel, progress=progress,
-                        profile_dir=profile_dir,
+                        profile_dir=profile_dir, stealth_cls=stealth_cls,
                     )
                 raw_url = row["downloading_invoice_url"]
                 if headed and _is_epsilon_docviewer(row["provider_host"], raw_url):
@@ -1232,6 +1247,32 @@ def download_viewer_only(
         progress=progress, should_cancel=should_cancel, on_done=bump,
     )
     saved += s1
+
+    # Πέρασμα 1.5: «stealth» real browser (patched Chrome via
+    # undetected-chromedriver, free/GitHub/MIT) for pages behind Cloudflare
+    # interactive Turnstile (Epsilon DocViewer etc. without server PDF). The
+    # patched real browser passes the risk check and — if needed — clicks the
+    # checkbox via CDP where the user would. Skipped when the package is not
+    # installed: rows fall to the headed pass exactly as before.
+    if remaining and not (should_cancel and should_cancel()):
+        from .download.stealth import StealthRenderer
+        from .download.stealth import available as stealth_available
+
+        if stealth_available():
+            progress(
+                f"  ▶ {len(remaining)} παραστατικά: πέρασμα «stealth» (patched real "
+                "browser — Turnstile auto-pass)."
+            )
+            s15, f15, remaining = _render_viewer_batch(
+                conn, settings, remaining, headed=True, patient=False,
+                timeout=60.0, progress=progress, should_cancel=should_cancel,
+                on_done=bump, stealth_cls=StealthRenderer,
+            )
+            saved += s15
+            failed += f15
+            cancelled = bool(should_cancel and should_cancel())
+
+    cancelled = bool(should_cancel and should_cancel())
 
     # Πέρασμα 2: ορατός headed browser για όσα έμειναν, αν το θέλει ο χρήστης.
     # Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» (π.χ. Epsilon):

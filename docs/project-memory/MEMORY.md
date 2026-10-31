@@ -8,3 +8,4 @@
 - [Packaging & installer](etimologio-packaging.md) — vendored sync, bundled PHP, the frozen-build traps
 - [Ψηφιακός βοηθός](etimologio-assistant.md) — καθαρός router, «μόνο πρόχειρο», γιατί η φωνή δεν πακετάρεται
 - [ΑΑΔΕ endpoint quirks](aade-endpoint-quirks.md) — τι επιστρέφει (και τι δεν επιστρέφει) το afm/preview_temp, ζωντανά επαληθευμένο
+- [Stealth downloader / Turnstile](etimologio-stealth-downloader.md) — DocViewer pages behind Cloudflare interactive Turnstile (Epsilon): how πέρασμα 1.5 (undetected-chromedriver) downloads them

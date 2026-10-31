@@ -11,6 +11,15 @@ import re
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
+def _try_submods(name):
+    # Optional package: collect_submodules raises when it's absent from the build
+    # env (undetected-chromedriver is installed only in the gui extra).
+    try:
+        return collect_submodules(name)
+    except Exception:
+        return []
+
+
 block_cipher = None
 
 
@@ -209,6 +218,8 @@ a = Analysis(
         + collect_submodules("websocket")
         + collect_submodules("openpyxl")
         + collect_submodules("qrcode")
+        + _try_submods("undetected_chromedriver")
+        + _try_submods("selenium")
         + ["et_xmlfile", "tzdata"]
     ),
     hookspath=[],

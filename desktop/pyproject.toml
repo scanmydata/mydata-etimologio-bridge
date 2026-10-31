@@ -1,6 +1,6 @@
 [project]
 name = "timologio-downloader"
-version = "0.4.46"
+version = "0.4.47"
 description = "Μαζική λήψη παραστατικών myDATA (ΑΑΔΕ) για πολλαπλούς πελάτες"
 readme = "README.md"
 authors = [
@@ -27,6 +27,11 @@ gui = [
     # QR για την εγγραφή 2FA στο e-Τιμολόγιο Pro. Καθαρά Python (διαβάζουμε το
     # get_matrix() και ζωγραφίζουμε με Qt) — δεν χρειάζεται Pillow.
     "qrcode>=8.0",
+    # Turnstile-gated providers (Epsilon DocViewer etc. without a server PDF):
+    # patched real browser via undetected-chromedriver (free, GitHub/MIT). If
+    # absent at runtime the download falls back to the visible headed pass.
+    "undetected-chromedriver>=3.5.5",
+    "selenium>=4.5",
 ]
 # Φωνητική είσοδος για τον ψηφιακό βοηθό, εκτός δικτύου. Ξεχωριστό extra και όχι
 # μέρος του `gui`: σέρνει native βιβλιοθήκες και απαιτεί το ελληνικό μοντέλο
