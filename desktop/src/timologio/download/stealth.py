@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import logging
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -79,6 +80,11 @@ class StealthRenderer:
         # (undetected-chromedriver patches Chrome specifically — never Edge).
         self._should_cancel = should_cancel
         self._chrome_tmp: str | None = None
+        # Download destination for /fd/ file links (Chrome saves instead of opening
+        # a PDF viewer, which would close the tab and raise NoSuchWindow).
+        self._dl_dir: Path = Path(tempfile.mkdtemp(prefix="tl_stealth_dl_"))
+        self._dl_seen: set[str] = set()
+        self._dl_behavior = False
         try:
             from undetected_chromedriver import Chrome as UCChrome
         except ImportError as exc:  # pragma: no cover
@@ -119,6 +125,39 @@ class StealthRenderer:
             return self._driver.execute_cdp_cmd(method, params)
         except Exception as exc:  # noqa: BLE001
             raise HeadlessError(f"CDP {method}: {exc}") from exc
+
+    def _ensure_download_dir(self) -> None:
+        """Allow Chrome downloads into our temp dir (once per renderer)."""
+        if self._dl_behavior:
+            return
+        for method in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
+            try:
+                self._cdp(method, {"behavior": "allow",
+                                   "downloadPath": str(self._dl_dir),
+                                   "eventsEnabled": True})
+                self._dl_behavior = True
+                return
+            except HeadlessError:
+                continue
+
+    def _capture_download(self, timeout: float) -> bytes | None:
+        """Poll our download dir for a freshly saved PDF."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for p in self._dl_dir.glob("*.pdf"):
+                if p.name in self._dl_seen or Path(str(p) + ".crdownload").exists():
+                    continue
+                try:
+                    data = p.read_bytes()
+                except OSError:
+                    continue
+                if data.startswith(b"%PDF") and len(data) > 1000:
+                    self._dl_seen.add(p.name)
+                    return data
+            if self._should_cancel and self._should_cancel():
+                raise HeadlessCancelled()
+            time.sleep(0.5)
+        return None
 
     def _text_length(self) -> int:
         try:
@@ -242,6 +281,22 @@ class StealthRenderer:
                 time.sleep(1)
         return bool(self._turnstile_token())
 
+    def _goto(self, url: str) -> bool:
+        """Navigate; if UC's startup window died, open a fresh one and retry."""
+        self._ensure_download_dir()
+        try:
+            self._driver.get(url)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Stealth navigate retry via new window: %s", exc)
+            try:
+                self._driver.new_window()
+                self._driver.get(url)
+                return True
+            except Exception as exc2:  # noqa: BLE001 — caller treats as «μόνο online»
+                log.warning("Stealth navigate failed: %s", exc2)
+                return False
+
     # ------------------------------------------------------------- render
     def render_pdf(
         self,
@@ -257,7 +312,14 @@ class StealthRenderer:
         Returns the PDF bytes or ``None`` when the page never rendered — callers
         must treat ``None`` as «μόνο online» and fall to the next pass.
         """
-        self._driver.get(url)
+        if not self._goto(url):
+            return None
+        if re.search(r"/fd/[0-9a-fA-F]+(?::\d+)?", url):
+            # /fd/ links ARE the file: Chrome downloads it (the viewer tab
+            # closes, which is why plain render_pdf used to die here).
+            got = self._capture_download(min(15.0, timeout))
+            if got:
+                return got
         textlen = self._await_render(min_text, _WAIT_FIRST, patient=patient,
                                      should_cancel=should_cancel or self._should_cancel)
         if textlen < min_text:
@@ -310,7 +372,8 @@ class StealthRenderer:
                 continue
 
         before = {p.name for p in download_dir.glob("*")}
-        self._driver.get(url)
+        if not self._goto(url):
+            return None
         cancel = should_cancel or self._should_cancel
         textlen = self._await_render(min_text, _WAIT_FIRST, patient=False, should_cancel=cancel)
         if textlen < min_text and not self._pass_turnstile(timeout=_WAIT_AFTER_CLICK):
@@ -351,6 +414,7 @@ class StealthRenderer:
             self._driver.quit()
         except Exception:  # noqa: BLE001
             pass
+        shutil.rmtree(self._dl_dir, ignore_errors=True)
         if self._chrome_tmp:
             shutil.rmtree(self._chrome_tmp, ignore_errors=True)
             self._chrome_tmp = None
