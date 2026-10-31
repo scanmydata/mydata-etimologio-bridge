@@ -422,6 +422,40 @@ class HeadlessRenderer:
             return 0
 
     # ------------------------------------------------------------- render
+    def _file_download_capture(self, url: str, timeout: float,
+                               should_cancel: Callable[[], bool] | None = None) -> bytes | None:
+        """/fd/ links ARE the file: navigate with a download destination set and
+        capture what Chrome/Edge saves (their PDF viewer has no printable page
+        headless, and navigating to it used to end in an empty projection)."""
+        tmp = Path(tempfile.mkdtemp(prefix="tl_headless_dl_"))
+        try:
+            for method in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
+                try:
+                    self._call(method, behavior="allow",
+                               downloadPath=str(tmp), eventsEnabled=True)
+                    break
+                except HeadlessError:
+                    continue
+            self._call("Page.navigate", url=url)
+            deadline = time.time() + min(timeout, 30.0)
+            while time.time() < deadline:
+                if should_cancel and should_cancel():
+                    raise HeadlessCancelled()
+                for p in tmp.glob("*.pdf"):
+                    if Path(str(p) + ".crdownload").exists():
+                        continue
+                    try:
+                        data = p.read_bytes()
+                    except OSError:
+                        continue
+                    if data.startswith(b"%PDF") and len(data) > 1000:
+                        return data
+                time.sleep(0.4)
+            log.info("file-download capture: nothing saved for %s", url)
+            return None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def render_pdf(
         self,
         url: str,
@@ -443,6 +477,12 @@ class HeadlessRenderer:
         ``should_cancel``: αν επιστρέψει True κατά την αναμονή, η απόδοση κόβεται
         αμέσως με ``HeadlessCancelled`` (η ακύρωση γίνεται αισθητή σε <0.5s).
         """
+        if "/fd/" in url:
+            # The link IS the file: let the browser save it instead of opening
+            # its PDF viewer (which has no printable page in headless mode).
+            got = self._file_download_capture(url, timeout, should_cancel)
+            if got:
+                return got
         self._call("Page.navigate", url=url)
         textlen = self._await_render(min_text, timeout, patient=patient,
                                      should_cancel=should_cancel)

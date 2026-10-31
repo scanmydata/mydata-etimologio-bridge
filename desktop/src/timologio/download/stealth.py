@@ -39,7 +39,8 @@ log = logging.getLogger(__name__)
 
 #: Richardson-Lucas style: how long to wait for the app to render (seconds) before
 #: the Turnstile click attempt, and after it.
-_WAIT_FIRST = 14.0
+_WAIT_FIRST = 9.0  # first render attempt; Turnstile checkbox appears ~3-5s in
+# (longer waits are paid per page anyway via the poll loop)
 _WAIT_AFTER_CLICK = 25.0
 
 
