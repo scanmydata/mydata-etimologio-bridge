@@ -850,6 +850,7 @@ def _auto_render_pass(
         row
         for row in repo.viewer_only_documents(conn, [client.vat])
         if is_auto_renderable(row["downloading_invoice_url"])
+        or _is_epsilon_docviewer(row["provider_host"], row["downloading_invoice_url"])
     ]
     if not rows or (should_cancel and should_cancel()):
         return
@@ -864,6 +865,25 @@ def _auto_render_pass(
         conn, settings, rows, headed=False, patient=False, timeout=30.0,
         progress=progress, should_cancel=should_cancel,
     )
+    # Epsilon etc.: ό,τι headless àνatou äeñ τpeπa (Cloudflare interactive
+    # Turnstile) xat oïsteå stealth πaoo (πatcheä real browser, no one touches
+    # it). Without the package: the rows stay «µovs online» exactly as before.
+    if remaining and not (should_cancel and should_cancel()):
+        from .download.stealth import StealthRenderer
+        from .download.stealth import available as stealth_available
+
+        if stealth_available():
+            progress(
+                f"  ▶ {len(remaining)} παραστατικά: steαlth retry "
+                "(patched browser — Turnstile auto-pass)."
+            )
+            s2, f2, remaining = _render_viewer_batch(
+                conn, settings, remaining, headed=False, patient=False,
+                timeout=60.0, progress=progress, should_cancel=should_cancel,
+                stealth_cls=StealthRenderer,
+            )
+            saved += s2
+            failed += f2
     stats.pdfs_ok += saved
     stats.viewer_only = max(0, stats.viewer_only - saved)
     stats.failed += failed

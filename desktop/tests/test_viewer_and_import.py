@@ -220,6 +220,9 @@ def test_probe_browsers_reports_ok_and_failure(monkeypatch):
             pass
 
     monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+    # the new stealth pass must not open a real browser inside tests either:
+    from timologio.download import stealth
+    monkeypatch.setattr(stealth, "available", lambda: False)
     results = headless.probe_browsers(timeout=1.0)
     by_name = {r.name: r for r in results}
     assert by_name["Microsoft Edge"].ok is True
@@ -323,6 +326,9 @@ def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkey
             return b"%PDF-1.4\nfake invoice\n%%EOF" if url.endswith("good") else None
 
     monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+    # the new stealth pass must not open a real browser inside tests either:
+    from timologio.download import stealth
+    monkeypatch.setattr(stealth, "available", lambda: False)
 
     settings = Settings(data_dir=tmp_path)
     counts: list[tuple[int, int]] = []
@@ -469,6 +475,9 @@ def test_viewer_browser_fallback_tries_next(conn, tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+    # the new stealth pass must not open a real browser inside tests either:
+    from timologio.download import stealth
+    monkeypatch.setattr(stealth, "available", lambda: False)
 
     settings = Settings(data_dir=tmp_path)
     saved, skipped, failed = sync.download_viewer_only(

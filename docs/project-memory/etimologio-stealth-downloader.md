@@ -35,4 +35,11 @@ now in the `gui` extras + `timologio.spec` hiddenimports):
 - Test: `tests/test_release_0_4_47.py` (module exists, interface parity,
   graceful absence, `stealth_cls` in the pipeline, direct endpoint still first).
 
+- 0.4.48: `_auto_render_pass` (inside every normal fetch) now also takes Epsilon
+  DocViewer rows: headless first, then stealth retry of what stayed empty — so
+  gated Epsilon docs stop being stranded «μόnos online». The manual popup path
+  (own browser / automatic) unchanged. Test `test_release_0_4_48.py`; tests that
+  stub renderers must also `monkeypatch` `stealth.available → False` (else UC
+  launches real Chrome in the test).
+
 Related: [AAΔE endpoint quirks](aade-endpoint-quirks.md).
