@@ -41,5 +41,12 @@ now in the `gui` extras + `timologio.spec` hiddenimports):
   (own browser / automatic) unchanged. Test `test_release_0_4_48.py`; tests that
   stub renderers must also `monkeypatch` `stealth.available → False` (else UC
   launches real Chrome in the test).
+- `/fd/<hex>:<id>` Epsilon links ARE the file: plain navigation makes Chrome
+  open its PDF viewer and the tab dies (`NoSuchWindow` / window-crash). Stealth
+  fixes it by setting `Browser.setDownloadBehavior` into its temp dir **before**
+  navigating (`_ensure_download_dir` inside `_goto`) and polling that dir for
+  the saved `*.pdf` (`_capture_download`); `_goto` also retries a dead window
+  via `driver.new_window()`. Verified live 2026-10-31: 3 stranded
+  `epsilondigital-enetgroup` rows saved 136–137 KB PDFs each, 122 s total.
 
 Related: [AAΔE endpoint quirks](aade-endpoint-quirks.md).
