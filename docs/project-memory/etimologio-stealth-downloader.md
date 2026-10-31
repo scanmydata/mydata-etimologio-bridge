@@ -48,5 +48,13 @@ now in the `gui` extras + `timologio.spec` hiddenimports):
   the saved `*.pdf` (`_capture_download`); `_goto` also retries a dead window
   via `driver.new_window()`. Verified live 2026-10-31: 3 stranded
   `epsilondigital-enetgroup` rows saved 136–137 KB PDFs each, 122 s total.
+- `HeadlessRenderer.render_pdf` got the same download-capture trick for `/fd/`
+  links (set download dir → navigate → poll for `*.pdf`, ≤30s) before falling
+  back to printToPDF: attachment-disposition links save headlessly in Edge/Chrome,
+  while links served as an HTML viewer page (e.g. epsilondigital-3rd) capture
+  nothing and fall through to render → stealth retry as before. Verified live.
+- Stealth first-render wait `_WAIT_FIRST` 14s → 9s (Turnstile checkbox paints
+  ~3-5s in; everything else is polled, not slept). Verified live on client
+  035929984 (afm): popup-automatic path saved 4/4 stranded vf rows, 160 s.
 
 Related: [AAΔE endpoint quirks](aade-endpoint-quirks.md).
