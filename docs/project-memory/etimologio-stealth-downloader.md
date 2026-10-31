@@ -56,5 +56,11 @@ now in the `gui` extras + `timologio.spec` hiddenimports):
 - Stealth first-render wait `_WAIT_FIRST` 14s → 9s (Turnstile checkbox paints
   ~3-5s in; everything else is polled, not slept). Verified live on client
   035929984 (afm): popup-automatic path saved 4/4 stranded vf rows, 160 s.
+- 0.4.49 discipline fix: the visible stealth window may ONLY open for a
+  user-chosen visible pass. `download_viewer_only` gates pass 1.5 under
+  `headed_fallback=True` (popup «via my browser» → UC visible ✓; popup
+  «automatic» → nothing visible, gated rows stay «µovs online»), and
+  `_auto_render_pass` (inside every fetch/backlog) has no stealth at all —
+  strictly headless. `test_release_0_4_49.py` asserts both.
 
 Related: [AAΔE endpoint quirks](aade-endpoint-quirks.md).

@@ -865,25 +865,11 @@ def _auto_render_pass(
         conn, settings, rows, headed=False, patient=False, timeout=30.0,
         progress=progress, should_cancel=should_cancel,
     )
-    # Epsilon etc.: ό,τι headless àνatou äeñ τpeπa (Cloudflare interactive
-    # Turnstile) xat oïsteå stealth πaoo (πatcheä real browser, no one touches
-    # it). Without the package: the rows stay «µovs online» exactly as before.
-    if remaining and not (should_cancel and should_cancel()):
-        from .download.stealth import StealthRenderer
-        from .download.stealth import available as stealth_available
-
-        if stealth_available():
-            progress(
-                f"  ▶ {len(remaining)} παραστατικά: steαlth retry "
-                "(patched browser — Turnstile auto-pass)."
-            )
-            s2, f2, remaining = _render_viewer_batch(
-                conn, settings, remaining, headed=False, patient=False,
-                timeout=60.0, progress=progress, should_cancel=should_cancel,
-                stealth_cls=StealthRenderer,
-            )
-            saved += s2
-            failed += f2
+    # NO visible browser here: this pass runs inside a normal fetch, so it is
+    # strictly headless (Edge → Chrome). Anything a hidden browser cannot render
+    # (e.g. providers behind an interactive «I am human» check) stays «μόνος
+    # online» and is offered to the user via the popup, where they explicitly
+    # choose the visible assisted download.
     stats.pdfs_ok += saved
     stats.viewer_only = max(0, stats.viewer_only - saved)
     stats.failed += failed
@@ -1272,9 +1258,11 @@ def download_viewer_only(
     # undetected-chromedriver, free/GitHub/MIT) for pages behind Cloudflare
     # interactive Turnstile (Epsilon DocViewer etc. without server PDF). The
     # patched real browser passes the risk check and — if needed — clicks the
-    # checkbox via CDP where the user would. Skipped when the package is not
-    # installed: rows fall to the headed pass exactly as before.
-    if remaining and not (should_cancel and should_cancel()):
+    # checkbox via CDP where the user would. THIS WINDOW IS VISIBLE, so it runs
+    # ONLY for the user-chosen visible pass (headed_fallback=True) and when the
+    # package is installed; in the automatic/headless selection nothing visible
+    # ever opens and such rows stay «μόνος online» — exactly as before.
+    if headed_fallback and remaining and not (should_cancel and should_cancel()):
         from .download.stealth import StealthRenderer
         from .download.stealth import available as stealth_available
 

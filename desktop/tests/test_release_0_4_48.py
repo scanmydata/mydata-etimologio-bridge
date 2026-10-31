@@ -1,7 +1,7 @@
 """0.4.48 — Epsilon DocViewer rows are no longer stranded «μόno online» after a
-fetch: the auto-render pass takes them (headless first) and retries what stays
-empty through the stealth pass (patched real browser). The manual «μόno online»
-popup path stays intact."""
+fetch: the auto-render pass takes them (headless first). The manual «μόno online»
+popup path stays intact. (The visible stealth retry was later restricted to the
+user-chosen visible pass — see test_release_0_4_49.)"""
 
 from __future__ import annotations
 
@@ -21,10 +21,9 @@ def test_epsilon_rows_are_recognized():
     assert not _is_epsilon_docviewer("eskap.gr", ESKAP)
 
 
-def test_the_auto_pass_includes_epsilon_and_stealth_retry():
+def test_the_auto_pass_includes_epsilon():
     src = inspect.getsource(_auto_render_pass)
     assert "_is_epsilon_docviewer(row[" in src
-    assert "stealth_cls=StealthRenderer" in src
     assert "is_auto_renderable(row[" in src  # eskap stays in the same pass
 
 
