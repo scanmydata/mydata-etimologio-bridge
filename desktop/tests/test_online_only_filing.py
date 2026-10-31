@@ -21,6 +21,13 @@ from timologio.sync import save_online_only_pdf
 CLIENT_VAT = "123456783"
 
 
+@pytest.fixture(autouse=True)
+def _no_stealth_browser(monkeypatch):
+    """The stealth pass must never open a real patched browser inside tests."""
+    from timologio.download import stealth
+    monkeypatch.setattr(stealth, "available", lambda: False)
+
+
 @pytest.fixture
 def conn(tmp_path: Path) -> sqlite3.Connection:
     conn = init_db(tmp_path / "t.db")
