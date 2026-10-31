@@ -125,9 +125,9 @@ def test_only_the_renderable_ones_are_taken(one_client, monkeypatch, tmp_path: P
     stats = RunStats(viewer_only=3)
     sync._auto_render_pass(conn, client, object(), stats=stats,
                            progress=lambda _m: None, should_cancel=None)
-    assert [row["mark"] for row in seen[0]] == ["1", "2"]     # η Epsilon μένει έξω
-    assert stats.pdfs_ok == 2
-    assert stats.viewer_only == 1
+    assert [row["mark"] for row in seen[0]] == ["1", "2", "3"]     # 0.4.48: Epsilon now enters the pass too
+    assert stats.pdfs_ok == 3
+    assert stats.viewer_only == 0
     assert stats.failed == 0
 
 
