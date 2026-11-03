@@ -124,6 +124,7 @@ _COL_TYPE = 3
 _COL_PARTY = 4
 _COL_VATNO = 5
 _COL_SERIES = 6
+_COL_AA = 7
 _COL_FUEL = 8
 _COL_NET, _COL_VAT, _COL_GROSS = 9, 10, 11
 _COL_WITHHELD = 12
@@ -133,9 +134,9 @@ _COL_PRINTED = 15
 _COL_OPEN = len(_COLS) - 1
 
 #: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και οι
-#: ημερομηνίες) που αξίζει να φιλτράρονται με λίστα — όχι ποσά/αύξοντες αριθμούς.
+#: ημερομηνίες, σειρά, α/α και ποσά) που φιλτράρονται με λίστα.
 _FILTERABLE_COLS = (
-    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_SERIES, _COL_FUEL,
+    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_SERIES, _COL_AA, _COL_FUEL,
     _COL_NET, _COL_VAT, _COL_GROSS, _COL_WITHHELD, _COL_CLS, _COL_STATUS, _COL_PRINTED,
 )
 
@@ -1046,6 +1047,8 @@ class DocumentsView(QWidget):
             return (r["counter_vat"] if is_income else r["issuer_vat"]) or "—"
         if col == _COL_SERIES:
             return r["series"] or "—"
+        if col == _COL_AA:
+            return r["aa"] or "—"
         if col == _COL_FUEL:
             return self._fuel_text(r)
         if col in (_COL_NET, _COL_VAT, _COL_GROSS):
@@ -1079,13 +1082,34 @@ class DocumentsView(QWidget):
     def _kind_text(self, r: sqlite3.Row) -> str:
         return {"income": "Έσοδο", "expense": "Έξοδο"}.get(self._kind(r), "—")
 
+    def _filtered_rows(self, skip_col: int | None = None) -> list[sqlite3.Row]:
+        """Οι γραμμές μετά την αναζήτηση και τα φίλτρα στήλης (εκτός από της
+        ``skip_col``). Τα γενικά φίλτρα (κουτιά, ημερομηνίες) έχουν ήδη
+        περιορίσει το ``self._rows``."""
+        needle = self.search.text().strip().lower()
+        rows = self._rows
+        if needle:
+            rows = [r for r in rows if needle in self._search_haystack(r)]
+        # Φίλτρα στήλης (Excel-style): κρατάμε μόνο τις γραμμές που η τιμή τους σε
+        # κάθε φιλτραρισμένη στήλη ανήκει στις επιλεγμένες.
+        for col, allowed in self._col_filters.items():
+            if allowed and col != skip_col:
+                rows = [r for r in rows if self._col_value(r, col) in allowed]
+        return list(rows)
+
     def _distinct_col_values(self, col: int) -> list[str]:
-        """Οι μοναδικές τιμές μιας στήλης στο τρέχον σύνολο (πριν τα φίλτρα
-        στήλης), ταξινομημένες — για τη λίστα του γρήγορου φίλτρου."""
-        values = {self._col_value(r, col) for r in self._rows}
+        """Οι μοναδικές τιμές μιας στήλης για τη λίστα του γρήγορου φίλτρου.
+
+        Όπως στο Excel, η λίστα ακολουθεί τα ενεργά φίλτρα — γενικά, αναζήτηση
+        και τα φίλτρα των ΑΛΛΩΝ στηλών: δεν προσφέρει τιμές που θα άδειαζαν τον
+        πίνακα. Το δικό της φίλτρο δεν μετρά, για να μπορεί κανείς να
+        ξανατσεκάρει ό,τι έβγαλε."""
+        values = {self._col_value(r, col) for r in self._filtered_rows(skip_col=col)}
         if col in _MONEY_COLS:
             # Ποσά: αριθμητικά, όχι αλφαβητικά («200,00» πριν από «1.240,00»).
             return sorted(values, key=_money_key)
+        if col == _COL_AA:
+            return sorted(values, key=_aa_key)
         return sorted(values)
 
     def _open_col_filter(self, col: int) -> None:
@@ -1096,7 +1120,7 @@ class DocumentsView(QWidget):
         selected = self._col_filters.get(col) or set(values)
 
         def apply(chosen: set[str]) -> None:
-            if not chosen or chosen == set(values):
+            if not chosen or chosen >= set(values):
                 self._col_filters.pop(col, None)  # όλα επιλεγμένα = χωρίς φίλτρο
             else:
                 self._col_filters[col] = chosen
@@ -1108,17 +1132,7 @@ class DocumentsView(QWidget):
         )
 
     def _fill(self) -> None:
-        needle = self.search.text().strip().lower()
-        rows = self._rows
-        if needle:
-            rows = [r for r in rows if needle in self._search_haystack(r)]
-
-        # Φίλτρα στήλης (Excel-style): κρατάμε μόνο τις γραμμές που η τιμή τους σε
-        # κάθε φιλτραρισμένη στήλη ανήκει στις επιλεγμένες.
-        for col, allowed in self._col_filters.items():
-            if allowed:
-                rows = [r for r in rows if self._col_value(r, col) in allowed]
-        rows = list(rows)
+        rows = self._filtered_rows()
 
         net = vat_sum = gross = withheld_sum = 0.0
         uncounted = 0
@@ -1191,8 +1205,8 @@ class DocumentsView(QWidget):
             return lambda r: r["mark"] in self._checked
         if col == _COL_SERIES:
             return lambda r: r["series"] or "—"
-        if col == 7:
-            return lambda r: r["aa"] or "—"
+        if col == _COL_AA:
+            return lambda r: _aa_key(r["aa"])
         if col in _FILTERABLE_COLS:
             return lambda r: self._col_value(r, col)
         return lambda r: 0
@@ -1658,6 +1672,12 @@ def _busy_text(exc: Exception) -> str:
             "(εδώ ή σε άλλον υπολογιστή). Δοκιμάστε ξανά σε λίγα δευτερόλεπτα."
         )
     return str(exc)
+
+
+def _aa_key(text: str) -> tuple:
+    """Α/Α αριθμητικά («9» πριν από «10»)· με γράμματα, κατά κείμενο μετά."""
+    digits = "".join(ch for ch in text or "" if ch.isdigit())
+    return (0, int(digits), text) if digits and digits == text else (1, 0, text or "")
 
 
 def _money_key(text: str) -> float:

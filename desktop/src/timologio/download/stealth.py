@@ -28,8 +28,11 @@ import logging
 import random
 import re
 import shutil
+import sys
 import tempfile
+import threading
 import time
+import types
 from collections.abc import Callable
 from pathlib import Path
 
@@ -44,14 +47,122 @@ _WAIT_FIRST = 9.0  # first render attempt; Turnstile checkbox appears ~3-5s in
 _WAIT_AFTER_CLICK = 25.0
 
 
+#: Το UC «μπαλώνει» ένα κοινό αρχείο chromedriver: δύο εκκινήσεις μαζί (λήψη
+#: + «μόνο online») χαλούσαν η μία την άλλη. Μία εκκίνηση τη φορά.
+_LAUNCH_LOCK = threading.Lock()
+
+#: Τα flags που κρατούν ζωντανή τη σελίδα όταν το παράθυρο είναι εκτός οθόνης:
+#: αλλιώς τα Windows το θεωρούν «κρυμμένο», ο Chrome παγώνει timers/rendering
+#: και το Turnstile δεν τελειώνει ποτέ.
+_KEEP_ALIVE_ARGS = (
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--no-first-run",
+    "--no-default-browser-check",
+)
+#: Σελίδες ανά συνεδρία Chrome. Μετρημένο στην Epsilon: η 5η φόρτωση της
+#: ίδιας συνεδρίας μένει μισή (206 χαρακτήρες) — με νέα συνεδρία κάθε 4, 0
+#: κολλήματα.
+_PAGES_PER_SESSION = 4
+
+#: Εκτός οθόνης: δουλεύει σαν κανονικό (ορατό, όχι headless) παράθυρο — αυτό
+#: θέλει το Cloudflare — αλλά ο χρήστης δεν βλέπει τίποτα να ανοιγοκλείνει.
+_OFFSCREEN_ARGS = ("--window-position=-32000,-32000", "--window-size=1280,1000")
+
+
+def _ensure_distutils() -> None:
+    """Το UC 3.5.5 κάνει ``from distutils.version import LooseVersion``. Η Python
+    3.12+ δεν έχει distutils· στο venv το «δανείζει» το setuptools, στο .exe
+    όχι — και τότε το stealth έλειπε σιωπηλά από την εγκατεστημένη εφαρμογή.
+    Ένα ελάχιστο LooseVersion αρκεί (το UC κρατά μόνο τα ``version``/``vstring``)."""
+    try:
+        from distutils.version import LooseVersion  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    class LooseVersion:
+        def __init__(self, vstring: str = "") -> None:
+            self.vstring = str(vstring).strip()
+            self.version = [int(x) if x.isdigit() else x
+                            for x in re.split(r"[.\-]", self.vstring) if x]
+
+        def __str__(self) -> str:
+            return self.vstring
+
+        def __repr__(self) -> str:
+            return f"LooseVersion({self.vstring!r})"
+
+        def _key(self, other):
+            return other.version if isinstance(other, LooseVersion) else LooseVersion(other).version
+
+        def __eq__(self, other) -> bool:
+            return self.version == self._key(other)
+
+        def __lt__(self, other) -> bool:
+            return self.version < self._key(other)
+
+        def __le__(self, other) -> bool:
+            return self.version <= self._key(other)
+
+        def __gt__(self, other) -> bool:
+            return self.version > self._key(other)
+
+        def __ge__(self, other) -> bool:
+            return self.version >= self._key(other)
+
+    pkg = sys.modules.get("distutils") or types.ModuleType("distutils")
+    mod = types.ModuleType("distutils.version")
+    mod.LooseVersion = LooseVersion  # type: ignore[attr-defined]
+    pkg.version = mod  # type: ignore[attr-defined]
+    sys.modules["distutils"] = pkg
+    sys.modules["distutils.version"] = mod
+
+
 def available() -> bool:
     """True if undetected-chromedriver is importable in this environment."""
+    _ensure_distutils()
     try:
-        import undetected_chromedriver  # noqa: F406
+        import undetected_chromedriver  # noqa: F401
         import selenium  # noqa: F401
     except ImportError:
         return False
-    return True
+    return chrome_path() is not None
+
+
+def chrome_path() -> Path | None:
+    """Ο Google Chrome (το UC δουλεύει ΜΟΝΟ με Chrome, όχι Edge)."""
+    from .headless import find_browsers
+
+    for path in find_browsers():
+        if path.name.lower() == "chrome.exe":
+            return path
+    return None
+
+
+def chrome_major(path: Path | None) -> int | None:
+    """Η κύρια έκδοση του εγκατεστημένου Chrome (π.χ. 156).
+
+    Χωρίς αυτήν το UC κατεβάζει τον driver της ΤΕΛΕΥΤΑΙΑΣ σταθερής έκδοσης·
+    όσο ο Chrome του χρήστη δεν έχει ενημερωθεί (ή έχει, αλλά δεν ξανάνοιξε)
+    οι δύο δεν ταιριάζουν και η εκκίνηση αποτυγχάνει — το «μια δουλεύει, μια
+    όχι». Ο φάκελος δίπλα στο chrome.exe έχει το όνομα της έκδοσης."""
+    if path is None:
+        return None
+    versions = [
+        tuple(int(x) for x in d.name.split("."))
+        for d in path.parent.iterdir()
+        if d.is_dir() and re.fullmatch(r"\d+\.\d+\.\d+\.\d+", d.name)
+    ] if path.parent.exists() else []
+    return max(versions)[0] if versions else None
+
+
+def _mismatch_major(error: str) -> int | None:
+    """«Current browser version is 156.0…» → 156 (για δεύτερη προσπάθεια)."""
+    m = re.search(r"Current browser version is (\d+)", error)
+    return int(m.group(1)) if m else None
 
 
 class StealthRenderer:
@@ -63,10 +174,11 @@ class StealthRenderer:
         with StealthRenderer() as r:
             pdf = r.render_pdf(url)
 
-    The window IS visible on screen (this is the whole point: a visible,
-    non-headless browser is what Cloudflare's score needs) — it opens
-    unattended, the user does not touch it; if the checkbox cannot be passed,
-    the page simply stays empty and the row falls to the next pass.
+    It is a real, non-headless window (that is what Cloudflare's score needs),
+    but with ``hidden=True`` (default) it opens OFF-SCREEN: the user sees no
+    window flashing during a fetch or the «automatic» online-only pass. If the
+    checkbox cannot be passed, the page stays empty and the row stays «μόνο
+    online».
     """
 
     def __init__(
@@ -76,6 +188,7 @@ class StealthRenderer:
         profile_dir: str | Path | None = None,
         should_cancel: Callable[[], bool] | None = None,
         launch_timeout: float = 30.0,
+        hidden: bool = True,
     ) -> None:
         # ``browser`` is accepted for interface parity but only Chrome is supported
         # (undetected-chromedriver patches Chrome specifically — never Edge).
@@ -86,20 +199,25 @@ class StealthRenderer:
         self._dl_dir: Path = Path(tempfile.mkdtemp(prefix="tl_stealth_dl_"))
         self._dl_seen: set[str] = set()
         self._dl_behavior = False
+        self.downloaded: bytes | None = None
+        self._renders = 0
+        _ensure_distutils()
         try:
-            from undetected_chromedriver import Chrome as UCChrome
+            import undetected_chromedriver as uc
         except ImportError as exc:  # pragma: no cover
             raise HeadlessError(
                 f"undetected-chromedriver not installed: {exc}"
             ) from exc
+        chrome = browser if browser is not None and browser.name.lower() == "chrome.exe" \
+            else chrome_path()
+        if chrome is None:
+            raise HeadlessError("Δεν βρέθηκε Google Chrome (το stealth θέλει Chrome)")
         kwargs: dict = {
             "headless": False,
-            "delay": 0.01,
-            "executable": None,
-            "keep_drive": False,
+            "browser_executable_path": str(chrome),
+            "version_main": chrome_major(chrome),
+            "use_subprocess": True,
         }
-        if browser is not None:
-            kwargs["executable"] = str(browser)
         if profile_dir is not None:
             kwargs["user_data_dir"] = str(profile_dir)
             self._persistent_profile = True
@@ -108,9 +226,33 @@ class StealthRenderer:
             self._chrome_tmp = tempfile.mkdtemp(prefix="tl_stealth_")
             kwargs["user_data_dir"] = self._chrome_tmp
             self._persistent_profile = False
+        def options():
+            # Νέο αντικείμενο σε κάθε προσπάθεια: το UC δεν δέχεται ξανά το ίδιο.
+            opts = uc.ChromeOptions()
+            for arg in _KEEP_ALIVE_ARGS + (_OFFSCREEN_ARGS if hidden else ()):
+                opts.add_argument(arg)
+            return opts
+
+        def launch():
+            with _LAUNCH_LOCK:
+                try:
+                    return uc.Chrome(options=options(), **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    # Driver και Chrome διαφορετικής έκδοσης: ξανά με αυτήν που
+                    # λέει το ίδιο το σφάλμα.
+                    major = _mismatch_major(str(exc))
+                    if not major or major == kwargs["version_main"]:
+                        raise
+                    log.warning("UC: driver/Chrome mismatch, retry with %s", major)
+                    kwargs["version_main"] = major
+                    return uc.Chrome(options=options(), **kwargs)
+
+        self._launch = launch
+        self._kwargs = kwargs
         started = time.time()
         try:
-            self._driver = UCChrome(**kwargs)
+            self._driver = launch()
+            self._limit_page_load()
         except Exception as exc:  # noqa: BLE001 — surface as flow error
             if self._chrome_tmp:
                 shutil.rmtree(self._chrome_tmp, ignore_errors=True)
@@ -118,6 +260,36 @@ class StealthRenderer:
             raise HeadlessError(f"UC Chrome launch failed: {exc}") from exc
         if time.time() - started > launch_timeout:  # pragma: no cover
             log.warning("UC launch αργό (%.0fs)", time.time() - started)
+
+    def _restart(self) -> bool:
+        """Νέος Chrome με ΚΑΘΑΡΟ προφίλ (~2″). Η Epsilon «κολλάει» κάθε 5η
+        φόρτωση της ίδιας συνεδρίας (μετρημένο: 7η, 12η, 17η, 22η, 27η)· ούτε
+        ξαναφόρτωμα ούτε νέα καρτέλα βοηθούν — νέα συνεδρία ναι."""
+        try:
+            self._driver.quit()
+        except Exception:  # noqa: BLE001
+            pass
+        if not self._persistent_profile:
+            if self._chrome_tmp:
+                shutil.rmtree(self._chrome_tmp, ignore_errors=True)
+            self._chrome_tmp = tempfile.mkdtemp(prefix="tl_stealth_")
+            self._kwargs["user_data_dir"] = self._chrome_tmp
+        self._dl_behavior = False
+        try:
+            self._driver = self._launch()
+            self._limit_page_load()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Stealth restart failed: %s", exc)
+            return False
+
+    def _limit_page_load(self) -> None:
+        # Χωρίς όριο, μια σελίδα που «πέθανε» κρατούσε το get() για λεπτά και
+        # μαζί όλη την παρτίδα.
+        try:
+            self._driver.set_page_load_timeout(45)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------- navigate
     def _cdp(self, method: str, params: dict):
@@ -141,10 +313,35 @@ class StealthRenderer:
             except HeadlessError:
                 continue
 
-    def _capture_download(self, timeout: float) -> bytes | None:
-        """Poll our download dir for a freshly saved PDF."""
-        deadline = time.time() + timeout
+    def _take_download(self) -> bytes | None:
+        """Ένα PDF που μόλις ολοκληρώθηκε στον φάκελο λήψεων, ή ``None``."""
+        for p in self._dl_dir.glob("*.pdf"):
+            if p.name in self._dl_seen or Path(str(p) + ".crdownload").exists():
+                continue
+            try:
+                data = p.read_bytes()
+            except OSError:
+                continue
+            if data.startswith(b"%PDF") and len(data) > 1000:
+                self._dl_seen.add(p.name)
+                return data
+        return None
+
+    def _capture_download(self, timeout: float, *, page_aware: bool = False) -> bytes | None:
+        """Poll our download dir for a freshly saved PDF.
+
+        ``page_aware``: σταματά νωρίς αν δεν κατεβαίνει τίποτα και η καρτέλα
+        δείχνει ΣΕΛΙΔΑ (κείμενο ή κουτάκι Turnstile). Πολλά /fd/ της Epsilon
+        σερβίρονται ως σελίδα προβολής, όχι ως αρχείο — εκεί περιμέναμε άδικα
+        15″ σε κάθε παραστατικό πριν την τυπώσουμε."""
+        start = time.time()
+        deadline = start + timeout
         while time.time() < deadline:
+            downloading = any(self._dl_dir.glob("*.crdownload"))
+            if (page_aware and not downloading and time.time() - start > 1.5
+                    and (self._text_length() >= MIN_TEXT
+                         or self._turnstile_rect() is not None)):
+                return None
             for p in self._dl_dir.glob("*.pdf"):
                 if p.name in self._dl_seen or Path(str(p) + ".crdownload").exists():
                     continue
@@ -264,12 +461,16 @@ class StealthRenderer:
                     )
                     time.sleep(random.uniform(0.03, 0.12))
                 jx, jy = cx + random.randint(-4, 4), cy + random.randint(-3, 3)
+                # «buttons» είναι bitmask (1 = αριστερό), ΟΧΙ λίστα: με λίστα
+                # το CDP απαντούσε «Invalid parameters» και το κουτάκι δεν
+                # πατήθηκε ποτέ — περνούσαν μόνο σελίδες που δεν το ζητούσαν.
                 for ev in ("mousePressed", "mouseReleased"):
                     self._driver.execute_cdp_cmd(
                         "Input.dispatchMouseEvent",
-                        {"type": ev, "x": jx, "y": jy, "button": "left", "buttonTypes": ["left"],
-                         "buttons": [{"button": "left", "buttonTypes": ["left"]}]},
+                        {"type": ev, "x": jx, "y": jy, "button": "left",
+                         "buttons": 1 if ev == "mousePressed" else 0, "clickCount": 1},
                     )
+                    time.sleep(random.uniform(0.05, 0.12))
                 log.info("Turnstile checkbox clicked at (%d,%d) attempt %d", jx, jy, attempt + 1)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Turnstile click failed: %s", exc)
@@ -282,6 +483,73 @@ class StealthRenderer:
                 time.sleep(1)
         return bool(self._turnstile_token())
 
+    def _scroll_to_widget(self) -> None:
+        try:
+            self._driver.execute_script(
+                "var e=document.getElementById('cf-turnstile');"
+                "if(e) e.scrollIntoView({block:'center'});"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render_or_pass(
+        self, min_text: int, timeout: float,
+        should_cancel: Callable[[], bool] | None = None,
+        *, watch_downloads: bool = False,
+    ) -> int:
+        """Περιμένει να στοιχειοθετηθεί η σελίδα και, ΟΠΟΤΕ εμφανιστεί το
+        κουτάκι του Turnstile, το πατά (έως 3 φορές, με κενό ανάμεσα).
+
+        Παλιά: ένας έλεγχος στα 9″ — αν το κουτάκι ζωγραφιζόταν στα 11″ δεν
+        πατιόταν ποτέ και η σελίδα έμενε κενή· άλλοτε πρόφταινε, άλλοτε όχι.
+        """
+        cancel = should_cancel or self._should_cancel
+        deadline = time.time() + timeout
+        clicks, last_click, passed_at = 0, 0.0, 0.0
+        last, stable, textlen = -1, 0, 0
+        self.downloaded = None
+        self.passed = False
+        while time.time() < deadline:
+            if cancel and cancel():
+                raise HeadlessCancelled()
+            if watch_downloads:
+                # /fd/: μετά τον έλεγχο του Cloudflare η καρτέλα γίνεται λήψη
+                # αρχείου — η σελίδα δεν «στοιχειοθετείται» ποτέ, το PDF όμως
+                # φτάνει στον φάκελο. Το bazaar περίμενε 60″ και αποτύγχανε.
+                data = self._take_download()
+                if data:
+                    self.downloaded = data
+                    return -1
+            textlen = self._text_length()
+            if textlen == last:
+                stable += 1
+                if textlen >= min_text and stable >= 3:
+                    return textlen
+            else:
+                stable, last = 0, textlen
+            if (textlen < min_text and clicks < 3 and time.time() - last_click > 8
+                    and not self._turnstile_token()
+                    and self._turnstile_rect() is not None):
+                self._scroll_to_widget()
+                if self._pass_turnstile(timeout=_WAIT_AFTER_CLICK):
+                    log.info("Turnstile passed")
+                    self.passed = True
+                    passed_at = time.time()
+                clicks += 1
+                last_click = time.time()
+                continue
+            if textlen < min_text and stable >= 16 and self._turnstile_rect() is None:
+                # Μισοφορτωμένη σελίδα που δεν αλλάζει για ~8″ και ΔΕΝ ζητά
+                # κλικ: κόλλησε — ο καλών την ξαναφορτώνει μία φορά.
+                return textlen
+            if passed_at and textlen < min_text and time.time() - passed_at > 12:
+                # Token πήραμε, η εφαρμογή όμως δεν προχώρησε: αντί να
+                # περιμένουμε 60″ ακόμη, ο καλών ξαναφορτώνει τη σελίδα (το
+                # cookie του Cloudflare υπάρχει πια).
+                return textlen
+            time.sleep(0.5)
+        return textlen
+
     def _goto(self, url: str) -> bool:
         """Navigate; if UC's startup window died, open a fresh one and retry."""
         self._ensure_download_dir()
@@ -291,7 +559,13 @@ class StealthRenderer:
         except Exception as exc:  # noqa: BLE001
             log.warning("Stealth navigate retry via new window: %s", exc)
             try:
-                self._driver.new_window()
+                # Η καρτέλα έκλεισε (π.χ. έγινε λήψη αρχείου): πάμε σε όποια
+                # ζει ακόμη και ανοίγουμε καινούργια. (Το παλιό new_window()
+                # δεν υπάρχει στο selenium 4 — μετά από μία αποτυχία έπεφταν
+                # ΟΛΑ τα επόμενα παραστατικά αμέσως.)
+                if not self._restart():
+                    return False
+                self._ensure_download_dir()
                 self._driver.get(url)
                 return True
             except Exception as exc2:  # noqa: BLE001 — caller treats as «μόνο online»
@@ -313,26 +587,35 @@ class StealthRenderer:
         Returns the PDF bytes or ``None`` when the page never rendered — callers
         must treat ``None`` as «μόνο online» and fall to the next pass.
         """
+        # Νέα συνεδρία ΠΡΙΝ από την 5η σελίδα: εκεί «κολλάει» η Epsilon, και
+        # το κόλλημα κοστίζει ~10″ + ξανά, ενώ η επανεκκίνηση ~2″.
+        self._renders += 1
+        if self._renders > 1 and (self._renders - 1) % _PAGES_PER_SESSION == 0:
+            self._restart()
         if not self._goto(url):
             return None
         if re.search(r"/fd/[0-9a-fA-F]+(?::\d+)?", url):
             # /fd/ links ARE the file: Chrome downloads it (the viewer tab
             # closes, which is why plain render_pdf used to die here).
-            got = self._capture_download(min(15.0, timeout))
+            got = self._capture_download(min(15.0, timeout), page_aware=True)
             if got:
                 return got
-        textlen = self._await_render(min_text, _WAIT_FIRST, patient=patient,
-                                     should_cancel=should_cancel or self._should_cancel)
-        if textlen < min_text:
-            token = self._turnstile_token()
-            if not token and self._turnstile_rect() is not None:
-                if not self._pass_turnstile(timeout=_WAIT_AFTER_CLICK):
-                    log.info("Stealth render: κενή/σκάίη σελίδα for %s", url)
-                    return None
-            textlen = self._await_render(
-                min_text, timeout - _WAIT_FIRST, patient=True,
-                should_cancel=should_cancel or self._should_cancel,
-            )
+        is_file = bool(re.search(r"/fd/[0-9a-fA-F]+(?::\d+)?", url))
+        textlen = self._render_or_pass(min_text, timeout, should_cancel,
+                                       watch_downloads=is_file)
+        if textlen == -1 and self.downloaded:
+            return self.downloaded
+        if textlen < min_text and self._restart() and self._goto(url):
+            log.info("Stealth: νέα συνεδρία και ξανά για %s", url)
+            textlen = self._render_or_pass(min_text, min(40.0, timeout), should_cancel,
+                                           watch_downloads=is_file)
+            if textlen == -1 and self.downloaded:
+                return self.downloaded
+        if is_file and textlen < min_text:
+            # Τελευταία ευκαιρία: λήψη που τελείωσε την τελευταία στιγμή.
+            got = self._capture_download(5.0)
+            if got:
+                return got
         if textlen < min_text:
             log.info("Stealth render: κενή after wait (%d χαρ.) for %s", textlen, url)
             return None
@@ -376,12 +659,9 @@ class StealthRenderer:
         if not self._goto(url):
             return None
         cancel = should_cancel or self._should_cancel
-        textlen = self._await_render(min_text, _WAIT_FIRST, patient=False, should_cancel=cancel)
-        if textlen < min_text and not self._pass_turnstile(timeout=_WAIT_AFTER_CLICK):
-            log.info("save_via_button (stealth): κelη for %s", url)
-            return None
-        textlen = self._await_render(min_text, render_timeout, patient=True, should_cancel=cancel)
+        textlen = self._render_or_pass(min_text, render_timeout, cancel)
         if textlen < min_text:
+            log.info("save_via_button (stealth): κενή σελίδα για %s", url)
             return None
         try:
             clicked = self._driver.execute_script("return " + _SAVE_PDF_CLICK_JS)

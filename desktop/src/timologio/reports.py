@@ -514,8 +514,12 @@ def _amount(r: sqlite3.Row, column: str) -> float:
 
 
 def _documents_rows(
-    conn: sqlite3.Connection, vat: str | None, year: int | None = None
+    conn: sqlite3.Connection, vat: str | None, year: int | None = None,
+    *, filters: Sequence[str] = (), date_from: str = "", date_to: str = "",
 ) -> list[sqlite3.Row]:
+    """Οι γραμμές της εξαγωγής. ``filters``: κλειδιά του ``DOC_FILTERS`` (έσοδα,
+    αχαρακτήριστα, μόνο online…), συνδυάζονται με ΚΑΙ — ίδια με τα κουτιά των
+    Παραστατικών."""
     sql = """SELECT c.vat client_vat, c.label client_label, d.*
              FROM documents d JOIN clients c ON c.id = d.client_id"""
     where: list[str] = ["d.superseded = 0"]
@@ -527,6 +531,16 @@ def _documents_rows(
         # Η εξαγωγή ακολουθεί τη χρήση που βλέπει ο χρήστης στην οθόνη.
         where.append("d.issue_date >= ? AND d.issue_date <= ?")
         params.extend(year_bounds_iso(year))
+    for key in filters:
+        clause = DOC_FILTERS.get(key or "all", "")
+        if clause and key != "duplicates":
+            where.append(clause)
+    if date_from:
+        where.append("d.issue_date >= ?")
+        params.append(coverage.to_iso(date_from))
+    if date_to:
+        where.append("d.issue_date <= ?")
+        params.append(coverage.to_iso(date_to))
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY c.vat, d.issue_date, d.mark"
@@ -535,7 +549,8 @@ def _documents_rows(
 
 def export_documents_xlsx(
     conn: sqlite3.Connection, path: Path, vat: str | None = None,
-    year: int | None = None,
+    year: int | None = None, *, filters: Sequence[str] = (),
+    date_from: str = "", date_to: str = "",
 ) -> int:
     """Αναλυτική κατάσταση σε Excel (.xlsx), ως **πραγματικός πίνακας**.
 
@@ -547,7 +562,8 @@ def export_documents_xlsx(
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.table import Table, TableStyleInfo
 
-    rows = _documents_rows(conn, vat, year)
+    rows = _documents_rows(conn, vat, year, filters=filters,
+                           date_from=date_from, date_to=date_to)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()
@@ -585,10 +601,12 @@ def export_documents_xlsx(
 
 def export_documents(
     conn: sqlite3.Connection, path: Path, vat: str | None = None,
-    year: int | None = None,
+    year: int | None = None, *, filters: Sequence[str] = (),
+    date_from: str = "", date_to: str = "",
 ) -> int:
     """Αναλυτική κατάσταση παραστατικών σε CSV."""
-    rows = _documents_rows(conn, vat, year)
+    rows = _documents_rows(conn, vat, year, filters=filters,
+                           date_from=date_from, date_to=date_to)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh, delimiter=";")
@@ -596,7 +614,7 @@ def export_documents(
             "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
             "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
             "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο", "Σύνδεσμος παρόχου",
-            "Παρακρατούμενοι φόροι", "Κρατήσεις",
+            "Παρακρατούμενοι φόροι", "Κρατήσεις", "Καύσιμα",
         ])
         for r in rows:
             cls = Classification(r["classification"] or "unknown")
@@ -613,5 +631,6 @@ def export_documents(
                 r["downloading_invoice_url"] or "",
                 f"{signed(_amount(r, 'withheld_amount'), r['invoice_type']):.2f}".replace(".", ","),
                 f"{signed(_amount(r, 'deductions_amount'), r['invoice_type']):.2f}".replace(".", ","),
+                fuel_label(r["fuel_codes"] if "fuel_codes" in r.keys() else ""),
             ])
     return len(rows)

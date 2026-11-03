@@ -27,15 +27,15 @@ def test_auto_pass_covers_epsilon_strictly_headless():
     src = inspect.getsource(_auto_render_pass)
     assert "_is_epsilon_docviewer(row[" in src
     assert "is_auto_renderable(row[" in src
-    assert "StealthRenderer" not in src  # nothing visible inside a normal fetch
+    # 0.4.50: stealth retry for Epsilon, but OFF-SCREEN (nothing visible).
+    assert "functools.partial(StealthRenderer, hidden=True)" in src
 
 
 def test_stealth_only_for_the_visible_user_pass():
     src = inspect.getsource(download_viewer_only)
     gate = src[src.index("Πέρασμα 1.5"):]
-    assert "stealth_cls=StealthRenderer" in gate
-    head = gate[:gate.index("stealth_cls=StealthRenderer")]
-    assert "if headed_fallback and remaining" in head
+    # 0.4.50: also in the automatic pass, hidden unless the user chose visible.
+    assert "hidden=not headed_fallback" in gate
 
 
 def test_auto_renderable_predicate_untouched_for_eskap():

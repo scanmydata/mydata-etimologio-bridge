@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime
@@ -31,6 +32,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -74,7 +77,7 @@ from .. import crypto as crypto_mod
 from ..crypto import Crypto
 from ..db import init_db
 from ..download.storage import find_client_folder
-from ..reports import export_documents, export_documents_xlsx
+from ..reports import _documents_rows, export_documents, export_documents_xlsx
 from ..schedule import SyncSchedule
 from ..schedule import from_dict as schedule_from_dict
 from ..schedule import to_dict as schedule_to_dict
@@ -82,7 +85,15 @@ from .analysis_panel import AnalysisPanel
 from .busy import BusyOverlay
 from .client_dialog import ClientDialog
 from .control_panel import ControlPanel
-from .documents_view import DEFAULT_FILTER, DocumentsView, SortableItem
+from .documents_view import (
+    CLS_FILTERS,
+    DEFAULT_FILTER,
+    KIND_FILTERS,
+    STATUS_FILTERS,
+    DocumentsView,
+    SortableItem,
+    _gr_upper,
+)
 from .icons import icon, logo_pixmap
 from .import_dialog import ImportDialog
 from .manual import ensure_manual
@@ -96,7 +107,7 @@ from .tour import Step, Tour
 from .table_filter import cell_menu_actions
 from .tray import Tray
 from . import unlock, updater
-from .widgets import resort, setup_columns
+from .widgets import GrDateEdit, resort, setup_columns
 from .workers import HeadlessWorker, SyncWorker
 
 log = logging.getLogger(__name__)
@@ -2058,6 +2069,8 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if self._refuse_running_delete(vats):
+            return
         with self._busy("Διαγραφή…"):
             create_backup(self.settings.db_path, reason="delete-clients")
             count = repo.delete_clients(self.conn, vats)
@@ -2066,6 +2079,22 @@ class MainWindow(QMainWindow):
             self.reload_clients()
             self._set_panel_open(False, animate=False)
         self._log(f"Διαγράφηκαν {count} πελάτες")
+
+    def _refuse_running_delete(self, vats) -> bool:
+        """Πελάτης που κατεβαίνει ΤΩΡΑ δεν σβήνεται: η λήψη θα έγραφε σε πελάτη
+        που δεν υπάρχει. Οι υπόλοιποι σβήνονται κανονικά."""
+        busy = sorted(set(vats) & getattr(self, "_running_vats", set()))
+        if not busy or self._thread is None:
+            return False
+        who = ", ".join(self._label_for(v) for v in busy[:3])
+        if len(busy) > 3:
+            who += f" και άλλοι {len(busy) - 3}"
+        QMessageBox.information(
+            self, "Εκτελείται λήψη",
+            f"Κατεβαίνει τώρα: {who}.\n\n"
+            "Περιμένετε να τελειώσει η λήψη (ή ακυρώστε την) και ξαναδοκιμάστε.",
+        )
+        return True
 
     def on_wipe(self, vats: list[str] | None = None) -> None:
         """Σβήνει τα ληφθέντα και, προαιρετικά, τους ίδιους τους πελάτες.
@@ -2095,6 +2124,8 @@ class MainWindow(QMainWindow):
 
         proceed, delete_files, delete_clients = self._ask_wipe(scope, docs, len(targets))
         if not proceed:
+            return
+        if self._refuse_running_delete(targets if delete_clients else (vats or targets)):
             return
 
         with self._busy("Εκκαθάριση…"):
@@ -2332,7 +2363,7 @@ class MainWindow(QMainWindow):
             self.sync_page.date_from.gr(), self.sync_page.date_to.gr()
         )
         self._sync_window = (to_iso(wide_from), to_iso(wide_to))
-        self._set_running(True, len(vats))
+        self._set_running(True, len(vats), vats)
         self._show_page("sync")
         self._log(
             f"── Έναρξη λήψης για {len(vats)} πελάτες "
@@ -2406,7 +2437,7 @@ class MainWindow(QMainWindow):
         create_backup(self.settings.db_path, reason="backlog")
         self._run_kind = "backlog"
         self._sync_problems = []
-        self._set_running(True, len(vats))
+        self._set_running(True, len(vats), vats)
         self._show_page("sync")
         self._log(
             f"── Λήψη {sum(int(r['n']) for r in rows)} εκκρεμών PDF "
@@ -2610,7 +2641,7 @@ class MainWindow(QMainWindow):
             "(π.χ. Epsilon, Megasoft).<br><br>"
             "<b>Αυτόματα (αόρατα)</b>: μόνο με <b>αόρατο</b> browser (γρήγορα, "
             "παράλληλα) — δεν ανοίγει παράθυρο. Πιάνει όσα δεν έχουν έλεγχο "
-            "«είστε άνθρωπος».<br><br>"
+            "«είστε άνθρωπος», και την Epsilon με Chrome εκτός οθόνης.<br><br>"
             "<b>Αυτόματα (ορατός browser)</b>: ανοίγει ένα <b>ορατό</b> παράθυρο "
             "και δοκιμάζει να αποθηκεύσει μόνο του. Την <b>πρώτη φορά</b> ίσως "
             "χρειαστεί να συνδεθείτε στον πάροχο ή να περάσετε τον έλεγχο «είστε "
@@ -2663,9 +2694,22 @@ class MainWindow(QMainWindow):
         self, vats: list[str] | None, n: int, *, headed: bool
     ) -> None:
         create_backup(self.settings.db_path, reason="headless")
+        self._hl_counts = (0, n)
+        self._hl_step = "Προετοιμασία…"
+        self._hl_started = time.monotonic()
         self._hl_dialog = QProgressDialog(
-            "Άνοιγμα browser…", "Ακύρωση", 0, n, self
+            self._headless_label(), "Ακύρωση", 0, n, self
         )
+        self._hl_dialog.setMinimumWidth(520)
+        # Το ρολόι προχωρά κάθε δευτερόλεπτο, και όσο ξεκινά ο browser: φαίνεται
+        # ότι η δουλειά τρέχει, όχι ότι κόλλησε.
+        tick = QTimer(self._hl_dialog)
+        tick.setInterval(1000)
+        tick.timeout.connect(
+            lambda: self._hl_dialog is not None
+            and self._hl_dialog.setLabelText(self._headless_label())
+        )
+        tick.start()
         self._hl_dialog.setWindowTitle("Λήψη μόνο-online")
         self._hl_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self._hl_dialog.setMinimumDuration(0)
@@ -2702,8 +2746,19 @@ class MainWindow(QMainWindow):
             return
         dialog.setMaximum(total)
         dialog.setValue(done)
+        self._hl_counts = (done, total)
+        dialog.setLabelText(self._headless_label())
+
+    def _headless_label(self) -> str:
+        """Μετρητής ΚΑΙ τι γίνεται τώρα (φάση, παραστατικό, χρόνος): μόνο το
+        «Άνοιγμα browser…» έμενε για λεπτά χωρίς να λέει τίποτα."""
+        done, total = getattr(self, "_hl_counts", (0, 0))
         pct = int(done * 100 / total) if total else 0
-        dialog.setLabelText(f"Λήψη μόνο-online…  {done} / {total}  ({pct}%)")
+        secs = int(time.monotonic() - getattr(self, "_hl_started", time.monotonic()))
+        return (
+            f"Λήψη μόνο-online…  {done} / {total}  ({pct}%) · {secs // 60}:{secs % 60:02d}"
+            f"\n\n{getattr(self, '_hl_step', '')}"
+        )
 
     def _on_headless_cancel(self) -> None:
         """Ακύρωση της μόνο-online λήψης — γίνεται αισθητή σε <1s."""
@@ -2749,10 +2804,13 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_headless_message(self, text: str) -> None:
-        # Η μπάρα και το ποσοστό οδηγούνται πλέον από το ακριβές
-        # _on_headless_progress (done/total)· εδώ κρατάμε μόνο το ημερολόγιο,
-        # ώστε τα δύο να μη «μαλώνουν» για την ίδια ετικέτα.
+        # Η μπάρα/ποσοστό έρχονται από το _on_headless_progress· το μήνυμα
+        # μπαίνει στη δεύτερη γραμμή της ίδιας ετικέτας («τι γίνεται τώρα»).
         self._log(text)
+        self._hl_step = text.strip().lstrip("…✓✗⧉▶ ").strip() or self._hl_step
+        dialog = getattr(self, "_hl_dialog", None)
+        if dialog is not None:
+            dialog.setLabelText(self._headless_label())
 
     def _teardown_headless(self) -> None:
         self.menu.set_action_busy("online_pdf", False)
@@ -2763,6 +2821,7 @@ class MainWindow(QMainWindow):
         self._hl_worker = None
         if getattr(self, "_hl_dialog", None) is not None:
             self._hl_dialog.close()
+            self._hl_dialog.deleteLater()    # μαζί και το ρολόι του
             self._hl_dialog = None
 
     def _on_headless_finished(self, saved: int, skipped: int, failed: int) -> None:
@@ -2909,7 +2968,7 @@ class MainWindow(QMainWindow):
                 "χαρακτηρισμός, παρακρατήσεις) έρχονται πάντα για ΟΛΗ τη χρήση "
                 "ως σήμερα, ώστε τα σύνολα να είναι σωστά. Αν κάποιος πελάτης "
                 "έχει αχαρακτήριστα με παρακρατούμενο φόρο, η σύνοψη στο τέλος "
-                "το λέει με σύνδεσμο «δείξε τα».\n\n"
+                "το λέει με σύνδεσμο «Εμφάνιση».\n\n"
                 "Οι αποδείξεις λιανικής που εξέδωσε ο ίδιος ο πελάτης μένουν σε "
                 "αναμονή· στο τέλος η εφαρμογή ρωτά αν θέλετε να κατέβουν.\n\n"
                 "Η εφαρμογή ζητά μόνο ό,τι είναι νεότερο από την προηγούμενη "
@@ -3265,15 +3324,16 @@ class MainWindow(QMainWindow):
             return
 
         who = self._label_for(vats[0]) if len(vats) == 1 else f"{len(vats)} πελάτες"
+        # Κεφαλαία, όπως και στο ZIP: «ΠΑΡΑΣΤΑΤΙΚΑ <ΑΦΜ> <επωνυμία> <χρήση>».
         base = (
-            f"παραστατικά {vats[0]} {_safe_name(self._label_for(vats[0]))}".strip()
-            if len(vats) == 1 else "παραστατικά"
+            f"ΠΑΡΑΣΤΑΤΙΚΑ {vats[0]} {_safe_name(self._label_for(vats[0]))}".strip()
+            if len(vats) == 1 else "ΠΑΡΑΣΤΑΤΙΚΑ"
         ) + f" {self._fiscal_year}"
 
         # 1) Επιλογή μορφής από αναπτυσσόμενο μενού (roller) — Excel ή CSV.
         dialog = QDialog(self)
         dialog.setWindowTitle("Εξαγωγή")
-        dialog.setMinimumWidth(420)
+        dialog.setMinimumWidth(460)
         box_lay = QVBoxLayout(dialog)
         box_lay.setSpacing(10)
         box_lay.addWidget(QLabel(
@@ -3283,6 +3343,58 @@ class MainWindow(QMainWindow):
         combo.addItem("Excel (.xlsx) — ταξινομήσιμος πίνακας με φίλτρα", "excel")
         combo.addItem("CSV (.csv) — απλό κείμενο για εισαγωγή αλλού", "csv")
         box_lay.addWidget(combo)
+
+        # Τι θα μπει στο αρχείο: οι ίδιοι άξονες με τα Παραστατικά (έσοδα/
+        # έξοδα, διάστημα, χαρακτηρισμός, PDF), ώστε να μη χρειάζεται φιλτράρισμα
+        # στο Excel μετά.
+        filt_box = QGroupBox("Τι θα εξαχθεί")
+        form = QFormLayout(filt_box)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        def axis(options) -> QComboBox:
+            c = QComboBox()
+            for key, label in options:
+                if key != "duplicates":
+                    c.addItem(label, key)
+            return c
+
+        kind_combo = axis(KIND_FILTERS)
+        cls_combo = axis(CLS_FILTERS)
+        status_combo = axis(STATUS_FILTERS)
+        start, end = (date.fromisoformat(d) for d in self._year_iso())
+        date_from, date_to = GrDateEdit(start), GrDateEdit(end)
+        for edit in (date_from, date_to):
+            edit.set_range(start, end)
+            edit.setMinimumWidth(128)
+        dates = QHBoxLayout()
+        dates.addWidget(date_from)
+        dates.addWidget(QLabel("έως"))
+        dates.addWidget(date_to)
+        dates.addStretch(1)
+        form.addRow("Είδος:", kind_combo)
+        form.addRow("Από:", dates)
+        form.addRow("Χαρακτηρισμός:", cls_combo)
+        form.addRow("Λήψη PDF:", status_combo)
+        count_lbl = QLabel("")
+        count_lbl.setObjectName("muted")
+        form.addRow("", count_lbl)
+        box_lay.addWidget(filt_box)
+
+        def chosen() -> dict:
+            return {
+                "filters": [c.currentData() for c in (kind_combo, cls_combo, status_combo)
+                            if c.currentData() != "all"],
+                "date_from": to_iso(date_from.gr()),
+                "date_to": to_iso(date_to.gr()),
+            }
+
+        def recount() -> None:
+            # Πόσα θα βγουν, πριν πατηθεί «Συνέχεια».
+            n = sum(len(_documents_rows(self.conn, v, self._fiscal_year, **chosen()))
+                    for v in vats)
+            count_lbl.setText(f"{n} παραστατικά θα εξαχθούν")
+            ok = bb.button(QDialogButtonBox.StandardButton.Ok)
+            ok.setEnabled(n > 0)     # κενό αρχείο δεν βγαίνει
         hint = QLabel(
             "Το αρχείο περιλαμβάνει και τον σύνδεσμο του παρόχου κάθε "
             "παραστατικού — χρήσιμο για όσα έχουν σφάλμα."
@@ -3298,12 +3410,25 @@ class MainWindow(QMainWindow):
         bb.accepted.connect(dialog.accept)
         bb.rejected.connect(dialog.reject)
         box_lay.addWidget(bb)
+        for c in (kind_combo, cls_combo, status_combo):
+            c.currentIndexChanged.connect(recount)
+        for edit in (date_from, date_to):
+            edit.dateChanged.connect(recount)
+        recount()
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         is_excel = combo.currentData() == "excel"
         suffix = ".xlsx" if is_excel else ".csv"
         kind = "Excel" if is_excel else "CSV"
         writer = export_documents_xlsx if is_excel else export_documents
+        options = chosen()
+        # Το όνομα λέει και τι φιλτραρίστηκε («… ΕΣΟΔΑ ΑΧΑΡΑΚΤΗΡΙΣΤΑ»).
+        tags = [c.currentText() for c in (kind_combo, cls_combo, status_combo)
+                if c.currentData() != "all"]
+        if (date_from.date().toPython(), date_to.date().toPython()) != (start, end):
+            tags.append(f"{date_from.gr()}-{date_to.gr()}".replace("/", "."))
+        if tags:
+            base += " " + _gr_upper(" ".join(tags))
 
         # 2) Πού θα αποθηκευτεί — με τον κανονικό browser των Windows.
         default = self.settings.data_dir / f"{base}{suffix}"
@@ -3326,7 +3451,7 @@ class MainWindow(QMainWindow):
                         f"{target.stem} {vat} {_safe_name(self._label_for(vat))}"
                         f"{target.suffix}".replace("  ", " ")
                     )
-                total += writer(self.conn, target, vat, self._fiscal_year)
+                total += writer(self.conn, target, vat, self._fiscal_year, **options)
         self._log(f"Εξήχθησαν {total} παραστατικά για {who} ({kind})")
         QMessageBox.information(
             self, "Η εξαγωγή ολοκληρώθηκε",
@@ -3459,7 +3584,7 @@ class MainWindow(QMainWindow):
             return
         self._run_kind = "retail"
         self._sync_problems = []
-        self._set_running(True, len(vats))
+        self._set_running(True, len(vats), vats)
         self._log(f"── Λήψη αποδείξεων λιανικής για {len(vats)} πελάτες "
                   f"({to_gr(start)} – {to_gr(end)})")
         self._thread = QThread(self)
@@ -3571,7 +3696,7 @@ class MainWindow(QMainWindow):
                 f'<span style="color:{CURRENT.bad};">⚠ <b>{who}</b>: {alert["n"]} '
                 f'αχαρακτήριστα με παρακρατούμενο φόρο ({money(alert["amount"])} €)'
                 f'</span> — <a href="withheld:{alert["vat"]}" '
-                f'style="color:{CURRENT.accent}; font-weight:700;">δείξε τα</a>'
+                f'style="color:{CURRENT.accent}; font-weight:700;">Εμφάνιση</a>'
             )
         box.setText("Η λήψη ολοκληρώθηκε.<br><br>" + "<br>".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -3586,7 +3711,7 @@ class MainWindow(QMainWindow):
                     lambda href: (box.accept(), self.open_withheld(href.partition(":")[2]))
                 )
             if len(alerts) == 1:
-                show = box.addButton("Δείξε τα", QMessageBox.ButtonRole.ActionRole)
+                show = box.addButton("Εμφάνιση", QMessageBox.ButtonRole.ActionRole)
                 show.clicked.connect(lambda: self.open_withheld(alerts[0]["vat"]))
         box.exec()
 
@@ -3608,7 +3733,11 @@ class MainWindow(QMainWindow):
         self.menu.set_action_busy("pending_pdf", False)
         self._set_running(False, 0)
 
-    def _set_running(self, running: bool, total: int) -> None:
+    def _set_running(
+        self, running: bool, total: int, vats: list[str] | None = None
+    ) -> None:
+        # Ποιοι πελάτες κατεβαίνουν τώρα: δεν διαγράφονται στη μέση της λήψης.
+        self._running_vats = set(vats or ()) if running else set()
         self.sync_page.set_running(running)
         self.menu.set_enabled_action("import", not running)
         self.menu.set_enabled_action("restore", not running)

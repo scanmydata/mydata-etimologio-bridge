@@ -6,6 +6,7 @@ debug surface.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
@@ -17,6 +18,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import coverage, repo
 from .config import Settings
@@ -870,6 +872,24 @@ def _auto_render_pass(
     # (e.g. providers behind an interactive «I am human» check) stays «μόνος
     # online» and is offered to the user via the popup, where they explicitly
     # choose the visible assisted download.
+    # Epsilon πίσω από Turnstile: ξανά με «stealth» Chrome, ΕΚΤΟΣ ΟΘΟΝΗΣ —
+    # κανένα παράθυρο δεν φαίνεται, αλλά το Cloudflare βλέπει κανονικό browser.
+    eps = [r for r in remaining
+           if _is_epsilon_docviewer(r["provider_host"], r["downloading_invoice_url"])]
+    if eps and not (should_cancel and should_cancel()):
+        from .download.stealth import StealthRenderer
+        from .download.stealth import available as stealth_available
+
+        if stealth_available():
+            progress(f"  ▶ {len(eps)} παραστατικά Epsilon: λήψη με κρυφό Chrome (stealth)")
+            s2, f2, left = _render_viewer_batch(
+                conn, settings, eps, headed=False, patient=False, timeout=60.0,
+                progress=progress, should_cancel=should_cancel,
+                stealth_cls=functools.partial(StealthRenderer, hidden=True),
+            )
+            saved += s2
+            failed += f2
+            remaining = [r for r in remaining if r not in eps] + left
     stats.pdfs_ok += saved
     stats.viewer_only = max(0, stats.viewer_only - saved)
     stats.failed += failed
@@ -1067,6 +1087,12 @@ def _render_viewer_batch(
                         profile_dir=profile_dir, stealth_cls=stealth_cls,
                     )
                 raw_url = row["downloading_invoice_url"]
+                # Τι γίνεται ΤΩΡΑ — αλλιώς το παράθυρο έμενε στο «άνοιγμα
+                # browser» όσο φόρτωνε η σελίδα του πρώτου παραστατικού.
+                progress(
+                    f"  … {i + 1}/{len(rows)} {label}: φόρτωση σελίδας "
+                    f"{row['provider_host'] or urlparse(raw_url).netloc}…"
+                )
                 if headed and _is_epsilon_docviewer(row["provider_host"], raw_url):
                     # Epsilon: το επίσημο PDF φτιάχνεται μέσα στον browser όταν
                     # πατηθεί το κουμπί «Αποθήκευση ως PDF». Το πατάμε εμείς (όπως
@@ -1150,20 +1176,43 @@ def _direct_fetch_batch(
 
     Επιστρέφει (αποθηκεύτηκαν, όσα έμειναν).
     """
-    downloader = ProviderDownloader(settings)
+    from .download.provider import is_auto_renderable
+
     saved = 0
     remaining: list[sqlite3.Row] = []
-    try:
-        for row in rows:
-            if should_cancel and should_cancel():
+    # Όσοι πάροχοι ξέρουμε ότι δίνουν ΜΟΝΟ σελίδα (ΕΣΚΑΠ, Alpha Ψηφιακή) δεν
+    # ρωτιούνται καν: πάνε κατευθείαν στον browser.
+    probe = [r for r in rows if not is_auto_renderable(r["downloading_invoice_url"])]
+    if len(probe) < len(rows):
+        remaining.extend(r for r in rows if is_auto_renderable(r["downloading_invoice_url"]))
+    if not probe:
+        return 0, remaining
+    progress(f"  … έλεγχος για άμεσο PDF στον πάροχο ({len(probe)} παραστατικά)…")
+
+    def fetch(row: sqlite3.Row):
+        # Ένα session ανά αίτημα: τα requests.Session δεν μοιράζονται με
+        # ασφάλεια ανάμεσα σε threads.
+        if should_cancel and should_cancel():
+            return None
+        downloader = ProviderDownloader(settings)
+        try:
+            return downloader.fetch_pdf(row["downloading_invoice_url"])
+        except Exception:  # noqa: BLE001 — HTML/σφάλμα: δοκίμασε browser μετά
+            return None
+        finally:
+            downloader.close()
+
+    # Παράλληλα (μόνο το δίκτυο): σειριακά, 50 σελίδες × λίγα δευτερόλεπτα η
+    # καθεμία κρατούσαν τον χρήστη μπροστά σε «άνοιγμα browser» για λεπτά. Η
+    # εγγραφή στη βάση μένει εδώ, στο ίδιο thread.
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for n, (row, result) in enumerate(zip(probe, pool.map(fetch, probe)), 1):
+            if n % 10 == 0 and n < len(probe):
+                progress(f"  … έλεγχος για άμεσο PDF: {n}/{len(probe)}")
+            if result is None:
                 remaining.append(row)
                 continue
             label = row["client_label"] or row["client_vat"]
-            try:
-                result = downloader.fetch_pdf(row["downloading_invoice_url"])
-            except Exception:  # noqa: BLE001 — HTML/σφάλμα: δοκίμασε browser μετά
-                remaining.append(row)
-                continue
             doc = _doc_from_row(row)
             path = resolve_path(settings.storage_root, row["client_vat"], doc,
                                 client_label=row["client_label"])
@@ -1177,8 +1226,6 @@ def _direct_fetch_batch(
             if on_done is not None:
                 on_done()  # τερματικό: αυτό δεν πάει στα browser περάσματα
             progress(f"  ✓ {label}: PDF άμεσα από τον πάροχο ({size:,} B)")
-    finally:
-        downloader.close()
     return saved, remaining
 
 
@@ -1262,7 +1309,8 @@ def download_viewer_only(
     # ONLY for the user-chosen visible pass (headed_fallback=True) and when the
     # package is installed; in the automatic/headless selection nothing visible
     # ever opens and such rows stay «μόνος online» — exactly as before.
-    if headed_fallback and remaining and not (should_cancel and should_cancel()):
+    # Τρέχει ΚΑΙ στο «Αυτόματα (αόρατα)»: εκεί το παράθυρο ανοίγει εκτός οθόνης.
+    if remaining and not (should_cancel and should_cancel()):
         from .download.stealth import StealthRenderer
         from .download.stealth import available as stealth_available
 
@@ -1274,7 +1322,8 @@ def download_viewer_only(
             s15, f15, remaining = _render_viewer_batch(
                 conn, settings, remaining, headed=True, patient=False,
                 timeout=60.0, progress=progress, should_cancel=should_cancel,
-                on_done=bump, stealth_cls=StealthRenderer,
+                on_done=bump,
+                stealth_cls=functools.partial(StealthRenderer, hidden=not headed_fallback),
             )
             saved += s15
             failed += f15

@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QLocale, QObject, QRect, QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QImage, QPageLayout, QPainter
+from PySide6.QtGui import QAction, QFont, QFontMetrics, QImage, QPageLayout, QPainter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPrintSupport import (
     QPrintDialog,
@@ -270,6 +270,37 @@ class PrintJob:
         return layout_pages([d.pageCount() for d in self.docs],
                             self.duplex if duplex is None else duplex)
 
+    def sheets(self, duplex: bool | None = None) -> int:
+        """Πόσα φύλλα χαρτί θα βγουν."""
+        n = len(self.slots(duplex))
+        on = self.duplex if duplex is None else duplex
+        return (n + 1) // 2 if on else n
+
+    def duplex_text(self, duplex: bool | None = None) -> str:
+        """Η ετικέτα του κουμπιού: τι θα γίνει ΤΩΡΑ, όχι σκέτο «Εμπρός-πίσω» που
+        δεν έλεγε αν είναι αναμμένο."""
+        on = self.duplex if duplex is None else duplex
+        sheets = self.sheets(on)
+        word = "φύλλο" if sheets == 1 else "φύλλα"
+        if on:
+            return f"✔ Εμπρός-πίσω · {sheets} {word}"
+        return f"Μόνο εμπρός · {sheets} {word}"
+
+    def duplex_tooltip(self) -> str:
+        if self.duplex:
+            return (
+                "ΑΝΑΜΜΕΝΟ: τυπώνει και στις δύο όψεις του χαρτιού.\n"
+                "Κάθε παραστατικό ξεκινά σε δικό του φύλλο: ένα δισέλιδο γίνεται\n"
+                "ένα φύλλο εμπρός-πίσω, δύο μονοσέλιδα δύο φύλλα (όχι το ένα\n"
+                "πίσω από το άλλο). Οι λευκές σελίδες της προεπισκόπησης είναι\n"
+                "οι πίσω όψεις που μένουν κενές.\n\nΚλικ για μονή όψη."
+            )
+        return (
+            "ΣΒΗΣΤΟ: κάθε σελίδα σε δικό της φύλλο, μόνο μπροστά.\n\n"
+            "Κλικ για εμπρός-πίσω (και στις δύο όψεις, κάθε παραστατικό σε\n"
+            "δικό του φύλλο)."
+        )
+
     def render(self, printer: QPrinter, duplex: bool | None = None) -> None:
         # Ο δείκτης αναμονής μπαίνει/βγαίνει ΜΕΣΑ στο render (ισοσκελισμένο), ώστε
         # να μη μένει ποτέ κολλημένος.
@@ -347,17 +378,17 @@ def _install_print_controls(
     native.setVisible(False)
     preview = dialog.findChild(QPrintPreviewWidget)
 
-    duplex = QAction("Εμπρός-πίσω", dialog)
+    duplex = QAction(job.duplex_text(), dialog)
     duplex.setCheckable(True)
     duplex.setChecked(job.duplex)
-    duplex.setToolTip(
-        "Εκτύπωση και στις δύο όψεις του χαρτιού.\n"
-        "Κάθε παραστατικό ξεκινά σε δικό του φύλλο: ένα δισέλιδο τυπώνεται\n"
-        "εμπρός-πίσω, δύο μονοσέλιδα σε δύο φύλλα (όχι το ένα πίσω από το άλλο)."
-    )
+    duplex.setToolTip(job.duplex_tooltip())
 
     def toggle(on: bool) -> None:
         job.duplex = on
+        # Ανάδραση: η ετικέτα λέει τι ισχύει και πόσα φύλλα θα βγουν, και το
+        # κουμπί «ανάβει» όσο είναι ενεργό.
+        duplex.setText(job.duplex_text())
+        duplex.setToolTip(job.duplex_tooltip())
         if preview is not None:
             preview.updatePreview()    # να φανούν και οι λευκές σελίδες
 
@@ -379,6 +410,22 @@ def _install_print_controls(
     button = toolbar.widgetForAction(duplex)
     if button is not None:
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        button.setObjectName("duplexToggle")
+        button.setStyleSheet(
+            f"QToolButton#duplexToggle {{ padding: 3px 10px; border-radius: 6px;"
+            f" border: 1px solid {CURRENT.line}; }}"
+            f"QToolButton#duplexToggle:checked {{ background: {CURRENT.accent};"
+            f" color: {CURRENT.on_accent}; border-color: {CURRENT.accent}; font-weight: 700; }}"
+        )
+        # Σταθερό πλάτος (το φαρδύτερο από τα δύο κείμενα, σε έντονα): αλλιώς με
+        # το κλικ το κουμπί φάρδαινε και η γραμμή το έκρυβε στο «…» μαζί με την
+        # Εκτύπωση.
+        bold = QFont(button.font())
+        bold.setBold(True)
+        metrics = QFontMetrics(bold)
+        button.setMinimumWidth(
+            max(metrics.horizontalAdvance(job.duplex_text(on)) for on in (False, True)) + 28
+        )
     return duplex, act
 
 

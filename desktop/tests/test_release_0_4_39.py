@@ -134,7 +134,7 @@ def test_export_follows_the_year_and_carries_the_withheld_columns(conn, tmp_path
     path = tmp_path / "out.csv"
     assert export_documents(conn, path, VAT, 2026) == 3
     head = path.read_text(encoding="utf-8-sig").splitlines()[0]
-    assert head.endswith("Παρακρατούμενοι φόροι;Κρατήσεις")
+    assert head.endswith("Παρακρατούμενοι φόροι;Κρατήσεις;Καύσιμα")
 
 
 def test_pdfs_follow_the_users_dates_while_the_year_is_discovered(conn, monkeypatch):

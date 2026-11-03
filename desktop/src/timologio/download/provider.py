@@ -29,6 +29,10 @@ _EPSILON_HOST = "epsilonnet.gr"
 #: κουμπιά)· η καθαρή εκτυπώσιμη μορφή είναι πίσω από το κουμπί «Εκτύπωση» που
 #: καλεί ``printPage('/invoice_print.php?authentication_code=…')``.
 _ESKAP_HOST = "eskap.gr"
+#: Alpha Ψηφιακή: το ``…/invoices/<UID>/pdf`` είναι καθαρή εκτυπώσιμη σελίδα
+#: HTML (όχι αρχείο), χωρίς έλεγχο «είστε άνθρωπος»· το print CSS κρύβει και
+#: το κουμπί «Ανάλυση Παραστατικού». Ο σύνδεσμος χωρίς /pdf κάνει 302 σε αυτήν.
+_ALPHA_HOST = "alphapsifiaki.gr"
 _ESKAP_PRINT_RE = re.compile(
     r"invoice_print\.php\?authentication_code=([A-Za-z0-9]+)", re.I
 )
@@ -169,7 +173,7 @@ def is_eskap(url: str) -> bool:
 #: κανονικά σε αόρατο browser, χωρίς έλεγχο «είστε άνθρωπος». Για αυτούς η λήψη
 #: γίνεται ΜΟΝΗ ΤΗΣ στο κανονικό κατέβασμα — ο χρήστης δεν έχει λόγο να ανοίγει
 #: τη σελίδα και να κάνει «Αποθήκευση ως».
-AUTO_RENDER_HOSTS = (_ESKAP_HOST,)
+AUTO_RENDER_HOSTS = (_ESKAP_HOST, _ALPHA_HOST)
 
 
 def is_auto_renderable(url: str) -> bool:
@@ -253,6 +257,10 @@ class ProviderDownloader:
             # ABC/pdf»). Περνά κατευθείαν στην απόδοση της σελίδας, που γίνεται
             # αυτόματα στο ίδιο κατέβασμα.
             raise NotAPdf("eskap: μόνο εκτυπώσιμη σελίδα, χωρίς αρχείο PDF")
+        if is_auto_renderable(url):
+            # Ίδια περίπτωση (Alpha Ψηφιακή): ούτε το «/pdf» δίνει αρχείο —
+            # δίνει HTML. Κατευθείαν στην αόρατη απόδοση, χωρίς άσκοπη κλήση.
+            raise NotAPdf("μόνο εκτυπώσιμη σελίδα, χωρίς αρχείο PDF")
         return self._fetch(pdf_url(url), missing_is_viewer=False)
 
     def _fetch(self, target: str, *, missing_is_viewer: bool) -> PdfResult:

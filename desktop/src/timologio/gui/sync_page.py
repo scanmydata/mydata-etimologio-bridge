@@ -483,6 +483,10 @@ class SyncPage(QWidget):
         self.checked = set(vats)
         self._fill()
 
+    def _refresh_target(self) -> None:
+        ready = {r["vat"] for r in getattr(self, "_rows", [])}
+        self.set_target(len(self.checked & ready), len(getattr(self, "_rows", [])))
+
     def _emit_target(self) -> None:
         # Η κοινή επιλογή (self.checked) μπορεί να περιέχει και πελάτες χωρίς
         # κλειδί — επιλέξιμους για διαγραφή στη σελίδα Πελατών, αλλά όχι για
@@ -494,6 +498,16 @@ class SyncPage(QWidget):
 
     def set_target(self, selected: int, ready_total: int) -> None:
         """Δείχνει ρητά τι θα γίνει, πριν πατηθεί το κουμπί."""
+        if getattr(self, "_running", False):
+            # Όσο τρέχει λήψη, μια ανανέωση της λίστας (προσθήκη/διαγραφή
+            # πελάτη, τέλος ενός πελάτη) ΔΕΝ ξαναενεργοποιεί το «Λήψη» ούτε
+            # γράφει «Λήψη για…» σαν να μην τρέχει τίποτα.
+            self.target.setText("Λήψη σε εξέλιξη — η πρόοδος φαίνεται στη μπάρα κάτω")
+            self.target.setStyleSheet(
+                f"font-size:15px; font-weight:600; color:{CURRENT.accent};"
+            )
+            self.btn_sync.setEnabled(False)
+            return
         kinds = self.directions()
         if not kinds:
             self.target.setText("Επιλέξτε έσοδα ή έξοδα")
@@ -534,6 +548,7 @@ class SyncPage(QWidget):
         self._emit_target()
 
     def set_running(self, running: bool) -> None:
+        self._running = running
         self.btn_sync.setEnabled(not running)
         self.btn_cancel.setEnabled(running)
         self.date_from.setEnabled(not running)
@@ -544,3 +559,6 @@ class SyncPage(QWidget):
         self.chk_smart.setEnabled(not running)
         self.btn_refresh.setEnabled(not running)
         self.table.setEnabled(not running)
+        # Μόνο το κείμενο/κουμπί — ΟΧΙ selection_changed: η κύρια οθόνη θα
+        # έπαιρνε τότε την (ίσως παλιά) επιλογή αυτής της σελίδας.
+        self._refresh_target()
