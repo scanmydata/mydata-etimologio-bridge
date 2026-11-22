@@ -182,9 +182,10 @@ def test_issue_form_is_hidden_until_the_wizard_says_otherwise(page: str):
 # ===========================================================================
 def test_busy_card_sits_top_right(page: str):
     assert "#busyBox{position:fixed;right:18px;top:18px;" in page
-    assert "body.busy .toast{top:100px}" in page
-    assert "document.body.classList.add('busy');" in page
-    assert "document.body.classList.remove('busy');" in page
+    # 0.4.51: τα μηνύματα είναι στοίβα (#flashStack) και κατεβαίνουν κάτω από
+    # την αναμονή όσο ο χρήστης δεν τα έχει μετακινήσει.
+    assert "body.busy #flashStack.at-default{top:110px}" in page
+    assert "document.body.classList.toggle('busy',vis.length>0);" in page
 
 
 def test_every_server_call_lights_the_card(page: str):
@@ -192,7 +193,8 @@ def test_every_server_call_lights_the_card(page: str):
     wrap = wrap[:wrap.index("};})();") + 7]
     assert "if(url.indexOf(API)!==0)return rawFetch(input,init);" in wrap
     assert "if(!label)return rawFetch(input,init);" in wrap       # σιωπηλά = παρασκήνιο
-    assert "setTimeout(()=>{on=true;busyOn(label,'');" in wrap     # όχι τρεμόπαιγμα
+    assert "setTimeout(()=>{id=busyOn(label,'');" in wrap         # όχι τρεμόπαιγμα
+    assert "if(id)busyOff(id);" in wrap                            # σβήνει τη ΔΙΚΗ του κάρτα
     assert "δευτ." in wrap                                        # πόση ώρα τρέχει
     assert "const done=()=>{clearTimeout(t);" in wrap and "e=>{done();throw e;}" in wrap
 

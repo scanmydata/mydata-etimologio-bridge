@@ -128,7 +128,7 @@ def test_documents_table_never_waits_for_a_full_customer_sync():
     αξίζει δευτερόλεπτα λευκής οθόνης.
     """
     src = _read(APP_PHP)
-    load = src[src.index("async function loadDocs()"):]
+    load = src[src.index("async function loadDocs("):]
     load = load[: load.index("function docWho(i)")]
     assert "await api({cached:'customers'})" in load
     assert "await loadCustomers()" not in load

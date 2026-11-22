@@ -265,49 +265,57 @@ function login(): \CurlHandle {
 // --- 1. SEARCH CUSTOMER ------------------------------------------------------
 
 function searchCustomer(\CurlHandle $ch, string $afm): ?array {
-    $token = getToken($ch, BASE_URL . '/customer/ListCustomers');
-
-    $html = curlPost($ch, BASE_URL . '/customer/SearchCustomers', [
-        'Language'                            => 'el-GR',
-        'CompanyVat'                          => COMPANY_VAT,
-        'CustomerVat'                         => $afm,
-        'CustomerCode'                        => '',
-        'CustomerName'                        => '',
-        'NextPartitionKey'                    => '',
-        'NextRowKey'                          => '',
-        'continuationToken.continuationToken' => '',
-        'totalFechedRows'                     => '10',
-        'PrevCustomerCode'                    => '',
-        'PrevCustomerVat'                     => '',
-        'PrevCustomerName'                    => '',
-        'btnSearch'                           => 'btnSearch',
-        '__RequestVerificationToken'          => $token,
-    ]);
-
-    if (preg_match('/<td[^>]*>\s*' . preg_quote($afm, '/') . '\s*<\/td>/', $html)) {
-        preg_match('/<tr>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?' . preg_quote($afm, '/') . '/s', $html, $row);
-        return ['code' => $row[2] ?? null, 'vat' => $afm];
+    // Η παλιά εκδοχή έψαχνε με ένα regex από την ΠΡΩΤΗ <tr> του πίνακα ως το
+    // ΑΦΜ: όταν η ΑΑΔΕ γύριζε περισσότερες γραμμές (μερικό ταίριασμα ΑΦΜ), ο
+    // «κωδικός» ήταν του πρώτου πελάτη της λίστας, όχι αυτού με το ΑΦΜ. Τώρα
+    // διαβάζεται ΓΡΑΜΜΗ-ΓΡΑΜΜΗ και κρατιέται μόνο η γραμμή με ακριβώς ίδιο ΑΦΜ.
+    $r = listCustomers($ch, $afm, '', '', false, 50, 1);
+    foreach (($r['customers'] ?? []) as $c) {
+        if ((string)($c['vat'] ?? '') !== $afm) continue;
+        return [
+            'code'    => (string)($c['code'] ?? ''),
+            'vat'     => $afm,
+            'name'    => (string)($c['name'] ?? ''),
+            'address' => (string)($c['address'] ?? ''),
+            'city'    => (string)($c['city'] ?? ''),
+        ];
     }
     return null;
+}
+
+/**
+ * Σύγκριση επωνυμιών «όπως τις βλέπει άνθρωπος»: χωρίς τόνους, πεζά/κεφαλαία,
+ * στίξη και διπλά κενά. Η «ΑΛΦΑ Α.Ε.» και η «Άλφα ΑΕ» είναι ο ίδιος πελάτης·
+ * η «ΒΗΤΑ ΑΕ» όχι.
+ */
+function custNameNorm(string $n): string {
+    $n = mb_strtoupper(trim($n), 'UTF-8');
+    $n = strtr($n, ['Ά'=>'Α','Έ'=>'Ε','Ή'=>'Η','Ί'=>'Ι','Ϊ'=>'Ι','Ό'=>'Ο','Ύ'=>'Υ','Ϋ'=>'Υ','Ώ'=>'Ω']);
+    return (string)preg_replace('/[^\p{L}\p{N}]+/u', '', $n);
 }
 
 // --- 2. GET FROM TAXISNET ----------------------------------------------------
 
 function getFromTaxisnet(\CurlHandle $ch, string $afm): ?array {
+    // Μία ερώτηση ανά ΑΦΜ ανά αίτημα: η οριστική έκδοση περνούσε από εδώ ΤΡΕΙΣ
+    // φορές (findOrCreate → customerInfo → createInvoice) για τον ίδιο πελάτη.
+    static $memo = [];
+    if (array_key_exists($afm, $memo)) return $memo[$afm];
     $response = curlGet($ch, BASE_URL . '/Customer/GetCustomerByTaxis?' . http_build_query([
         'companyVat'  => COMPANY_VAT,
         'customerVat' => $afm,
     ]));
 
     $data = json_decode($response, true);
-    if (!$data || !empty($data['errorDescr'])) return null;
+    if (!$data || !empty($data['errorDescr'])) return $memo[$afm] = null;
 
-    return [
-        'name'    => $data['n']  ?? '',
-        'address' => $data['a']  ?? '',
-        'city'    => $data['ct'] ?? '',
-        'zip'     => $data['z']  ?? '',
-        'doy'     => $data['do'] ?? '',
+    $clean = static fn($v) => trim((string)preg_replace('/\s+/u', ' ', (string)($v ?? '')));
+    return $memo[$afm] = [
+        'name'    => $clean($data['n']  ?? ''),
+        'address' => $clean($data['a']  ?? ''),
+        'city'    => $clean($data['ct'] ?? ''),
+        'zip'     => (string)preg_replace('/\D/', '', (string)($data['z'] ?? '')),
+        'doy'     => $clean($data['do'] ?? ''),
     ];
 }
 
@@ -537,7 +545,10 @@ function createCustomer(\CurlHandle $ch, string $afm, array $info): bool {
         'isB2GCustomer'              => 'false',
         'CustomerCode'               => '',
         'CustomerVat'                => $afm,
-        'CustomerName'               => strtoupper($info['name']),
+        // ΑΚΡΙΒΩΣ όπως το δίνει το Taxisnet. Το `strtoupper` της PHP κεφαλαιοποιεί
+        // μόνο λατινικά: η «Alpha Ελλάς ΑΕ» γινόταν «ALPHA Ελλάς ΑΕ» — άλλη
+        // επωνυμία στην καρτέλα από αυτήν που έμπαινε στο παραστατικό.
+        'CustomerName'               => trim((string)$info['name']),
         'JobDescription'             => '',
         'CustomerAddress'            => $info['address'],
         'CustomerCity'               => $info['city'],
@@ -647,31 +658,67 @@ function createPersonalCustomer(
 // --- 4. FIND OR CREATE CUSTOMER ----------------------------------------------
 
 function findOrCreateCustomer(\CurlHandle $ch, string $afm): array {
+    // Ίδιο αίτημα, ίδιο ΑΦΜ → ίδια απάντηση. Η έκδοση το ζητούσε δύο φορές.
+    static $memo = [];
+    if (isset($memo[$afm])) return $memo[$afm];
+
     $existing = searchCustomer($ch, $afm);
     if ($existing) {
         // ΠΑΝΤΑ με στοιχεία, όχι μόνο για τους νεοδημιουργημένους: το UI καλεί
-        // αυτή τη διαδρομή για να συμπληρώσει επωνυμία/διεύθυνση/πόλη/ΤΚ, και
-        // για κάθε γνωστό πελάτη έπαιρνε σκέτο {status:'found'} — δηλαδή η
-        // «Άντληση» δεν άντλησε ποτέ τίποτα για όποιον ήταν ήδη καταχωρημένος.
-        return [
+        // αυτή τη διαδρομή για να συμπληρώσει επωνυμία/διεύθυνση/πόλη/ΤΚ.
+        $taxis = getFromTaxisnet($ch, $afm);
+        $info  = customerInfo($ch, $afm);
+        $recName   = (string)($existing['name'] ?? '');
+        $taxisName = (string)($taxis['name'] ?? '');
+        return $memo[$afm] = [
             'success' => true, 'status' => 'found',
             'code' => $existing['code'], 'vat' => $afm,
-            'info' => customerInfo($ch, $afm),
+            'info' => $info,
+            'record_name' => $recName,
+            'taxis_name'  => $taxisName,
+            // Η καρτέλα στο e-timologio γράφει άλλη επωνυμία από το Taxisnet
+            // (μετονομασία, παλιά καταχώρηση με το χέρι). Το UI το δείχνει και
+            // προτείνει ενημέρωση — δεν το αλλάζουμε σιωπηλά στην ΑΑΔΕ.
+            'name_mismatch' => $recName !== '' && $taxisName !== ''
+                && custNameNorm($recName) !== custNameNorm($taxisName),
         ];
     }
 
     $info = getFromTaxisnet($ch, $afm);
-    if (!$info) {
-        return ['success' => false, 'status' => 'error', 'error' => 'AFM not found in Taxisnet'];
+    if (!$info || trim((string)$info['name']) === '') {
+        return ['success' => false, 'status' => 'error', 'error' => 'Το ΑΦΜ ' . $afm . ' δεν βρέθηκε στο Taxisnet'];
     }
 
     $created = createCustomer($ch, $afm, $info);
     if (!$created) {
-        return ['success' => false, 'status' => 'error', 'error' => 'Failed to create customer'];
+        return ['success' => false, 'status' => 'error', 'error' => 'Αποτυχία καταχώρησης πελάτη στο e-timologio'];
     }
+    // Νέος πελάτης στην ΑΑΔΕ = η λίστα πελατών της μνήμης δεν ισχύει πια.
+    if (defined('COMPANY_VAT')) cacheMarkDirty(COMPANY_VAT, ['customers']);
 
     $new = searchCustomer($ch, $afm);
-    return ['success' => true, 'status' => 'created', 'code' => $new['code'] ?? null, 'vat' => $afm, 'info' => $info];
+    return $memo[$afm] = ['success' => true, 'status' => 'created', 'code' => $new['code'] ?? null, 'vat' => $afm,
+            'info' => $info, 'record_name' => (string)($new['name'] ?? $info['name']),
+            'taxis_name' => (string)$info['name'], 'name_mismatch' => false];
+}
+
+/**
+ * Η επωνυμία που ΠΡΕΠΕΙ να γράψει το παραστατικό για ελληνικό ΑΦΜ.
+ *
+ * Το σφάλμα που διορθώνει: η φόρμα έστελνε ό,τι είχε το πεδίο «Επωνυμία» — που
+ * μπορούσε να είναι του ΠΡΟΗΓΟΥΜΕΝΟΥ πελάτη (άλλαξε το ΑΦΜ, η επωνυμία έμεινε),
+ * του πρώτου πελάτη μιας λίστας, ή μισογραμμένη. Η οριστική έκδοση έβγαινε με
+ * ΑΦΜ ενός και επωνυμία άλλου. Σειρά: Taxisnet (επίσημο μητρώο) → καρτέλα
+ * πελάτη στο e-timologio → ό,τι έγραψε ο χρήστης.
+ */
+function authoritativeCounterpart(\CurlHandle $ch, string $afm): array {
+    $t = getFromTaxisnet($ch, $afm);
+    if ($t && $t['name'] !== '') return ['source' => 'taxis'] + $t;
+    $rec = searchCustomer($ch, $afm);
+    if ($rec && $rec['name'] !== '') {
+        return ['name' => $rec['name'], 'address' => $rec['address'], 'city' => $rec['city'], 'zip' => '', 'source' => 'record'];
+    }
+    return ['name' => '', 'address' => '', 'city' => '', 'zip' => '', 'source' => ''];
 }
 
 // --- 4b. CUSTOMER/INVOICE LIST HELPERS --------------------------------------
@@ -2665,16 +2712,24 @@ function createInvoice(
 
     // Enrich counterpart — Taxisnet for GR clients, e-timologio database for foreign
     if ($afm !== '') {
-        if (preg_match('/^\d{9}$/', $afm)) {
-            // Greek client — fetch from Taxisnet
-            $taxisData = getFromTaxisnet($ch, $afm);
-            if ($taxisData) {
-                if ($name    === '') $name    = $taxisData['name'];
-                if ($address === '') $address = $taxisData['address'];
-                if ($city    === '') $city    = $taxisData['city'];
-                if ($zip     === '') $zip     = $taxisData['zip'];
+        if (preg_match('/^\d{9}$/', $afm) && $country === 'GR') {
+            // Ελληνικό ΑΦΜ: η επωνυμία ΔΕΝ είναι επιλογή του χρήστη. Ό,τι κι αν
+            // έγραφε η φόρμα, το παραστατικό παίρνει την επίσημη (βλ.
+            // authoritativeCounterpart) και η διαφορά επιστρέφεται ως προειδοποίηση.
+            $auth = authoritativeCounterpart($ch, $afm);
+            if ($auth['name'] !== '') {
+                if ($name !== '' && custNameNorm($name) !== custNameNorm($auth['name'])) {
+                    $GLOBALS['__nameCorrected'] = ['from' => $name, 'to' => $auth['name'], 'source' => $auth['source']];
+                    // Η διεύθυνση της φόρμας ανήκε κατά πάσα πιθανότητα στον ίδιο
+                    // «λάθος» πελάτη: δεν την κρατάμε.
+                    $address = ''; $city = ''; $zip = '';
+                }
+                $name = $auth['name'];
+                if ($address === '') $address = $auth['address'];
+                if ($city    === '') $city    = $auth['city'];
+                if ($zip     === '') $zip     = $auth['zip'];
             }
-        } else {
+        } elseif (!preg_match('/^\d{9}$/', $afm)) {
             // Foreign client — fetch from e-timologio customer database
             $dbData = getCustomerFromDatabase($ch, $afm, $invoiceType);
             if ($dbData) {
@@ -3769,7 +3824,25 @@ function enrichCustomerDetails(\CurlHandle $ch, array &$rows, float $budget = 8.
 // server εξυπηρετεί ένα αίτημα τη φορά: πέντε «ανανεώσεις» στο παρασκήνιο
 // έκαναν τον οδηγό της Έκδοσης να περιμένει πίσω τους. Μια λίστα που
 // επιβεβαιώθηκε πρόσφατα απαντιέται από τη βάση, χωρίς σύνδεση.
-const SYNC_TRUST_SECONDS = 600;
+//
+// Η μνήμη είναι η ΠΗΓΗ για το UI· η ΑΑΔΕ ρωτιέται μόνο όταν (α) αλλάξαμε εμείς
+// κάτι (σημάδι dirty), (β) ο έλεγχος «νέα στην ΑΑΔΕ» βρήκε κίνηση που δεν
+// έγινε από εδώ (σημαδεύει dirty τα σχετικά είδη), (γ) πέρασε το παράθυρο
+// εμπιστοσύνης, ή (δ) ο χρήστης πάτησε ρητά «Ανανέωση» (force). Στον server ο
+// scheduler ξαναβεβαιώνει τη μνήμη στο παρασκήνιο (`sync_all`), οπότε ο χρήστης
+// δεν περιμένει ποτέ την ΑΑΔΕ για να δει μια λίστα.
+const SYNC_TRUST_SECONDS = 21600;      // 6 ώρες για πελάτες/είδη/σειρές/κατηγορίες/κρατήσεις
+const DOCS_TRUST_SECONDS = 1800;       // παραστατικά: 30' (ο έλεγχος newdocs τρέχει ωριαία)
+const BG_SYNC_KINDS = ['customers', 'products', 'series', 'deductions', 'categories', 'prodcats', 'invtypes', 'drafts', 'newdocs'];
+
+/** Μπορεί η μνήμη ενός είδους να απαντήσει χωρίς ΑΑΔΕ; */
+function cacheTrusted(string $vat, string $kind, ?array $c = null): bool {
+    $c = $c ?? cache_get($vat, $kind);
+    $age = cacheAgeSeconds($c);
+    if (!$c || $age === null) return false;
+    if (setting_get(cacheDirtyKey($vat, $kind)) !== '') return false;
+    return $age < ($kind === 'docs' ? DOCS_TRUST_SECONDS : SYNC_TRUST_SECONDS);
+}
 
 function cacheAgeSeconds(?array $c): ?int {
     if (!$c) return null;
@@ -3783,6 +3856,23 @@ function cacheDirtyKey(string $vat, string $kind): string { return 'cache.dirty.
 function cacheMarkDirty(string $vat, array $kinds): void {
     if ($vat === '') return;
     foreach ($kinds as $k) { try { setting_set(cacheDirtyKey($vat, $k), '1'); } catch (\Throwable $e) {} }
+}
+
+/**
+ * Αν η έκδοση άλλαξε την επωνυμία της φόρμας (βλ. authoritativeCounterpart),
+ * το λέμε στον χρήστη και επιστρέφουμε την επωνυμία που ΠΡΑΓΜΑΤΙΚΑ μπήκε —
+ * αυτή πάει και στην ειδοποίηση, όχι η λάθος της φόρμας.
+ */
+function annotateNameCorrection(&$result, string $name): string {
+    $nc = $GLOBALS['__nameCorrected'] ?? null;
+    if (!is_array($nc)) return $name;
+    if (is_array($result)) {
+        $result['name_corrected'] = $nc;
+        $msg = 'Η επωνυμία διορθώθηκε σε «' . $nc['to'] . '» (από '
+             . ($nc['source'] === 'taxis' ? 'Taxisnet' : 'την καρτέλα πελάτη') . ') — η φόρμα έγραφε «' . $nc['from'] . '».';
+        $result['warning'] = trim(($result['warning'] ?? '') . ' ' . $msg);
+    }
+    return (string)$nc['to'];
 }
 
 // --- Χαιρετισμός email ---------------------------------------------------------
@@ -6012,6 +6102,7 @@ if ($cachedKind !== '') {
         $age = $ts ? max(0, time() - $ts) : null;
         jsonResponse(['success' => true, 'cached' => true, 'kind' => $cachedKind,
             'synced_at' => $c['synced_at'], 'age_seconds' => $age,
+            'trusted' => cacheTrusted(COMPANY_VAT, $cachedKind, $c),
             'count' => count($c['rows']), 'rows' => $c['rows']]);
     }
     jsonResponse(['success' => true, 'cached' => false, 'kind' => $cachedKind, 'count' => 0, 'rows' => []]);
@@ -6202,6 +6293,8 @@ if (defined('COMPANY_VAT') && COMPANY_VAT !== '') {
         'deductions' => ['new_deduction', 'update_deduction_code', 'delete_deduction_code'],
         'prodcats'   => ['new_product_category', 'update_category_id', 'delete_product_category_id', 'save_category_cls'],
         'categories' => ['new_product_category', 'update_category_id', 'delete_product_category_id', 'save_category_cls'],
+        'drafts'     => ['delete_temp_id'],
+        'docs'       => ['credit_note', 'cancel_mark', 'delivery_note'],
     ];
     $__dirty = [];
     foreach ($__mut as $__kind => $__params) {
@@ -6233,7 +6326,9 @@ if (defined('COMPANY_VAT') && COMPANY_VAT !== '') {
 // Ανανέωση λίστας που επιβεβαιώθηκε πρόσφατα: απάντηση από τη βάση, χωρίς σύνδεση.
 $__syncFast = trim((string)($_GET['sync'] ?? $_POST['sync'] ?? ''));
 if ($__syncFast !== '' && defined('COMPANY_VAT') && COMPANY_VAT !== ''
-        && in_array($__syncFast, ['customers', 'products', 'series', 'deductions', 'categories', 'prodcats', 'invtypes'], true)
+        && in_array($__syncFast, ['customers', 'products', 'series', 'deductions', 'categories', 'prodcats', 'invtypes', 'drafts'], true)
+        && ($__syncFast !== 'drafts' || (trim((string)($_GET['save_date_from'] ?? $_POST['save_date_from'] ?? '')) === ''
+                                         && trim((string)($_GET['save_date_to'] ?? $_POST['save_date_to'] ?? '')) === ''))
         && empty($_GET['force'] ?? $_POST['force'] ?? '') && empty($_GET['details'] ?? $_POST['details'] ?? '')
         && setting_get(cacheDirtyKey(COMPANY_VAT, $__syncFast)) === ''
         && !($__syncFast === 'customers' && setting_get('cache.pending.' . COMPANY_VAT . '.customers') !== '0')) {
@@ -6243,6 +6338,32 @@ if ($__syncFast !== '' && defined('COMPANY_VAT') && COMPANY_VAT !== ''
         jsonResponse(['success' => true, 'kind' => $__syncFast, 'changed' => false, 'from_cache' => true,
             'count' => count($__c['rows']), 'prev_count' => count($__c['rows']), 'discovered' => 0,
             'age_seconds' => $__age, 'synced_at' => $__c['synced_at'], 'rows' => $__c['rows']]);
+    }
+}
+
+// Λίστα παραστατικών διαστήματος από τη μνήμη, όταν αυτή είναι έμπιστη: η ίδια
+// αναζήτηση στην ΑΑΔΕ κοστίζει σύνδεση + δευτερόλεπτα σε ΚΑΘΕ άνοιγμα της οθόνης.
+if (!empty($_GET['search_invoices'] ?? $_POST['search_invoices'] ?? '') && defined('COMPANY_VAT') && COMPANY_VAT !== ''
+        && empty($_GET['force'] ?? $_POST['force'] ?? '') && empty($_GET['names_only'] ?? $_POST['names_only'] ?? '')
+        && trim((string)($_GET['mark'] ?? $_POST['mark'] ?? '')) === ''
+        && trim((string)($_GET['series'] ?? $_POST['series'] ?? '')) === ''
+        && trim((string)($_GET['buyer_vat'] ?? $_POST['buyer_vat'] ?? '')) === ''
+        && trim((string)($_GET['search_invoice_type'] ?? $_POST['search_invoice_type'] ?? $_GET['invoice_type'] ?? $_POST['invoice_type'] ?? $_GET['type'] ?? $_POST['type'] ?? '')) === ''
+        && in_array(trim((string)($_GET['invoice_status'] ?? $_POST['invoice_status'] ?? '')), ['', '0'], true)
+        && empty($_GET['include_cancelled'] ?? $_POST['include_cancelled'] ?? '')) {
+    $__c = cache_get(COMPANY_VAT, 'docs');
+    $__r = $__c['rows'] ?? null;
+    $__from = toSearchDate(trim((string)($_GET['issue_date_from'] ?? $_POST['issue_date_from'] ?? '')), date('01/m/Y'));
+    $__to   = toSearchDate(trim((string)($_GET['issue_date_to'] ?? $_POST['issue_date_to'] ?? '')), date('d/m/Y'));
+    if (is_array($__r) && ($__r['from'] ?? '') === $__from && ($__r['to'] ?? '') === $__to
+            && is_array($__r['invoices'] ?? null) && cacheTrusted(COMPANY_VAT, 'docs', $__c)) {
+        jsonResponse(['success' => true, 'from_cache' => true, 'count' => count($__r['invoices']),
+            'issue_date_from' => $__from, 'issue_date_to' => $__to, 'invoices' => $__r['invoices'],
+            'age_seconds' => cacheAgeSeconds($__c),
+            // Επωνυμίες που δεν είχαν βρεθεί όταν γράφτηκε η μνήμη: το UI τις
+            // ζητά στο παρασκήνιο (names_only), όπως και μετά από ζωντανή αναζήτηση.
+            'names_pending' => count(array_filter($__r['invoices'], static fn($iv) =>
+                empty($iv['counterpart_name']) && !in_array((string)($iv['buyer_vat'] ?? ''), ['', '000000000'], true)))]);
     }
 }
 
@@ -6346,9 +6467,15 @@ if ($previewTempId !== '') {
     jsonResponse($result);
 }
 
-// Background sync — fetch fresh, compare snapshot hash, update cache, report change
-$syncKind = trim($_GET['sync'] ?? $_POST['sync'] ?? '');
-if ($syncKind !== '') {
+// Background sync — fetch fresh, compare snapshot hash, update cache, report change.
+// Ζει σε συνάρτηση ώστε το `sync_all` (scheduler στον server) να ανανεώνει ΟΛΑ
+// τα είδη με ΜΙΑ σύνδεση στην ΑΑΔΕ αντί για μία ανά είδος.
+function runSyncKind(\CurlHandle $ch, string $syncKind, array $ctx): array {
+    $issueDateFrom = (string)($ctx['issue_date_from'] ?? '');
+    $issueDateTo   = (string)($ctx['issue_date_to'] ?? '');
+    $saveDateFrom  = (string)($ctx['save_date_from'] ?? '');
+    $saveDateTo    = (string)($ctx['save_date_to'] ?? '');
+    $r = null;
     $prev = cache_get(COMPANY_VAT, $syncKind);
     $rows = [];
     $detailsPending = null;
@@ -6358,7 +6485,7 @@ if ($syncKind !== '') {
             // Ο πρώτος γύρος σύντομος (ο πίνακας περιμένει)· οι επόμενοι, που
             // ζητά η σελίδα στο παρασκήνιο, με περισσότερο χρόνο.
             $detailsPending = enrichCustomerDetails($ch, $rows,
-                !empty($_GET['details'] ?? $_POST['details'] ?? '') ? 20.0 : 6.0);
+                !empty($ctx['details']) ? 20.0 : 6.0);
             setting_set('cache.pending.' . COMPANY_VAT . '.customers', (string)$detailsPending);
         } else {
             foreach ($rows as &$__r) unset($__r['view_url']);
@@ -6411,7 +6538,13 @@ if ($syncKind !== '') {
         }
         unset($t);
     } else {
-        curl_close($ch); jsonError('Unknown sync kind: ' . $syncKind);
+        return ['success' => false, 'error' => 'Unknown sync kind: ' . $syncKind];
+    }
+    // Αποτυχία της ΑΑΔΕ ΔΕΝ γράφεται στη μνήμη. Πριν, ένα `success:false` (π.χ.
+    // λήξη συνεδρίας στη μέση) αποθηκευόταν ως «άδεια λίστα» με φρέσκια σφραγίδα
+    // — και για τα επόμενα λεπτά κάθε οθόνη έβλεπε μηδέν πελάτες/είδη.
+    if (is_array($r) && array_key_exists('success', $r) && $r['success'] === false) {
+        return ['success' => false, 'kind' => $syncKind, 'error' => (string)($r['error'] ?? 'Η ΑΑΔΕ δεν απάντησε σωστά')];
     }
     // --- Ο ΕΛΕΓΧΟΣ: τι εμφανίστηκε στην ΑΑΔΕ που δεν το ξέραμε ---------------
     // Οι ειδοποιήσεις δεν έρχονται μόνο από εκδόσεις που έγιναν ΕΔΩ: κάθε φορά
@@ -6479,6 +6612,17 @@ if ($syncKind !== '') {
         if ($found_new) {
             try { notifyAadeDiscoveryEmail(COMPANY_VAT, $found_new); } catch (\Throwable $e) {}
         }
+        // ΚΙΝΗΣΗ ΕΞΩ ΑΠΟ ΕΜΑΣ: κάποιος εξέδωσε απευθείας στην ΑΑΔΕ. Η λίστα
+        // παραστατικών δεν ισχύει, και αν ο αγοραστής είναι άγνωστος στη μνήμη
+        // πελατών, κάποιος καταχώρησε και πελάτη — ξαναρωτάμε και αυτούς.
+        if ($found_new) {
+            $__dirty = ['docs'];
+            foreach ($found_new as $__fi) {
+                $__bv = trim((string)($__fi['buyer_vat'] ?? ''));
+                if ($__bv !== '' && !isset($custNames[$__bv])) { $__dirty[] = 'customers'; break; }
+            }
+            cacheMarkDirty(COMPANY_VAT, $__dirty);
+        }
     }
     // Η σφραγίδα του ωριαίου ελέγχου. Μπαίνει και όταν δεν βρέθηκε τίποτα:
     // «έλεγξα και δεν υπήρχε τίποτα» είναι εξίσου ολοκληρωμένος έλεγχος.
@@ -6491,11 +6635,39 @@ if ($syncKind !== '') {
     cache_set(COMPANY_VAT, $syncKind, $rows);
     try { setting_set(cacheDirtyKey(COMPANY_VAT, $syncKind), ''); } catch (\Throwable $e) {}
     $meta = cache_get(COMPANY_VAT, $syncKind);
-    curl_close($ch);
-    jsonResponse(['success' => true, 'kind' => $syncKind, 'changed' => $changed,
+    return (['success' => true, 'kind' => $syncKind, 'changed' => $changed,
         'count' => count($rows), 'prev_count' => $prev ? count($prev['rows']) : 0,
         'discovered' => $discovered, 'details_pending' => $detailsPending,
         'synced_at' => $meta['synced_at'] ?? '', 'rows' => $rows]);
+}
+
+$__syncCtx = ['issue_date_from' => $issueDateFrom, 'issue_date_to' => $issueDateTo,
+              'save_date_from' => $saveDateFrom, 'save_date_to' => $saveDateTo,
+              'details' => !empty($_GET['details'] ?? $_POST['details'] ?? '')];
+
+// Όλα τα είδη μαζί, όσα δεν είναι πια έμπιστα (ή `force`). Το καλεί ο
+// scheduler του server στο παρασκήνιο — δες scheduler.php.
+if (!empty($_GET['sync_all'] ?? $_POST['sync_all'] ?? '')) {
+    $__force = !empty($_GET['force'] ?? $_POST['force'] ?? '');
+    $__out = [];
+    foreach (BG_SYNC_KINDS as $__k) {
+        if (!$__force && $__k !== 'newdocs' && cacheTrusted(COMPANY_VAT, $__k)
+                && cacheAgeSeconds(cache_get(COMPANY_VAT, $__k)) < SYNC_TRUST_SECONDS / 2) { $__out[$__k] = 'fresh'; continue; }
+        try {
+            $__r = runSyncKind($ch, $__k, ['details' => $__k === 'customers'] + $__syncCtx);
+            $__out[$__k] = !empty($__r['success']) ? ($__r['changed'] ? 'changed' : 'same') : ('error: ' . ($__r['error'] ?? ''));
+        } catch (\Throwable $e) { $__out[$__k] = 'error: ' . $e->getMessage(); }
+    }
+    curl_close($ch);
+    jsonResponse(['success' => true, 'kinds' => $__out]);
+}
+
+$syncKind = trim($_GET['sync'] ?? $_POST['sync'] ?? '');
+if ($syncKind !== '') {
+    $__r = runSyncKind($ch, $syncKind, $__syncCtx);
+    curl_close($ch);
+    if (empty($__r['success'])) jsonError((string)($__r['error'] ?? 'sync failed'));
+    jsonResponse($__r);
 }
 
 if ($ledgerFlag) {
@@ -6643,6 +6815,9 @@ if (!empty($_GET['bulk_issue'] ?? $_POST['bulk_issue'] ?? '')) {
         $bNotes  = trim((string)($it['notes'] ?? ''));
         if (empty($bLines)) { $results[] = ['index' => $idx, 'afm' => $bAfm, 'success' => false, 'error' => 'Καμία γραμμή είδους']; continue; }
         if ($bSeries === '') { $results[] = ['index' => $idx, 'afm' => $bAfm, 'success' => false, 'error' => 'Λείπει η σειρά']; continue; }
+        // Οι σημαίες είναι ανά παραστατικό: χωρίς μηδενισμό, μια διόρθωση
+        // επωνυμίας του πρώτου «κολλούσε» σε όλα τα επόμενα της παρτίδας.
+        unset($GLOBALS['__nameCorrected'], $GLOBALS['__addressDropped']);
         // Auto find/create the customer (GR ΑΦΜ) so the counterpart resolves.
         if ($bAfm !== '' && preg_match('/^\d{9}$/', $bAfm)) {
             $cust = findOrCreateCustomer($ch, $bAfm);
@@ -6654,10 +6829,12 @@ if (!empty($_GET['bulk_issue'] ?? $_POST['bulk_issue'] ?? '')) {
             trim((string)($it['zip'] ?? '')), trim((string)($it['country'] ?? 'GR')), trim((string)($it['branch'] ?? '0')),
             0, 0.0, $bulkLive, '', $bNotes, -1.0, 0, [], $bLines, $bSeries, $bTaxes, false, $bLang
         );
+        $bName = annotateNameCorrection($r, $bName);
         $row = [
             'index'        => $idx,
             'afm'          => $bAfm,
             'name'         => $bName,
+            'warning'      => $r['warning'] ?? '',
             'type'         => $bType,
             'success'      => (bool)($r['success'] ?? false),
             'amount_total' => $r['amount_total'] ?? null,
@@ -6675,6 +6852,7 @@ if (!empty($_GET['bulk_issue'] ?? $_POST['bulk_issue'] ?? '')) {
         $results[] = $row;
     }
     curl_close($ch);
+    if ($okCount > 0) cacheMarkDirty(COMPANY_VAT, $bulkLive ? ['docs', 'newdocs'] : ['drafts']);
     jsonResponse([
         'success' => true,
         'live'    => $bulkLive,
@@ -6792,6 +6970,8 @@ if ($linesJson !== '') {
     if (!empty($GLOBALS['__addressDropped']) && is_array($result)) {
         $result['warning'] = 'Η διεύθυνση του πελάτη δεν μπήκε στο παραστατικό: λείπει ο Τ.Κ. ή η πόλη. Συμπλήρωσέ τα στον πελάτη.';
     }
+    $name = annotateNameCorrection($result, $name);
+    if (!empty($result['success'])) cacheMarkDirty(COMPANY_VAT, $live && !$previewFlag ? ['docs', 'newdocs'] : ['drafts']);
     if ($live && !$previewFlag) notifyIssue($result, ['doc_type' => $type, 'series' => $issueSeries, 'buyer_vat' => $afm, 'buyer_name' => $name]);
     jsonResponse($result);
 }
@@ -7156,6 +7336,7 @@ if ($searchInvoicesFlag) {
         try {
             cache_set(COMPANY_VAT, 'docs', ['from' => $result['issue_date_from'], 'to' => $result['issue_date_to'],
                                             'invoices' => $result['invoices']]);
+            setting_set(cacheDirtyKey(COMPANY_VAT, 'docs'), '');
         } catch (\Throwable $e) {}
     }
     jsonResponse($result);
@@ -7271,6 +7452,8 @@ if ($amount > 0) {
     if (!empty($GLOBALS['__addressDropped']) && is_array($result)) {
         $result['warning'] = 'Η διεύθυνση του πελάτη δεν μπήκε στο παραστατικό: λείπει ο Τ.Κ. ή η πόλη. Συμπλήρωσέ τα στον πελάτη.';
     }
+    $name = annotateNameCorrection($result, $name);
+    if (!empty($result['success'])) cacheMarkDirty(COMPANY_VAT, $live ? ['docs', 'newdocs'] : ['drafts']);
     if ($live) notifyIssue($result, ['doc_type' => $type, 'series' => $issueSeries, 'buyer_vat' => $afm, 'buyer_name' => $name]);
     jsonResponse($result);
 } else {

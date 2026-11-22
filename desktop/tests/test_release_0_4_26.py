@@ -163,7 +163,7 @@ def test_issuance_seeds_the_name_without_asking_aade(etim: str):
 
 
 def test_documents_open_from_cache_then_refresh(page: str, etim: str):
-    load = _block(page, "async function loadDocs(){")
+    load = _block(page, "async function loadDocs(force){")
     assert load.index("api({cached:'docs'})") < load.index("search_invoices:1")
     # Παλιά απάντηση δεν σκεπάζει νεότερη (άλλαξε διάστημα στο μεταξύ).
     assert "seq!==DOCS_SEQ" in load

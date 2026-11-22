@@ -1593,7 +1593,7 @@ function sched_add(string $accountVat, int $userId, array $d): int {
         ':kind'    => trim((string)($d['kind'] ?? 'invoice')),
         ':payload' => enc(json_encode($d['payload'] ?? [], JSON_UNESCAPED_UNICODE)),
         ':run_at'  => trim((string)($d['run_at'] ?? '')),
-        ':rec'     => in_array($d['recurrence'] ?? 'none', ['none','daily','weekly','monthly'], true) ? $d['recurrence'] : 'none',
+        ':rec'     => in_array($d['recurrence'] ?? 'none', ['none','daily','weekly','monthly'], true) ? ($d['recurrence'] ?? 'none') : 'none',
     ]);
 }
 

@@ -102,7 +102,10 @@ def test_the_card_moves_into_an_open_dialog(page: str) -> None:
     """Ένα ανοιχτό <dialog> ζει στο «top layer»: ό,τι μένει στο <body> κρύβεται
     από πίσω του όσο μεγάλο κι αν είναι το z-index."""
     body = page[page.index("function busyOn("):page.index("function busyOff(")]
-    assert "dialog[open]" in body and "appendChild" in body
+    # Από την 0.4.51 η μετακόμιση γίνεται σε κοινή συνάρτηση με τα μηνύματα.
+    assert "flashHost(d)" in body
+    host = page[page.index("function flashHost("):page.index("function toast(")]
+    assert "dialog[open]" in host and "appendChild" in host
 
 
 # --- 4. Ο επιλογέας στηλών έφευγε εκτός οθόνης -----------------------------

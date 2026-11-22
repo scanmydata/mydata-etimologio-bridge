@@ -191,7 +191,8 @@ def test_mutations_mark_lists_dirty(etim: str):
 
 
 def test_sync_always_stamps_and_clears_dirty(etim: str):
-    sync = etim[etim.index("$syncKind = trim("):etim.index("if ($ledgerFlag) {")]
+    # Από την 0.4.51 το σώμα του sync ζει στη runSyncKind() (το καλεί και το sync_all).
+    sync = etim[etim.index("function runSyncKind("):etim.index("if ($ledgerFlag) {")]
     assert "if ($changed) cache_set(" not in sync
     assert "cache_set(COMPANY_VAT, $syncKind, $rows);" in sync
     assert "setting_set(cacheDirtyKey(COMPANY_VAT, $syncKind), '')" in sync

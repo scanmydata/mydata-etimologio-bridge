@@ -91,7 +91,44 @@ foreach ($ledgerAccounts as $lvat) {
 // εντολές όχι. Ο κώδικας ήταν απροσπέλαστος: το «δεν υπάρχουν εργασίες» βγαίνει
 // με `exit(0)` δύο γραμμές παρακάτω, δηλαδή σχεδόν πάντα. Το αυτόματο αντίγραφο
 // δεν είχε τρέξει ποτέ, ούτε μία φορά, και κανένα μήνυμα δεν το έλεγε.
-try { srv_backup_tick(); } catch (Throwable $e) { error_log('srv_backup_tick: ' . $e->getMessage()); }
+// Τοπικά (εφαρμογή υπολογιστή) το αντίγραφο το κάνει το δικό της ημερήσιο
+// αντίγραφο (`link_backup_tick`) — όχι το αντίγραφο του server.
+if (!defined('SCHEDULER_LOCAL')) {
+    try { srv_backup_tick(); } catch (Throwable $e) { error_log('srv_backup_tick: ' . $e->getMessage()); }
+}
+
+// --- Μνήμη λιστών στο παρασκήνιο ---------------------------------------------
+// Ο server κρατά τα δεδομένα κάθε εταιρείας (πελάτες, είδη, σειρές, κατηγορίες,
+// κρατήσεις, πρόχειρα) και τα ξαναβεβαιώνει μόνος του, ώστε το UI να ανοίγει
+// από τη μνήμη χωρίς να περιμένει την ΑΑΔΕ. Ανά εταιρεία το πολύ μία φορά κάθε
+// BG_SYNC_MINUTES· το `sync_all` ρωτά ΜΟΝΟ τα είδη που έπαψαν να είναι έμπιστα,
+// και το `newdocs` πιάνει ό,τι έγινε απευθείας στο e-timologio της ΑΑΔΕ.
+$bgMin = defined('BG_SYNC_MINUTES') ? (int)BG_SYNC_MINUTES : (int)(getenv('BG_SYNC_MINUTES') ?: 60);
+if ($bgMin > 0 && function_exists('accounts_all')) {
+    $bgDone = 0;
+    foreach (accounts_all() as $acc) {
+        $bvat = (string)($acc['vat'] ?? '');
+        if ($bvat === '') continue;
+        $last = (int)setting_get('bgsync.last.' . $bvat);
+        if (time() - $last < $bgMin * 60) continue;
+        if ($DRY) { slog("DRY-RUN would background-sync account $bvat."); continue; }
+        setting_set('bgsync.last.' . $bvat, (string)time());
+        [$bc, $bb] = sched_http_post($ENDPOINT, [
+            'sync_all'    => 1,
+            'account'     => $bvat,
+            'sched_token' => SCHED_TOKEN,
+            'sched_uid'   => sched_master_uid(),
+            'issue_date_from' => date('01/m/Y'),
+            'issue_date_to'   => date('d/m/Y'),
+        ]);
+        $br = $bb !== '' ? json_decode($bb, true) : null;
+        if ($VERBOSE || !is_array($br) || empty($br['success'])) {
+            slog("Background sync $bvat: " . (is_array($br) ? json_encode($br['kinds'] ?? $br, JSON_UNESCAPED_UNICODE) : 'HTTP ' . $bc));
+        }
+        // Ένα tick δεν πρέπει να κρατήσει το λεπτό του scheduler για πολλές εταιρείες.
+        if (++$bgDone >= 3) break;
+    }
+}
 
 $now = date('Y-m-d H:i:s');
 $due = sched_due($now);
@@ -108,6 +145,27 @@ foreach ($due as $job) {
     $rec    = (string)$job['recurrence'];
     $title  = $job['title'] !== '' ? $job['title'] : ('#' . $id);
     $payload = is_array($job['payload'] ?? null) ? $job['payload'] : [];
+
+    // ΤΟΠΙΚΑ: η εφαρμογή μπορεί να έμεινε κλειστή μέρες. Μια έκδοση που
+    // «έληξε» πριν από πολλές ώρες ΔΕΝ εκδίδεται αυτόματα — θα έβγαινε
+    // παραστατικό που ο χρήστης δεν περιμένει πια, και η ΑΑΔΕ δεν δέχεται
+    // αναδρομική ημερομηνία. Σημειώνεται αποτυχημένη με εξήγηση, και η
+    // επαναλαμβανόμενη πάει στην επόμενη ΜΕΛΛΟΝΤΙΚΗ εμφάνισή της.
+    $staleH = defined('SCHED_STALE_HOURS') ? (int)SCHED_STALE_HOURS : 12;
+    if (defined('SCHEDULER_LOCAL') && $staleH > 0
+            && strtotime((string)$job['run_at']) < time() - $staleH * 3600) {
+        $nextS = sched_next_run($job['run_at'], $rec);
+        for ($guard = 0; $nextS && strtotime($nextS) <= time() && $guard < 2000; $guard++) {
+            $nextS = sched_next_run($nextS, $rec);
+        }
+        if (!$DRY) {
+            sched_record_result($id, 'failed', ['at' => date('c'), 'success' => false,
+                'error' => 'Δεν εκδόθηκε: η προγραμματισμένη ώρα (' . $job['run_at'] . ') πέρασε όσο η εφαρμογή ήταν κλειστή.'], $nextS);
+        }
+        slog("Job #$id ($title): stale (run_at {$job['run_at']}) → skipped" . ($nextS ? " · next run $nextS" : '') . '.');
+        $failCount++;
+        continue;
+    }
 
     if (empty($payload)) {
         sched_record_result($id, 'failed', ['error' => 'Κενό payload', 'at' => date('c')]);

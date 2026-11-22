@@ -117,7 +117,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
   :root[data-theme="light"] button.danger{background:#fef2f2;border-color:var(--bad);color:#b91c1c}
   :root[data-theme="light"] button.danger:hover{background:#fee2e2}
   :root[data-theme="light"] button.primary{color:#fff}
-  :root[data-theme="light"] .toast{color:var(--txt)}
+  :root[data-theme="light"] .flash{color:var(--txt)}
   /* Theme toggle switch (fixed bottom-left, clear of content) */
   /* Sidebar toggles (theme + tooltips) — live inside the aside, no overlap */
   .side-controls{padding:10px 12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:9px}
@@ -488,8 +488,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     .field{min-width:0}
     dialog .modal-body{max-width:96vw!important;padding:14px}
     #cbPanel{right:8px;left:8px;width:auto;bottom:86px}
-    #busyBox{left:10px;right:10px;max-width:none}
-    .toast{left:10px;right:10px;max-width:none}
+    #busyBox,#flashStack{left:10px!important;right:10px!important;top:auto!important;bottom:12px!important;max-width:none}
     .notif-panel{width:min(360px,92vw);right:-8px}
   }
   /* --- Αναμονή -------------------------------------------------------------
@@ -503,19 +502,46 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
      δεν το φτάνει κανένα z-index) — δες `busyOn`. */
   /* Πάνω δεξιά, εκεί που κοιτά ο χρήστης μόλις πατήσει κάτι — και όχι στη
      γωνία που κρύβει ο βοηθός. Το μήνυμα λέει ΤΙ τρέχει, με τα δευτερόλεπτα. */
-  #busyBox{position:fixed;right:18px;top:18px;z-index:400;display:none;max-width:min(360px,90vw)}
-  #busyBox.on{display:block}
-  .busy-box{display:flex;align-items:center;gap:14px;background:var(--panel);
+  /* Δύο «επιπλέοντα» κουτιά: η αναμονή και τα μηνύματα. Ο χρήστης τα σέρνει
+     από τη λαβή ⠿ όπου τον βολεύει και η θέση μένει (ανά χρήστη, στον server
+     και τοπικά). Διπλό κλικ στη λαβή = πίσω στη θέση τους. */
+  #busyBox{position:fixed;right:18px;top:18px;z-index:400;display:none;width:min(360px,90vw)}
+  #busyBox.on{display:flex;flex-direction:column;gap:8px}
+  #flashStack{position:fixed;right:20px;top:20px;z-index:390;display:flex;flex-direction:column;gap:8px;
+    width:min(400px,92vw);pointer-events:none}
+  body.busy #flashStack.at-default{top:110px}
+  .float-grip{pointer-events:auto;align-self:flex-end;cursor:grab;user-select:none;font-size:13px;line-height:1;
+    padding:3px 8px;border-radius:8px;background:var(--panel);border:1px solid var(--line);color:var(--muted);
+    opacity:0;transition:opacity .15s}
+  #busyBox:hover .float-grip,#flashStack:hover .float-grip,.float-grip.dragging{opacity:1}
+  .float-grip.dragging{cursor:grabbing}
+  #flashStack:not(:has(.flash)) .float-grip{display:none}
+  .busy-x,.flash-x{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;
+    padding:2px 4px;margin-left:auto;align-self:flex-start;border-radius:6px}
+  .busy-x:hover,.flash-x:hover{color:var(--txt);background:var(--line)}
+  .flash{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;background:var(--panel);
+    border:1px solid var(--line);border-left:4px solid var(--accent);padding:11px 12px 11px 14px;border-radius:12px;
+    box-shadow:var(--shadow);animation:flashIn .2s ease-out;position:relative;overflow:hidden}
+  .flash.ok{border-left-color:var(--ok)} .flash.err{border-left-color:var(--bad)} .flash.warn{border-left-color:#e0a100}
+  .flash .fi{font-size:16px;line-height:1.2}
+  .flash .fm{flex:1;min-width:0;white-space:pre-line;word-break:break-word;font-size:14px}
+  .flash .fm .fc{color:var(--muted);font-size:12px;margin-left:6px}
+  .flash .fa{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  .flash .fa button{font-size:12px;padding:4px 10px}
+  .flash .fbar{position:absolute;left:0;bottom:0;height:3px;background:currentColor;opacity:.25;width:100%;
+    transform-origin:left;animation:flashBar linear forwards}
+  .flash:hover .fbar{animation-play-state:paused}
+  .flash.leaving{opacity:0;transform:translateX(16px);transition:.18s}
+  @keyframes flashIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+  @keyframes flashBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+  .busy-box{display:flex;align-items:center;gap:14px;background:var(--panel);animation:flashIn .2s ease-out;
     border:1px solid var(--line);border-left:4px solid var(--accent);
     border-radius:14px;box-shadow:var(--shadow);padding:14px 18px}
   .busy-box .spin{width:22px;height:22px;border-width:3px}
   .busy-box b{display:block;font-size:15px}
   .busy-box small{color:var(--muted)}
-  .toast{pointer-events:none;position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);padding:12px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:90;max-width:380px;opacity:0;transform:translateY(-10px);transition:.25s}
-  .toast.show{opacity:1;transform:none}
-  /* Όσο τρέχει διεργασία, το μήνυμα κατεβαίνει από κάτω της αντί να κρύβεται. */
-  body.busy .toast{top:100px}
-  .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--bad)}
+  .busy-box.bg{opacity:.85}
+  .busy-box .bw{flex:1;min-width:0}
   /* Η απώλεια σύνδεσης είναι ΚΑΤΑΣΤΑΣΗ, όχι συμβάν: ένα toast που φεύγει σε
      τρία δευτερόλεπτα αφήνει τον χρήστη να νομίζει ότι φταίει η εφαρμογή.
      Η μπάρα μένει όσο κρατά το πρόβλημα και φεύγει μόνη της μόλις λυθεί. */
@@ -694,10 +720,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
     <button class="primary" id="uiAskOk">ΟΚ</button>
   </div>
 </div></dialog>
-  <div id="busyBox" aria-live="polite">
-    <div class="busy-box"><span class="spin"></span>
-      <div><b id="busyMsg">Περιμένετε…</b><small id="busySub"></small></div></div>
-  </div>
+  <div id="busyBox" aria-live="polite"><span class="float-grip" data-float="busy" title="Σύρε για μετακίνηση · διπλό κλικ: αρχική θέση">⠿ μετακίνηση</span></div>
 
   <div id="netBar" role="status" aria-live="polite">
     <span class="nb-dot"></span>
@@ -833,7 +856,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
           <div class="field"><label>Από</label><input id="docFrom" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
           <div class="field"><label>Έως</label><input id="docTo" type="text" class="dt" placeholder="ηη/μμ/εεεε" maxlength="10" oninput="dtMask(this)"></div>
           <div class="field grow"><label>Αναζήτηση (ΑΦΜ / επωνυμία / ΜΑΡΚ / σειρά / ημερομηνία / ποσό)</label><input id="docSearch" placeholder="Πληκτρολόγησε…" autocomplete="off" oninput="renderDocs()"></div>
-          <button class="primary" onclick="loadDocs()">Αναζήτηση</button>
+          <button class="primary" onclick="loadDocs(true)" title="Ζωντανή αναζήτηση στην ΑΑΔΕ">Αναζήτηση</button>
           <button class="ghost" onclick="docsYear()" data-tip="Επαναφορά στο τρέχον έτος">📅 Τρέχον έτος</button>
         </div>
         <div class="row" style="align-items:center;margin-top:6px">
@@ -1985,7 +2008,7 @@ $__version = defined('APP_VERSION_LABEL') ? APP_VERSION_LABEL : '';
 <!-- Σήμα του γραφείου, σταθερά κάτω αριστερά. Δύο εκδοχές, μία ανά θέμα:
      το φωτεινό λογότυπο πάνω σε σκούρο φόντο χάνεται (και αντίστροφα). -->
 
-<div class="toast" id="toast"></div>
+<div id="flashStack" class="at-default" role="status" aria-live="polite"><span class="float-grip" data-float="flash" title="Σύρε για μετακίνηση · διπλό κλικ: αρχική θέση">⠿ μετακίνηση</span></div>
 <div id="colFilterPop"></div>
 
 <!-- Guided page tour -->
@@ -2122,7 +2145,111 @@ function payMethod(m){return PAYMETHODS[parseInt(m,10)]||'';}
 // Τρέχουμε μέσα στην εφαρμογή υπολογιστή (ενσωματωμένος browser) ή σε κανονικό
 // browser; Αλλάζει τι μπορεί να γίνει με νέα παράθυρα και λήψεις.
 function isEmbedded(){return document.body.classList.contains('embedded');}
-function toast(m,t=''){const e=$('#toast');e.className='toast show '+t;e.textContent=m;clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',3400);}
+// --- Μηνύματα (flash) -------------------------------------------------------
+// Στοίβα αντί για ΕΝΑ κουτί: πριν, το «Εκδόθηκε» σβηνόταν αμέσως από την
+// προειδοποίηση που ακολουθούσε (ή το αντίστροφο), και ένα σφάλμα χανόταν σε
+// 3,4'' χωρίς να προλάβει να διαβαστεί. Τώρα κάθε μήνυμα έχει ✕, τα σφάλματα
+// και οι προειδοποιήσεις μένουν περισσότερο, το hover παγώνει τον χρόνο, και
+// ίδιο μήνυμα δεν στοιβάζεται δεύτερη φορά (μετρά ×2).
+//   toast(text, 'ok'|'err'|'warn'|'', {sticky, ms, action:{label, fn}})
+const FLASH_MS={ok:4000,'':5500,warn:10000,err:12000};
+const FLASH_ICON={ok:'✅',err:'⛔',warn:'⚠️','':'ℹ️'};
+function flashHost(el){
+  // Ένα ανοιχτό <dialog> ζει στο top layer: ό,τι μένει στο <body> κρύβεται πίσω
+  // του. Γι' αυτό τα μηνύματα μετακομίζουν μέσα στο παράθυρο όσο είναι ανοιχτό.
+  const open=[...document.querySelectorAll('dialog[open]')].pop();
+  const host=open||document.body;
+  if(el&&el.parentElement!==host)host.appendChild(el);
+}
+function toast(m,t='',opts){
+  const box=$('#flashStack');if(!box)return;
+  const o=opts||{};const type=FLASH_MS[t]!==undefined?t:'';
+  const text=String(m==null?'':m);
+  flashHost(box);
+  const dup=[...box.querySelectorAll('.flash')].find(f=>f.dataset.msg===text&&f.dataset.type===type);
+  if(dup){const c=dup.querySelector('.fc');const n=(+dup.dataset.n||1)+1;dup.dataset.n=n;c.textContent='×'+n;flashArm(dup,o,type);return dup;}
+  const f=document.createElement('div');
+  f.className='flash '+type;f.dataset.msg=text;f.dataset.type=type;f.dataset.n=1;
+  f.setAttribute('role',type==='err'?'alert':'status');
+  f.innerHTML='<span class="fi">'+FLASH_ICON[type]+'</span><div class="fm"><span class="ft"></span><span class="fc"></span><div class="fa"></div></div><button class="flash-x" title="Κλείσιμο" aria-label="Κλείσιμο">✕</button>';
+  f.querySelector('.ft').textContent=text;
+  if(o.action&&o.action.label){const b=document.createElement('button');b.className='ghost';b.textContent=o.action.label;
+    b.onclick=ev=>{ev.stopPropagation();try{o.action.fn&&o.action.fn();}finally{flashClose(f);}};f.querySelector('.fa').appendChild(b);}
+  else f.querySelector('.fa').remove();
+  f.querySelector('.flash-x').onclick=ev=>{ev.stopPropagation();flashClose(f);};
+  box.appendChild(f);
+  // Όχι ατελείωτη στοίβα: πάνω από πέντε, φεύγει το παλαιότερο μη-«κολλημένο».
+  const all=[...box.querySelectorAll('.flash:not(.leaving)')];
+  if(all.length>5){const old=all.find(x=>!x._sticky)||all[0];flashClose(old);}
+  flashArm(f,o,type);
+  return f;
+}
+function flashArm(f,o,type){
+  clearTimeout(f._t);f._sticky=!!o.sticky;
+  const old=f.querySelector('.fbar');if(old)old.remove();
+  if(o.sticky)return;
+  const ms=o.ms||FLASH_MS[type];
+  const bar=document.createElement('span');bar.className='fbar';bar.style.animationDuration=ms+'ms';f.appendChild(bar);
+  // Ο χρόνος μετρά μόνο όσο ΔΕΝ είναι το ποντίκι πάνω του.
+  let left=ms,t0=Date.now();
+  const run=()=>{t0=Date.now();f._t=setTimeout(()=>flashClose(f),left);};
+  f.onmouseenter=()=>{clearTimeout(f._t);left-=Date.now()-t0;};
+  f.onmouseleave=run;
+  run();
+}
+function flashClose(f){if(!f||f.classList.contains('leaving'))return;clearTimeout(f._t);f.classList.add('leaving');setTimeout(()=>f.remove(),200);}
+function flashClearAll(){document.querySelectorAll('#flashStack .flash').forEach(flashClose);}
+// Κλείνει ένα <dialog>: ό,τι είχε μετακομίσει μέσα του γυρίζει στο <body>.
+document.addEventListener('close',()=>{setTimeout(()=>{const f=$('#flashStack');if(f&&!f.closest('dialog[open]'))flashHost(f);
+  const b=$('#busyBox');if(b&&b.classList.contains('on')&&!b.closest('dialog[open]'))flashHost(b);},0);},true);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]')){const l=[...document.querySelectorAll('#flashStack .flash:not(.leaving)')].pop();if(l)flashClose(l);}});
+
+// --- Μετακινούμενα κουτιά (μηνύματα + αναμονή), με μνήμη θέσης ------------
+// Η θέση κρατιέται ως ΠΟΣΟΣΤΟ του παραθύρου ώστε να επιβιώνει αλλαγής μεγέθους,
+// στον server (`ui_prefs_set`, κλειδί pos.<όνομα>) για να ακολουθεί τον χρήστη
+// σε άλλο μηχάνημα, και στο localStorage για να εφαρμόζεται ΑΜΕΣΑ στη φόρτωση.
+const FLOAT_IDS={flash:'flashStack',busy:'busyBox'};
+let FLOAT_POS={};
+try{FLOAT_POS=JSON.parse(localStorage.getItem('etim.floatpos')||'{}')||{};}catch(e){FLOAT_POS={};}
+function floatApply(name){
+  const el=document.getElementById(FLOAT_IDS[name]);if(!el)return;
+  const p=FLOAT_POS[name];
+  if(!p||window.innerWidth<760){el.style.left=el.style.top=el.style.right=el.style.bottom='';el.classList.add('at-default');return;}
+  el.classList.remove('at-default');
+  const w=el.offsetWidth||360,h=Math.max(el.offsetHeight,40);
+  const x=Math.min(Math.max(4,p.x*window.innerWidth),window.innerWidth-w-4);
+  const y=Math.min(Math.max(4,p.y*window.innerHeight),window.innerHeight-h-4);
+  el.style.right='auto';el.style.bottom='auto';el.style.left=x+'px';el.style.top=y+'px';
+}
+function floatSave(name){
+  try{localStorage.setItem('etim.floatpos',JSON.stringify(FLOAT_POS));}catch(e){}
+  clearTimeout(floatSave._t);
+  floatSave._t=setTimeout(()=>{try{apost({auth:'ui_prefs_set',key:'pos.'+name,value:JSON.stringify(FLOAT_POS[name]||null)}).catch(()=>{});}catch(e){}},500);
+}
+function floatInit(){
+  document.querySelectorAll('.float-grip').forEach(g=>{
+    const name=g.dataset.float;const el=document.getElementById(FLOAT_IDS[name]);if(!el)return;
+    g.addEventListener('dblclick',()=>{delete FLOAT_POS[name];floatApply(name);floatSave(name);toast('Η θέση επανήλθε','ok');});
+    g.addEventListener('pointerdown',ev=>{
+      if(window.innerWidth<760)return;
+      ev.preventDefault();g.setPointerCapture(ev.pointerId);g.classList.add('dragging');
+      const r=el.getBoundingClientRect();const dx=ev.clientX-r.left,dy=ev.clientY-r.top;
+      const move=e=>{el.classList.remove('at-default');el.style.right='auto';el.style.bottom='auto';
+        const x=Math.min(Math.max(4,e.clientX-dx),window.innerWidth-r.width-4);
+        const y=Math.min(Math.max(4,e.clientY-dy),window.innerHeight-40);
+        el.style.left=x+'px';el.style.top=y+'px';};
+      const up=e=>{g.releasePointerCapture(ev.pointerId);g.classList.remove('dragging');
+        g.removeEventListener('pointermove',move);g.removeEventListener('pointerup',up);
+        const rr=el.getBoundingClientRect();
+        FLOAT_POS[name]={x:+(rr.left/window.innerWidth).toFixed(4),y:+(rr.top/window.innerHeight).toFixed(4)};
+        floatSave(name);};
+      g.addEventListener('pointermove',move);g.addEventListener('pointerup',up);
+    });
+    floatApply(name);
+  });
+  window.addEventListener('resize',()=>Object.keys(FLOAT_IDS).forEach(floatApply));
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',floatInit);else floatInit();
 // --- Κατάσταση σύνδεσης -------------------------------------------------------
 // Τρεις πηγές, με αυτή τη σειρά αξιοπιστίας:
 //   1. Ο server δοκιμάζει να φτάσει την ΑΑΔΕ (`?netcheck=1`) — η μόνη απόδειξη.
@@ -2277,11 +2404,10 @@ function busyQuery(url,init){
     if(url.indexOf(API)!==0)return rawFetch(input,init);
     const label=busyLabel(busyQuery(url,init));
     if(!label)return rawFetch(input,init);
-    let on=false,tick=0;const t0=Date.now();
-    const t=setTimeout(()=>{on=true;busyOn(label,'');
-      tick=setInterval(()=>{const el=$('#busySub');
-        if(el)el.textContent=Math.round((Date.now()-t0)/1000)+' δευτ.';},1000);},BUSY_DELAY);
-    const done=()=>{clearTimeout(t);if(tick)clearInterval(tick);if(on)busyOff();};
+    let id=0,tick=0;const t0=Date.now();
+    const t=setTimeout(()=>{id=busyOn(label,'');
+      tick=setInterval(()=>busySub(id,Math.round((Date.now()-t0)/1000)+' δευτ.'),1000);},BUSY_DELAY);
+    const done=()=>{clearTimeout(t);if(tick)clearInterval(tick);if(id)busyOff(id);};
     return rawFetch(input,init).then(r=>{done();return r;},e=>{done();throw e;});
   };})();
 
@@ -3311,6 +3437,12 @@ let UI_PREFS_READY=false;
 async function loadGridLayouts(){
   try{const d=await apost({auth:'ui_prefs_get'});
     Object.entries(d.prefs||{}).forEach(([k,v])=>{
+      // Θέση των κουτιών μηνυμάτων/αναμονής: ο server κερδίζει το localStorage
+      // (ίδιος χρήστης, άλλο μηχάνημα).
+      if(k.startsWith('pos.')){try{const pv=JSON.parse(v);const nm=k.slice(4);
+        if(pv&&typeof pv.x==='number')FLOAT_POS[nm]=pv;else delete FLOAT_POS[nm];
+        try{localStorage.setItem('etim.floatpos',JSON.stringify(FLOAT_POS));}catch(e){}
+        floatApply(nm);}catch(e){}return;}
       if(!k.startsWith('cols.'))return;
       try{GRID_LAYOUT[k.slice(5)]=JSON.parse(v)||{};}catch(e){}
     });
@@ -4545,7 +4677,7 @@ async function bulkRun(live){
     const txt=await resp.text();let d;try{d=JSON.parse(txt);}catch(e){throw new Error(txt.slice(0,200));}
     if(!d||d.success===false){$('#blkResult').innerHTML='<div class="card"><span class="pill bad">Σφάλμα</span> '+esc((d&&d.error)||'')+'</div>';return;}
     const rows=(d.results||[]).map(r=>`<tr><td>${r.index+1}</td><td>${esc(r.afm||'')}</td><td>${esc(invLabelByValue(r.type)||r.type||'')}</td>
-      <td>${r.success?`<span class="pill ok">${live?'ΜΑΡΚ '+esc(r.mark||''):'Πρόχειρο'}</span>${!live&&r.temp_id?` <span class="muted">${esc(r.temp_id.slice(0,8))}</span>`:''}`:`<span class="pill bad">Σφάλμα</span> <span class="muted">${esc(r.error||'')}</span>`}</td>
+      <td>${r.success?`<span class="pill ok">${live?'ΜΑΡΚ '+esc(r.mark||''):'Πρόχειρο'}</span>${!live&&r.temp_id?` <span class="muted">${esc(r.temp_id.slice(0,8))}</span>`:''}${r.warning?` <span class="pill warn" title="${esc(r.warning)}">⚠ ${esc(r.name||'')}</span>`:''}`:`<span class="pill bad">Σφάλμα</span> <span class="muted">${esc(r.error||'')}</span>`}</td>
       <td class="num">${r.amount_total!=null?fmt(r.amount_total)+' €':''}</td></tr>`).join('');
     $('#blkResult').innerHTML=`<div class="card"><div class="row" style="justify-content:space-between"><b>${live?'Μαζική έκδοση':'Πρόχειρα'}</b><span><span class="pill ok">${d.ok} επιτυχή</span> ${d.failed?`<span class="pill bad">${d.failed} απέτυχαν</span>`:''}</span></div>
       <table style="margin-top:8px"><thead><tr><th>#</th><th>ΑΦΜ</th><th>Τύπος</th><th>Αποτέλεσμα</th><th class="num">Σύνολο</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -4650,34 +4782,72 @@ async function afmDetails(afm,opts){
   // Η αναμονή μπαίνει ΜΟΝΟ όταν το ζήτησε ο χρήστης με κουμπί. Στο γράψιμο του
   // ΑΦΜ (debounce) μια οθόνη που ανοιγοκλείνει σε κάθε ψηφίο είναι χειρότερη
   // από την καθυστέρηση.
-  if(o.busy)busyOn('Άντληση στοιχείων πελάτη…','ΑΦΜ '+afm+' — από την ΑΑΔΕ');
+  const bid=o.busy?busyOn('Άντληση στοιχείων πελάτη…','ΑΦΜ '+afm+' — από την ΑΑΔΕ'):0;
   try{
-    // Πρώτα η καταχώρηση στην ΑΑΔΕ (αυτό κάνει το `?afm=`), μετά τα στοιχεία.
-    if(o.register!==false){try{await api({afm});}catch(e){}}
-    let c=null;
-    try{const d=await api({list_customers:1,cust_vat:afm});
-        const list=(d&&d.customers)||[];
-        c=list.find(x=>String(x.vat||'')===afm)||list[0]||null;
-    }catch(e){}
-    if(!c&&typeof ALL_CUSTOMERS!=='undefined'&&Array.isArray(ALL_CUSTOMERS)){
-      c=ALL_CUSTOMERS.find(x=>String(x.vat||'')===afm)||null;
+    // 1) Καταχώρηση/επιβεβαίωση στην ΑΑΔΕ. Ο server απαντά πλέον ΚΑΙ με τα
+    //    στοιχεία (Taxisnet πρώτα), με την επωνυμία της καρτέλας και με σημαία
+    //    ασυμφωνίας των δύο.
+    let reg=null;
+    if(o.register!==false){try{reg=await api({afm});}catch(e){}}
+    if(reg&&reg.success===false){
+      if(!o.quiet)toast(reg.error||('Το ΑΦΜ '+afm+' δεν βρέθηκε'),'err');
+      return null;
     }
-    if(!c)return null;
+    const info=(reg&&reg.info)||{};
+    // 2) Ό,τι λείπει, από τη λίστα πελατών — ΜΟΝΟ γραμμή με ΑΚΡΙΒΩΣ ίδιο ΑΦΜ.
+    //    Το παλιό `|| list[0]` γέμιζε τη φόρμα με τον ΠΡΩΤΟ πελάτη της λίστας
+    //    όποτε το ΑΦΜ δεν ταίριαζε: παραστατικό με ΑΦΜ ενός και επωνυμία άλλου.
+    let c=null;
+    if(!info.name||!info.city){
+      try{const d=await api({list_customers:1,cust_vat:afm});
+          c=((d&&d.customers)||[]).find(x=>String(x.vat||'')===afm)||null;}catch(e){}
+      if(!c&&typeof ALL_CUSTOMERS!=='undefined'&&Array.isArray(ALL_CUSTOMERS))
+        c=ALL_CUSTOMERS.find(x=>String(x.vat||'')===afm)||null;
+    }
+    if(!info.name&&!c)return null;
     // Ο πίνακας της ΑΑΔΕ γράφει τον ΤΚ ΜΕΣΑ στην πόλη («ΑΘΗΝΑ 11527»).
-    const city=String(c.city||'');const zm=city.match(/\b(\d{5})\b/);
-    return {vat:afm,name:c.name||'',address:c.address||'',
-            city:zm?city.replace(zm[1],'').replace(/[,\s]+$/,'').trim():city,
-            zip:c.zip||(zm?zm[1]:'')};
-  }finally{if(o.busy)busyOff();}
+    const rawCity=String(info.city||(c&&c.city)||'');const zm=rawCity.match(/\b(\d{5})\b/);
+    return {vat:afm,
+            name:info.name||(c&&c.name)||'',
+            address:info.address||(c&&c.address)||'',
+            city:zm?rawCity.replace(zm[1],'').replace(/[,\s]+$/,'').trim():rawCity,
+            zip:info.zip||(c&&c.zip)||(zm?zm[1]:''),
+            code:(reg&&reg.code)||(c&&c.code)||'',
+            status:reg&&reg.status||'',
+            mismatch:!!(reg&&reg.name_mismatch),record_name:(reg&&reg.record_name)||'',taxis_name:(reg&&reg.taxis_name)||''};
+  }finally{if(bid)busyOff(bid);}
 }
-function lookupAfm(){clearTimeout(afmTimer);afmTimer=setTimeout(async()=>{const afm=$('#iAfm').value.trim();if(!/^\d{9}$/.test(afm))return;
+// Η καρτέλα στο e-timologio γράφει άλλη επωνυμία από το Taxisnet: το λέμε, με
+// ένα κουμπί που ενημερώνει την καρτέλα. Το παραστατικό ούτως ή άλλως βγαίνει
+// με την επίσημη επωνυμία (ο server τη διορθώνει).
+function afmMismatchFlash(c){
+  if(!c||!c.mismatch||!c.taxis_name)return;
+  toast('Η καρτέλα πελάτη γράφει «'+c.record_name+'», ενώ στο Taxisnet είναι «'+c.taxis_name+'». Το παραστατικό θα βγει με την επωνυμία του Taxisnet.','warn',
+    {sticky:true,action:{label:'Ενημέρωση καρτέλας από Taxisnet',fn:async()=>{
+      try{const d=await api({update_customer:1,update_customer_vat:c.vat,update_customer_code:c.code||'',update_name:c.taxis_name,
+            update_address:c.address||'',update_city:c.city||'',update_zip:c.zip||''});
+        if(d.success===false)throw new Error(d.error||'σφάλμα');
+        cacheTouch('customers');toast('Η καρτέλα ενημερώθηκε: '+c.taxis_name,'ok');
+      }catch(e){toast('Ενημέρωση καρτέλας: '+e.message,'err');}}}});
+}
+// Τα στοιχεία της φόρμας ανήκουν σε ΕΝΑ ΑΦΜ. Όταν αυτό αλλάζει, τα παλιά
+// φεύγουν αμέσως — πριν, έμενε η επωνυμία του προηγούμενου πελάτη αν ο νέος
+// δεν είχε στοιχεία (ή όσο περίμενε η ΑΑΔΕ), και έφευγε έτσι στην έκδοση.
+let ISSUE_AFM_FILLED='';
+function issueCustClear(){['#iName','#iAddress','#iCity','#iZip'].forEach(k=>{const e=$(k);if(e)e.value='';});}
+function lookupAfm(){clearTimeout(afmTimer);
+  const now=$('#iAfm').value.trim();
+  if(ISSUE_AFM_FILLED&&now!==ISSUE_AFM_FILLED){issueCustClear();ISSUE_AFM_FILLED='';}
+  afmTimer=setTimeout(async()=>{const afm=$('#iAfm').value.trim();if(!/^\d{9}$/.test(afm))return;
   const c=await afmDetails(afm);
-  if(!c)return;
-  if(c.name)$('#iName').value=c.name;
-  if(c.address)$('#iAddress').value=c.address;
-  if(c.city)$('#iCity').value=c.city;
-  if(c.zip)$('#iZip').value=c.zip;
-  toast(c.name?('Πελάτης: '+c.name):'Ο πελάτης καταχωρήθηκε','ok');},400);}
+  if($('#iAfm').value.trim()!==afm)return;          // ο χρήστης άλλαξε ΑΦΜ στο μεταξύ
+  if(!c){issueCustClear();ISSUE_AFM_FILLED='';return;}
+  $('#iName').value=c.name||'';$('#iAddress').value=c.address||'';
+  $('#iCity').value=c.city||'';$('#iZip').value=c.zip||'';
+  ISSUE_AFM_FILLED=afm;
+  if(c.status==='created')cacheTouch('customers');
+  toast(c.name?((c.status==='created'?'Νέος πελάτης από Taxisnet: ':'Πελάτης: ')+c.name):'Ο πελάτης καταχωρήθηκε','ok');
+  afmMismatchFlash(c);},400);}
 // Lines editor (multi-line). Each line has a searchable product combobox that shows
 // "code - description" in the field; the dropdown offers "➕ Νέο είδος" first, then items.
 function prodText(code){const p=PRODMAP[code];return code?(code+(p&&p.desc?' - '+p.desc:'')):'';}
@@ -4884,7 +5054,7 @@ async function submitInvoice(viaIssue){const live=viaIssue===true;
   if(live)p.live=1;
   $('#issueResult').innerHTML='<span class="spin"></span> Υποβολή…';
   try{const d=await api(p);
-    if(d.success){$('#issueResult').innerHTML=d.live?`<div class="card"><span class="pill ok">Εκδόθηκε</span><div style="margin-top:8px">ΜΑΡΚ <strong>${esc(d.mark)}</strong> · ΑΑ ${esc(d.aa)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € · ${docBtn(d.mark)}</div></div>`:`<div class="card"><span class="pill warn">Πρόχειρο</span><div style="margin-top:8px">Temp ID ${esc(d.temp_id)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € <span class="muted">(δεν υποβλήθηκε)</span></div></div>`;toast(d.live?'Εκδόθηκε':'Πρόχειρο OK','ok');if(d.warning)toast(d.warning,'warn');if(d.live)window.__issueTempId=null;ITAXES=[];renderTaxes();sumTotals();offerDelivery(lines);
+    if(d.success){$('#issueResult').innerHTML=d.live?`<div class="card"><span class="pill ok">Εκδόθηκε</span><div style="margin-top:8px">ΜΑΡΚ <strong>${esc(d.mark)}</strong> · ΑΑ ${esc(d.aa)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € · ${docBtn(d.mark)}</div></div>`:`<div class="card"><span class="pill warn">Πρόχειρο</span><div style="margin-top:8px">Temp ID ${esc(d.temp_id)} · ${lines.length} γραμμές · Σύνολο ${fmt(d.amount_total)} € <span class="muted">(δεν υποβλήθηκε)</span></div></div>`;toast(d.live?'Εκδόθηκε':'Πρόχειρο OK','ok');if(d.name_corrected&&d.name_corrected.to){$('#iName').value=d.name_corrected.to;}if(d.warning)toast(d.warning,'warn',{sticky:!!d.name_corrected});if(d.live)window.__issueTempId=null;ITAXES=[];renderTaxes();sumTotals();offerDelivery(lines);
       // Οριστική έκδοση: πάμε εκεί που ζει πια το παραστατικό, με τη γραμμή του
       // επισημασμένη. Η φόρμα δεν έχει να δείξει τίποτα άλλο.
       //
@@ -4956,8 +5126,10 @@ async function dnLoadCustDeliv(vat,cust){cust=cust||{};
   }catch(e){$('#dnDStreet').value=cust.address||'';$('#dnDCity').value=cust.city||'';$('#dnDZip').value=cust.zip||'';}}
 function dnLookup(){clearTimeout(dnTimer);dnTimer=setTimeout(async()=>{const afm=$('#dnAfm').value.trim();if(!/^\d{9}$/.test(afm))return;
   const c=await afmDetails(afm);
-  if(!c)return;
-  if(c.name){$('#dnName').value=c.name;$('#dnCust').value=c.name;}
+  if($('#dnAfm').value.trim()!==afm)return;
+  if(!c){$('#dnName').value='';return;}
+  $('#dnName').value=c.name||'';if(c.name)$('#dnCust').value=c.name;
+  afmMismatchFlash(c);
   dnLoadCustDeliv(afm,{address:c.address,city:c.city,zip:c.zip});},400);}
 
 // --- Loading place: company base (via profile) + localStorage reuse ----------
@@ -5255,7 +5427,7 @@ function focusDocRow(){
   row.scrollIntoView({block:'center',behavior:'smooth'});
   DOC_FOCUS='';
 }
-async function loadDocs(){
+async function loadDocs(force){
   if(!$('#docFrom').value||!$('#docTo').value){const y=new Date().getFullYear();dset('docFrom',y+'-01-01');dset('docTo',y+'-12-31');}
   $('#docTable tbody').innerHTML='<tr><td colspan="11"><span class="spin"></span></td></tr>';
   // Το πελατολόγιο ΠΡΩΤΑ: η αναζήτηση παραστατικών της ΑΑΔΕ επιστρέφει μόνο
@@ -5276,7 +5448,10 @@ async function loadDocs(){
     if(seq===DOCS_SEQ&&r&&r.from===from&&r.to===to&&Array.isArray(r.invoices)){
       ALL_DOCS=r.invoices.filter(i=>i.mark);DOCS_FROM_CACHE=true;renderDocs();}
   }catch(e){}
-  try{const d=await api({search_invoices:1,issue_date_from:from,issue_date_to:to});
+  // Χωρίς `force` ο server απαντά από τη μνήμη όταν αυτή είναι έμπιστη (καμία
+  // έκδοση από εδώ, κανένα νέο παραστατικό στην ΑΑΔΕ) — αλλιώς ρωτά την ΑΑΔΕ.
+  try{const q={search_invoices:1,issue_date_from:from,issue_date_to:to};if(force===true)q.force=1;
+    const d=await api(q);
     if(seq!==DOCS_SEQ)return;
     if(d.success===false)throw new Error(d.error||'σφάλμα');
     ALL_DOCS=(d.invoices||[]).filter(i=>i.mark);DOCS_FROM_CACHE=false;
@@ -7054,8 +7229,12 @@ function cacheTouch(kind){CACHE_DIRTY.add(kind);}
 // παρακάμψει κατά λάθος: πρώτα το σημάδι δικής μας αλλαγής, μετά η ηλικία.
 function cacheIsFresh(kind,c,minutes){
   if(CACHE_DIRTY.has(kind)){CACHE_DIRTY.delete(kind);return false;}
-  return !!c&&!!(c.rows&&c.rows.length)
-    &&typeof c.age_seconds==='number'&&c.age_seconds<(minutes||CACHE_FRESH_MIN)*60;
+  if(!c||!(c.rows&&(c.rows.length||c.rows.invoices)))return false;
+  // Ο server ξέρει αν η μνήμη είναι έμπιστη (καμία δική μας αλλαγή, κανένα νέο
+  // στην ΑΑΔΕ, μέσα στο παράθυρο εμπιστοσύνης). Το τοπικό όριο λεπτών μένει
+  // μόνο για παλιό server που δεν στέλνει `trusted`.
+  if(typeof c.trusted==='boolean'&&!minutes)return c.trusted;
+  return typeof c.age_seconds==='number'&&c.age_seconds<(minutes||CACHE_FRESH_MIN)*60;
 }
 
 // Είναι η κρυφή μνήμη αρκετά πρόσφατη ώστε να ΜΗΝ ξαναρωτήσουμε την ΑΑΔΕ;
@@ -7636,35 +7815,45 @@ const uiAlert=(text,opts)=>uiAsk(Object.assign({text,noCancel:true,title:'Ενη
 // --- Αναμονή ---------------------------------------------------------------
 // Με μετρητή, όχι με σημαία: δύο αργές δουλειές μαζί (π.χ. άντληση ΑΦΜ μέσα σε
 // αποθήκευση πελάτη) αλλιώς θα έσβηναν η μία την οθόνη της άλλης.
-let BUSY_N=0;
+// Κάθε δουλειά έχει ΔΙΚΗ της κάρτα (πριν: μία κοινή, όπου η δεύτερη δουλειά
+// έσβηνε το όνομα της πρώτης και ο μετρητής δευτερολέπτων της μιας έγραφε στην
+// άλλη). Το ✕ ΚΡΥΒΕΙ την κάρτα — η δουλειά συνεχίζει και ό,τι απαντήσει
+// φαίνεται κανονικά. busyOn() → id· busyOff(id) ή busyOff() για την τελευταία.
+let BUSY_SEQ=0;const BUSY_ITEMS=[];
 function busyOn(msg,sub){
-  const d=$('#busyBox');if(!d)return;
-  $('#busyMsg').textContent=msg||'Περιμένετε…';
-  $('#busySub').textContent=sub||'';
-  BUSY_N++;
-  // Ένα ανοιχτό <dialog> ζει στο «top layer» των browsers: ό,τι μένει στο
-  // <body> κρύβεται από πίσω του όσο μεγάλο κι αν είναι το z-index. Γι' αυτό η
-  // κάρτα μπαίνει ΜΕΣΑ στο παράθυρο όσο αυτό είναι ανοιχτό.
-  const open=document.querySelector('dialog[open]');
-  const host=open||document.body;
-  if(d.parentElement!==host)host.appendChild(d);
-  d.classList.add('on');
-  document.body.classList.add('busy');
+  const d=$('#busyBox');if(!d)return 0;
+  const id=++BUSY_SEQ;
+  const it=document.createElement('div');it.className='busy-box';it.dataset.bid=id;
+  it.innerHTML='<span class="spin"></span><div class="bw"><b></b><small></small></div><button class="busy-x" title="Απόκρυψη — η εργασία συνεχίζει στο παρασκήνιο" aria-label="Απόκρυψη">✕</button>';
+  it.querySelector('b').textContent=msg||'Περιμένετε…';
+  it.querySelector('small').textContent=sub||'';
+  it.querySelector('.busy-x').onclick=ev=>{ev.stopPropagation();it.hidden=true;it.dataset.hid='1';busyRefresh();};
+  d.appendChild(it);BUSY_ITEMS.push(id);
+  flashHost(d);
+  busyRefresh();
+  floatApply('busy');
+  return id;
 }
-function busyOff(){
+function busySub(id,text){const it=document.querySelector('#busyBox [data-bid="'+id+'"] small');if(it)it.textContent=text||'';}
+function busyRefresh(){
   const d=$('#busyBox');if(!d)return;
-  BUSY_N=Math.max(0,BUSY_N-1);
-  if(BUSY_N===0){
-    d.classList.remove('on');
-    document.body.classList.remove('busy');
-    if(d.parentElement!==document.body)document.body.appendChild(d);
-  }
+  const vis=[...d.querySelectorAll('.busy-box')].filter(x=>!x.hidden);
+  d.classList.toggle('on',vis.length>0);
+  document.body.classList.toggle('busy',vis.length>0);
+  if(!vis.length&&d.parentElement!==document.body)document.body.appendChild(d);
+}
+function busyOff(id){
+  const d=$('#busyBox');if(!d)return;
+  if(!id)id=BUSY_ITEMS[BUSY_ITEMS.length-1];
+  const i=BUSY_ITEMS.indexOf(id);if(i>=0)BUSY_ITEMS.splice(i,1);
+  const it=d.querySelector('[data-bid="'+id+'"]');if(it)it.remove();
+  busyRefresh();
 }
 // Ό,τι τυλίγεται εδώ σβήνει την αναμονή ΚΑΙ στο σφάλμα — αλλιώς μια αποτυχία
 // άφηνε την εφαρμογή κλειδωμένη πίσω από μια οθόνη που δεν φεύγει ποτέ.
 async function withBusy(msg,fn,sub){
-  busyOn(msg,sub);
-  try{return await fn();}finally{busyOff();}
+  const id=busyOn(msg,sub);
+  try{return await fn();}finally{busyOff(id);}
 }
 
 // Το κλειδί πρόσβασης το φτιάχνει ο διαχειριστής ΣΤΟΝ SERVER· εδώ απλώς

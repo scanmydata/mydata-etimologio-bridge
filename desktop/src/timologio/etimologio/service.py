@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -100,6 +101,8 @@ class EtimologioService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._proc: subprocess.Popen[bytes] | None = None
         self._port: int | None = None
+        self._sched_stop = threading.Event()
+        self._sched_thread: threading.Thread | None = None
         self._conf = self._load_conf()
 
     # --- persisted service config -----------------------------------------
@@ -232,6 +235,12 @@ const WHISPER_EXE = '{whisper_exe}';
 const WHISPER_MODEL = '{whisper_model}';
 const APP_VERSION_LABEL = '{APP_VERSION}';
 const NOTIFY_ADMIN_EMAIL = '';
+// Τοπική εγκατάσταση: ο scheduler τρέχει από την ίδια την εφαρμογή (δες
+// EtimologioService._scheduler_loop) και ΔΕΝ κάνει τα έργα του server
+// (ημερήσιο αντίγραφο server, συγχρονισμός στο παρασκήνιο που θα κρατούσε
+// απασχολημένο τον μονονηματικό τοπικό server).
+const SCHEDULER_LOCAL = true;
+const BG_SYNC_MINUTES = 0;
 """
         (root / "config.php").write_text(config, "utf-8")
 
@@ -299,7 +308,64 @@ const NOTIFY_ADMIN_EMAIL = '';
             self.stop()
             raise RuntimeError("Ο τοπικός server e-Τιμολόγιο δεν ξεκίνησε.")
         log.info("e-Τιμολόγιο local backend on %s", self.base_url())
+        self._start_scheduler(php, ini, cacert, root)
         return self.base_url()
+
+    # --- τοπικός scheduler --------------------------------------------------
+    # Οι «Προγραμματισμένες εκδόσεις» και η μηνιαία αποστολή καρτελών ζουν στο
+    # `scheduler.php`, που στον server το τρέχει το cron κάθε λεπτό. Τοπικά δεν
+    # το έτρεχε ΚΑΝΕΙΣ: μια έκδοση προγραμματισμένη από την εφαρμογή υπολογιστή
+    # έμενε «σε αναμονή» για πάντα, χωρίς κανένα μήνυμα. Τώρα το τρέχουμε εμείς,
+    # όσο είναι ανοιχτή η εφαρμογή (ίδια συμπεριφορά με το ημερήσιο αντίγραφο).
+    SCHED_INTERVAL = 60.0
+
+    def scheduler_command(self, php: str, ini: str | None, cacert: str | None, root: Path) -> list[str]:
+        cmd = [php]
+        if ini:
+            cmd += ["-c", ini]
+        if cacert:
+            cmd += ["-d", f"curl.cainfo={cacert}", "-d", f"openssl.cafile={cacert}"]
+        cmd += [
+            "-d", "display_errors=0",
+            "-d", "log_errors=1",
+            "-d", f"error_log={self.data_dir / 'php-errors.log'}",
+            str(root / "scheduler.php"),
+        ]
+        return cmd
+
+    def _start_scheduler(self, php: str, ini: str | None, cacert: str | None, root: Path) -> None:
+        if not (root / "scheduler.php").exists():
+            log.warning("Λείπει το scheduler.php — οι προγραμματισμένες εκδόσεις δεν θα τρέχουν")
+            return
+        if self._sched_thread and self._sched_thread.is_alive():
+            return
+        self._sched_stop.clear()
+        cmd = self.scheduler_command(php, ini, cacert, root)
+        self._sched_thread = threading.Thread(
+            target=self._scheduler_loop, args=(cmd, root), name="etim-scheduler", daemon=True
+        )
+        self._sched_thread.start()
+
+    def _scheduler_loop(self, cmd: list[str], root: Path) -> None:
+        # Πρώτος γύρος λίγο μετά την εκκίνηση: ό,τι «έληξε» όσο η εφαρμογή ήταν
+        # κλειστή εκδίδεται χωρίς να περιμένει ολόκληρο λεπτό.
+        wait = 20.0
+        while not self._sched_stop.wait(wait):
+            wait = self.SCHED_INTERVAL
+            if not self._proc or self._proc.poll() is not None:
+                continue
+            self.run_scheduler_once(cmd, root)
+
+    def run_scheduler_once(self, cmd: list[str], root: Path) -> int | None:
+        try:
+            with open(self.data_dir / "scheduler.log", "ab") as out:  # noqa: SIM115
+                return subprocess.run(
+                    cmd, cwd=str(root), stdout=out, stderr=out,
+                    timeout=900, creationflags=_CREATE_NO_WINDOW, check=False,
+                ).returncode
+        except (OSError, subprocess.SubprocessError):
+            log.exception("Ο τοπικός scheduler απέτυχε")
+            return None
 
     def _wait_healthy(self, seconds: float) -> bool:
         deadline = time.monotonic() + seconds
@@ -324,6 +390,7 @@ const NOTIFY_ADMIN_EMAIL = '';
             return False
 
     def stop(self) -> None:
+        self._sched_stop.set()
         proc, self._proc = self._proc, None
         if proc and proc.poll() is None:
             proc.terminate()
