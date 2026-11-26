@@ -212,8 +212,9 @@ def list_clients(conn: sqlite3.Connection, only_ready: bool = False) -> list[sql
 
 
 #: Έκδοση των στοιχείων που διαβάζουμε από την ΑΑΔΕ. 1 = παρακρατήσεις,
-#: 2 = UID και καύσιμα. Μικρότερη τιμή = η λήψη ξαναζητά τη χρήση από την αρχή.
-DATA_V = 2
+#: 2 = UID και καύσιμα, 3 = αυτοτιμολόγηση. Μικρότερη τιμή = η λήψη ξαναζητά τη
+#: χρήση από την αρχή.
+DATA_V = 3
 
 
 def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> None:
@@ -231,18 +232,19 @@ def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> 
             counter_vat, counter_name, series, aa, issue_date,
             net_value, vat_amount, total_value,
             withheld_amount, deductions_amount, amounts_v, uid, fuel_codes,
-            downloading_invoice_url, provider_host, status)
+            self_pricing, downloading_invoice_url, provider_host, status)
         VALUES(:client_id, :mark, :direction, :invoice_type, :issuer_vat, :issuer_name,
                :counter_vat, :counter_name, :series, :aa, :issue_date,
                :net_value, :vat_amount, :total_value,
                :withheld, :deductions, :dv, :uid, :fuel,
-               :url, :host, :status)
+               :sp, :url, :host, :status)
         ON CONFLICT(client_id, mark) DO UPDATE SET
           withheld_amount = excluded.withheld_amount,
           deductions_amount = excluded.deductions_amount,
           amounts_v = :dv,
           uid = CASE WHEN excluded.uid <> '' THEN excluded.uid ELSE documents.uid END,
           fuel_codes = excluded.fuel_codes,
+          self_pricing = excluded.self_pricing,
           direction = CASE WHEN documents.direction <> excluded.direction
                            THEN 'both' ELSE documents.direction END,
           downloading_invoice_url = CASE WHEN excluded.downloading_invoice_url <> ''
@@ -268,6 +270,7 @@ def upsert_document(conn: sqlite3.Connection, client_id: int, doc: Document) -> 
             "issue_date": doc.issue_date,
             "uid": doc.uid,
             "fuel": doc.fuel_codes,
+            "sp": int(bool(doc.self_pricing)),
             "dv": DATA_V,
             "net_value": doc.net_value,
             "vat_amount": doc.vat_amount,

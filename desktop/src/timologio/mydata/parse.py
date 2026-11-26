@@ -133,6 +133,10 @@ def parse_invoice(invoice: ET.Element, direction: Direction) -> Document:
         provider_host=urlsplit(url).netloc if url else "",
         uid=_strip(invoice.findtext("ns:uid", "", NS)) or find_by_localnames(invoice, {"uid"}),
         fuel_codes=",".join(fuels),
+        self_pricing=(
+            _strip(header.findtext("ns:selfPricing", "", NS)).lower() == "true"
+            if header is not None else False
+        ),
     )
     if not url:
         # Χωρίς PDF παρόχου κρατάμε το raw XML — έχει issuer, γραμμές, σύνολα.

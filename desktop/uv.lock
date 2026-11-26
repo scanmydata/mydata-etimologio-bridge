@@ -698,7 +698,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/66/b7/4a1bc231e0681ebf3
 
 [[package]]
 name = "timologio-downloader"
-version = "0.4.51"
+version = "0.4.52"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

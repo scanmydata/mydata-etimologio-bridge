@@ -121,6 +121,9 @@ class Document:
     uid: str = ""
     #: Οι κωδικοί καυσίμου των γραμμών (fuelCode), π.χ. «10,20».
     fuel_codes: str = ""
+    #: Αυτοτιμολόγηση (``selfPricing``): το εκδίδει ο αγοραστής για λογαριασμό
+    #: του πωλητή — αντιστρέφει το έσοδο/έξοδο.
+    self_pricing: bool = False
     classification: Classification = Classification.UNKNOWN
     xml_blob: bytes | None = field(default=None, repr=False)
     """Το raw <invoice> element — σώζεται μόνο όταν λείπει provider URL."""

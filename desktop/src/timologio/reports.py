@@ -492,7 +492,8 @@ def _doc_row_values(r: sqlite3.Row) -> list:
         status_el = r["status"]
     return [
         r["client_vat"], r["client_label"], r["mark"],
-        _KIND_EL[doc_kind(r["issuer_vat"], r["client_vat"], r["invoice_type"])],
+        _KIND_EL[doc_kind(r["issuer_vat"], r["client_vat"], r["invoice_type"],
+                          r["self_pricing"] if "self_pricing" in r.keys() else 0)],
         r["invoice_type"], r["issue_date"], r["series"], r["aa"],
         r["issuer_vat"], r["issuer_name"],
         signed(r["net_value"], r["invoice_type"]), signed(r["vat_amount"], r["invoice_type"]),

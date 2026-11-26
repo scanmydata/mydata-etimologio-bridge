@@ -332,6 +332,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("uid", "TEXT NOT NULL DEFAULT ''"),
         ("fuel_codes", "TEXT NOT NULL DEFAULT ''"),
         ("superseded", "INTEGER NOT NULL DEFAULT 0"),
+        # Αυτοτιμολόγηση (selfPricing): έρχεται με την επόμενη λήψη (amounts_v < 3).
+        ("self_pricing", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if column not in existing:
             conn.execute(f"ALTER TABLE documents ADD COLUMN {column} {ddl}")

@@ -90,17 +90,24 @@ SELF_EXPENSE_PREFIXES = ("13.", "14.")
 NON_COUNTING_TYPES = frozenset({"6.1", "6.2", "9.3"})
 
 
-def doc_kind(issuer_vat: str | None, client_vat: str, code: str | None) -> str:
+def doc_kind(
+    issuer_vat: str | None, client_vat: str, code: str | None,
+    self_pricing: bool | int | None = False,
+) -> str:
     """«income» ή «expense» για ένα παραστατικό του πελάτη.
 
-    Έσοδο = το εξέδωσε ο πελάτης, εκτός από τις εγγραφές εξόδων που καταχωρεί ο
-    ίδιος. Έξοδο = το εξέδωσε άλλος, ή είναι εγγραφή εξόδων του πελάτη. Αν
-    μετρά στα σύνολα το λέει χωριστά το `counts_in_totals`.
+    Έσοδο = ο πελάτης είναι ο ΠΩΛΗΤΗΣ, εκτός από τις εγγραφές εξόδων που
+    καταχωρεί ο ίδιος. Συνήθως πωλητής = εκδότης· στην **αυτοτιμολόγηση**
+    (``selfPricing`` της myDATA) το εκδίδει ο ΑΓΟΡΑΣΤΗΣ για λογαριασμό του
+    πωλητή, οπότε αντιστρέφεται: τιμολόγιο της GO DELIVERY προς τον πελάτη με
+    αυτοτιμολόγηση είναι έσοδο του πελάτη. Αν μετρά στα σύνολα το λέει χωριστά
+    το `counts_in_totals`.
     """
     code = (code or "").strip()
     if code in SELF_EXPENSE_TYPES or code.startswith(SELF_EXPENSE_PREFIXES):
         return "expense"
-    return "income" if (issuer_vat or "") == client_vat else "expense"
+    sells = ((issuer_vat or "") == client_vat) != bool(self_pricing)
+    return "income" if sells else "expense"
 
 
 def counts_in_totals(code: str | None) -> bool:
@@ -117,14 +124,37 @@ def _type_sql(type_column: str) -> str:
     return f"({t} IN ({own}) OR {prefixes})"
 
 
-def income_sql(issuer_column: str, client_vat: str, type_column: str = "invoice_type") -> str:
+def _sells_sql(issuer_column: str, client_vat: str, self_pricing_column: str | None) -> str:
+    """«Ο πελάτης είναι ο πωλητής» σε SQL: εκδότης = πελάτης, ανάποδα στην
+    αυτοτιμολόγηση. Η στήλη ``self_pricing`` παίρνει το πρόθεμα του εκδότη
+    («d.issuer_vat» → «d.self_pricing»)."""
+    if self_pricing_column is None:
+        if issuer_column.startswith(":"):
+            self_pricing_column = "0"      # τιμή-παράμετρος, όχι στήλη πίνακα
+        else:
+            prefix = issuer_column.rpartition(".")[0]
+            self_pricing_column = f"{prefix}.self_pricing" if prefix else "self_pricing"
+    issuer = f"COALESCE({issuer_column},'')"
+    return (f"(CASE WHEN COALESCE({self_pricing_column},0) = 1 "
+            f"THEN {issuer} <> {client_vat} ELSE {issuer} = {client_vat} END)")
+
+
+def income_sql(
+    issuer_column: str, client_vat: str, type_column: str = "invoice_type",
+    self_pricing_column: str | None = None,
+) -> str:
     """Το `doc_kind(...) == "income"` μέσα σε SQL."""
-    return f"({issuer_column} = {client_vat} AND NOT {_type_sql(type_column)})"
+    sells = _sells_sql(issuer_column, client_vat, self_pricing_column)
+    return f"({sells} AND NOT {_type_sql(type_column)})"
 
 
-def expense_sql(issuer_column: str, client_vat: str, type_column: str = "invoice_type") -> str:
+def expense_sql(
+    issuer_column: str, client_vat: str, type_column: str = "invoice_type",
+    self_pricing_column: str | None = None,
+) -> str:
     """Το `doc_kind(...) == "expense"` μέσα σε SQL."""
-    return f"({_type_sql(type_column)} OR {issuer_column} <> {client_vat})"
+    sells = _sells_sql(issuer_column, client_vat, self_pricing_column)
+    return f"({_type_sql(type_column)} OR NOT {sells})"
 
 
 def counting_sql(type_column: str = "invoice_type") -> str:

@@ -1077,7 +1077,8 @@ class DocumentsView(QWidget):
         return fuel_label(codes) or "—"
 
     def _kind(self, r: sqlite3.Row) -> str:
-        return doc_kind(r["issuer_vat"], self._vat, r["invoice_type"])
+        return doc_kind(r["issuer_vat"], self._vat, r["invoice_type"],
+                        r["self_pricing"] if "self_pricing" in r.keys() else 0)
 
     def _kind_text(self, r: sqlite3.Row) -> str:
         return {"income": "Έσοδο", "expense": "Έξοδο"}.get(self._kind(r), "—")

@@ -119,7 +119,7 @@ def test_uid_and_fuels_force_a_one_off_refetch(conn):
     row = c.execute("SELECT amounts_v, uid, fuel_codes FROM documents "
                     "WHERE mark='400013226701592'").fetchone()
     assert tuple(row) == (repo.DATA_V, "E8E6", "20")
-    assert repo.DATA_V == 2
+    assert repo.DATA_V >= 2
     c.execute("UPDATE documents SET amounts_v=1")
     assert repo.needs_amount_refresh(c, cid, Direction.OUTGOING, "2026-01-01", "2026-12-31")
 

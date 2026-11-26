@@ -240,6 +240,8 @@ def cell_menu_actions(menu, table: QTableWidget, pos, column_filter=None) -> Non
 
     Μπαίνει ως **προσθήκη** σε όποιο μενού έχει ήδη ο πίνακας: οι δικές του
     ενέργειες (άνοιγμα, διαγραφή…) μένουν στην κορυφή, όπου τις ξέρει ο χρήστης.
+    Από κάτω πρώτο το **φίλτρο** (η πιο συχνή κίνηση) και μετά η αντιγραφή —
+    όλα με εικονίδιο, όπως οι ενέργειες από πάνω.
     """
     from PySide6.QtGui import QGuiApplication
 
@@ -254,9 +256,35 @@ def cell_menu_actions(menu, table: QTableWidget, pos, column_filter=None) -> Non
     def copy(text: str) -> None:
         QGuiApplication.clipboard().setText(text)
 
+    if column_filter is not None:
+        header = table.horizontalHeaderItem(col)
+        name = (header.text() if header else "") or "στήλη"
+        added = False
+        if column_filter.can_filter(col) and value:
+            act = menu.addAction(icon("filter", CURRENT.accent),
+                                 f"Φίλτρο: {name} = «{value}»")
+            act.setToolTip("Δείχνει μόνο τις γραμμές με αυτή την τιμή")
+            act.triggered.connect(
+                lambda _=False, c=col, v=value: column_filter.filter_by(c, v)
+            )
+            added = True
+        if column_filter.filters.get(col):
+            act = menu.addAction(icon("cancel", CURRENT.muted),
+                                 f"Καθάρισμα φίλτρου «{name}»")
+            act.triggered.connect(lambda _=False, c=col: column_filter.filter_by(c, None))
+            added = True
+        if column_filter.has_filters():
+            menu.addAction(icon("cancel", CURRENT.muted),
+                           "Καθάρισμα όλων των φίλτρων").triggered.connect(
+                column_filter.clear
+            )
+            added = True
+        if added:
+            menu.addSeparator()
+
     if value:
         short = value if len(value) <= 38 else value[:36] + "…"
-        act = menu.addAction(f"Αντιγραφή «{short}»")
+        act = menu.addAction(icon("copy", CURRENT.muted), f"Αντιγραφή «{short}»")
         act.setToolTip("Αντιγράφει το περιεχόμενο του κελιού")
         act.triggered.connect(lambda _=False, v=value: copy(v))
 
@@ -266,27 +294,9 @@ def cell_menu_actions(menu, table: QTableWidget, pos, column_filter=None) -> Non
     ]
     line = "\t".join(c for c in cells if c)
     if line:
-        act = menu.addAction("Αντιγραφή ολόκληρης της γραμμής")
+        act = menu.addAction(icon("copy", CURRENT.muted), "Αντιγραφή ολόκληρης της γραμμής")
         act.setToolTip("Οι τιμές χωρισμένες με tab — επικολλώνται σε Excel")
         act.triggered.connect(lambda _=False, v=line: copy(v))
-
-    if column_filter is None:
-        return
-    header = table.horizontalHeaderItem(col)
-    name = (header.text() if header else "") or "στήλη"
-    if column_filter.can_filter(col) and value:
-        act = menu.addAction(f"Φίλτρο: {name} = «{value}»")
-        act.setToolTip("Δείχνει μόνο τις γραμμές με αυτή την τιμή")
-        act.triggered.connect(
-            lambda _=False, c=col, v=value: column_filter.filter_by(c, v)
-        )
-    if column_filter.filters.get(col):
-        act = menu.addAction(f"Καθάρισμα φίλτρου «{name}»")
-        act.triggered.connect(lambda _=False, c=col: column_filter.filter_by(c, None))
-    if column_filter.has_filters():
-        menu.addAction("Καθάρισμα όλων των φίλτρων").triggered.connect(
-            column_filter.clear
-        )
 
 
 def install_cell_menu(table: QTableWidget, column_filter=None) -> None:
