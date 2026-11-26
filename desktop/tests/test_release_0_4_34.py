@@ -116,6 +116,9 @@ def test_only_the_renderable_ones_are_taken(one_client, monkeypatch, tmp_path: P
     seen: list[list[sqlite3.Row]] = []
 
     monkeypatch.setattr("timologio.download.headless.find_browser", lambda: Path("edge.exe"))
+    # Χωρίς stealth: όλα στο ίδιο (αόρατο) πέρασμα. Με stealth η Epsilon πάει
+    # κατευθείαν εκεί (0.4.53, βλ. test_release_0_4_53).
+    monkeypatch.setattr("timologio.download.stealth.available", lambda: False)
 
     def fake_batch(_conn, _settings, rows, **kwargs):
         seen.append(rows)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 from .crypto import Crypto
+from .doctypes import expense_sql
 from .models import Classification, Client, ClientStatus, Direction, DocStatus, Document
 
 
@@ -539,9 +540,10 @@ def pending_documents(
     ]
     params: list[object] = [client_id]
     if unclassified_expenses_only:
-        # Έξοδο = ο εκδότης είναι κάποιος άλλος, όχι ο πελάτης.
-        sql.append("AND classification='unclassified' AND issuer_vat <> ?")
-        params.append(client_vat)
+        # Έξοδο: ίδιος κανόνας με την ανάλυση (και η αυτοτιμολόγηση).
+        clause = expense_sql("issuer_vat", "?")
+        sql.append(f"AND classification='unclassified' AND {clause}")
+        params.extend([client_vat] * clause.count("?"))
     # Αποδείξεις λιανικής που εξέδωσε ο ίδιος ο πελάτης (11.x): σε πελάτες με
     # μεγάλη κίνηση είναι οι μισές εκκρεμότητες, και τα σύνολά τους τα έχουμε
     # ήδη από την ΑΑΔΕ. Η κανονική λήψη τις αφήνει «σε αναμονή» ("skip") και
@@ -587,12 +589,19 @@ def pending_backlog(
 
 
 def viewer_only_documents(
-    conn: sqlite3.Connection, vats: list[str] | None = None
+    conn: sqlite3.Connection, vats: list[str] | None = None,
+    *,
+    unclassified_expenses_only: bool = False,
+    date_from_iso: str = "",
+    date_to_iso: str = "",
 ) -> list[sqlite3.Row]:
     """Τα «μόνο online» παραστατικά (με σύνδεσμο παρόχου), για headless λήψη.
 
     Επιστρέφει και τα στοιχεία του πελάτη (ΑΦΜ/επωνυμία) ώστε να χτιστεί το
-    όνομα αρχείου. Προαιρετικά περιορίζεται σε συγκεκριμένους πελάτες.
+    όνομα αρχείου. Προαιρετικά περιορίζεται σε συγκεκριμένους πελάτες, και —
+    μέσα σε μια λήψη — στα ΙΔΙΑ με τα PDF της: διάστημα και «έξυπνη λήψη».
+    Χωρίς αυτό, μια έξυπνη λήψη Οκτωβρίου περνούσε από browser ΟΛΑ τα «μόνο
+    online» της χρήσης (43 σελίδες Epsilon, μισή ώρα).
     """
     sql = (
         """SELECT d.*, c.vat AS client_vat, c.label AS client_label
@@ -604,6 +613,15 @@ def viewer_only_documents(
     if vats:
         sql += f" AND c.vat IN ({','.join('?' * len(vats))})"
         params.extend(vats)
+    if unclassified_expenses_only:
+        sql += (" AND d.classification='unclassified' AND "
+                + expense_sql("d.issuer_vat", "c.vat", "d.invoice_type"))
+    if date_from_iso:
+        sql += " AND d.issue_date >= ?"
+        params.append(date_from_iso)
+    if date_to_iso:
+        sql += " AND d.issue_date <= ?"
+        params.append(date_to_iso)
     sql += " ORDER BY c.label, d.issue_date, d.mark"
     return list(conn.execute(sql, params))
 

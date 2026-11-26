@@ -159,6 +159,49 @@ def chrome_major(path: Path | None) -> int | None:
     return max(versions)[0] if versions else None
 
 
+def hide_from_taskbar(pid: int | None, timeout: float = 5.0) -> int:
+    """Βγάζει τα παράθυρα του Chrome (διεργασία ``pid``) από τη γραμμή εργασιών.
+
+    Το παράθυρο είναι ήδη εκτός οθόνης, αλλά τα Windows του έδιναν κουμπί στη
+    γραμμή εργασιών («Error! – Google Chrome» δίπλα στα προγράμματα του
+    χρήστη). Ως «tool window» μένει ζωντανό και «ορατό» για το Cloudflare,
+    χωρίς κουμπί και χωρίς να παίρνει την εστίαση. Επιστρέφει πόσα έκρυψε.
+    """
+    if sys.platform != "win32" or not pid:
+        return 0
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    gwl_exstyle, ws_ex_toolwindow, ws_ex_appwindow = -20, 0x00000080, 0x00040000
+    sw_hide, sw_shownoactivate, gw_owner = 0, 4, 4
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collect(hwnd, _lparam):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if (owner.value == pid and user32.IsWindowVisible(hwnd)
+                and not user32.GetWindow(hwnd, gw_owner)):
+            found.append(hwnd)
+        return True
+
+    deadline = time.time() + timeout
+    while not found and time.time() < deadline:
+        user32.EnumWindows(collect, 0)
+        if not found:
+            time.sleep(0.2)
+    for hwnd in found:
+        style = user32.GetWindowLongW(hwnd, gwl_exstyle)
+        # Το στυλ αλλάζει μόνο με το παράθυρο κρυμμένο· μετά ξαναφαίνεται χωρίς
+        # να ενεργοποιηθεί (εκτός οθόνης, ο χρήστης δεν βλέπει τίποτα).
+        user32.ShowWindow(hwnd, sw_hide)
+        user32.SetWindowLongW(hwnd, gwl_exstyle,
+                              (style | ws_ex_toolwindow) & ~ws_ex_appwindow)
+        user32.ShowWindow(hwnd, sw_shownoactivate)
+    return len(found)
+
+
 def _mismatch_major(error: str) -> int | None:
     """«Current browser version is 156.0…» → 156 (για δεύτερη προσπάθεια)."""
     m = re.search(r"Current browser version is (\d+)", error)
@@ -249,10 +292,12 @@ class StealthRenderer:
 
         self._launch = launch
         self._kwargs = kwargs
+        self._hidden = hidden
         started = time.time()
         try:
             self._driver = launch()
             self._limit_page_load()
+            self._hide_window()
         except Exception as exc:  # noqa: BLE001 — surface as flow error
             if self._chrome_tmp:
                 shutil.rmtree(self._chrome_tmp, ignore_errors=True)
@@ -278,10 +323,19 @@ class StealthRenderer:
         try:
             self._driver = self._launch()
             self._limit_page_load()
+            self._hide_window()
             return True
         except Exception as exc:  # noqa: BLE001
             log.warning("Stealth restart failed: %s", exc)
             return False
+
+    def _hide_window(self) -> None:
+        if not getattr(self, "_hidden", False):
+            return
+        try:
+            hide_from_taskbar(getattr(self._driver, "browser_pid", None))
+        except Exception as exc:  # noqa: BLE001 — κοσμητικό, ποτέ λόγος αποτυχίας
+            log.debug("taskbar hide: %s", exc)
 
     def _limit_page_load(self) -> None:
         # Χωρίς όριο, μια σελίδα που «πέθανε» κρατούσε το get() για λεπτά και

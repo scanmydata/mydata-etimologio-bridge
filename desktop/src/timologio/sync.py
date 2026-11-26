@@ -819,6 +819,8 @@ def sync_client(
     )
     _auto_render_pass(
         conn, client, settings, stats=stats,
+        unclassified_expenses_only=unclassified_expenses_only,
+        date_from=date_from, date_to=date_to,
         progress=progress, should_cancel=should_cancel,
     )
     return stats
@@ -832,8 +834,13 @@ def _auto_render_pass(
     stats: RunStats,
     progress: ProgressFn,
     should_cancel: Callable[[], bool] | None,
+    unclassified_expenses_only: bool = False,
+    date_from: str = "",
+    date_to: str = "",
 ) -> None:
     """Κατεβάζει ΜΟΝΟ ΤΟΥ όσα ο πάροχος δίνει μόνο ως σελίδα — όταν γίνεται.
+
+    Ακολουθεί τα ίδια όρια με τα PDF της λήψης (διάστημα, έξυπνη λήψη).
 
     Η ΕΣΚΑΠ (και όποιος άλλος μπει στο ``AUTO_RENDER_HOSTS``) δεν έχει αρχείο
     PDF: δίνει εκτυπώσιμη σελίδα. Μέχρι τώρα αυτά έμεναν «μόνο online» και ο
@@ -850,7 +857,11 @@ def _auto_render_pass(
     assert client.id is not None
     rows = [
         row
-        for row in repo.viewer_only_documents(conn, [client.vat])
+        for row in repo.viewer_only_documents(
+            conn, [client.vat],
+            unclassified_expenses_only=unclassified_expenses_only,
+            date_from_iso=_gr_to_iso(date_from), date_to_iso=_gr_to_iso(date_to),
+        )
         if is_auto_renderable(row["downloading_invoice_url"])
         or _is_epsilon_docviewer(row["provider_host"], row["downloading_invoice_url"])
     ]
@@ -863,33 +874,32 @@ def _auto_render_pass(
         return
 
     progress(f"{client.vat}: {len(rows)} παραστατικά γίνονται PDF από τη σελίδα τους")
-    saved, failed, remaining = _render_viewer_batch(
-        conn, settings, rows, headed=False, patient=False, timeout=30.0,
-        progress=progress, should_cancel=should_cancel,
-    )
-    # NO visible browser here: this pass runs inside a normal fetch, so it is
-    # strictly headless (Edge → Chrome). Anything a hidden browser cannot render
-    # (e.g. providers behind an interactive «I am human» check) stays «μόνος
-    # online» and is offered to the user via the popup, where they explicitly
-    # choose the visible assisted download.
-    # Epsilon πίσω από Turnstile: ξανά με «stealth» Chrome, ΕΚΤΟΣ ΟΘΟΝΗΣ —
-    # κανένα παράθυρο δεν φαίνεται, αλλά το Cloudflare βλέπει κανονικό browser.
-    eps = [r for r in remaining
-           if _is_epsilon_docviewer(r["provider_host"], r["downloading_invoice_url"])]
+    # Κανένα ορατό παράθυρο εδώ (τρέχει μέσα σε κανονική λήψη). Οι σελίδες
+    # χωρίς έλεγχο «είστε άνθρωπος» → αόρατος browser. Η Epsilon (Turnstile)
+    # → stealth Chrome ΕΚΤΟΣ ΟΘΟΝΗΣ, ΚΑΤΕΥΘΕΙΑΝ: ο αόρατος δεν την περνά ποτέ
+    # και έτρωγε ~43″ ανά παραστατικό πριν φτάσει στο stealth (μισή ώρα για 43).
+    eps, others = _split_epsilon(rows)
+    saved = failed = 0
+    remaining: list[sqlite3.Row] = []
+    if others:
+        saved, failed, remaining = _render_viewer_batch(
+            conn, settings, others, headed=False, patient=False, timeout=30.0,
+            progress=progress, should_cancel=should_cancel,
+        )
     if eps and not (should_cancel and should_cancel()):
         from .download.stealth import StealthRenderer
-        from .download.stealth import available as stealth_available
 
-        if stealth_available():
-            progress(f"  ▶ {len(eps)} παραστατικά Epsilon: λήψη με κρυφό Chrome (stealth)")
-            s2, f2, left = _render_viewer_batch(
-                conn, settings, eps, headed=False, patient=False, timeout=60.0,
-                progress=progress, should_cancel=should_cancel,
-                stealth_cls=functools.partial(StealthRenderer, hidden=True),
-            )
-            saved += s2
-            failed += f2
-            remaining = [r for r in remaining if r not in eps] + left
+        progress(f"  ▶ {len(eps)} παραστατικά Epsilon: λήψη με κρυφό Chrome (stealth)")
+        s2, f2, left = _render_viewer_batch(
+            conn, settings, eps, headed=False, patient=False, timeout=60.0,
+            progress=progress, should_cancel=should_cancel,
+            stealth_cls=functools.partial(StealthRenderer, hidden=True),
+        )
+        saved += s2
+        failed += f2
+        remaining += left
+    elif eps:
+        remaining += eps
     stats.pdfs_ok += saved
     stats.viewer_only = max(0, stats.viewer_only - saved)
     stats.failed += failed
@@ -937,6 +947,7 @@ def download_backlog(
     if retail != "only":
         _auto_render_pass(
             conn, client, settings, stats=stats,
+            date_from=date_from, date_to=date_to,
             progress=progress, should_cancel=should_cancel,
         )
     return stats
@@ -1001,6 +1012,19 @@ def _is_epsilon_docviewer(host: str, url: str) -> bool:
     """Είναι Epsilon DocViewer (client-side PDF μέσω κουμπιού «Αποθήκευση ως PDF»);"""
     blob = f"{host or ''} {url or ''}".lower()
     return "epsilonnet.gr" in blob
+
+
+def _split_epsilon(rows: list[sqlite3.Row]) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    """(Epsilon για stealth, υπόλοιπα). Χωρίς stealth (λείπει Chrome ή το
+    πακέτο) όλα πάνε στον αόρατο browser, όπως πριν."""
+    from .download.stealth import available as stealth_available
+
+    eps = [r for r in rows
+           if _is_epsilon_docviewer(r["provider_host"], r["downloading_invoice_url"])]
+    if not eps or not stealth_available():
+        return [], list(rows)
+    marks = {r["mark"] for r in eps}
+    return eps, [r for r in rows if r["mark"] not in marks]
 
 
 def _render_target_url(url: str) -> str:
@@ -1295,10 +1319,13 @@ def download_viewer_only(
         return saved, len(remaining), failed
 
     # Πέρασμα 1: headless, σειριακά με έναν browser (σταθερό, χαμηλή προτεραιότητα).
+    # Η Epsilon το προσπερνά όταν υπάρχει stealth (εκεί δεν περνά ποτέ).
+    eps, others = _split_epsilon(remaining)
     s1, failed, remaining = _render_viewer_batch(
-        conn, settings, remaining, headed=False, patient=False, timeout=30.0,
+        conn, settings, others, headed=False, patient=False, timeout=30.0,
         progress=progress, should_cancel=should_cancel, on_done=bump,
-    )
+    ) if others else (0, 0, [])
+    remaining = eps + remaining
     saved += s1
 
     # Πέρασμα 1.5: «stealth» real browser (patched Chrome via
