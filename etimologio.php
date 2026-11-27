@@ -4502,6 +4502,8 @@ if ($authAction !== '') {
             $np = (string)($_POST['password'] ?? '');
             if (strlen($np) < 8) jsonError('Ο νέος κωδικός πρέπει να έχει ≥ 8 χαρακτήρες');
             user_update((int)$u['id'], ['password_hash' => password_hash($np, PASSWORD_DEFAULT)]);
+            // Τα «να με θυμάσαι» των άλλων συσκευών ακυρώνονται· αυτή εδώ παίρνει νέο.
+            if (auth_is_shell_client()) auth_remember_issue(user_by_id((int)$u['id']));
             jsonResponse(['success' => true]);
         }
         // ---- Σύνδεση εφαρμογής υπολογιστή σε server (κλειδί πρόσβασης) ----

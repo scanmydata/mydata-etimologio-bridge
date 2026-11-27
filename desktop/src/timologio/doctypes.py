@@ -84,6 +84,13 @@ CREDIT_TYPES = frozenset({"5.1", "5.2", "11.4", "14.31"})
 SELF_EXPENSE_TYPES = frozenset({"15.1", "16.1", "17.1", "17.2", "17.5", "17.6"})
 SELF_EXPENSE_PREFIXES = ("13.", "14.")
 
+#: Τίτλοι Κτήσης: τους εκδίδει ο ΑΓΟΡΑΣΤΗΣ (ο πωλητής δεν είναι υπόχρεος, π.χ.
+#: αγρότης ή ιδιώτης, ή αρνείται να εκδώσει). Εκδότης = λήπτης των αγαθών,
+#: αντισυμβαλλόμενος = πωλητής. Άρα για τον εκδότη είναι ΕΞΟΔΟ και για τον
+#: αντισυμβαλλόμενο ΕΣΟΔΟ — όπως στην αυτοτιμολόγηση. Μετρημένο: 46 τίτλοι
+#: κτήσης αγοράς αγροτικών προϊόντων μετρούσαν στα έσοδα του αγοραστή.
+BUYER_ISSUED_TYPES = frozenset({"3.1", "3.2"})
+
 #: Εμφανίζονται στα έσοδα ή στα έξοδα (κατά τον εκδότη) αλλά ΔΕΝ μετρούν στα
 #: σύνολα: δελτία αποστολής (διακίνηση, όχι συναλλαγή) και αυτοπαραδόσεις /
 #: ιδιοχρησιμοποιήσεις (εσωτερική κίνηση, όχι πώληση).
@@ -100,13 +107,16 @@ def doc_kind(
     καταχωρεί ο ίδιος. Συνήθως πωλητής = εκδότης· στην **αυτοτιμολόγηση**
     (``selfPricing`` της myDATA) το εκδίδει ο ΑΓΟΡΑΣΤΗΣ για λογαριασμό του
     πωλητή, οπότε αντιστρέφεται: τιμολόγιο της GO DELIVERY προς τον πελάτη με
-    αυτοτιμολόγηση είναι έσοδο του πελάτη. Αν μετρά στα σύνολα το λέει χωριστά
+    αυτοτιμολόγηση είναι έσοδο του πελάτη. Το ίδιο στους **τίτλους κτήσης**
+    (3.1/3.2): εκδότης είναι ο αγοραστής, άρα για τον εκδότη είναι έξοδο και
+    για τον αντισυμβαλλόμενο (τον πωλητή) έσοδο. Αν μετρά στα σύνολα το λέει χωριστά
     το `counts_in_totals`.
     """
     code = (code or "").strip()
     if code in SELF_EXPENSE_TYPES or code.startswith(SELF_EXPENSE_PREFIXES):
         return "expense"
-    sells = ((issuer_vat or "") == client_vat) != bool(self_pricing)
+    buyer_issued = bool(self_pricing) or code in BUYER_ISSUED_TYPES
+    sells = ((issuer_vat or "") == client_vat) != buyer_issued
     return "income" if sells else "expense"
 
 
@@ -124,9 +134,12 @@ def _type_sql(type_column: str) -> str:
     return f"({t} IN ({own}) OR {prefixes})"
 
 
-def _sells_sql(issuer_column: str, client_vat: str, self_pricing_column: str | None) -> str:
+def _sells_sql(
+    issuer_column: str, client_vat: str, self_pricing_column: str | None,
+    type_column: str = "invoice_type",
+) -> str:
     """«Ο πελάτης είναι ο πωλητής» σε SQL: εκδότης = πελάτης, ανάποδα στην
-    αυτοτιμολόγηση. Η στήλη ``self_pricing`` παίρνει το πρόθεμα του εκδότη
+    αυτοτιμολόγηση και στους τίτλους κτήσης. Η στήλη ``self_pricing`` παίρνει το πρόθεμα του εκδότη
     («d.issuer_vat» → «d.self_pricing»)."""
     if self_pricing_column is None:
         if issuer_column.startswith(":"):
@@ -135,7 +148,9 @@ def _sells_sql(issuer_column: str, client_vat: str, self_pricing_column: str | N
             prefix = issuer_column.rpartition(".")[0]
             self_pricing_column = f"{prefix}.self_pricing" if prefix else "self_pricing"
     issuer = f"COALESCE({issuer_column},'')"
+    buyer_types = ",".join(f"'{c}'" for c in sorted(BUYER_ISSUED_TYPES))
     return (f"(CASE WHEN COALESCE({self_pricing_column},0) = 1 "
+            f"OR TRIM(COALESCE({type_column},'')) IN ({buyer_types}) "
             f"THEN {issuer} <> {client_vat} ELSE {issuer} = {client_vat} END)")
 
 
@@ -144,7 +159,7 @@ def income_sql(
     self_pricing_column: str | None = None,
 ) -> str:
     """Το `doc_kind(...) == "income"` μέσα σε SQL."""
-    sells = _sells_sql(issuer_column, client_vat, self_pricing_column)
+    sells = _sells_sql(issuer_column, client_vat, self_pricing_column, type_column)
     return f"({sells} AND NOT {_type_sql(type_column)})"
 
 
@@ -153,7 +168,7 @@ def expense_sql(
     self_pricing_column: str | None = None,
 ) -> str:
     """Το `doc_kind(...) == "expense"` μέσα σε SQL."""
-    sells = _sells_sql(issuer_column, client_vat, self_pricing_column)
+    sells = _sells_sql(issuer_column, client_vat, self_pricing_column, type_column)
     return f"({_type_sql(type_column)} OR NOT {sells})"
 
 

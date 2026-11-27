@@ -87,6 +87,9 @@ function req_is_loopback(): bool {
 
 //: Πόσο κρατά η σύνδεση της ΕΦΑΡΜΟΓΗΣ ΥΠΟΛΟΓΙΣΤΗ χωρίς χρήση (30 ημέρες).
 const AUTH_SHELL_SESSION_TTL = 2592000;
+//: Cookie του «να με θυμάσαι» (δες auth_remember_touch). Πριν από το session
+//: block: οι σταθερές, αντίθετα με τις συναρτήσεις, δεν «ανεβαίνουν».
+const AUTH_REMEMBER_COOKIE = 'ETIM_REMEMBER';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_name('ETIM_SID');
@@ -122,6 +125,113 @@ if (session_status() === PHP_SESSION_NONE) {
     }
     // Εγγραφή το πολύ μία φορά το λεπτό: αλλιώς κάθε αίτημα θα ξαναέγραφε το αρχείο.
     if ($__now - $__seen >= 60) $_SESSION['__seen'] = $__now;
+    $GLOBALS['__auth_shell_client'] = $__shellClient;
+    if ($__shellClient) auth_remember_touch();
+}
+
+// --- «Να με θυμάσαι» της εφαρμογής υπολογιστή ------------------------------
+//
+// Η συνεδρία PHP ζει σε ΑΡΧΕΙΟ του server. Ό,τι το σβήνει (νέο deploy με
+// φάκελο συνεδριών που δεν κρατήθηκε, καθαριστής, restart) έβγαζε τον λογιστή
+// από την εφαρμογή υπολογιστή, ενώ το cookie του ήταν ακόμη έγκυρο — και
+// έβλεπε ξανά τη φόρμα σύνδεσης. Επιπλέον το cookie της συνεδρίας έληγε 30
+// ημέρες από την ΠΡΩΤΗ επίσκεψη, όσο κι αν χρησιμοποιούνταν.
+//
+// Γι' αυτό, μόνο για την εφαρμογή υπολογιστή: τυχαίο διακριτικό σε cookie
+// (HttpOnly), στη ΒΑΣΗ μόνο το hash του. Αν η συνεδρία χαθεί, το διακριτικό την
+// ξαναστήνει σιωπηλά. Δένεται με τον κωδικό: αλλαγή κωδικού το ακυρώνει. Η
+// διάρκεια (30 ημέρες) ανανεώνεται με τη χρήση, μία φορά την ημέρα.
+function auth_is_shell_client(): bool {
+    return !empty($GLOBALS['__auth_shell_client']);
+}
+
+function auth_remember_key(string $token): string {
+    return 'remember.' . hash('sha256', $token);
+}
+
+/** Σβήνει τη γραμμή του διακριτικού (όχι απλώς κενή τιμή: να μη μαζεύονται). */
+function auth_remember_drop(string $key): void {
+    localdb()->prepare("DELETE FROM app_settings WHERE key = :k")->execute([':k' => $key]);
+    $GLOBALS['__settings_dirty'] = true;
+}
+
+function auth_password_tag(array $u): string {
+    return substr(hash('sha256', (string)($u['password_hash'] ?? '')), 0, 16);
+}
+
+function auth_remember_cookie(string $value, int $expires): void {
+    if (headers_sent()) return;
+    setcookie(AUTH_REMEMBER_COOKIE, $value, [
+        'expires'  => $expires,
+        'path'     => '/',
+        'httponly' => true,
+        'samesite' => 'Lax',
+        'secure'   => req_is_https(),
+    ]);
+}
+
+/** Νέο διακριτικό μετά από επιτυχημένη σύνδεση (μόνο εφαρμογή υπολογιστή). */
+function auth_remember_issue(array $u): void {
+    if (!auth_is_shell_client()) return;
+    auth_remember_forget();                       // ένα ανά πρόγραμμα περιήγησης
+    $token = bin2hex(random_bytes(32));
+    $exp = time() + AUTH_SHELL_SESSION_TTL;
+    setting_set(auth_remember_key($token), json_encode(
+        ['uid' => (int)$u['id'], 'exp' => $exp, 'pw' => auth_password_tag($u), 'at' => time()]));
+    auth_remember_cookie($token, $exp);
+    $_COOKIE[AUTH_REMEMBER_COOKIE] = $token;
+}
+
+/** Σβήνει το διακριτικό αυτού του προγράμματος περιήγησης (αποσύνδεση). */
+function auth_remember_forget(): void {
+    $token = (string)($_COOKIE[AUTH_REMEMBER_COOKIE] ?? '');
+    if ($token === '') return;
+    if (preg_match('/^[0-9a-f]{64}$/', $token)) auth_remember_drop(auth_remember_key($token));
+    auth_remember_cookie('', time() - 42000);
+    unset($_COOKIE[AUTH_REMEMBER_COOKIE]);
+}
+
+/**
+ * Ξαναστήνει χαμένη συνεδρία από το διακριτικό και κρατά ζωντανά τα cookies.
+ * Καλείται σε κάθε αίτημα της εφαρμογής υπολογιστή· γράφει το πολύ μία φορά
+ * την ημέρα.
+ */
+function auth_remember_touch(): void {
+    $token = (string)($_COOKIE[AUTH_REMEMBER_COOKIE] ?? '');
+    if (!preg_match('/^[0-9a-f]{64}$/', $token)) return;
+    $key = auth_remember_key($token);
+    $raw = setting_get($key);
+    $d = $raw !== '' ? json_decode($raw, true) : null;
+    $now = time();
+    $u = is_array($d) ? user_by_id((int)($d['uid'] ?? 0)) : null;
+    $valid = $u && (int)($d['exp'] ?? 0) > $now && $u['status'] === 'active'
+             && hash_equals((string)($d['pw'] ?? ''), auth_password_tag($u));
+    if (!$valid) {
+        if (is_array($d)) auth_remember_drop($key);
+        auth_remember_cookie('', $now - 42000);
+        unset($_COOKIE[AUTH_REMEMBER_COOKIE]);
+        return;
+    }
+    if (empty($_SESSION['uid'])) {
+        $_SESSION['uid'] = (int)$u['id'];
+        if (function_exists('audit_log_add')) audit_log_add((int)$u['id'], '', 'login_remembered');
+    } elseif ((int)$_SESSION['uid'] !== (int)$u['id']) {
+        return;                                   // άλλος χρήστης στη συνεδρία: δεν την αγγίζουμε
+    }
+    // Κυλιόμενη λήξη: 30 ημέρες από την τελευταία χρήση, όχι από την πρώτη.
+    if ($now - (int)($d['at'] ?? 0) >= 86400) {
+        $exp = $now + AUTH_SHELL_SESSION_TTL;
+        setting_set($key, json_encode(['uid' => (int)$u['id'], 'exp' => $exp,
+                                       'pw' => (string)$d['pw'], 'at' => $now]));
+        auth_remember_cookie($token, $exp);
+        if (!headers_sent()) {
+            $p = session_get_cookie_params();
+            setcookie(session_name(), session_id(), [
+                'expires' => $exp, 'path' => $p['path'], 'httponly' => true,
+                'samesite' => 'Lax', 'secure' => req_is_https(),
+            ]);
+        }
+    }
 }
 
 // --- Master bootstrap -------------------------------------------------------
@@ -256,6 +366,7 @@ function auth_login(string $email, string $password): array {
     // login + location.href navigation can drop a regenerated cookie. Reusing the id
     // keeps login robust.
     $_SESSION['uid'] = (int)$u['id'];
+    auth_remember_issue($u);
     if (function_exists('audit_log_add')) audit_log_add((int)$u['id'], '', 'login');
     return ['success' => true, 'user' => user_public($u)];
 }
@@ -279,6 +390,7 @@ function auth_login_totp(string $code): array {
     }
     unset($_SESSION['pending_2fa_uid'], $_SESSION['pending_2fa_at']);
     $_SESSION['uid'] = (int)$u['id'];
+    auth_remember_issue($u);
     if (function_exists('audit_log_add')) audit_log_add((int)$u['id'], '', 'login_2fa');
     return ['success' => true, 'user' => user_public($u)];
 }
@@ -287,6 +399,7 @@ function auth_logout(): void {
     if (function_exists('audit_log_add') && !empty($_SESSION['uid'])) {
         audit_log_add((int)$_SESSION['uid'], '', 'logout');
     }
+    auth_remember_forget();
     $_SESSION = [];
     if (ini_get('session.use_cookies')) {
         $p = session_get_cookie_params();
